@@ -182,6 +182,24 @@ impl Indexer {
             }
         }
 
+        // ============================================================================
+        // WORKSPACE SUPPORT - 20260112
+        // ============================================================================
+        // NEW: Find and parse all Cargo.toml files for Rust workspaces
+        let rust_crates = crate::parsers::rust::parse_all_rust_crates(root)
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to parse Cargo.toml files: {}", e);
+                Vec::new()
+            });
+        if !rust_crates.is_empty() {
+            log::info!("Found {} Rust workspace crates", rust_crates.len());
+        }
+
+        // ============================================================================
+        // WORKSPACE SUPPORT - 20260112
+        // ============================================================================
+
+
         // Step 1.5: Quick incremental check - are all files unchanged?
         // If yes, skip expensive rebuild entirely and return cached stats
         if !existing_hashes.is_empty() && total_files == existing_hashes.len() {
@@ -894,6 +912,25 @@ impl Indexer {
                         }
                     }
 
+                    // ============================================================================
+                    // WORKSPACE SUPPORT - 20260112
+                    // ============================================================================
+                    // NEW: Reclassify Rust imports using workspace crates
+                    if file_path.ends_with(".rs") && !rust_crates.is_empty() {
+                        let new_type = crate::parsers::rust::reclassify_rust_import(
+                            &import_info.imported_path, 
+                            &rust_crates
+                        );
+
+                    // ============================================================================
+                    // WORKSPACE SUPPORT - 20260112
+                    // ============================================================================
+
+
+                    if matches!(new_type, ImportType::Internal) {
+                            import_info.import_type = new_type;
+                        }
+                    }
                     // ONLY insert Internal dependencies - skip External and Stdlib
                     if !matches!(import_info.import_type, ImportType::Internal) {
                         continue;
@@ -1022,14 +1059,42 @@ impl Indexer {
                             log::trace!("Could not resolve TS/JS import (non-relative or external): {}", import_info.imported_path);
                             None
                         }
+                    // } else if file_path.ends_with(".rs") {
+                    //     // Resolve Rust dependencies (crate::, super::, self::, mod declarations)
+                    //     if let Some(resolved_path) = crate::parsers::rust::resolve_rust_use_to_path(
+                    //         &import_info.imported_path,
+                    //         Some(&file_path),
+                    //         Some(root.to_str().unwrap_or("")),
+                    //     ) {
+                    //         // Look up file ID in database using exact match
+                    //         match dep_index.get_file_id_by_path(&resolved_path)? {
+                    //             Some(id) => {
+
+
+                    // ============================================================================
+                    // WORKSPACE SUPPORT (END) - 20260112
+                    // ============================================================================
                     } else if file_path.ends_with(".rs") {
                         // Resolve Rust dependencies (crate::, super::, self::, mod declarations)
-                        if let Some(resolved_path) = crate::parsers::rust::resolve_rust_use_to_path(
+                        let resolved = crate::parsers::rust::resolve_rust_use_to_path(
                             &import_info.imported_path,
-                            Some(&file_path),
+                            Some(&file_path), 
                             Some(root.to_str().unwrap_or("")),
-                        ) {
-                            // Look up file ID in database using exact match
+                        );
+                        
+                        // NEW: If standard resolution failed, try Workspace Resolution (ts_shared::...)
+                        let resolved_path_opt = resolved.or_else(|| {
+                             crate::parsers::rust::resolve_rust_workspace_path(
+                                &import_info.imported_path,
+                                &rust_crates
+                            )
+                        });
+
+                        if let Some(resolved_path) = resolved_path_opt {
+                        // Look up file ID in database using exact match
+                        // ============================================================================
+                        // WORKSPACE SUPPORT - 20260112
+                        // ============================================================================
                             match dep_index.get_file_id_by_path(&resolved_path)? {
                                 Some(id) => {
                                     log::trace!("Resolved Rust dependency: {} -> {} (file_id={})",
