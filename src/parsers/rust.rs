@@ -1422,3 +1422,131 @@ mod path_resolution_tests {
         assert!(result.is_none());
     }
 }
+
+// ============================================================================
+// WORKSPACE SUPPORT (NEW) - 20260112
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct RustCrate {
+    pub name: String,
+    pub root_path: std::path::PathBuf,
+}
+
+/// Find all Rust crates in the workspace by looking for Cargo.toml files
+pub fn parse_all_rust_crates(root: &std::path::Path) -> anyhow::Result<Vec<RustCrate>> {
+    let mut crates = Vec::new();
+    // Scan the entire directory tree respecting gitignore
+    let walker = ignore::WalkBuilder::new(root)
+        .git_ignore(true)
+        .build();
+
+    for entry in walker {
+        let entry = entry?;
+        // Found a Cargo.toml
+        if entry.file_name() == "Cargo.toml" {
+            // Read it to extract the package name
+            // Simple string parsing to avoid adding new dependencies like 'toml'
+            let content = std::fs::read_to_string(entry.path())?;
+            if let Some(name) = extract_crate_name(&content) {
+                // The directory containing Cargo.toml is the crate root
+                if let Some(crate_root) = entry.path().parent() {
+                    crates.push(RustCrate {
+                        name,
+                        root_path: crate_root.to_path_buf(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(crates)
+}
+
+/// Robust extraction of name="..." from [package] section
+fn extract_crate_name(content: &str) -> Option<String> {
+    let mut in_package_section = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "[package]" {
+            in_package_section = true;
+            continue;
+        }
+        if in_package_section {
+            if line.starts_with('[') {
+                break; // End of package section
+            }
+            if line.starts_with("name") {
+                // Parse: name = "ts_shared"
+                if let Some(val) = line.split('=').nth(1) {
+                    return Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Reclassify an import based on known workspace crates
+pub fn reclassify_rust_import(
+    path: &str,
+    crates: &[RustCrate],
+) -> crate::models::ImportType {
+    // If the import matches a known crate name, it is Internal
+    for krate in crates {
+        // Match "ts_shared" or "ts_shared::submodule"
+        if path == krate.name || path.starts_with(&format!("{}::", krate.name)) {
+            return crate::models::ImportType::Internal;
+        }
+    }
+    // Fallback to default classification (std, external, etc.)
+    classify_rust_import(path)
+}
+
+/// Resolve a workspace import to a file path
+/// e.g., "ts_shared::config" -> "/path/to/ts_shared/src/config.rs"
+pub fn resolve_rust_workspace_path(
+    import_path: &str,
+    crates: &[RustCrate],
+) -> Option<String> {
+    // 1. Find which crate matches the start of the import
+    for krate in crates {
+        if import_path == krate.name || import_path.starts_with(&format!("{}::", krate.name)) {
+            // 2. Strip crate name to get relative module path
+            // "ts_shared::config" -> "config"
+            let relative_module = if import_path == krate.name {
+                "" 
+            } else {
+                import_path.strip_prefix(&format!("{}::", krate.name)).unwrap_or("")
+            };
+            
+            // 3. Assume standard "src/" layout
+            let src_root = krate.root_path.join("src");
+            
+            // 4. Try to resolve the path
+            if relative_module.is_empty() {
+                // "use ts_shared;" -> likely lib.rs
+                let lib = src_root.join("lib.rs");
+                if lib.exists() { return Some(lib.to_string_lossy().to_string()); }
+                let main = src_root.join("main.rs");
+                if main.exists() { return Some(main.to_string_lossy().to_string()); }
+            } else {
+                // "use ts_shared::config;"
+                let parts: Vec<&str> = relative_module.split("::").collect();
+                
+                // Attempt 1: The path points directly to a module/file
+                if let Some(path) = resolve_rust_module_path(&src_root, &parts) {
+                    return Some(path);
+                }
+                
+                // Attempt 2: The path points to an ITEM (struct/func) inside a file
+                // Try popping the last component ("config::Struct") -> resolve "config"
+                if parts.len() > 1 {
+                    if let Some(path) = resolve_rust_module_path(&src_root, &parts[..parts.len()-1]) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
