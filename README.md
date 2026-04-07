@@ -7,6 +7,7 @@ Reflex is a code search engine designed for developers and AI coding assistants.
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-347%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
+[![gitcgr](https://gitcgr.com/badge/reflex-search/reflex.svg)](https://gitcgr.com/reflex-search/reflex)
 
 ## ✨ Features
 
