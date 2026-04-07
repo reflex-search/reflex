@@ -41,6 +41,7 @@ pub mod mcp;
 pub mod models;
 pub mod output;
 pub mod parsers;
+pub mod pulse;
 pub mod query;
 pub mod regex_trigrams;
 pub mod semantic;

@@ -118,7 +118,7 @@ pub async fn ask_question(
 /// - ```\n{...}\n```
 /// - JSON embedded in surrounding text (finds first `{` to last matching `}`)
 /// - {raw JSON} (no-op, returns as-is)
-fn extract_json(text: &str) -> &str {
+pub(crate) fn extract_json(text: &str) -> &str {
     let trimmed = text.trim();
 
     // Check for markdown code fence pattern (case-insensitive language tag)

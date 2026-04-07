@@ -12,6 +12,7 @@ use crate::cache::CacheManager;
 use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language};
 use crate::output;
+use crate::pulse;
 use crate::query::{QueryEngine, QueryFilter};
 
 /// Reflex: Local-first, structure-aware code search for AI agents
@@ -652,6 +653,166 @@ pub enum Command {
         /// Cache directory path
         cache_dir: PathBuf,
     },
+
+    /// Take and manage codebase snapshots for structural tracking
+    ///
+    /// Snapshots capture the structural state of the index (files, dependencies,
+    /// metrics) for diffing and historical analysis.
+    ///
+    /// With no subcommand, creates a new snapshot.
+    ///
+    /// Examples:
+    ///   rfx snapshot               # Create a new snapshot
+    ///   rfx snapshot list           # List available snapshots
+    ///   rfx snapshot diff           # Diff latest vs previous
+    ///   rfx snapshot gc             # Run retention policy
+    Snapshot {
+        #[command(subcommand)]
+        command: Option<SnapshotSubcommand>,
+    },
+
+    /// Generate codebase intelligence surfaces (digest, wiki, map, site)
+    ///
+    /// Pulse turns structural facts from the index into browsable documentation.
+    ///
+    /// Examples:
+    ///   rfx pulse digest --no-llm           # Structural-only digest
+    ///   rfx pulse wiki --no-llm             # Generate wiki pages
+    ///   rfx pulse map                        # Architecture map (mermaid)
+    ///   rfx pulse generate --no-llm          # Full static site
+    Pulse {
+        #[command(subcommand)]
+        command: PulseSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnapshotSubcommand {
+    /// Compare two snapshots
+    ///
+    /// Defaults to latest vs previous snapshot.
+    Diff {
+        /// Baseline snapshot ID (defaults to second-most-recent)
+        #[arg(long)]
+        baseline: Option<String>,
+
+        /// Current snapshot ID (defaults to most recent)
+        #[arg(long)]
+        current: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output
+        #[arg(long)]
+        pretty: bool,
+    },
+
+    /// List available snapshots
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output
+        #[arg(long)]
+        pretty: bool,
+    },
+
+    /// Run snapshot garbage collection
+    Gc {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PulseSubcommand {
+    /// Generate a structural change digest
+    Digest {
+        /// Baseline snapshot ID
+        #[arg(long)]
+        baseline: Option<String>,
+
+        /// Current snapshot ID
+        #[arg(long)]
+        current: Option<String>,
+
+        /// Skip LLM narration (structural content only)
+        #[arg(long)]
+        no_llm: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output
+        #[arg(long)]
+        pretty: bool,
+    },
+
+    /// Generate living wiki pages
+    Wiki {
+        /// Skip LLM narration
+        #[arg(long)]
+        no_llm: bool,
+
+        /// Output directory for markdown files
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Export an architecture map
+    Map {
+        /// Output format (mermaid, d2)
+        #[arg(short, long, default_value = "mermaid")]
+        format: String,
+
+        /// Output file (prints to stdout if not set)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Zoom level: repo (default) or module path
+        #[arg(short, long)]
+        zoom: Option<String>,
+    },
+
+    /// Generate a complete static HTML site
+    Generate {
+        /// Output directory
+        #[arg(short, long, default_value = "pulse-site")]
+        output: PathBuf,
+
+        /// Base URL for asset paths
+        #[arg(long, default_value = "/")]
+        base_url: String,
+
+        /// Site title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Surfaces to include (comma-separated: wiki,digest,map)
+        #[arg(long)]
+        include: Option<String>,
+
+        /// Skip LLM narration
+        #[arg(long)]
+        no_llm: bool,
+
+        /// Clean output directory before generating
+        #[arg(long)]
+        clean: bool,
+
+        /// Force re-narration (ignore LLM cache)
+        #[arg(long)]
+        force_renarrate: bool,
+    },
 }
 
 /// Try to run background cache compaction if needed
@@ -812,6 +973,36 @@ impl Cli {
             }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
+            }
+            Some(Command::Snapshot { command }) => {
+                match command {
+                    None => handle_snapshot_create(),
+                    Some(crate::cli::SnapshotSubcommand::List { json, pretty }) => {
+                        handle_snapshot_list(json, pretty)
+                    }
+                    Some(crate::cli::SnapshotSubcommand::Diff { baseline, current, json, pretty }) => {
+                        handle_snapshot_diff(baseline, current, json, pretty)
+                    }
+                    Some(crate::cli::SnapshotSubcommand::Gc { json }) => {
+                        handle_snapshot_gc(json)
+                    }
+                }
+            }
+            Some(Command::Pulse { command }) => {
+                match command {
+                    crate::cli::PulseSubcommand::Digest { baseline, current, no_llm, json, pretty } => {
+                        handle_pulse_digest(baseline, current, no_llm, json, pretty)
+                    }
+                    crate::cli::PulseSubcommand::Wiki { no_llm, output, json } => {
+                        handle_pulse_wiki(no_llm, output, json)
+                    }
+                    crate::cli::PulseSubcommand::Map { format, output, zoom } => {
+                        handle_pulse_map(format, output, zoom)
+                    }
+                    crate::cli::PulseSubcommand::Generate { output, base_url, title, include, no_llm, clean, force_renarrate } => {
+                        handle_pulse_generate(output, base_url, title, include, no_llm, clean, force_renarrate)
+                    }
+                }
             }
         }
     }
@@ -3422,6 +3613,308 @@ fn handle_deps_islands(
             anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
         }
     }
+
+    Ok(())
+}
+
+// ── Snapshot handlers ──────────────────────────────────────────
+
+fn handle_snapshot_create() -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let info = pulse::snapshot::create_snapshot(&cache)?;
+    eprintln!("Snapshot created: {}", info.id);
+    eprintln!("  Files: {}, Lines: {}, Edges: {}", info.file_count, info.total_lines, info.edge_count);
+    if let Some(branch) = &info.git_branch {
+        eprintln!("  Branch: {}", branch);
+    }
+
+    // Run background GC
+    let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+    let gc_report = pulse::snapshot::run_gc(&cache, &pulse_config.retention)?;
+    if gc_report.removed > 0 {
+        eprintln!("  GC: removed {} old snapshot(s)", gc_report.removed);
+    }
+
+    Ok(())
+}
+
+fn handle_snapshot_list(json: bool, pretty: bool) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let snapshots = pulse::snapshot::list_snapshots(&cache)?;
+
+    if json || pretty {
+        let output = if pretty {
+            serde_json::to_string_pretty(&snapshots)?
+        } else {
+            serde_json::to_string(&snapshots)?
+        };
+        println!("{}", output);
+    } else {
+        if snapshots.is_empty() {
+            eprintln!("No snapshots found. Run `rfx snapshot` to create one.");
+            return Ok(());
+        }
+        println!("{:<20} {:>6} {:>8} {:>6}  {}", "ID", "Files", "Lines", "Edges", "Branch");
+        println!("{}", "-".repeat(60));
+        for s in &snapshots {
+            println!("{:<20} {:>6} {:>8} {:>6}  {}",
+                s.id, s.file_count, s.total_lines, s.edge_count,
+                s.git_branch.as_deref().unwrap_or("-"));
+        }
+        eprintln!("\n{} snapshot(s)", snapshots.len());
+    }
+
+    Ok(())
+}
+
+fn handle_snapshot_diff(
+    baseline: Option<String>,
+    current: Option<String>,
+    json: bool,
+    pretty: bool,
+) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let snapshots = pulse::snapshot::list_snapshots(&cache)?;
+    let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+
+    let current_snapshot = match &current {
+        Some(id) => snapshots.iter().find(|s| s.id == *id)
+            .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?,
+        None => snapshots.first()
+            .ok_or_else(|| anyhow::anyhow!("No snapshots found. Run `rfx snapshot` first."))?,
+    };
+
+    let baseline_snapshot = match &baseline {
+        Some(id) => snapshots.iter().find(|s| s.id == *id)
+            .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?,
+        None => snapshots.get(1)
+            .ok_or_else(|| anyhow::anyhow!("Need at least 2 snapshots to diff. Run `rfx snapshot` again after making changes."))?,
+    };
+
+    let diff = pulse::diff::compute_diff(
+        &baseline_snapshot.path,
+        &current_snapshot.path,
+        &pulse_config.thresholds,
+    )?;
+
+    if json || pretty {
+        let output = if pretty {
+            serde_json::to_string_pretty(&diff)?
+        } else {
+            serde_json::to_string(&diff)?
+        };
+        println!("{}", output);
+    } else {
+        let s = &diff.summary;
+        println!("Diff: {} → {}", diff.baseline_id, diff.current_id);
+        println!("  Files: +{} -{} ~{}", s.files_added, s.files_removed, s.files_modified);
+        println!("  Edges: +{} -{}", s.edges_added, s.edges_removed);
+        if !diff.threshold_alerts.is_empty() {
+            println!("  Alerts: {}", diff.threshold_alerts.len());
+            for alert in &diff.threshold_alerts {
+                println!("    [{:?}] {}", alert.severity, alert.message);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_snapshot_gc(json: bool) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+    let report = pulse::snapshot::run_gc(&cache, &pulse_config.retention)?;
+
+    if json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        println!("GC complete: before {}, after {}, removed {}", report.snapshots_before, report.snapshots_after, report.removed);
+    }
+
+    Ok(())
+}
+
+// ── Pulse handlers ─────────────────────────────────────────────
+
+fn handle_pulse_digest(
+    baseline: Option<String>,
+    current: Option<String>,
+    no_llm: bool,
+    json: bool,
+    pretty: bool,
+) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let snapshots = pulse::snapshot::list_snapshots(&cache)?;
+    let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+
+    let current_snapshot = match &current {
+        Some(id) => snapshots.iter().find(|s| s.id == *id)
+            .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?,
+        None => snapshots.first()
+            .ok_or_else(|| anyhow::anyhow!("No snapshots found. Run `rfx snapshot` first."))?,
+    };
+
+    let snapshot_diff = match &baseline {
+        Some(id) => {
+            let bl = snapshots.iter().find(|s| s.id == *id)
+                .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?;
+            Some(pulse::diff::compute_diff(&bl.path, &current_snapshot.path, &pulse_config.thresholds)?)
+        }
+        None => {
+            snapshots.get(1).map(|bl| {
+                pulse::diff::compute_diff(&bl.path, &current_snapshot.path, &pulse_config.thresholds)
+            }).transpose()?
+        }
+    };
+
+    let digest = pulse::digest::generate_digest(
+        snapshot_diff.as_ref(),
+        current_snapshot,
+        no_llm,
+    )?;
+
+    if json || pretty {
+        let output = if pretty {
+            serde_json::to_string_pretty(&digest)?
+        } else {
+            serde_json::to_string(&digest)?
+        };
+        println!("{}", output);
+    } else {
+        println!("{}", pulse::digest::render_markdown(&digest));
+    }
+
+    Ok(())
+}
+
+fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: bool) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let snapshots = pulse::snapshot::list_snapshots(&cache)?;
+    let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+
+    let snapshot_diff = if snapshots.len() >= 2 {
+        pulse::diff::compute_diff(&snapshots[1].path, &snapshots[0].path, &pulse_config.thresholds).ok()
+    } else {
+        None
+    };
+
+    let pages = pulse::wiki::generate_all_pages(&cache, snapshot_diff.as_ref(), no_llm)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pages)?);
+    } else if let Some(out_dir) = output {
+        std::fs::create_dir_all(&out_dir)?;
+        let rendered = pulse::wiki::render_wiki_markdown(&pages);
+        for (filename, content) in &rendered {
+            std::fs::write(out_dir.join(filename), content)?;
+        }
+        eprintln!("Wrote {} wiki pages to {}", rendered.len(), out_dir.display());
+    } else {
+        let rendered = pulse::wiki::render_wiki_markdown(&pages);
+        for (filename, content) in &rendered {
+            println!("--- {} ---\n{}\n", filename, content);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_pulse_map(format: String, output: Option<PathBuf>, zoom: Option<String>) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let map_format: pulse::map::MapFormat = format.parse()?;
+    let map_zoom = match zoom {
+        Some(module) => pulse::map::MapZoom::Module(module),
+        None => pulse::map::MapZoom::Repo,
+    };
+
+    let content = pulse::map::generate_map(&cache, &map_zoom, map_format)?;
+
+    if let Some(out_path) = output {
+        std::fs::write(&out_path, &content)?;
+        eprintln!("Map written to {}", out_path.display());
+    } else {
+        println!("{}", content);
+    }
+
+    Ok(())
+}
+
+fn handle_pulse_generate(
+    output: PathBuf,
+    base_url: String,
+    title: Option<String>,
+    include: Option<String>,
+    no_llm: bool,
+    clean: bool,
+    force_renarrate: bool,
+) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let surfaces = match include {
+        Some(ref s) => {
+            s.split(',')
+                .map(|part| match part.trim().to_lowercase().as_str() {
+                    "wiki" => Ok(pulse::site::Surface::Wiki),
+                    "digest" => Ok(pulse::site::Surface::Digest),
+                    "map" => Ok(pulse::site::Surface::Map),
+                    other => anyhow::bail!("Unknown surface '{}'. Supported: wiki, digest, map", other),
+                })
+                .collect::<Result<Vec<_>>>()?
+        }
+        None => vec![
+            pulse::site::Surface::Wiki,
+            pulse::site::Surface::Digest,
+            pulse::site::Surface::Map,
+        ],
+    };
+
+    let config = pulse::site::SiteConfig {
+        output_dir: output,
+        base_url,
+        title: title.unwrap_or_else(|| "Pulse".to_string()),
+        surfaces,
+        no_llm,
+        clean,
+        force_renarrate,
+    };
+
+    let report = pulse::site::generate_site(&cache, &config)?;
+
+    eprintln!("Site generated in {}/", report.output_dir);
+    eprintln!("  Wiki pages: {}", report.pages_generated);
+    eprintln!("  Digest: {}", if report.digest_generated { "yes" } else { "no" });
+    eprintln!("  Map: {}", if report.map_generated { "yes" } else { "no" });
 
     Ok(())
 }

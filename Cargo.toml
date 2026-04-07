@@ -63,6 +63,9 @@ async-trait = "0.1"
 # Config parsing
 toml = "0.8"
 
+# Template engine (for Pulse static site generation)
+tera = "1"
+
 # Shell command parsing
 shell-words = "1.1"
 

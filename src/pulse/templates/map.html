@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block title %}Architecture Map - {{ site_title }}{% endblock %}
+
+{% block content %}
+<h1>Architecture Map</h1>
+<p>Module-level dependency diagram. Hotspot modules are highlighted in red.</p>
+<div class="mermaid">
+{{ mermaid_content }}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad: true});</script>
+{% endblock %}

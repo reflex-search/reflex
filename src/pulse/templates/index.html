@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}{{ site_title }}{% endblock %}
+
+{% block sidebar %}
+<h3>Modules</h3>
+<ul>
+{% for page in wiki_pages %}
+    <li><a href="{{ base_url }}wiki/{{ page.module_path | replace(from="/", to="_") }}.html">{{ page.module_path }}/</a></li>
+{% endfor %}
+</ul>
+{% endblock %}
+
+{% block content %}
+<h1>{{ site_title }}</h1>
+<p>Auto-generated codebase documentation powered by <a href="https://github.com/reflex-search/reflex">Reflex Pulse</a>.</p>
+
+<h2>Modules</h2>
+<ul>
+{% for page in wiki_pages %}
+    <li><a href="{{ base_url }}wiki/{{ page.module_path | replace(from="/", to="_") }}.html">{{ page.title }}</a></li>
+{% endfor %}
+</ul>
+
+{% if has_digest %}
+<h2>Latest Digest</h2>
+<p><a href="{{ base_url }}digest.html">View the latest structural change digest</a></p>
+{% endif %}
+
+{% if has_map %}
+<h2>Architecture Map</h2>
+<p><a href="{{ base_url }}map.html">View the dependency architecture map</a></p>
+{% endif %}
+{% endblock %}

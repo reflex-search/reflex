@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} - {{ site_title }}{% endblock %}
+
+{% block sidebar %}
+<h3>Modules</h3>
+<ul>
+{% for wp in wiki_pages %}
+    <li><a href="{{ base_url }}wiki/{{ wp.module_path | replace(from="/", to="_") }}.html">{{ wp.module_path }}/</a></li>
+{% endfor %}
+</ul>
+{% endblock %}
+
+{% block content %}
+<h1>{{ page.title }}</h1>
+
+{% if page.sections.summary %}
+<section class="summary">
+{{ page.sections.summary }}
+</section>
+{% endif %}
+
+<h2>Structure</h2>
+<div class="content">{{ page.sections.structure }}</div>
+
+<h2>Dependencies</h2>
+<div class="content">{{ page.sections.dependencies }}</div>
+
+<h2>Dependents</h2>
+<div class="content">{{ page.sections.dependents }}</div>
+
+<h2>Key Symbols</h2>
+<div class="content">{{ page.sections.key_symbols }}</div>
+
+<h2>Metrics</h2>
+<div class="content">{{ page.sections.metrics }}</div>
+
+{% if page.sections.recent_changes %}
+<h2>Recent Changes</h2>
+<div class="content">{{ page.sections.recent_changes }}</div>
+{% endif %}
+{% endblock %}

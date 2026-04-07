@@ -33,24 +33,41 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 
 use crate::cache::CacheManager;
 use crate::models::{Dependency, DependencyInfo, ImportType};
 
 /// Manages dependency storage and graph operations
 pub struct DependencyIndex {
-    cache: CacheManager,
+    cache: Option<CacheManager>,
+    db_path: PathBuf,
 }
 
 impl DependencyIndex {
     /// Create a new dependency index for the given cache
     pub fn new(cache: CacheManager) -> Self {
-        Self { cache }
+        let db_path = cache.path().join("meta.db");
+        Self { cache: Some(cache), db_path }
     }
 
-    /// Get a reference to the cache manager
+    /// Create a dependency index pointing directly at a database file.
+    ///
+    /// Used by Pulse to run analysis against snapshot databases.
+    pub fn from_db_path(db_path: impl Into<PathBuf>) -> Self {
+        Self { cache: None, db_path: db_path.into() }
+    }
+
+    /// Get a reference to the cache manager.
+    ///
+    /// Panics if this index was created via `from_db_path()`.
     pub fn get_cache(&self) -> &CacheManager {
-        &self.cache
+        self.cache.as_ref().expect("DependencyIndex created with from_db_path has no CacheManager")
+    }
+
+    /// Open a database connection to the backing store.
+    fn open_conn(&self) -> Result<Connection> {
+        Connection::open(&self.db_path).context("Failed to open database")
     }
 
     /// Insert a dependency into the database
@@ -72,9 +89,7 @@ impl DependencyIndex {
         line_number: usize,
         imported_symbols: Option<Vec<String>>,
     ) -> Result<()> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for dependency insert")?;
+        let conn = self.open_conn()?;
 
         let import_type_str = match import_type {
             ImportType::Internal => "internal",
@@ -119,9 +134,7 @@ impl DependencyIndex {
         resolved_source_id: Option<i64>,
         line_number: usize,
     ) -> Result<()> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for export insert")?;
+        let conn = self.open_conn()?;
 
         conn.execute(
             "INSERT INTO file_exports (file_id, exported_symbol, source_path, resolved_source_id, line_number)
@@ -146,9 +159,7 @@ impl DependencyIndex {
             return Ok(());
         }
 
-        let db_path = self.cache.path().join("meta.db");
-        let mut conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for batch dependency insert")?;
+        let mut conn = self.open_conn()?;
 
         let tx = conn.transaction()?;
 
@@ -187,9 +198,7 @@ impl DependencyIndex {
     ///
     /// Returns a list of files/modules that this file imports.
     pub fn get_dependencies(&self, file_id: i64) -> Result<Vec<Dependency>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for dependency lookup")?;
+        let conn = self.open_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols
@@ -232,9 +241,7 @@ impl DependencyIndex {
     /// Returns a list of file IDs that import this file.
     /// Uses `resolved_file_id` column for instant SQL lookup (sub-10ms).
     pub fn get_dependents(&self, file_id: i64) -> Result<Vec<i64>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for reverse dependency lookup")?;
+        let conn = self.open_conn()?;
 
         // Pure SQL query on resolved_file_id (instant)
         let mut stmt = conn.prepare(
@@ -333,9 +340,7 @@ impl DependencyIndex {
     /// Returns a list of cycle paths, where each cycle is represented as
     /// a vector of file IDs forming the cycle.
     pub fn detect_circular_dependencies(&self) -> Result<Vec<Vec<i64>>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for circular dependency analysis")?;
+        let conn = self.open_conn()?;
 
         // Build in-memory dependency graph using resolved_file_id (instant)
         let mut graph: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -420,9 +425,7 @@ impl DependencyIndex {
     ///
     /// Useful for converting file ID results to human-readable paths.
     pub fn get_file_paths(&self, file_ids: &[i64]) -> Result<HashMap<i64, String>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for file path lookup")?;
+        let conn = self.open_conn()?;
 
         let mut paths = HashMap::new();
 
@@ -441,9 +444,7 @@ impl DependencyIndex {
 
     /// Get file path for a single file ID
     fn get_file_path(&self, file_id: i64) -> Result<String> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for file path lookup")?;
+        let conn = self.open_conn()?;
 
         let path = conn.query_row(
             "SELECT path FROM files WHERE id = ?",
@@ -456,9 +457,7 @@ impl DependencyIndex {
 
     /// Get all file IDs in the database
     fn get_all_file_ids(&self) -> Result<Vec<i64>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for file ID lookup")?;
+        let conn = self.open_conn()?;
 
         let mut stmt = conn.prepare("SELECT id FROM files")?;
         let file_ids = stmt
@@ -479,9 +478,7 @@ impl DependencyIndex {
     /// * `limit` - Maximum number of hotspots to return (None = all)
     /// * `min_dependents` - Minimum number of imports required to be a hotspot (default: 2)
     pub fn find_hotspots(&self, limit: Option<usize>, min_dependents: usize) -> Result<Vec<(i64, usize)>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for hotspot analysis")?;
+        let conn = self.open_conn()?;
 
         // Pure SQL aggregation on resolved_file_id (instant)
         let mut stmt = conn.prepare(
@@ -521,9 +518,7 @@ impl DependencyIndex {
     /// - App imports `@packages/ui/components` (resolves to index.ts)
     /// - This function follows the export chain and marks `WithLabel.vue` as used
     pub fn find_unused_files(&self) -> Result<Vec<i64>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for unused files analysis")?;
+        let conn = self.open_conn()?;
 
         // Build set of used files by following barrel export chains
         let mut used_files = HashSet::new();
@@ -586,9 +581,7 @@ impl DependencyIndex {
     ///
     /// Vec of file IDs that are transitively exported (includes the barrel file itself)
     pub fn resolve_through_barrel_exports(&self, barrel_file_id: i64) -> Result<Vec<i64>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for barrel export resolution")?;
+        let conn = self.open_conn()?;
 
         let mut resolved_files = Vec::new();
         let mut visited = HashSet::new();
@@ -638,9 +631,7 @@ impl DependencyIndex {
     /// Returns a list of islands, where each island is a vector of file IDs.
     /// Islands are sorted by size (largest first).
     pub fn find_islands(&self) -> Result<Vec<Vec<i64>>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for island analysis")?;
+        let conn = self.open_conn()?;
 
         // Build undirected dependency graph (A imports B => edge A-B and B-A)
         let mut graph: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -736,9 +727,7 @@ impl DependencyIndex {
     /// HashMap mapping imported_path to resolved file_id (only includes
     /// successfully resolved paths; external/unresolved paths are omitted)
     fn build_resolution_cache(&self) -> Result<HashMap<String, i64>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for building resolution cache")?;
+        let conn = self.open_conn()?;
 
         // Get all unique imported_path values (single query)
         let mut stmt = conn.prepare(
@@ -772,9 +761,7 @@ impl DependencyIndex {
 
     /// Clear all dependencies for a file (used during incremental reindexing)
     pub fn clear_dependencies(&self, file_id: i64) -> Result<()> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for dependency clearing")?;
+        let conn = self.open_conn()?;
 
         conn.execute(
             "DELETE FROM file_dependencies WHERE file_id = ?",
@@ -826,9 +813,7 @@ impl DependencyIndex {
     /// Returns None if no matches found.
     /// Returns error if multiple matches found (ambiguous path fragment).
     pub fn get_file_id_by_path(&self, path: &str) -> Result<Option<i64>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for file ID lookup")?;
+        let conn = self.open_conn()?;
 
         // Normalize path: strip ./ prefix, ../ prefix, and convert absolute to relative
         let normalized_path = normalize_path_for_lookup(path);
@@ -881,9 +866,7 @@ impl DependencyIndex {
     ///
     /// A vector of tuples: (language, total_deps, resolved_deps, resolution_rate)
     pub fn get_resolution_stats(&self) -> Result<Vec<(String, usize, usize, f64)>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for resolution stats")?;
+        let conn = self.open_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT
@@ -944,9 +927,7 @@ impl DependencyIndex {
     /// A vector of tuples: (source_file, imported_path, resolved_file_path)
     /// where resolved_file_path is None if the dependency couldn't be resolved.
     pub fn get_all_internal_dependencies(&self) -> Result<Vec<(String, String, Option<String>)>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for internal dependencies")?;
+        let conn = self.open_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT
@@ -979,9 +960,7 @@ impl DependencyIndex {
 
     /// Get total count of dependencies by type (for debugging)
     pub fn get_dependency_count_by_type(&self) -> Result<Vec<(String, usize)>> {
-        let db_path = self.cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for dependency count")?;
+        let conn = self.open_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT import_type, COUNT(*) as count

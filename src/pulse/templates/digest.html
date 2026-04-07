@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block title %}Digest - {{ site_title }}{% endblock %}
+
+{% block content %}
+<h1>Structural Change Digest</h1>
+<div class="digest-content">
+{{ digest_markdown }}
+</div>
+{% endblock %}

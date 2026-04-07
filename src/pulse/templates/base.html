@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ site_title }}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ base_url }}style.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <h2><a href="{{ base_url }}index.html">{{ site_title }}</a></h2>
+        <ul>
+            <li><a href="{{ base_url }}index.html">Home</a></li>
+            {% if has_digest is defined and has_digest %}
+            <li><a href="{{ base_url }}digest.html">Digest</a></li>
+            {% endif %}
+            {% if has_map is defined and has_map %}
+            <li><a href="{{ base_url }}map.html">Map</a></li>
+            {% endif %}
+        </ul>
+        {% block sidebar %}{% endblock %}
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

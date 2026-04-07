@@ -1,0 +1,77 @@
+/* Pulse static site theme */
+:root {
+    --bg: #1a1b26;
+    --fg: #c0caf5;
+    --accent: #7aa2f7;
+    --surface: #24283b;
+    --border: #3b4261;
+    --muted: #565f89;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --error: #f7768e;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    display: grid;
+    grid-template-columns: 250px 1fr;
+    min-height: 100vh;
+}
+
+.sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 1.5rem 1rem;
+    overflow-y: auto;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+}
+
+.sidebar h2 { margin-bottom: 1rem; }
+.sidebar h2 a { color: var(--accent); text-decoration: none; }
+.sidebar h3 { margin: 1rem 0 0.5rem; color: var(--muted); font-size: 0.85rem; text-transform: uppercase; }
+.sidebar ul { list-style: none; }
+.sidebar li { margin: 0.25rem 0; }
+.sidebar a { color: var(--fg); text-decoration: none; font-size: 0.9rem; }
+.sidebar a:hover { color: var(--accent); }
+
+main {
+    padding: 2rem 3rem;
+    max-width: 900px;
+}
+
+h1 { color: var(--accent); margin-bottom: 1.5rem; font-size: 1.8rem; }
+h2 { color: var(--fg); margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+
+a { color: var(--accent); }
+
+code, pre {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    background: var(--surface);
+    border-radius: 4px;
+}
+code { padding: 0.15rem 0.3rem; font-size: 0.85em; }
+pre { padding: 1rem; overflow-x: auto; margin: 1rem 0; border: 1px solid var(--border); }
+
+table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+th, td { padding: 0.5rem 1rem; border: 1px solid var(--border); text-align: left; }
+th { background: var(--surface); color: var(--accent); }
+
+ul, ol { margin: 0.5rem 0 0.5rem 1.5rem; }
+li { margin: 0.25rem 0; }
+
+.content { white-space: pre-wrap; line-height: 1.6; }
+.summary { background: var(--surface); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; border-left: 3px solid var(--accent); }
+
+.mermaid { background: white; padding: 2rem; border-radius: 8px; margin: 1rem 0; }
+
+@media (max-width: 768px) {
+    body { grid-template-columns: 1fr; }
+    .sidebar { position: relative; height: auto; }
+    main { padding: 1rem; }
+}
