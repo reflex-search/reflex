@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
-use crate::content_store::ContentWriter;
+use crate::content_store::{ContentReader, ContentWriter};
 use crate::dependency::DependencyIndex;
 use crate::models::{Dependency, IndexConfig, IndexStats, Language, ImportType};
 use crate::output;
@@ -224,9 +224,22 @@ impl Indexer {
             }
 
             if !any_changed {
-                log::info!("No files changed - skipping index rebuild");
-                let stats = self.cache.stats()?;
-                return Ok(stats);
+                // Validate that binary index files actually exist and contain data.
+                // A prior interrupted run may have written hashes to the database
+                // but failed to finalize content.bin/trigrams.bin.
+                let content_path = self.cache.path().join("content.bin");
+                let trigrams_path = self.cache.path().join("trigrams.bin");
+                if content_path.exists() && trigrams_path.exists() {
+                    if let Ok(reader) = ContentReader::open(&content_path) {
+                        if reader.file_count() > 0 {
+                            log::info!("No files changed - skipping index rebuild");
+                            return Ok(self.cache.stats()?);
+                        }
+                    }
+                    log::warn!("content.bin invalid despite hashes matching - forcing rebuild");
+                } else {
+                    log::warn!("Binary index files missing - forcing rebuild");
+                }
             }
         } else if total_files != existing_hashes.len() {
             log::info!("File count changed ({} -> {}) - full reindex required",

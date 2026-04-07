@@ -206,7 +206,7 @@ impl ContentWriter {
 
     /// Finalize the content.bin file by writing the file index and updating the header
     fn finalize(&mut self) -> Result<()> {
-        let writer = self.writer.as_mut()
+        let mut writer = self.writer.take()
             .ok_or_else(|| anyhow::anyhow!("ContentWriter not initialized"))?;
 
         // Write file index at current position
@@ -222,11 +222,9 @@ impl ContentWriter {
             writer.write_all(&entry.length.to_le_bytes())?;
         }
 
-        // Flush all writes
-        writer.flush()?;
-
-        // Get mutable reference to underlying file
-        let file = writer.get_mut();
+        // Consume BufWriter and get the underlying File
+        let mut file = writer.into_inner()
+            .map_err(|e| anyhow::anyhow!("Failed to flush BufWriter: {}", e.error()))?;
 
         // Rewind to header and update with correct values
         use std::io::Seek;
@@ -589,6 +587,27 @@ mod tests {
         assert_eq!(matching, "Line 3 with match");
         assert_eq!(after.len(), 1);
         assert_eq!(after[0], "Line 4");
+    }
+
+    #[test]
+    fn test_streaming_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let content_path = temp.path().join("content.bin");
+
+        // Use the streaming path: init() -> add_file() -> finalize_if_needed()
+        let mut writer = ContentWriter::new();
+        writer.init(content_path.clone()).unwrap();
+        writer.add_file(PathBuf::from("src/main.rs"), "fn main() {}\n");
+        writer.add_file(PathBuf::from("src/lib.rs"), "pub fn hello() -> &'static str { \"hi\" }\n");
+        writer.finalize_if_needed().unwrap();
+
+        // Verify the file can be read back correctly
+        let reader = ContentReader::open(&content_path).unwrap();
+        assert_eq!(reader.file_count(), 2);
+        assert_eq!(reader.get_file_content(0).unwrap(), "fn main() {}\n");
+        assert_eq!(reader.get_file_content(1).unwrap(), "pub fn hello() -> &'static str { \"hi\" }\n");
+        assert_eq!(reader.get_file_path(0).unwrap(), Path::new("src/main.rs"));
+        assert_eq!(reader.get_file_path(1).unwrap(), Path::new("src/lib.rs"));
     }
 
     #[test]

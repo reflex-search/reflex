@@ -455,7 +455,7 @@ mod tests {
 
         assert!(!BackgroundIndexer::is_running(cache_mgr.path()));
 
-        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
+        let indexer = BackgroundIndexer::new(temp.path()).unwrap();
         let _lock = indexer.acquire_lock().unwrap();
 
         assert!(BackgroundIndexer::is_running(cache_mgr.path()));
@@ -470,10 +470,10 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
-        let mut indexer1 = BackgroundIndexer::new(temp.path()).unwrap();
+        let indexer1 = BackgroundIndexer::new(temp.path()).unwrap();
         let _lock1 = indexer1.acquire_lock().unwrap();
 
-        let mut indexer2 = BackgroundIndexer::new(temp.path()).unwrap();
+        let indexer2 = BackgroundIndexer::new(temp.path()).unwrap();
         let result = indexer2.acquire_lock();
 
         assert!(result.is_err());
