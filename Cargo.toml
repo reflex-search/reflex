@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
