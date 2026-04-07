@@ -101,11 +101,15 @@ impl OpenRouterProvider {
     /// * `model` - Optional model override (default: anthropic/claude-sonnet-4)
     /// * `sort` - Optional sort strategy: "price", "speed", or "throughput" (default: "price")
     pub fn new(api_key: String, model: Option<String>, sort: Option<String>) -> Result<Self> {
+        // Normalize sort value: map legacy "speed" to the correct API value "latency"
+        let sort = sort
+            .map(|s| if s == "speed" { "latency".to_string() } else { s })
+            .unwrap_or_else(|| "price".to_string());
         Ok(Self {
             client: reqwest::Client::new(),
             api_key,
             model: model.unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string()),
-            sort: sort.unwrap_or_else(|| "price".to_string()),
+            sort,
         })
     }
 }
@@ -228,11 +232,22 @@ mod tests {
         let provider = OpenRouterProvider::new(
             "test-key".to_string(),
             Some("openai/gpt-4o-mini".to_string()),
-            Some("speed".to_string()),
+            Some("latency".to_string()),
         )
         .unwrap();
         assert_eq!(provider.model, "openai/gpt-4o-mini");
-        assert_eq!(provider.sort, "speed");
+        assert_eq!(provider.sort, "latency");
+    }
+
+    #[test]
+    fn test_new_maps_legacy_speed_to_latency() {
+        let provider = OpenRouterProvider::new(
+            "test-key".to_string(),
+            None,
+            Some("speed".to_string()),
+        )
+        .unwrap();
+        assert_eq!(provider.sort, "latency");
     }
 
     #[test]

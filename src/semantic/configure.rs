@@ -45,7 +45,7 @@ use crate::semantic::providers::openrouter::OpenRouterModel;
 /// Sort strategies for OpenRouter provider routing
 const OPENROUTER_SORT_STRATEGIES: &[(&str, &str)] = &[
     ("price", "Cheapest provider for the model"),
-    ("speed", "Fastest response time (lowest latency)"),
+    ("latency", "Fastest response time (lowest latency)"),
     ("throughput", "Highest tokens per second"),
 ];
 
