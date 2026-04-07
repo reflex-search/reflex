@@ -27,7 +27,7 @@ Pulse is also not trying to be a hosted SaaS. It runs locally against a local in
 
 Three concepts the rest of this document depends on:
 
-**Module.** A directory that gets its own wiki page. Tier 1 modules are top-level directories (reuses `extract_top_level_dirs()` from `CodebaseContext` in `src/semantic/context.rs`). Tier 2 modules are common paths at depth 2–3 (reuses `extract_common_paths()`). When monorepo detection fires (`detect_monorepo()`), subproject roots are promoted to Tier 1. A module is the unit of wiki generation, summary regeneration, and structural analysis — everything Pulse produces is either per-module or cross-module.
+**Module.** A directory that gets its own wiki page. Tier 1 modules are top-level directories, Tier 2 modules are common paths at depth 2–3, and monorepo subproject roots are promoted to Tier 1. Module detection reuses `CodebaseContext::extract()` from `src/semantic/context.rs`, which internally calls `extract_top_level_dirs()`, `extract_common_paths()`, and `detect_monorepo()`. These helpers are private to `context.rs`, so Pulse consumes their output through the public `CodebaseContext` struct (all fields are `pub`), not by calling them directly. A module is the unit of wiki generation, summary regeneration, and structural analysis — everything Pulse produces is either per-module or cross-module.
 
 **Snapshot.** A point-in-time capture of structural index state. Not a full index copy — just the subset of facts needed for diffing: file metadata, dependency edges, and aggregate metrics. Snapshots are stored as individual SQLite databases under `.reflex/snapshots/`. See [Snapshot format](#snapshot-format) for the schema.
 
@@ -56,9 +56,9 @@ Snapshots are taken automatically on every `rfx index` run, with an explicit `rf
 | Table | Columns | Source |
 |-------|---------|--------|
 | `files` | `id`, `path`, `language`, `line_count` | Subset of `meta.db` `files` table |
-| `dependency_edges` | `source_file_id`, `target_file_id`, `import_type` | Flattened from `file_dependencies` |
-| `metrics` | `module_path`, `file_count`, `symbol_count`, `total_lines` | Aggregated at snapshot time |
-| `metadata` | `key`, `value` | timestamp, git_branch, git_commit_sha, reflex_version |
+| `dependency_edges` | `source_file_id`, `target_file_id`, `import_type` | Projected from `file_dependencies` (aliasing `file_id` → `source_file_id`, `resolved_file_id` → `target_file_id`) |
+| `metrics` | `module_path`, `file_count`, `symbol_count`, `total_lines` | Computed at snapshot time by aggregating `files` table grouped by module path (no source table in `meta.db`) |
+| `metadata` | `key`, `value` | timestamp, git_branch, git_commit_sha, reflex_version, schema_version |
 
 **Why SQLite:** `rusqlite` is already in deps. `ATTACH DATABASE` enables cross-snapshot SQL queries for diffing — no custom binary format needed. The existing `meta.db` schema is the template, so snapshot creation is mostly `INSERT INTO ... SELECT FROM`.
 
@@ -88,9 +88,16 @@ SnapshotDiff {
     // Threshold alerts
     threshold_alerts: Vec<ThresholdAlert>,  // Any metric crossing a configured boundary
 }
+
+// Default thresholds (configurable via [pulse.thresholds] in config.toml):
+//   fan_in_warning: 10    — file imported by >= N others triggers a hotspot alert
+//   fan_in_critical: 25   — elevated severity for extreme fan-in
+//   cycle_length: 3       — circular dependency chains of length >= N are flagged
+//   module_file_count: 50 — modules exceeding N files trigger a complexity alert
+//   line_count_growth: 2.0 — files whose line count grew by >= Nx between snapshots
 ```
 
-**Implementation:** `ATTACH DATABASE 'baseline.db' AS baseline` + `ATTACH DATABASE 'current.db' AS current`, then SQL set operations (`EXCEPT`, `LEFT JOIN ... WHERE NULL`). The analysis deltas (hotspots, cycles, islands) reuse the existing functions in `DependencyIndex` (`detect_circular_dependencies()`, `find_hotspots()`, `find_unused_files()`, `find_islands()`) by running them against each snapshot and diffing the results.
+**Implementation:** `ATTACH DATABASE 'baseline.db' AS baseline` + `ATTACH DATABASE 'current.db' AS current`, then SQL set operations (`EXCEPT`, `LEFT JOIN ... WHERE NULL`). The analysis deltas (hotspots, cycles, islands) reuse the SQL logic from `DependencyIndex` (`detect_circular_dependencies()`, `find_hotspots()`, `find_unused_files()`, `find_islands()`), but these functions currently hardcode their connection to `meta.db` via `self.cache.path()`. **Prerequisite refactor:** `DependencyIndex` needs a `from_connection(conn: Connection)` constructor (or the analysis functions need to accept `&Connection` as a parameter) so they can run against snapshot databases. This is the primary preparatory change before Phase 1 can begin — see [Preparatory refactors](#preparatory-refactors).
 
 ## The tech debt angle
 
@@ -116,7 +123,7 @@ Every LLM invocation in Pulse follows a three-part protocol:
 
 3. **Confidence threshold.** Before invoking the LLM at all, Pulse computes a groundability score: the ratio of semantically-clear symbol names (multi-word identifiers, natural-language function names) to opaque ones (single-letter variables, generated hashes). If the score falls below 0.3, the LLM summary is suppressed entirely for that module, and the output contains only structural data. This avoids wasting LLM calls on modules where narration would be meaningless.
 
-**Implementation:** Reuses the `LlmProvider` trait and `call_with_retry()` from `src/semantic/`. The structural context block is assembled from `SnapshotDiff` and per-module metric queries. The `--no-llm` flag bypasses steps 1–3 entirely — see [Structural-only mode](#structural-only-mode).
+**Implementation:** Reuses the `LlmProvider` trait and `call_with_retry()` (currently `pub(crate)`, accessible from new modules within the crate) from `src/semantic/`. The `extract_json()` helper in `src/semantic/mod.rs` is currently private and needs promotion to `pub(crate)` for Pulse use. The structural context block is assembled from `SnapshotDiff` and per-module metric queries. The `--no-llm` flag bypasses steps 1–3 entirely — see [Structural-only mode](#structural-only-mode).
 
 ### Structural-only mode
 
@@ -280,15 +287,25 @@ Pulse is deliberately built on top of existing Reflex modules. This table maps e
 
 | Pulse need | Existing module | Key types / functions |
 |---|---|---|
-| Module definition (Tier 1/2) | `src/semantic/context.rs` | `CodebaseContext`, `extract_top_level_dirs()`, `extract_common_paths()`, `detect_monorepo()` |
-| Snapshot schema template | `src/cache.rs` | `files`, `file_dependencies`, `branches` tables in `init_meta_db()` |
-| Structural analysis (hotspots, cycles, islands) | `src/dependency.rs` | `DependencyIndex`, `detect_circular_dependencies()`, `find_hotspots()`, `find_unused_files()`, `find_islands()` |
+| Module definition (Tier 1/2) | `src/semantic/context.rs` | `CodebaseContext` (pub struct, pub fields) — consumed via `CodebaseContext::extract()`, not the private helpers directly |
+| Snapshot schema template | `src/cache.rs` | `files`, `file_dependencies` tables in `init_meta_db()` — snapshot uses column aliases for `dependency_edges` |
+| Structural analysis (hotspots, cycles, islands) | `src/dependency.rs` | `DependencyIndex` — requires `from_connection()` refactor (see [Preparatory refactors](#preparatory-refactors)) |
 | LLM provider abstraction | `src/semantic/providers/mod.rs` | `LlmProvider` trait, `create_provider()` |
-| LLM retry and response validation | `src/semantic/mod.rs` | `call_with_retry()`, `extract_json()` |
+| LLM retry and response validation | `src/semantic/mod.rs` | `call_with_retry()` (pub(crate)), `extract_json()` (needs pub(crate) promotion) |
 | Content hashing | `blake3` crate | Already used for incremental indexing in `src/indexer.rs` |
 | CLI pattern | `src/cli.rs` | `Command` enum with clap derive macros |
 | Index staleness detection | `src/models.rs` | `IndexStatus`, `IndexWarning`, `IndexWarningDetails` |
 | Configuration | `.reflex/config.toml` | Existing `[index]`, `[search]`, `[performance]` sections; Pulse adds `[pulse]` |
+
+## Preparatory refactors
+
+Before Phase 1 begins, two changes to existing code are required:
+
+1. **`DependencyIndex` connection injection.** Currently, all analysis methods in `src/dependency.rs` open `meta.db` via `Connection::open(self.cache.path().join("meta.db"))`. Pulse needs to run these same queries against snapshot databases. Add a `DependencyIndex::from_connection(conn: Connection)` constructor that accepts an existing connection, keeping the current `new(cache: CacheManager)` constructor for backward compatibility. The analysis methods (`detect_circular_dependencies`, `find_hotspots`, `find_unused_files`, `find_islands`) then use `self.conn` instead of opening a new connection each time. This is a pure refactor — no behavior change for existing callers.
+
+2. **Visibility promotions.** Promote `extract_json()` in `src/semantic/mod.rs` from `fn` to `pub(crate) fn` so Pulse modules can reuse it for LLM response processing.
+
+These are small, safe changes that should be landed before Pulse implementation begins. They do not affect any existing functionality.
 
 ## Implementation order
 
