@@ -51,6 +51,7 @@ pub struct WikiSections {
     pub dependencies: String,
     pub dependents: String,
     pub dependency_diagram: Option<String>,
+    pub circular_deps: Option<String>,
     pub key_symbols: String,
     pub metrics: String,
     pub recent_changes: Option<String>,
@@ -165,6 +166,7 @@ pub fn generate_wiki_page(
     let dependencies = build_dependencies_section(&conn, &module.path, all_modules)?;
     let dependents = build_dependents_section(&conn, &deps_index, &module.path, all_modules)?;
     let dependency_diagram = build_dependency_diagram(&conn, &module.path, all_modules);
+    let circular_deps = build_circular_deps_section(&deps_index, &module.path);
     let key_symbols = build_key_symbols_section(&conn, &module.path, &query_engine);
     let metrics = build_metrics_section(module, &conn)?;
     let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
@@ -205,6 +207,7 @@ pub fn generate_wiki_page(
             dependencies,
             dependents,
             dependency_diagram,
+            circular_deps,
             key_symbols,
             metrics,
             recent_changes,
@@ -283,6 +286,12 @@ pub fn render_wiki_markdown(pages: &[WikiPage]) -> Vec<(String, String)> {
         md.push_str(&page.sections.dependents);
         md.push_str("\n\n");
 
+        if let Some(circular) = &page.sections.circular_deps {
+            md.push_str("## Circular Dependencies\n\n");
+            md.push_str(circular);
+            md.push_str("\n\n");
+        }
+
         md.push_str("## Key Symbols\n\n");
         md.push_str(&page.sections.key_symbols);
         md.push_str("\n\n");
@@ -351,8 +360,12 @@ fn build_dependency_diagram(
     let mut diagram = String::new();
     diagram.push_str("graph LR\n");
 
-    // Sanitize node IDs for mermaid (replace / with _)
-    let center_id = module_path.replace('/', "_");
+    // Sanitize node IDs with m_ prefix to avoid Mermaid reserved word collisions
+    let sanitize = |s: &str| -> String {
+        format!("m_{}", s.replace(['/', '.', '-', ' '], "_"))
+    };
+
+    let center_id = sanitize(module_path);
     diagram.push_str(&format!("    {}[\"<b>{}/</b>\"]\n", center_id, module_path));
     diagram.push_str(&format!("    style {} fill:#7aa2f7,color:#1a1b26,stroke:#7aa2f7\n", center_id));
 
@@ -363,7 +376,7 @@ fn build_dependency_diagram(
     let mut out_sorted: Vec<_> = outgoing.into_iter().collect();
     out_sorted.sort_by(|a, b| b.1.cmp(&a.1));
     for (target, count) in out_sorted.iter().take(8) {
-        let target_id = target.replace('/', "_");
+        let target_id = sanitize(target);
         diagram.push_str(&format!("    {}[\"{}/\"]\n", target_id, target));
         diagram.push_str(&format!("    {} -->|{}| {}\n", center_id, count, target_id));
         all_node_paths.push(target.clone());
@@ -373,7 +386,7 @@ fn build_dependency_diagram(
     let mut in_sorted: Vec<_> = incoming.into_iter().collect();
     in_sorted.sort_by(|a, b| b.1.cmp(&a.1));
     for (source, count) in in_sorted.iter().take(8) {
-        let source_id = source.replace('/', "_");
+        let source_id = sanitize(source);
         // Avoid re-declaring if already declared as outgoing target
         if !out_sorted.iter().any(|(t, _)| t == source) {
             diagram.push_str(&format!("    {}[\"{}/\"]\n", source_id, source));
@@ -389,12 +402,70 @@ fn build_dependency_diagram(
 
     // Clickable nodes → wiki pages
     for node_path in &all_node_paths {
-        let node_id = node_path.replace('/', "_");
+        let node_id = sanitize(node_path);
         let slug = node_path.replace('/', "-");
         diagram.push_str(&format!("    click {} \"/wiki/{}/\"\n", node_id, slug));
     }
 
     Some(diagram)
+}
+
+/// Build a circular dependencies section for a module.
+/// Detects cycles that include files within this module's path.
+fn build_circular_deps_section(deps_index: &DependencyIndex, module_path: &str) -> Option<String> {
+    let cycles = match deps_index.detect_circular_dependencies() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    if cycles.is_empty() {
+        return None;
+    }
+
+    // Collect all file IDs involved in cycles
+    let all_ids: Vec<i64> = cycles.iter().flatten().copied().collect();
+    let path_map = match deps_index.get_file_paths(&all_ids) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    let prefix = format!("{}/", module_path);
+
+    // Filter cycles that involve at least one file in this module
+    let mut relevant_cycles: Vec<Vec<String>> = Vec::new();
+    for cycle in &cycles {
+        let paths: Vec<String> = cycle.iter()
+            .filter_map(|id| path_map.get(id).cloned())
+            .collect();
+
+        if paths.iter().any(|p| p.starts_with(&prefix)) {
+            relevant_cycles.push(paths);
+        }
+    }
+
+    if relevant_cycles.is_empty() {
+        return None;
+    }
+
+    let mut content = String::new();
+    content.push_str(&format!(
+        "**{} circular {}** involving this module:\n\n",
+        relevant_cycles.len(),
+        if relevant_cycles.len() == 1 { "dependency" } else { "dependencies" }
+    ));
+
+    for (i, cycle) in relevant_cycles.iter().take(10).enumerate() {
+        let short_paths: Vec<String> = cycle.iter()
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+            .collect();
+        content.push_str(&format!("{}. {}\n", i + 1, short_paths.join(" → ")));
+    }
+
+    if relevant_cycles.len() > 10 {
+        content.push_str(&format!("\n... and {} more. Run `rfx analyze --circular` for full list.\n", relevant_cycles.len() - 10));
+    }
+
+    Some(content)
 }
 
 fn build_module_def(conn: &Connection, path: &str, tier: u8) -> Result<Option<ModuleDefinition>> {
@@ -449,7 +520,7 @@ fn build_structure_section(
                 .trim_start_matches('/');
             let child_slug = child.path.replace('/', "-");
             content.push_str(&format!(
-                "- [**{}//**](/wiki/{}/) — {} files, {} lines ({})\n",
+                "- [**{}/**](/wiki/{}/) — {} files, {} lines ({})\n",
                 short_name,
                 child_slug,
                 child.file_count,
@@ -653,6 +724,34 @@ fn build_dependents_section(
     Ok(content)
 }
 
+/// Language keywords and common variable names that are noise in "Key Symbols" rankings.
+/// These appear in thousands of files and tell users nothing about the module.
+const SYMBOL_BLOCKLIST: &[&str] = &[
+    // Multi-language keywords
+    "return", "this", "self", "super", "new", "null", "true", "false", "none",
+    "class", "function", "var", "let", "const", "static", "public", "private",
+    "protected", "abstract", "virtual", "override", "final", "async", "await",
+    "import", "export", "module", "package", "namespace", "use", "from", "as",
+    "if", "else", "for", "while", "do", "switch", "case", "default", "break",
+    "continue", "try", "catch", "throw", "throws", "finally", "yield",
+    "void", "int", "bool", "string", "float", "double", "char", "byte",
+    "struct", "enum", "trait", "impl", "interface", "type", "where",
+    // Common generic variable names
+    "data", "value", "name", "key", "item", "items", "list", "result",
+    "error", "err", "msg", "args", "opts", "params", "config", "options",
+    "index", "count", "size", "length", "path", "file", "line", "text",
+    "input", "output", "request", "response", "context", "state", "props",
+    "init", "main", "run", "get", "set", "add", "delete", "update", "create",
+    "test", "setup", "describe", "expect",
+];
+
+/// Symbol kinds considered high-value for "Key definitions" rankings.
+/// These represent meaningful domain abstractions, not individual variables.
+const PRIORITY_SYMBOL_KINDS: &[&str] = &[
+    "Function", "Struct", "Class", "Trait", "Interface",
+    "Enum", "Macro", "Type", "Constant",
+];
+
 fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine: &QueryEngine) -> String {
     let pattern = format!("{}/%", module_path);
     let mut stmt = match conn.prepare(
@@ -722,23 +821,46 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
 
     let mut content = String::new();
 
-    // --- Top symbols above the fold ---
-    // Rank by reference count: how many files in the codebase use each symbol
-    // Deduplicate symbol names (same name may appear in multiple files within a module)
+    // --- Top symbols by codebase importance (above the fold) ---
+    // Deduplicate symbol names, preferring priority kinds
     let mut unique_symbols: HashMap<String, (String, String)> = HashMap::new(); // name -> (kind, path)
+    // First pass: insert priority-kind symbols
     for (kind_str, entries) in &by_kind {
-        for (name, path, _size) in entries {
-            unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
+        if PRIORITY_SYMBOL_KINDS.contains(&kind_str.as_str()) {
+            for (name, path, _size) in entries {
+                unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
+            }
+        }
+    }
+    // Second pass: fill in remaining kinds (won't overwrite priority entries)
+    for (kind_str, entries) in &by_kind {
+        if !PRIORITY_SYMBOL_KINDS.contains(&kind_str.as_str()) {
+            for (name, path, _size) in entries {
+                unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
+            }
         }
     }
 
     // Count references for each unique symbol via the trigram index
+    // Filter out blocklisted keywords, short names, and deprioritize Variable/Property kinds
     let mut ranked: Vec<(String, String, String, usize)> = Vec::new(); // (name, kind, path, ref_count)
     for (name, (kind, path)) in &unique_symbols {
-        // Trigram index requires 3+ character patterns
-        if name.len() < 3 {
+        // Skip short names (< 4 chars) — they're too generic
+        if name.len() < 4 {
             continue;
         }
+        // Skip blocklisted keywords and common variable names
+        if SYMBOL_BLOCKLIST.contains(&name.to_lowercase().as_str()) {
+            continue;
+        }
+        // Skip names that start with $ (PHP variables like $data, $type)
+        if name.starts_with('$') {
+            let stripped = &name[1..];
+            if stripped.len() < 4 || SYMBOL_BLOCKLIST.contains(&stripped.to_lowercase().as_str()) {
+                continue;
+            }
+        }
+
         let filter = QueryFilter {
             paths_only: true,
             force: true,
@@ -752,7 +874,15 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
         };
         ranked.push((name.clone(), kind.clone(), path.clone(), ref_count));
     }
-    ranked.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
+
+    // Sort: priority kinds first, then by reference count desc
+    ranked.sort_by(|a, b| {
+        let a_priority = PRIORITY_SYMBOL_KINDS.contains(&a.1.as_str());
+        let b_priority = PRIORITY_SYMBOL_KINDS.contains(&b.1.as_str());
+        b_priority.cmp(&a_priority)
+            .then_with(|| b.3.cmp(&a.3))
+            .then_with(|| a.0.cmp(&b.0))
+    });
 
     if !ranked.is_empty() {
         content.push_str("**Key definitions:**\n");
@@ -765,6 +895,60 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             ));
         }
         content.push('\n');
+    }
+
+    // --- Top symbols within this module (collapsible) ---
+    // Scope trigram search to files within the module only
+    let mut module_ranked: Vec<(String, String, String, usize)> = Vec::new();
+    for (name, (kind, path)) in &unique_symbols {
+        if name.len() < 4 {
+            continue;
+        }
+        if SYMBOL_BLOCKLIST.contains(&name.to_lowercase().as_str()) {
+            continue;
+        }
+        if name.starts_with('$') {
+            let stripped = &name[1..];
+            if stripped.len() < 4 || SYMBOL_BLOCKLIST.contains(&stripped.to_lowercase().as_str()) {
+                continue;
+            }
+        }
+
+        let filter = QueryFilter {
+            paths_only: true,
+            force: true,
+            suppress_output: true,
+            limit: None,
+            glob_patterns: vec![format!("{}/**", module_path)],
+            ..Default::default()
+        };
+        let ref_count = match query_engine.search_with_metadata(name, filter) {
+            Ok(response) => response.results.len(),
+            Err(_) => 0,
+        };
+        if ref_count > 0 {
+            module_ranked.push((name.clone(), kind.clone(), path.clone(), ref_count));
+        }
+    }
+    module_ranked.sort_by(|a, b| {
+        let a_priority = PRIORITY_SYMBOL_KINDS.contains(&a.1.as_str());
+        let b_priority = PRIORITY_SYMBOL_KINDS.contains(&b.1.as_str());
+        b_priority.cmp(&a_priority)
+            .then_with(|| b.3.cmp(&a.3))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    if !module_ranked.is_empty() {
+        content.push_str("<details><summary><strong>Top symbols within this module</strong></summary>\n\n");
+        for (name, kind, path, ref_count) in module_ranked.iter().take(5) {
+            let short = path.rsplit('/').next().unwrap_or(path);
+            content.push_str(&format!(
+                "- `{}` ({}) in {} — used in {} module {}\n",
+                name, kind, short, ref_count,
+                if *ref_count == 1 { "file" } else { "files" }
+            ));
+        }
+        content.push_str("\n</details>\n\n");
     }
 
     // --- By Kind view (collapsible, showing ALL symbols) ---
@@ -951,6 +1135,7 @@ mod tests {
                 dependencies: "test deps".to_string(),
                 dependents: "test dependents".to_string(),
                 dependency_diagram: None,
+                circular_deps: None,
                 key_symbols: "test symbols".to_string(),
                 metrics: "test metrics".to_string(),
                 recent_changes: None,

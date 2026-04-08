@@ -162,8 +162,10 @@ fn generate_module_map(cache: &CacheManager, module_path: &str, format: MapForma
     }
 }
 
+/// Create a Mermaid-safe node ID with a prefix to avoid reserved word collisions.
+/// Mermaid v11 can choke on IDs that match internal keywords or contain certain patterns.
 fn sanitize_id(s: &str) -> String {
-    s.replace(['/', '.', '-', ' '], "_")
+    format!("m_{}", s.replace(['/', '.', '-', ' '], "_"))
 }
 
 fn render_mermaid_repo(
@@ -180,14 +182,20 @@ fn render_mermaid_repo(
 
     out.push('\n');
 
-    for (src, tgt, count) in edges {
+    // Track thick edges for linkStyle directives
+    let mut thick_edge_indices: Vec<usize> = Vec::new();
+    for (i, (src, tgt, count)) in edges.iter().enumerate() {
         let src_id = sanitize_id(src);
         let tgt_id = sanitize_id(tgt);
+        out.push_str(&format!("  {} -->|{}| {}\n", src_id, count, tgt_id));
         if *count > 5 {
-            out.push_str(&format!("  {} ==>|{}| {}\n", src_id, count, tgt_id));
-        } else {
-            out.push_str(&format!("  {} -->|{}| {}\n", src_id, count, tgt_id));
+            thick_edge_indices.push(i);
         }
+    }
+
+    // Apply thick stroke to high-count edges via linkStyle
+    for idx in &thick_edge_indices {
+        out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#7aa2f7\n", idx));
     }
 
     // High-contrast styling for dark theme
@@ -312,14 +320,20 @@ fn render_mermaid_layered(
 
     out.push('\n');
 
-    for (src, tgt, count) in edges {
+    // Track thick edges for linkStyle directives
+    let mut thick_edge_indices: Vec<usize> = Vec::new();
+    for (i, (src, tgt, count)) in edges.iter().enumerate() {
         let src_id = sanitize_id(src);
         let tgt_id = sanitize_id(tgt);
+        out.push_str(&format!("  {} -->|{}| {}\n", src_id, count, tgt_id));
         if *count > 5 {
-            out.push_str(&format!("  {} ==>|{}| {}\n", src_id, count, tgt_id));
-        } else {
-            out.push_str(&format!("  {} -->|{}| {}\n", src_id, count, tgt_id));
+            thick_edge_indices.push(i);
         }
+    }
+
+    // Apply thick stroke to high-count edges via linkStyle
+    for idx in &thick_edge_indices {
+        out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#7aa2f7\n", idx));
     }
 
     // Styling
@@ -420,8 +434,8 @@ mod tests {
 
     #[test]
     fn test_sanitize_id() {
-        assert_eq!(sanitize_id("src/parsers"), "src_parsers");
-        assert_eq!(sanitize_id("my-module.rs"), "my_module_rs");
+        assert_eq!(sanitize_id("src/parsers"), "m_src_parsers");
+        assert_eq!(sanitize_id("my-module.rs"), "m_my_module_rs");
     }
 
     #[test]

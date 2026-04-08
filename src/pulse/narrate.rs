@@ -191,6 +191,23 @@ pub fn architecture_narrative_system_prompt() -> &'static str {
     ARCHITECTURE_NARRATIVE_SYSTEM_PROMPT
 }
 
+/// Known compound words / proper nouns that should NOT be split by camelCase regex.
+/// These are common technical terms found in codebases.
+const CAMEL_CASE_BLOCKLIST: &[&str] = &[
+    "TypeScript", "JavaScript", "CoffeeScript", "ActionScript",
+    "PostgreSQL", "MySQL", "MariaDB", "MongoDB", "CouchDB", "GraphQL",
+    "GitHub", "GitLab", "BitBucket", "WordPress", "PostCSS",
+    "IntelliJ", "WebSocket", "WebAssembly", "DevOps", "DevTools",
+    "DataFrame", "NumPy", "PyTorch", "TensorFlow", "FastAPI",
+    "NextJS", "NestJS", "NodeJS", "ExpressJS", "AngularJS",
+    "iPhone", "iPad", "macOS", "iOS", "FreeBSD", "OpenBSD",
+    "CodePen", "CodeSandbox", "JetBrains", "PhpStorm", "AppKit",
+    "SwiftUI", "UIKit", "CoreData", "MapReduce",
+    "CloudFormation", "CloudFront", "CloudWatch",
+    "RedHat", "OpenShift", "OpenStack",
+    "SourceMap", "AutoComplete", "IntelliSense",
+];
+
 /// Post-process LLM narration output to fix common formatting issues.
 fn postprocess_narration(text: &str) -> String {
     let mut result = text.trim().to_string();
@@ -201,20 +218,18 @@ fn postprocess_narration(text: &str) -> String {
     result = re.replace_all(&result, "$1. $2").to_string();
 
     // Fix missing spaces between lowercase and uppercase (e.g., "moduledrives" → "module drives")
-    // Be conservative: only fix when a lowercase letter is directly followed by an uppercase
-    // but NOT in common patterns like camelCase identifiers
-    // We look for word-like patterns where the case transition happens mid-"word" without any code context
-    let re = regex::Regex::new(r"([a-z]{3,})([A-Z][a-z]{2,})").unwrap();
-    // Only apply this outside of backtick-quoted code
-    let mut fixed = String::new();
-    let mut in_code = false;
-    for ch in result.chars() {
-        if ch == '`' {
-            in_code = !in_code;
+    // Protect known compound words with placeholders before applying the regex
+    let mut placeholders: Vec<(&str, String)> = Vec::new();
+    for (i, term) in CAMEL_CASE_BLOCKLIST.iter().enumerate() {
+        if result.contains(*term) {
+            let placeholder = format!("\x00KEEP{}\x00", i);
+            result = result.replace(*term, &placeholder);
+            placeholders.push((term, placeholder));
         }
-        fixed.push(ch);
     }
-    // Apply the regex only to non-code segments
+
+    // Apply camelCase splitting only to non-code segments (outside backticks)
+    let re = regex::Regex::new(r"([a-z]{3,})([A-Z][a-z]{2,})").unwrap();
     let parts: Vec<&str> = result.split('`').collect();
     let mut assembled = String::new();
     for (i, part) in parts.iter().enumerate() {
@@ -229,6 +244,11 @@ fn postprocess_narration(text: &str) -> String {
         }
     }
     result = assembled;
+
+    // Restore protected compound words
+    for (term, placeholder) in &placeholders {
+        result = result.replace(placeholder, term);
+    }
 
     // Fix double spaces
     while result.contains("  ") {
@@ -315,5 +335,43 @@ mod tests {
     #[test]
     fn test_wiki_system_prompt() {
         assert!(wiki_system_prompt().contains("STRUCTURAL CONTEXT"));
+    }
+
+    #[test]
+    fn test_postprocess_preserves_proper_nouns() {
+        let input = "The TypeScript module handles JavaScript compilation.";
+        let result = postprocess_narration(input);
+        assert!(result.contains("TypeScript"), "Should preserve TypeScript, got: {}", result);
+        assert!(result.contains("JavaScript"), "Should preserve JavaScript, got: {}", result);
+    }
+
+    #[test]
+    fn test_postprocess_splits_run_on_words() {
+        // "moduledrives" should become "module drives"
+        let input = "The parseModule drives the query engine.";
+        let result = postprocess_narration(input);
+        assert!(result.contains("parse Module"), "Should split run-on camelCase: {}", result);
+    }
+
+    #[test]
+    fn test_postprocess_preserves_backtick_code() {
+        let input = "Uses `TypeScript` and `parseModule` for processing.";
+        let result = postprocess_narration(input);
+        assert!(result.contains("`TypeScript`"), "Should preserve code: {}", result);
+        assert!(result.contains("`parseModule`"), "Should preserve code: {}", result);
+    }
+
+    #[test]
+    fn test_postprocess_fixes_missing_sentence_space() {
+        let input = "First sentence.Second sentence starts here.";
+        let result = postprocess_narration(input);
+        assert!(result.contains(". S"), "Should add space after period: {}", result);
+    }
+
+    #[test]
+    fn test_postprocess_fixes_double_spaces() {
+        let input = "Too  many  spaces  here.";
+        let result = postprocess_narration(input);
+        assert!(!result.contains("  "), "Should remove double spaces: {}", result);
     }
 }

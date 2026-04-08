@@ -91,14 +91,25 @@ pub fn generate_digest(
         }
         None => {
             // Bootstrap mode: report on current state with enriched structural data
+            // Visual summary cards at the top
             let mut content = format!(
-                "First snapshot — no comparison baseline available.\n\n\
+                "<div class=\"metric-cards\">\n\
+                 <div class=\"metric-card\"><div class=\"metric-value\">{}</div><div class=\"metric-label\">Files</div></div>\n\
+                 <div class=\"metric-card\"><div class=\"metric-value\">{}</div><div class=\"metric-label\">Lines</div></div>\n\
+                 <div class=\"metric-card\"><div class=\"metric-value\">{}</div><div class=\"metric-label\">Dep Edges</div></div>\n\
+                 <div class=\"metric-card\"><div class=\"metric-value\">{}</div><div class=\"metric-label\">Branch</div></div>\n\
+                 </div>\n\n\
+                 First snapshot — no comparison baseline available.\n\n\
                  | Metric | Value |\n|---|---|\n\
                  | Files | {} |\n\
                  | Total lines | {} |\n\
                  | Dependency edges | {} |\n\
                  | Branch | {} |\n\
                  | Commit | {} |",
+                current_snapshot.file_count,
+                current_snapshot.total_lines,
+                current_snapshot.edge_count,
+                current_snapshot.git_branch.as_deref().unwrap_or("unknown"),
                 current_snapshot.file_count,
                 current_snapshot.total_lines,
                 current_snapshot.edge_count,
@@ -137,7 +148,24 @@ pub fn generate_digest(
                     // Language distribution
                     if let Ok(lang_dist) = build_language_distribution(&conn) {
                         if !lang_dist.is_empty() {
-                            content.push_str("\n### Language Distribution\n\n");
+                            // Mermaid pie chart for visual overview
+                            let total_lines: usize = lang_dist.iter().map(|(_, _, l)| l).sum();
+                            if total_lines > 0 {
+                                content.push_str("\n### Language Distribution\n\n");
+                                content.push_str("{% mermaid() %}\npie title Lines of Code by Language\n");
+                                for (lang, _, lines) in lang_dist.iter().take(8) {
+                                    content.push_str(&format!("    \"{}\" : {}\n", lang, lines));
+                                }
+                                // Group remaining as "Other"
+                                if lang_dist.len() > 8 {
+                                    let other_lines: usize = lang_dist.iter().skip(8).map(|(_, _, l)| l).sum();
+                                    if other_lines > 0 {
+                                        content.push_str(&format!("    \"Other\" : {}\n", other_lines));
+                                    }
+                                }
+                                content.push_str("{% end %}\n\n");
+                            }
+
                             content.push_str("| Language | Files | Lines |\n|---|---|---|\n");
                             for (lang, files, lines) in &lang_dist {
                                 content.push_str(&format!("| {} | {} | {} |\n", lang, files, lines));
@@ -435,7 +463,7 @@ fn build_module_section(diff: &SnapshotDiff) -> DigestSection {
 }
 
 /// Query language distribution from meta.db: (language, file_count, line_count)
-fn build_language_distribution(conn: &Connection) -> Result<Vec<(String, usize, usize)>> {
+pub fn build_language_distribution(conn: &Connection) -> Result<Vec<(String, usize, usize)>> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(language, 'other'), COUNT(*), COALESCE(SUM(line_count), 0)
          FROM files

@@ -456,9 +456,15 @@ fn write_templates(output_dir: &Path) -> Result<()> {
 <h1>{{ section.title }}</h1>
 {{ section.content | safe }}
 {% if section.pages %}
-<div class="page-list">
+{% if section.extra.has_search_filter is defined %}
+<div class="search-filter">
+    <input type="text" id="module-search" placeholder="Filter modules..." aria-label="Filter modules" autocomplete="off">
+    <span class="search-count" id="search-count"></span>
+</div>
+{% endif %}
+<div class="page-list" id="page-list">
     {% for page in section.pages %}
-    <div class="page-card">
+    <div class="page-card" data-title="{{ page.title | lower }}">
         <h3><a href="{{ page.permalink }}">{{ page.title }}</a></h3>
         {% if page.description %}
         <p>{{ page.description }}</p>
@@ -469,9 +475,29 @@ fn write_templates(output_dir: &Path) -> Result<()> {
 {% endif %}
 {% endblock content %}
 {% block scripts %}
+{% if section.extra.has_search_filter is defined %}
+<script>
+(function() {
+    var input = document.getElementById('module-search');
+    var cards = document.querySelectorAll('.page-card');
+    var count = document.getElementById('search-count');
+    if (!input) return;
+    input.addEventListener('input', function() {
+        var q = this.value.toLowerCase();
+        var visible = 0;
+        cards.forEach(function(card) {
+            var match = !q || card.getAttribute('data-title').indexOf(q) !== -1;
+            card.style.display = match ? '' : 'none';
+            if (match) visible++;
+        });
+        count.textContent = q ? visible + ' of ' + cards.length : '';
+    });
+})();
+</script>
+{% endif %}
 {% if section.extra.has_mermaid is defined %}
 <script type="module">
-    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
     mermaid.initialize({
         startOnLoad: true,
         theme: 'base',
@@ -528,7 +554,7 @@ fn write_templates(output_dir: &Path) -> Result<()> {
 {% block scripts %}
 {% if page.extra.has_mermaid is defined %}
 <script type="module">
-    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
     mermaid.initialize({
         startOnLoad: true,
         theme: 'base',
@@ -893,6 +919,41 @@ li { margin-bottom: 0.3rem; }
     font-weight: 500;
 }
 
+/* ── Search filter ───────────────────────────── */
+
+.search-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.search-filter input {
+    flex: 1;
+    max-width: 400px;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.search-filter input:focus {
+    border-color: var(--fg-accent);
+}
+
+.search-filter input::placeholder {
+    color: var(--fg-muted);
+}
+
+.search-count {
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+}
+
 /* ── Cards ───────────────────────────────────── */
 
 .page-card {
@@ -935,6 +996,40 @@ li { margin-bottom: 0.3rem; }
 .mermaid .edgeLabel {
     background: var(--bg-surface) !important;
     color: var(--fg) !important;
+}
+
+/* ── Metric cards (digest summary) ──────────── */
+
+.metric-cards {
+    display: flex;
+    gap: 1rem;
+    margin: 1.5rem 0;
+    flex-wrap: wrap;
+}
+
+.metric-card {
+    flex: 1;
+    min-width: 120px;
+    padding: 1rem 1.25rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: center;
+}
+
+.metric-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--fg-accent);
+    line-height: 1.2;
+}
+
+.metric-label {
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.25rem;
 }
 
 /* ── Module grid ─────────────────────────────── */
@@ -1254,6 +1349,9 @@ fn write_wiki_section_index(output_dir: &Path) -> Result<()> {
 title = "Reference"
 sort_by = "weight"
 template = "section.html"
+
+[extra]
+has_search_filter = true
 +++
 
 Per-module documentation pages. Each page covers a detected module's structure,
@@ -1331,6 +1429,12 @@ fn write_wiki_page(
     content.push_str(&page.sections.dependents);
     content.push_str("\n\n");
 
+    if let Some(circular) = &page.sections.circular_deps {
+        content.push_str("## Circular Dependencies\n\n");
+        content.push_str(circular);
+        content.push_str("\n\n");
+    }
+
     content.push_str("## Key Symbols\n\n");
     content.push_str(&page.sections.key_symbols);
     content.push_str("\n\n");
@@ -1355,11 +1459,12 @@ fn write_digest_page(
     digest_md: &str,
     digest_data: &digest::Digest,
 ) -> Result<()> {
-    // Section index
+    // Section index — enable mermaid for pie chart
     let mut index_content = String::new();
     index_content.push_str("+++\n");
     index_content.push_str(&format!("title = \"{}\"\n", digest_data.title));
     index_content.push_str("template = \"section.html\"\n");
+    index_content.push_str("\n[extra]\nhas_mermaid = true\n");
     index_content.push_str("+++\n\n");
     index_content.push_str(digest_md);
 
