@@ -13,6 +13,7 @@ use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 use crate::models::{Language, SymbolKind};
 use crate::parsers::ParserFactory;
+use crate::query::{QueryEngine, QueryFilter};
 use crate::semantic::context::CodebaseContext;
 use crate::semantic::providers::LlmProvider;
 
@@ -151,6 +152,7 @@ pub fn generate_wiki_page(
     let db_path = cache.path().join("meta.db");
     let conn = Connection::open(&db_path)?;
     let deps_index = DependencyIndex::new(cache.clone());
+    let query_engine = QueryEngine::new(cache.clone());
 
     // Find child modules of this module
     let prefix = format!("{}/", module.path);
@@ -163,7 +165,7 @@ pub fn generate_wiki_page(
     let dependencies = build_dependencies_section(&conn, &module.path, all_modules)?;
     let dependents = build_dependents_section(&conn, &deps_index, &module.path, all_modules)?;
     let dependency_diagram = build_dependency_diagram(&conn, &module.path, all_modules);
-    let key_symbols = build_key_symbols_section(&conn, &module.path);
+    let key_symbols = build_key_symbols_section(&conn, &module.path, &query_engine);
     let metrics = build_metrics_section(module, &conn)?;
     let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
 
@@ -651,7 +653,7 @@ fn build_dependents_section(
     Ok(content)
 }
 
-fn build_key_symbols_section(conn: &Connection, module_path: &str) -> String {
+fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine: &QueryEngine) -> String {
     let pattern = format!("{}/%", module_path);
     let mut stmt = match conn.prepare(
         "SELECT path, language FROM files
@@ -721,20 +723,46 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str) -> String {
     let mut content = String::new();
 
     // --- Top symbols above the fold ---
-    // Collect the 5 most significant symbols (largest by line span)
-    let mut all_symbols: Vec<(&str, &str, &str, usize)> = Vec::new(); // (name, kind, path, size)
+    // Rank by reference count: how many files in the codebase use each symbol
+    // Deduplicate symbol names (same name may appear in multiple files within a module)
+    let mut unique_symbols: HashMap<String, (String, String)> = HashMap::new(); // name -> (kind, path)
     for (kind_str, entries) in &by_kind {
-        for (name, path, size) in entries {
-            all_symbols.push((name, kind_str, path, *size));
+        for (name, path, _size) in entries {
+            unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
         }
     }
-    all_symbols.sort_by(|a, b| b.3.cmp(&a.3));
 
-    if !all_symbols.is_empty() {
+    // Count references for each unique symbol via the trigram index
+    let mut ranked: Vec<(String, String, String, usize)> = Vec::new(); // (name, kind, path, ref_count)
+    for (name, (kind, path)) in &unique_symbols {
+        // Trigram index requires 3+ character patterns
+        if name.len() < 3 {
+            continue;
+        }
+        let filter = QueryFilter {
+            paths_only: true,
+            force: true,
+            suppress_output: true,
+            limit: None,
+            ..Default::default()
+        };
+        let ref_count = match query_engine.search_with_metadata(name, filter) {
+            Ok(response) => response.results.len(),
+            Err(_) => 0,
+        };
+        ranked.push((name.clone(), kind.clone(), path.clone(), ref_count));
+    }
+    ranked.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
+
+    if !ranked.is_empty() {
         content.push_str("**Key definitions:**\n");
-        for (name, kind, path, _) in all_symbols.iter().take(5) {
+        for (name, kind, path, ref_count) in ranked.iter().take(5) {
             let short = path.rsplit('/').next().unwrap_or(path);
-            content.push_str(&format!("- `{}` ({}) in {}\n", name, kind, short));
+            content.push_str(&format!(
+                "- `{}` ({}) in {} — referenced in {} {}\n",
+                name, kind, short, ref_count,
+                if *ref_count == 1 { "file" } else { "files" }
+            ));
         }
         content.push('\n');
     }

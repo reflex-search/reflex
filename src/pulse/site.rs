@@ -1613,6 +1613,7 @@ fn try_zola_build(output_dir: &Path) -> bool {
             let result = std::process::Command::new(&zola_path)
                 .current_dir(output_dir)
                 .arg("build")
+                .arg("--force")
                 .arg("--output-dir")
                 .arg(&public_dir)
                 .output();
