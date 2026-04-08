@@ -190,12 +190,151 @@ fn render_mermaid_repo(
         }
     }
 
+    // High-contrast styling for dark theme
+    out.push_str("\n  classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
+    out.push_str("  classDef hotspot fill:#4a1a1a,stroke:#f7768e,color:#f7768e\n");
     if !hotspot_modules.is_empty() {
-        out.push_str("\n  classDef hotspot fill:#ff6b6b,stroke:#c0392b\n");
         for module in hotspot_modules {
             let id = sanitize_id(module);
             out.push_str(&format!("  class {} hotspot\n", id));
         }
+    }
+
+    // Clickable nodes → wiki pages
+    for (module, _) in modules {
+        let id = sanitize_id(module);
+        let slug = module.replace('/', "-");
+        out.push_str(&format!("  click {} \"/wiki/{}/\"\n", id, slug));
+    }
+
+    Ok(out)
+}
+
+/// Generate a layered (top-to-bottom) architecture diagram with Tier 1 subgraphs containing Tier 2 children
+pub fn generate_layered_map(
+    cache: &CacheManager,
+    format: MapFormat,
+) -> Result<String> {
+    let db_path = cache.path().join("meta.db");
+    let conn = Connection::open(&db_path)?;
+    let modules = wiki::detect_modules(cache)?;
+
+    let module_info: Vec<(String, usize, u8)> = modules.iter()
+        .map(|m| (m.path.clone(), m.file_count, m.tier))
+        .collect();
+
+    // Get module-level edges
+    let mut stmt = conn.prepare(
+        "SELECT f1.path, f2.path
+         FROM file_dependencies fd
+         JOIN files f1 ON fd.file_id = f1.id
+         JOIN files f2 ON fd.resolved_file_id = f2.id
+         WHERE fd.resolved_file_id IS NOT NULL"
+    )?;
+    let file_edges: Vec<(String, String)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?.collect::<Result<Vec<_>, _>>()?;
+
+    let mut module_edges: HashMap<(String, String), usize> = HashMap::new();
+    for (src_file, tgt_file) in &file_edges {
+        let src_module = find_owning_module(src_file, &modules);
+        let tgt_module = find_owning_module(tgt_file, &modules);
+        if src_module != tgt_module {
+            *module_edges.entry((src_module, tgt_module)).or_insert(0) += 1;
+        }
+    }
+
+    let mut edges: Vec<(String, String, usize)> = module_edges.into_iter()
+        .map(|((s, t), c)| (s, t, c))
+        .collect();
+    edges.sort_by(|a, b| b.2.cmp(&a.2));
+
+    let deps_index = DependencyIndex::new(cache.clone());
+    let hotspots = deps_index.find_hotspots(Some(10), 5).unwrap_or_default();
+    let hotspot_modules: HashSet<String> = hotspots.iter()
+        .filter_map(|(id, _)| {
+            deps_index.get_file_paths(&[*id]).ok()
+                .and_then(|paths| paths.get(id).cloned())
+                .map(|p| find_owning_module(&p, &modules))
+        })
+        .collect();
+
+    match format {
+        MapFormat::Mermaid => render_mermaid_layered(&module_info, &edges, &hotspot_modules),
+        MapFormat::D2 => render_d2_repo(
+            &module_info.iter().map(|(p, c, _)| (p.clone(), *c)).collect::<Vec<_>>(),
+            &edges,
+            &hotspot_modules,
+        ),
+    }
+}
+
+fn render_mermaid_layered(
+    modules: &[(String, usize, u8)],
+    edges: &[(String, String, usize)],
+    hotspot_modules: &HashSet<String>,
+) -> Result<String> {
+    let mut out = String::from("graph TB\n");
+
+    // Group Tier 2 modules under their Tier 1 parent
+    let tier1: Vec<&(String, usize, u8)> = modules.iter().filter(|m| m.2 == 1).collect();
+    let tier2: Vec<&(String, usize, u8)> = modules.iter().filter(|m| m.2 == 2).collect();
+
+    for t1 in &tier1 {
+        let t1_id = sanitize_id(&t1.0);
+        let children: Vec<&&(String, usize, u8)> = tier2.iter()
+            .filter(|t2| t2.0.starts_with(&format!("{}/", t1.0)))
+            .collect();
+
+        if children.is_empty() {
+            // Standalone Tier 1 node
+            out.push_str(&format!("  {}[\"{}/ ({} files)\"]\n", t1_id, t1.0, t1.1));
+        } else {
+            // Subgraph containing children
+            out.push_str(&format!("  subgraph {}[\"{}/ ({} files)\"]\n", t1_id, t1.0, t1.1));
+            for child in &children {
+                let child_id = sanitize_id(&child.0);
+                let short = child.0.strip_prefix(&format!("{}/", t1.0)).unwrap_or(&child.0);
+                out.push_str(&format!("    {}[\"{}/ ({} files)\"]\n", child_id, short, child.1));
+            }
+            out.push_str("  end\n");
+        }
+    }
+
+    // Orphan Tier 2 modules (no matching Tier 1 parent)
+    for t2 in &tier2 {
+        let has_parent = tier1.iter().any(|t1| t2.0.starts_with(&format!("{}/", t1.0)));
+        if !has_parent {
+            let id = sanitize_id(&t2.0);
+            out.push_str(&format!("  {}[\"{}/ ({} files)\"]\n", id, t2.0, t2.1));
+        }
+    }
+
+    out.push('\n');
+
+    for (src, tgt, count) in edges {
+        let src_id = sanitize_id(src);
+        let tgt_id = sanitize_id(tgt);
+        if *count > 5 {
+            out.push_str(&format!("  {} ==>|{}| {}\n", src_id, count, tgt_id));
+        } else {
+            out.push_str(&format!("  {} -->|{}| {}\n", src_id, count, tgt_id));
+        }
+    }
+
+    // Styling
+    out.push_str("\n  classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
+    out.push_str("  classDef hotspot fill:#4a1a1a,stroke:#f7768e,color:#f7768e\n");
+    for module in hotspot_modules {
+        let id = sanitize_id(module);
+        out.push_str(&format!("  class {} hotspot\n", id));
+    }
+
+    // Clickable nodes
+    for (module, _, _) in modules {
+        let id = sanitize_id(module);
+        let slug = module.replace('/', "-");
+        out.push_str(&format!("  click {} \"/wiki/{}/\"\n", id, slug));
     }
 
     Ok(out)

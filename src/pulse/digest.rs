@@ -233,8 +233,6 @@ pub fn generate_digest(
 pub fn render_markdown(digest: &Digest) -> String {
     let mut md = String::new();
 
-    md.push_str(&format!("# {}\n\n", digest.title));
-
     if digest.is_bootstrap {
         md.push_str("*First snapshot — no comparison baseline available.*\n\n");
     }

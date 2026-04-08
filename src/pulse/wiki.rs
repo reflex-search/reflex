@@ -49,6 +49,7 @@ pub struct WikiSections {
     pub structure: String,
     pub dependencies: String,
     pub dependents: String,
+    pub dependency_diagram: Option<String>,
     pub key_symbols: String,
     pub metrics: String,
     pub recent_changes: Option<String>,
@@ -161,6 +162,7 @@ pub fn generate_wiki_page(
     let structure = build_structure_section(&conn, &module.path, &child_modules)?;
     let dependencies = build_dependencies_section(&conn, &module.path, all_modules)?;
     let dependents = build_dependents_section(&conn, &deps_index, &module.path, all_modules)?;
+    let dependency_diagram = build_dependency_diagram(&conn, &module.path, all_modules);
     let key_symbols = build_key_symbols_section(&conn, &module.path);
     let metrics = build_metrics_section(module, &conn)?;
     let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
@@ -200,6 +202,7 @@ pub fn generate_wiki_page(
             structure,
             dependencies,
             dependents,
+            dependency_diagram,
             key_symbols,
             metrics,
             recent_changes,
@@ -263,6 +266,13 @@ pub fn render_wiki_markdown(pages: &[WikiPage]) -> Vec<(String, String)> {
         md.push_str(&page.sections.structure);
         md.push_str("\n\n");
 
+        if let Some(diagram) = &page.sections.dependency_diagram {
+            md.push_str("## Dependency Diagram\n\n");
+            md.push_str("```mermaid\n");
+            md.push_str(diagram);
+            md.push_str("```\n\n");
+        }
+
         md.push_str("## Dependencies\n\n");
         md.push_str(&page.sections.dependencies);
         md.push_str("\n\n");
@@ -290,6 +300,100 @@ pub fn render_wiki_markdown(pages: &[WikiPage]) -> Vec<(String, String)> {
 }
 
 // --- Private helpers ---
+
+/// Build a focused mermaid dependency diagram for a single module.
+/// Shows the module as center node with direct deps and dependents.
+fn build_dependency_diagram(
+    conn: &Connection,
+    module_path: &str,
+    all_modules: &[ModuleDefinition],
+) -> Option<String> {
+    let pattern = format!("{}/%", module_path);
+
+    // Collect outgoing deps (module_path → target_module)
+    let mut outgoing: HashMap<String, usize> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT f2.path FROM file_dependencies fd
+         JOIN files f1 ON fd.file_id = f1.id
+         JOIN files f2 ON fd.resolved_file_id = f2.id
+         WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1"
+    ) {
+        if let Ok(rows) = stmt.query_map([&pattern], |row| row.get::<_, String>(0)) {
+            for dep_file in rows.flatten() {
+                let target = find_owning_module(&dep_file, all_modules);
+                *outgoing.entry(target).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Collect incoming deps (source_module → module_path)
+    let mut incoming: HashMap<String, usize> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT f1.path FROM file_dependencies fd
+         JOIN files f1 ON fd.file_id = f1.id
+         JOIN files f2 ON fd.resolved_file_id = f2.id
+         WHERE f2.path LIKE ?1 AND f1.path NOT LIKE ?1"
+    ) {
+        if let Ok(rows) = stmt.query_map([&pattern], |row| row.get::<_, String>(0)) {
+            for dep_file in rows.flatten() {
+                let source = find_owning_module(&dep_file, all_modules);
+                *incoming.entry(source).or_insert(0) += 1;
+            }
+        }
+    }
+
+    if outgoing.is_empty() && incoming.is_empty() {
+        return None;
+    }
+
+    let mut diagram = String::new();
+    diagram.push_str("graph LR\n");
+
+    // Sanitize node IDs for mermaid (replace / with _)
+    let center_id = module_path.replace('/', "_");
+    diagram.push_str(&format!("    {}[\"<b>{}/</b>\"]\n", center_id, module_path));
+    diagram.push_str(&format!("    style {} fill:#7aa2f7,color:#1a1b26,stroke:#7aa2f7\n", center_id));
+
+    // Track all nodes for clickable links
+    let mut all_node_paths: Vec<String> = vec![module_path.to_string()];
+
+    // Outgoing edges (this module depends on)
+    let mut out_sorted: Vec<_> = outgoing.into_iter().collect();
+    out_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    for (target, count) in out_sorted.iter().take(8) {
+        let target_id = target.replace('/', "_");
+        diagram.push_str(&format!("    {}[\"{}/\"]\n", target_id, target));
+        diagram.push_str(&format!("    {} -->|{}| {}\n", center_id, count, target_id));
+        all_node_paths.push(target.clone());
+    }
+
+    // Incoming edges (modules that depend on this)
+    let mut in_sorted: Vec<_> = incoming.into_iter().collect();
+    in_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    for (source, count) in in_sorted.iter().take(8) {
+        let source_id = source.replace('/', "_");
+        // Avoid re-declaring if already declared as outgoing target
+        if !out_sorted.iter().any(|(t, _)| t == source) {
+            diagram.push_str(&format!("    {}[\"{}/\"]\n", source_id, source));
+        }
+        diagram.push_str(&format!("    {} -->|{}| {}\n", source_id, count, center_id));
+        if !all_node_paths.contains(source) {
+            all_node_paths.push(source.clone());
+        }
+    }
+
+    // High-contrast styling
+    diagram.push_str("    classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
+
+    // Clickable nodes → wiki pages
+    for node_path in &all_node_paths {
+        let node_id = node_path.replace('/', "_");
+        let slug = node_path.replace('/', "-");
+        diagram.push_str(&format!("    click {} \"/wiki/{}/\"\n", node_id, slug));
+    }
+
+    Some(diagram)
+}
 
 fn build_module_def(conn: &Connection, path: &str, tier: u8) -> Result<Option<ModuleDefinition>> {
     let pattern = format!("{}/%", path);
@@ -334,16 +438,18 @@ fn build_structure_section(
 
     let mut content = String::new();
 
-    // Show sub-modules if this module has children
+    // Show sub-modules if this module has children — linked to their wiki pages
     if !child_modules.is_empty() {
         content.push_str("### Sub-modules\n\n");
         for child in child_modules {
             let short_name = child.path.strip_prefix(module_path)
                 .unwrap_or(&child.path)
                 .trim_start_matches('/');
+            let child_slug = child.path.replace('/', "-");
             content.push_str(&format!(
-                "- **{}/** — {} files, {} lines ({})\n",
+                "- [**{}//**](/wiki/{}/) — {} files, {} lines ({})\n",
                 short_name,
+                child_slug,
                 child.file_count,
                 child.total_lines,
                 child.languages.join(", "),
@@ -406,7 +512,7 @@ fn build_structure_section(
         }
     }
 
-    // Top 10 largest files
+    // Top 10 largest files, with expandable overflow
     content.push_str("\n### Largest Files\n\n");
     let all_sorted: Vec<_> = files.iter()
         .map(|(path, _, lines)| (path.as_str(), *lines))
@@ -418,7 +524,15 @@ fn build_structure_section(
 
     let total = files.len();
     if total > 10 {
-        content.push_str(&format!("- ... and {} more files\n", total - 10));
+        content.push_str(&format!(
+            "\n<details><summary><strong>Show {} more files</strong></summary>\n\n",
+            total - 10
+        ));
+        for (path, lines) in all_sorted.iter().skip(10) {
+            let short = path.strip_prefix(&format!("{}/", module_path)).unwrap_or(path);
+            content.push_str(&format!("- `{}` ({} lines)\n", short, lines));
+        }
+        content.push_str("\n</details>\n");
     }
 
     Ok(content)
@@ -465,7 +579,8 @@ fn build_dependencies_section(
     );
 
     for (module, files) in &groups {
-        content.push_str(&format!("**{}/** ({} files):\n", module, files.len()));
+        let module_slug = module.replace('/', "-");
+        content.push_str(&format!("**[{}/](@/wiki/{}.md)** ({} files):\n", module, module_slug, files.len()));
         for f in files.iter().take(5) {
             let short = f.rsplit('/').next().unwrap_or(f);
             content.push_str(&format!("- `{}`\n", short));
@@ -521,7 +636,8 @@ fn build_dependents_section(
     );
 
     for (module, files) in &groups {
-        content.push_str(&format!("**{}/** ({} files):\n", module, files.len()));
+        let module_slug = module.replace('/', "-");
+        content.push_str(&format!("**[{}/](@/wiki/{}.md)** ({} files):\n", module, module_slug, files.len()));
         for f in files.iter().take(5) {
             let short = f.rsplit('/').next().unwrap_or(f);
             content.push_str(&format!("- `{}`\n", short));
@@ -604,77 +720,59 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str) -> String {
 
     let mut content = String::new();
 
-    // --- By Kind view ---
-    content.push_str("### By Kind\n\n");
+    // --- Top symbols above the fold ---
+    // Collect the 5 most significant symbols (largest by line span)
+    let mut all_symbols: Vec<(&str, &str, &str, usize)> = Vec::new(); // (name, kind, path, size)
+    for (kind_str, entries) in &by_kind {
+        for (name, path, size) in entries {
+            all_symbols.push((name, kind_str, path, *size));
+        }
+    }
+    all_symbols.sort_by(|a, b| b.3.cmp(&a.3));
 
+    if !all_symbols.is_empty() {
+        content.push_str("**Key definitions:**\n");
+        for (name, kind, path, _) in all_symbols.iter().take(5) {
+            let short = path.rsplit('/').next().unwrap_or(path);
+            content.push_str(&format!("- `{}` ({}) in {}\n", name, kind, short));
+        }
+        content.push('\n');
+    }
+
+    // --- By Kind view (collapsible, showing ALL symbols) ---
     let display_order = [
         "Function", "Struct", "Class", "Trait", "Interface",
         "Enum", "Method", "Constant", "Type", "Macro",
         "Variable", "Module", "Namespace", "Property", "Attribute",
     ];
 
-    let mut symbols_shown = 0;
-    let max_total = 50;
-
     for kind in &display_order {
-        if symbols_shown >= max_total {
-            break;
-        }
         let kind_str = kind.to_string();
         if let Some(entries) = by_kind.get_mut(&kind_str) {
             entries.sort_by(|a, b| b.2.cmp(&a.2));
             let count = entries.len();
-            let take = 10.min(max_total - symbols_shown);
-            content.push_str(&format!("**{}** ({}):\n", kind, count));
-            for (name, path, _) in entries.iter().take(take) {
+            content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n\n", kind, count));
+            for (name, path, _) in entries.iter() {
                 let short = path.rsplit('/').next().unwrap_or(path);
                 content.push_str(&format!("- `{}` ({})\n", name, short));
-                symbols_shown += 1;
             }
-            content.push('\n');
+            content.push_str("\n</details>\n\n");
         }
     }
 
     // Handle any kinds not in display_order
     for (kind, entries) in &mut by_kind {
-        if symbols_shown >= max_total {
-            break;
-        }
         if display_order.contains(&kind.as_str()) {
             continue;
         }
         entries.sort_by(|a, b| b.2.cmp(&a.2));
         let count = entries.len();
-        let take = 10.min(max_total - symbols_shown);
-        content.push_str(&format!("**{}** ({}):\n", kind, count));
-        for (name, path, _) in entries.iter().take(take) {
+        content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n\n", kind, count));
+        for (name, path, _) in entries.iter() {
             let short = path.rsplit('/').next().unwrap_or(path);
             content.push_str(&format!("- `{}` ({})\n", name, short));
-            symbols_shown += 1;
         }
-        content.push('\n');
-    }
-
-    // --- By File view ---
-    // Collect all symbols grouped by file
-    let mut by_file: HashMap<String, Vec<(String, String)>> = HashMap::new(); // path -> [(name, kind)]
-    for (kind_str, entries) in &by_kind {
-        for (name, path, _) in entries {
-            by_file.entry(path.clone()).or_default()
-                .push((name.clone(), kind_str.clone()));
-        }
-    }
-
-    if !by_file.is_empty() {
-        let mut file_list: Vec<_> = by_file.into_iter().collect();
-        file_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-
-        content.push_str("### By File\n\n");
-        for (path, symbols) in file_list.iter().take(10) {
-            let short = path.rsplit('/').next().unwrap_or(path);
-            let kinds: Vec<_> = symbols.iter().map(|(n, k)| format!("{} ({})", n, k)).collect();
-            content.push_str(&format!("**{}**: {}\n\n", short, kinds.join(", ")));
-        }
+        content.push_str("\n</details>\n\n");
     }
 
     if content.is_empty() {
@@ -824,6 +922,7 @@ mod tests {
                 structure: "test structure".to_string(),
                 dependencies: "test deps".to_string(),
                 dependents: "test dependents".to_string(),
+                dependency_diagram: None,
                 key_symbols: "test symbols".to_string(),
                 metrics: "test metrics".to_string(),
                 recent_changes: None,

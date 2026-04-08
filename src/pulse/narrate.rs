@@ -31,14 +31,58 @@ const WIKI_SYSTEM_PROMPT: &str = "\
 You are a technical writer creating a module overview for a codebase wiki.
 You may ONLY describe facts present in the STRUCTURAL CONTEXT below.
 
-Guidelines:
-- Start by inferring what the module IS from its file names, symbol names, and directory structure.
-- Identify the key abstractions (main structs/classes, core functions, public API surface).
-- Describe the module's position in the dependency graph: what it depends on and what depends on it.
-- Note complexity indicators: file count, line count, number of symbols.
-- Reference specific file and function names where relevant.
-- Write 4-8 sentences. Be specific, not generic.
+CRITICAL RULES:
+- NEVER start with 'The X module consists of...', 'This module contains...', or any variant.
+- Your first sentence MUST state what the module DOES or what PURPOSE it serves — infer this from file names, symbol names, and its dependency position.
+- Identify key abstractions: main structs/classes, core functions, public API surface.
+- Describe the module's architectural role: Is it a hub (many dependents)? A leaf (few dependents)? A bridge between subsystems?
+- Explain how this module fits into the larger system — what it provides to modules that depend on it, and what it consumes from its own dependencies.
+- If the module has high fan-in (many dependents), note that changes to it have wide blast radius.
+- If the module has significantly more or fewer files/lines than average for the codebase, note that.
+- Note complexity: file count, line count, symbol density.
+- Reference specific file and function names.
+- Vary your sentence structure. Do NOT repeat patterns across modules.
+- Write 4-8 sentences. Be specific, not generic. Every sentence should contain at least one concrete name or number.
 - Do NOT speculate about design intent or add information not in the context.
+- NEVER leave missing spaces between words. Proofread your output.
+
+STRUCTURAL CONTEXT:
+";
+
+/// System prompt for project overview narration
+const PROJECT_OVERVIEW_SYSTEM_PROMPT: &str = "\
+You are a technical writer creating a project overview for auto-generated codebase documentation.
+You may ONLY describe facts present in the STRUCTURAL CONTEXT below.
+
+CRITICAL RULES:
+- NEVER start with 'This project consists of...' or 'The codebase is...'
+- Your first sentence MUST describe what this software DOES — its purpose and primary function. Use evidence from module names and symbol names to infer the specific domain (e.g., 'code search' from TrigramIndex, QueryEngine, ParserFactory).
+- Paragraph 1: What it does and how (infer from module names, key symbols, languages used).
+- Paragraph 2: Architecture — how the major modules relate. Which modules are central hubs? What are the natural boundaries? Describe the data flow direction — which modules produce data and which consume it.
+- Paragraph 3: Scale and notable patterns — file/line counts, language mix, dependency health (cycles, hotspots).
+- Write exactly 3-4 paragraphs. Be specific: use module names, file counts, and dependency numbers.
+- Do NOT speculate or add information not in the context.
+- NEVER leave missing spaces between words. Proofread your output.
+
+STRUCTURAL CONTEXT:
+";
+
+/// System prompt for architecture narrative narration
+const ARCHITECTURE_NARRATIVE_SYSTEM_PROMPT: &str = "\
+You are a technical writer narrating the architecture of a codebase based on its dependency graph.
+You may ONLY describe facts present in the STRUCTURAL CONTEXT below.
+
+CRITICAL RULES:
+- NEVER start with 'The architecture consists of...' or 'This codebase is organized...'
+- Lead with the most connected module and explain WHY it's central (what it provides to others).
+- Describe data flow: which modules are producers (depended-on) vs consumers (depend on many).
+- Identify if the codebase follows a layered pattern (e.g., parsers → models → query engine → CLI) and describe the information flow between layers.
+- Identify natural boundaries: groups of tightly-coupled modules that form subsystems.
+- Call out concerning patterns: circular dependencies, extreme fan-in hotspots, isolated modules.
+- Note peripheral modules: what sits at the edges and what role they serve.
+- Write 3-5 paragraphs. Every claim must reference specific module names and dependency counts.
+- Do NOT speculate about design intent or add information not in the context.
+- NEVER leave missing spaces between words. Proofread your output.
 
 STRUCTURAL CONTEXT:
 ";
@@ -110,7 +154,7 @@ pub fn narrate_section(
 
     match result {
         Ok(response) => {
-            let response = response.trim().to_string();
+            let response = postprocess_narration(&response);
 
             // Cache the response
             let context_hash = blake3::hash(structural_context.as_bytes()).to_hex().to_string();
@@ -135,6 +179,63 @@ pub fn digest_system_prompt() -> &'static str {
 /// Get the system prompt for wiki narration
 pub fn wiki_system_prompt() -> &'static str {
     WIKI_SYSTEM_PROMPT
+}
+
+/// Get the system prompt for project overview narration
+pub fn project_overview_system_prompt() -> &'static str {
+    PROJECT_OVERVIEW_SYSTEM_PROMPT
+}
+
+/// Get the system prompt for architecture narrative narration
+pub fn architecture_narrative_system_prompt() -> &'static str {
+    ARCHITECTURE_NARRATIVE_SYSTEM_PROMPT
+}
+
+/// Post-process LLM narration output to fix common formatting issues.
+fn postprocess_narration(text: &str) -> String {
+    let mut result = text.trim().to_string();
+
+    // Fix missing spaces after periods (e.g., "module.The" → "module. The" but not "config.toml")
+    // Only insert space when followed by an uppercase letter (sentence boundary)
+    let re = regex::Regex::new(r"([a-z])\.([A-Z])").unwrap();
+    result = re.replace_all(&result, "$1. $2").to_string();
+
+    // Fix missing spaces between lowercase and uppercase (e.g., "moduledrives" → "module drives")
+    // Be conservative: only fix when a lowercase letter is directly followed by an uppercase
+    // but NOT in common patterns like camelCase identifiers
+    // We look for word-like patterns where the case transition happens mid-"word" without any code context
+    let re = regex::Regex::new(r"([a-z]{3,})([A-Z][a-z]{2,})").unwrap();
+    // Only apply this outside of backtick-quoted code
+    let mut fixed = String::new();
+    let mut in_code = false;
+    for ch in result.chars() {
+        if ch == '`' {
+            in_code = !in_code;
+        }
+        fixed.push(ch);
+    }
+    // Apply the regex only to non-code segments
+    let parts: Vec<&str> = result.split('`').collect();
+    let mut assembled = String::new();
+    for (i, part) in parts.iter().enumerate() {
+        if i % 2 == 0 {
+            // Outside backticks — apply fix
+            assembled.push_str(&re.replace_all(part, "$1 $2"));
+        } else {
+            // Inside backticks — preserve as-is
+            assembled.push('`');
+            assembled.push_str(part);
+            assembled.push('`');
+        }
+    }
+    result = assembled;
+
+    // Fix double spaces
+    while result.contains("  ") {
+        result = result.replace("  ", " ");
+    }
+
+    result
 }
 
 /// Synchronous LLM call with retry logic.
