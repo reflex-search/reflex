@@ -827,6 +827,18 @@ pub enum PulseSubcommand {
         /// Force re-narration (ignore LLM cache)
         #[arg(long)]
         force_renarrate: bool,
+
+        /// Maximum concurrent LLM requests (0 = unlimited, default)
+        #[arg(long, default_value = "0")]
+        concurrency: usize,
+
+        /// Maximum directory depth for module discovery (1=top-level only, 2=default)
+        #[arg(long, default_value = "2")]
+        depth: u8,
+
+        /// Minimum file count for a module to be included
+        #[arg(long, default_value = "1")]
+        min_files: usize,
     },
 
     /// Serve the generated site locally
@@ -1040,8 +1052,8 @@ impl Cli {
                     crate::cli::PulseSubcommand::Map { format, output, zoom } => {
                         handle_pulse_map(format, output, zoom)
                     }
-                    crate::cli::PulseSubcommand::Generate { output, base_url, title, include, no_llm, clean, force_renarrate } => {
-                        handle_pulse_generate(output, base_url, title, include, no_llm, clean, force_renarrate)
+                    crate::cli::PulseSubcommand::Generate { output, base_url, title, include, no_llm, clean, force_renarrate, concurrency, depth, min_files } => {
+                        handle_pulse_generate(output, base_url, title, include, no_llm, clean, force_renarrate, concurrency, depth, min_files)
                     }
                     crate::cli::PulseSubcommand::Serve { output, port, open } => {
                         handle_pulse_serve(output, port, open)
@@ -3942,6 +3954,7 @@ fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: bool) -> Resul
         snapshot_id,
         provider.as_ref().map(|p| p.as_ref()),
         llm_cache.as_ref(),
+        &pulse::wiki::ModuleDiscoveryConfig::default(),
     )?;
 
     if json {
@@ -3995,6 +4008,9 @@ fn handle_pulse_generate(
     no_llm: bool,
     clean: bool,
     force_renarrate: bool,
+    concurrency: usize,
+    depth: u8,
+    min_files: usize,
 ) -> Result<()> {
     let cache = CacheManager::new(".");
     if !cache.path().exists() {
@@ -4027,6 +4043,9 @@ fn handle_pulse_generate(
         no_llm,
         clean,
         force_renarrate,
+        concurrency,
+        max_depth: depth,
+        min_files,
     };
 
     let report = pulse::site::generate_site(&cache, &config)?;

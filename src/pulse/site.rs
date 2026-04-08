@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::cache::CacheManager;
 use crate::semantic::providers::LlmProvider;
@@ -40,6 +41,12 @@ pub struct SiteConfig {
     pub no_llm: bool,
     pub clean: bool,
     pub force_renarrate: bool,
+    /// Maximum concurrent LLM requests (0 = unlimited)
+    pub concurrency: usize,
+    /// Maximum directory depth for module discovery (1=top-level only, 2=default)
+    pub max_depth: u8,
+    /// Minimum file count for a module to be included
+    pub min_files: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +66,9 @@ impl Default for SiteConfig {
             no_llm: true,
             clean: false,
             force_renarrate: false,
+            concurrency: 0,
+            max_depth: 2,
+            min_files: 1,
         }
     }
 }
@@ -74,8 +84,15 @@ pub struct SiteReport {
     pub build_success: bool,
 }
 
-/// Generate the complete Zola project and optionally build it
+/// Generate the complete Zola project and optionally build it.
+///
+/// Uses a 3-phase architecture for maximum parallelism:
+/// 1. **Structural phase** (rayon): Build all structural data concurrently
+/// 2. **Narration phase** (tokio): Fire all LLM calls concurrently
+/// 3. **Write phase**: Assemble and write output files, run zola build
 pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteReport> {
+    let overall_start = std::time::Instant::now();
+
     // Auto-snapshot if index has changed since last snapshot
     let pulse_config = super::config::load_pulse_config(cache.path())?;
     let ensure_result = snapshot::ensure_snapshot(cache, &pulse_config.retention)?;
@@ -127,12 +144,12 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         }
     }
 
-    // Create LLM provider once for all surfaces
-    let provider: Option<Box<dyn LlmProvider>> = if !config.no_llm {
+    // Create LLM provider (as Arc for concurrent sharing)
+    let provider: Option<Arc<dyn LlmProvider>> = if !config.no_llm {
         match narrate::create_pulse_provider() {
             Ok(p) => {
                 eprintln!("LLM provider ready, narration enabled.");
-                Some(p)
+                Some(Arc::from(p))
             }
             Err(e) => {
                 eprintln!("LLM narration unavailable: {}", e);
@@ -150,63 +167,226 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let mut map_generated = false;
     let mut has_narration = false;
 
-    // Collect wiki pages for the home page index
-    let mut wiki_page_index: Vec<WikiPageMeta> = Vec::new();
+    let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
 
-    // Generate wiki pages
+    // ══════════════════════════════════════════════════════════════
+    // Phase 1: Parallel Structural (rayon for wiki, sequential for rest)
+    // ══════════════════════════════════════════════════════════════
+    let structural_start = std::time::Instant::now();
+
+    // Build module discovery config from site config
+    let discovery_config = wiki::ModuleDiscoveryConfig {
+        max_depth: config.max_depth,
+        min_files: config.min_files,
+    };
+
+    // 1a. Wiki: parallel structural build
+    let mut wiki_pages_with_context: Vec<wiki::WikiPageWithContext> = Vec::new();
     if config.surfaces.contains(&Surface::Wiki) {
-        let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
-        let wiki_pages = wiki::generate_all_pages(
+        eprintln!("Building wiki structural data (parallel)...");
+        wiki_pages_with_context = wiki::generate_all_pages_structural(
             cache,
             snapshot_diff.as_ref(),
-            config.no_llm,
-            snapshot_id,
-            provider.as_ref().map(|p| p.as_ref()),
-            llm_cache.as_ref(),
+            &discovery_config,
         )?;
+    }
 
-        if wiki_pages.iter().any(|p| p.sections.summary.is_some()) {
-            has_narration = true;
+    // Build wiki_page_index from structural data (needed for architecture/overview contexts)
+    let modules = wiki::detect_modules(cache, &discovery_config)?;
+    let module_map: std::collections::HashMap<&str, &wiki::ModuleDefinition> = modules.iter()
+        .map(|m| (m.path.as_str(), m))
+        .collect();
+
+    let mut wiki_page_index: Vec<WikiPageMeta> = Vec::new();
+    for pwc in &wiki_pages_with_context {
+        let page = &pwc.page;
+        let module = module_map.get(page.module_path.as_str());
+        let slug = page.module_path.replace('/', "-");
+
+        let summary_preview = format!("{} files", module.map(|m| m.file_count).unwrap_or(0));
+
+        let tier = module.map(|m| m.tier).unwrap_or(1);
+        let parent_path = if tier == 2 {
+            page.module_path.split('/').next().map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        wiki_page_index.push(WikiPageMeta {
+            title: page.title.clone(),
+            slug,
+            file_count: module.map(|m| m.file_count).unwrap_or(0),
+            total_lines: module.map(|m| m.total_lines).unwrap_or(0),
+            description: summary_preview,
+            tier,
+            parent_path,
+        });
+    }
+
+    // 1b. Digest: structural build
+    let mut digest_data: Option<digest::Digest> = None;
+    if config.surfaces.contains(&Surface::Digest) {
+        if let Some(current) = current_snapshot {
+            digest_data = Some(digest::generate_digest_structural(
+                snapshot_diff.as_ref(),
+                current,
+                Some(cache),
+            )?);
+        }
+    }
+
+    // 1c. Map: generate map content + architecture context
+    let mut map_content: Option<String> = None;
+    let mut layered_content: Option<String> = None;
+    let mut arch_context: Option<String> = None;
+    if config.surfaces.contains(&Surface::Map) {
+        map_content = Some(map::generate_map(cache, &MapZoom::Repo, MapFormat::Mermaid)?);
+        layered_content = map::generate_layered_map(cache, MapFormat::Mermaid).ok();
+        arch_context = Some(build_architecture_context(cache, &wiki_page_index));
+    }
+
+    // 1d. Project overview context
+    let overview_context = build_project_overview_context(cache, &wiki_page_index);
+
+    eprintln!("  Structural phase: {:.1}s", structural_start.elapsed().as_secs_f64());
+
+    // These will be filled by Phase 2 narration (if enabled)
+    let mut architecture_narrative: Option<String> = None;
+    let mut project_overview: Option<String> = None;
+
+    // ══════════════════════════════════════════════════════════════
+    // Phase 2: Concurrent Narration (tokio, all at once)
+    // ══════════════════════════════════════════════════════════════
+    if let (Some(provider), Some(llm_cache)) = (provider.as_ref(), llm_cache.as_ref()) {
+        eprintln!("Collecting narration tasks...");
+
+        let mut narration_tasks: Vec<narrate::NarrationTask> = Vec::new();
+
+        // Wiki narration tasks
+        for pwc in &wiki_pages_with_context {
+            if let Some(ctx) = &pwc.narration_context {
+                narration_tasks.push(narrate::NarrationTask {
+                    system_prompt: narrate::wiki_system_prompt(),
+                    structural_context: ctx.clone(),
+                    snapshot_id: snapshot_id.to_string(),
+                    cache_key_suffix: pwc.page.module_path.clone(),
+                });
+            }
         }
 
-        // Write wiki section index
-        write_wiki_section_index(&config.output_dir)?;
+        // Digest narration tasks
+        if let Some(ref digest) = digest_data {
+            for section in &digest.sections {
+                narration_tasks.push(narrate::NarrationTask {
+                    system_prompt: narrate::digest_system_prompt(),
+                    structural_context: section.structural_content.clone(),
+                    snapshot_id: snapshot_id.to_string(),
+                    cache_key_suffix: format!("digest:{}", section.heading),
+                });
+            }
+        }
 
-        // Detect modules for metadata
-        let modules = wiki::detect_modules(cache)?;
-        let module_map: std::collections::HashMap<&str, &wiki::ModuleDefinition> = modules.iter()
-            .map(|m| (m.path.as_str(), m))
+        // Architecture narrative task
+        if let Some(ref ctx) = arch_context {
+            narration_tasks.push(narrate::NarrationTask {
+                system_prompt: narrate::architecture_narrative_system_prompt(),
+                structural_context: ctx.clone(),
+                snapshot_id: snapshot_id.to_string(),
+                cache_key_suffix: "architecture-narrative".to_string(),
+            });
+        }
+
+        // Project overview task
+        narration_tasks.push(narrate::NarrationTask {
+            system_prompt: narrate::project_overview_system_prompt(),
+            structural_context: overview_context,
+            snapshot_id: snapshot_id.to_string(),
+            cache_key_suffix: "project-overview".to_string(),
+        });
+
+        let task_count = narration_tasks.len();
+        eprintln!("Narrating {} tasks concurrently...", task_count);
+        let narration_start = std::time::Instant::now();
+
+        let results = narrate::narrate_batch(
+            Arc::clone(provider),
+            narration_tasks,
+            llm_cache,
+            config.concurrency,
+        );
+
+        eprintln!(
+            "  Narration phase: {:.1}s ({} tasks)",
+            narration_start.elapsed().as_secs_f64(),
+            task_count,
+        );
+
+        // Distribute results back to their sources
+        let result_map: std::collections::HashMap<String, Option<String>> = results.into_iter()
+            .map(|r| (r.cache_key_suffix, r.response))
             .collect();
 
-        for (i, page) in wiki_pages.iter().enumerate() {
-            let module = module_map.get(page.module_path.as_str());
-            let slug = page.module_path.replace('/', "-");
+        // Fill wiki summaries
+        for pwc in &mut wiki_pages_with_context {
+            if let Some(response) = result_map.get(&pwc.page.module_path) {
+                pwc.page.sections.summary = response.clone();
+                if pwc.page.sections.summary.is_some() {
+                    has_narration = true;
+                }
+            }
+        }
 
-            let summary_preview = page.sections.summary.as_deref()
-                .map(|s| s.chars().take(200).collect::<String>())
-                .unwrap_or_else(|| format!("{} files", module.map(|m| m.file_count).unwrap_or(0)));
+        // Fill digest narratives
+        if let Some(ref mut digest) = digest_data {
+            for section in &mut digest.sections {
+                let key = format!("digest:{}", section.heading);
+                if let Some(response) = result_map.get(&key) {
+                    section.narrative = response.clone();
+                }
+            }
+            if digest.sections.iter().any(|s| s.narrative.is_some()) {
+                has_narration = true;
+                digest.narration_mode = digest::NarrationMode::Narrated;
+            }
+        }
 
-            let tier = module.map(|m| m.tier).unwrap_or(1);
-            let parent_path = if tier == 2 {
-                // Find Tier 1 parent: e.g., "src/parsers" → "src"
-                page.module_path.split('/').next().map(|s| s.to_string())
-            } else {
-                None
-            };
+        // Extract architecture narrative and project overview
+        if let Some(response) = result_map.get("architecture-narrative") {
+            architecture_narrative = response.clone();
+            if architecture_narrative.is_some() {
+                has_narration = true;
+            }
+        }
+        if let Some(response) = result_map.get("project-overview") {
+            project_overview = response.clone();
+            if project_overview.is_some() {
+                has_narration = true;
+            }
+        }
 
-            wiki_page_index.push(WikiPageMeta {
-                title: page.title.clone(),
-                slug: slug.clone(),
-                file_count: module.map(|m| m.file_count).unwrap_or(0),
-                total_lines: module.map(|m| m.total_lines).unwrap_or(0),
-                description: summary_preview,
-                tier,
-                parent_path,
-            });
+        // Update wiki page index descriptions with summaries
+        for (i, pwc) in wiki_pages_with_context.iter().enumerate() {
+            if let Some(summary) = &pwc.page.sections.summary {
+                if i < wiki_page_index.len() {
+                    wiki_page_index[i].description = summary.chars().take(200).collect();
+                }
+            }
+        }
+    }
 
+    // ══════════════════════════════════════════════════════════════
+    // Phase 3: Write + Build
+    // ══════════════════════════════════════════════════════════════
+
+    // Write wiki pages
+    if config.surfaces.contains(&Surface::Wiki) {
+        write_wiki_section_index(&config.output_dir)?;
+
+        for (i, pwc) in wiki_pages_with_context.iter().enumerate() {
+            let module = module_map.get(pwc.page.module_path.as_str());
             write_wiki_page(
                 &config.output_dir,
-                page,
+                &pwc.page,
                 module,
                 i + 1,
             )?;
@@ -214,76 +394,22 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         }
     }
 
-    // Generate digest
-    if config.surfaces.contains(&Surface::Digest) {
-        if let Some(current) = current_snapshot {
-            let digest_data = digest::generate_digest(
-                snapshot_diff.as_ref(),
-                current,
-                Some(cache),
-                config.no_llm,
-                provider.as_ref().map(|p| p.as_ref()),
-                llm_cache.as_ref(),
-            )?;
-
-            if digest_data.sections.iter().any(|s| s.narrative.is_some()) {
-                has_narration = true;
-            }
-
-            let digest_md = digest::render_markdown(&digest_data);
-            write_digest_page(&config.output_dir, &digest_md, &digest_data)?;
-            digest_generated = true;
-        }
+    // Write digest
+    if let Some(ref digest) = digest_data {
+        let digest_md = digest::render_markdown(digest);
+        write_digest_page(&config.output_dir, &digest_md, digest)?;
+        digest_generated = true;
     }
 
-    // Generate map
-    let mut architecture_narrative: Option<String> = None;
-    if config.surfaces.contains(&Surface::Map) {
-        let map_content = map::generate_map(cache, &MapZoom::Repo, MapFormat::Mermaid)?;
-        let layered_content = map::generate_layered_map(cache, MapFormat::Mermaid).ok();
-
-        // Build architecture narrative from map data
-        if let (Some(provider), Some(llm_cache)) = (provider.as_ref(), llm_cache.as_ref()) {
-            let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
-            let arch_context = build_architecture_context(cache, &wiki_page_index);
-            architecture_narrative = narrate::narrate_section(
-                provider.as_ref(),
-                narrate::architecture_narrative_system_prompt(),
-                &arch_context,
-                llm_cache,
-                snapshot_id,
-                "architecture-narrative",
-            );
-            if architecture_narrative.is_some() {
-                has_narration = true;
-            }
-        }
-
+    // Write map
+    if let Some(ref mc) = map_content {
         write_map_page(
             &config.output_dir,
-            &map_content,
+            mc,
             layered_content.as_deref(),
             architecture_narrative.as_deref(),
         )?;
         map_generated = true;
-    }
-
-    // Build project overview narrative
-    let mut project_overview: Option<String> = None;
-    if let (Some(provider), Some(llm_cache)) = (provider.as_ref(), llm_cache.as_ref()) {
-        let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
-        let overview_context = build_project_overview_context(cache, &wiki_page_index);
-        project_overview = narrate::narrate_section(
-            provider.as_ref(),
-            narrate::project_overview_system_prompt(),
-            &overview_context,
-            llm_cache,
-            snapshot_id,
-            "project-overview",
-        );
-        if project_overview.is_some() {
-            has_narration = true;
-        }
     }
 
     // Write home page
@@ -307,6 +433,8 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
 
     // Try to build with Zola
     let build_success = try_zola_build(&config.output_dir);
+
+    eprintln!("  Total generation: {:.1}s", overall_start.elapsed().as_secs_f64());
 
     Ok(SiteReport {
         output_dir: config.output_dir.display().to_string(),
@@ -1133,6 +1261,33 @@ details[open] {
     padding-bottom: 0.25rem;
 }
 
+/* ── Doc comments in key symbols ──────────── */
+
+.doc-comment {
+    margin: 0.25rem 0 0.5rem 1.5rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--surface);
+    border-left: 2px solid var(--border);
+    border-radius: 0 4px 4px 0;
+    color: var(--fg-muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+
+.doc-comment p {
+    margin: 0.2rem 0;
+}
+
+.doc-comment code {
+    font-size: 0.8rem;
+    background: rgba(255,255,255,0.04);
+}
+
+.doc-comment-inline {
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+}
+
 /* ── Map-specific: full width for diagrams ──── */
 
 .map-diagram {
@@ -1548,17 +1703,19 @@ fn build_project_overview_context(cache: &CacheManager, wiki_pages: &[WikiPageMe
     let mut ctx = String::new();
 
     // Aggregate stats
-    let total_files: usize = wiki_pages.iter().map(|p| p.file_count).sum();
-    let total_lines: usize = wiki_pages.iter().map(|p| p.total_lines).sum();
     let tier1_count = wiki_pages.iter().filter(|p| p.tier == 1).count();
     let tier2_count = wiki_pages.iter().filter(|p| p.tier == 2).count();
 
-    ctx.push_str(&format!("Total files: {}\nTotal lines: {}\n", total_files, total_lines));
-    ctx.push_str(&format!("Tier 1 modules: {}\nTier 2 modules: {}\n\n", tier1_count, tier2_count));
-
-    // Language distribution from meta.db
+    // Query database directly for true totals (wiki_pages would double-count nested modules)
     let db_path = cache.path().join("meta.db");
     if let Ok(conn) = Connection::open(&db_path) {
+        let total_files: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap_or(0);
+        let total_lines: usize = conn.query_row("SELECT COALESCE(SUM(line_count), 0) FROM files", [], |r| r.get(0)).unwrap_or(0);
+
+        ctx.push_str(&format!("Total files: {}\nTotal lines: {}\n", total_files, total_lines));
+        ctx.push_str(&format!("Tier 1 modules: {}\nTier 2 modules: {}\n\n", tier1_count, tier2_count));
+
+        // Language distribution
         if let Ok(mut stmt) = conn.prepare(
             "SELECT COALESCE(language, 'other'), COUNT(*) FROM files GROUP BY language ORDER BY COUNT(*) DESC LIMIT 10"
         ) {

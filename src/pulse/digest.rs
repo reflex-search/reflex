@@ -122,7 +122,7 @@ pub fn generate_digest(
                 let db_path = cache.path().join("meta.db");
                 if let Ok(conn) = Connection::open(&db_path) {
                     // Module-level summary using detect_modules
-                    if let Ok(modules) = super::wiki::detect_modules(cache) {
+                    if let Ok(modules) = super::wiki::detect_modules(cache, &super::wiki::ModuleDiscoveryConfig::default()) {
                         if !modules.is_empty() {
                             let tier1: Vec<_> = modules.iter().filter(|m| m.tier == 1).collect();
                             let tier2: Vec<_> = modules.iter().filter(|m| m.tier == 2).collect();
@@ -135,12 +135,19 @@ pub fn generate_digest(
 
                             content.push_str("| Module | Files | Lines | Languages |\n|---|---|---|---|\n");
                             for m in &modules {
-                                let indent = if m.tier == 2 { "  " } else { "" };
-                                content.push_str(&format!(
-                                    "| {}{} | {} | {} | {} |\n",
-                                    indent, m.path, m.file_count, m.total_lines,
-                                    m.languages.join(", ")
-                                ));
+                                if m.tier == 2 {
+                                    content.push_str(&format!(
+                                        "|   {} *(sub-module, counts included in parent)* | {} | {} | {} |\n",
+                                        m.path, m.file_count, m.total_lines,
+                                        m.languages.join(", ")
+                                    ));
+                                } else {
+                                    content.push_str(&format!(
+                                        "| **{}** | **{}** | **{}** | {} |\n",
+                                        m.path, m.file_count, m.total_lines,
+                                        m.languages.join(", ")
+                                    ));
+                                }
                             }
                         }
                     }
@@ -255,6 +262,18 @@ pub fn generate_digest(
             NarrationMode::Narrated
         },
     })
+}
+
+/// Generate digest sections structurally (no LLM narration).
+///
+/// Used by the batch orchestrator in site.rs to collect narration contexts
+/// before dispatching all LLM calls concurrently.
+pub fn generate_digest_structural(
+    diff: Option<&SnapshotDiff>,
+    current_snapshot: &SnapshotInfo,
+    cache: Option<&CacheManager>,
+) -> Result<Digest> {
+    generate_digest(diff, current_snapshot, cache, true, None, None)
 }
 
 /// Render a digest as markdown
@@ -564,7 +583,7 @@ fn build_alerts_section(diff: &SnapshotDiff) -> DigestSection {
             super::diff::AlertSeverity::Warning => "🟡",
         };
         let path_info = alert.path.as_deref().map(|p| format!(" (`{}`)", p)).unwrap_or_default();
-        content.push_str(&format!("{} **{}**: {}{}\n", icon, alert.category, alert.message, path_info));
+        content.push_str(&format!("- {} **{}**: {}{}\n", icon, alert.category, alert.message, path_info));
     }
 
     DigestSection {

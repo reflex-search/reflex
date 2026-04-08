@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::semantic::config;
 use crate::semantic::providers::{self, LlmProvider};
@@ -169,6 +170,193 @@ pub fn narrate_section(
             None
         }
     }
+}
+
+/// A narration task for batch dispatch
+pub struct NarrationTask {
+    pub system_prompt: &'static str,
+    pub structural_context: String,
+    pub snapshot_id: String,
+    pub cache_key_suffix: String,
+}
+
+/// Result of a narration task
+pub struct NarrationResult {
+    pub cache_key_suffix: String,
+    pub response: Option<String>,
+}
+
+/// Narrate multiple sections concurrently using a single tokio runtime.
+///
+/// Pre-filters cache hits and too-brief content. Remaining tasks are dispatched
+/// concurrently with a semaphore bound. Results are returned in order.
+pub fn narrate_batch(
+    provider: Arc<dyn LlmProvider>,
+    tasks: Vec<NarrationTask>,
+    cache: &LlmCache,
+    concurrency: usize,
+) -> Vec<NarrationResult> {
+    let total = tasks.len();
+    if total == 0 {
+        return Vec::new();
+    }
+
+    // Pre-filter: resolve cache hits and too-brief content synchronously
+    let mut results: Vec<NarrationResult> = Vec::with_capacity(total);
+    let mut pending: Vec<(usize, NarrationTask, String)> = Vec::new(); // (result_index, task, cache_key)
+
+    for task in tasks {
+        let word_count = task.structural_context.split_whitespace().count();
+        if word_count < MIN_CONTENT_WORDS {
+            eprintln!("  Skipping: {} (too brief, {} words)", task.cache_key_suffix, word_count);
+            results.push(NarrationResult {
+                cache_key_suffix: task.cache_key_suffix,
+                response: None,
+            });
+            continue;
+        }
+
+        let cache_key = LlmCache::compute_key(
+            &task.snapshot_id,
+            &task.cache_key_suffix,
+            &task.structural_context,
+        );
+        match cache.get(&cache_key) {
+            Ok(Some(cached)) => {
+                eprintln!("  Narrating: {} (cached)", task.cache_key_suffix);
+                results.push(NarrationResult {
+                    cache_key_suffix: task.cache_key_suffix,
+                    response: Some(cached.response),
+                });
+            }
+            _ => {
+                let idx = results.len();
+                results.push(NarrationResult {
+                    cache_key_suffix: task.cache_key_suffix.clone(),
+                    response: None,
+                });
+                pending.push((idx, task, cache_key));
+            }
+        }
+    }
+
+    if pending.is_empty() {
+        return results;
+    }
+
+    let pending_count = pending.len();
+    let effective_concurrency = if concurrency == 0 { pending_count } else { concurrency };
+    eprintln!(
+        "  Dispatching {} LLM calls ({} concurrent)...",
+        pending_count, effective_concurrency
+    );
+
+    // Clone cache_dir for use inside async tasks
+    let cache_dir = cache.cache_dir().to_path_buf();
+
+    // Single tokio runtime for all concurrent LLM calls
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::warn!("Failed to create tokio runtime for batch narration: {}", e);
+            return results;
+        }
+    };
+
+    let async_results = rt.block_on(async {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_concurrency));
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for (idx, task, cache_key) in pending {
+            let provider = Arc::clone(&provider);
+            let sem = Arc::clone(&semaphore);
+            let cache_dir = cache_dir.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore closed");
+                let start = std::time::Instant::now();
+                eprintln!("  Narrating: {}...", task.cache_key_suffix);
+
+                let prompt = format!("{}{}", task.system_prompt, task.structural_context);
+                let result = call_llm_async(&*provider, &prompt).await;
+
+                let response = match result {
+                    Ok(raw) => {
+                        let response = postprocess_narration(&raw);
+
+                        // Write to cache (file-based, unique key per task — no conflicts)
+                        let task_cache = LlmCache::from_dir(cache_dir);
+                        let context_hash = blake3::hash(task.structural_context.as_bytes())
+                            .to_hex()
+                            .to_string();
+                        if let Err(e) = task_cache.put(&cache_key, &context_hash, &response) {
+                            log::warn!("Failed to write LLM cache for '{}': {}", task.cache_key_suffix, e);
+                        }
+
+                        eprintln!(
+                            "  Narrating: {} (done, {:.1}s)",
+                            task.cache_key_suffix,
+                            start.elapsed().as_secs_f64()
+                        );
+                        Some(response)
+                    }
+                    Err(e) => {
+                        log::warn!("LLM narration failed for '{}': {}", task.cache_key_suffix, e);
+                        eprintln!(
+                            "  Narrating: {} (failed, {:.1}s)",
+                            task.cache_key_suffix,
+                            start.elapsed().as_secs_f64()
+                        );
+                        None
+                    }
+                };
+
+                (idx, task.cache_key_suffix, response)
+            });
+        }
+
+        let mut async_results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(r) => async_results.push(r),
+                Err(e) => log::warn!("Narration task panicked: {}", e),
+            }
+        }
+        async_results
+    });
+
+    // Distribute results back
+    for (idx, cache_key_suffix, response) in async_results {
+        results[idx] = NarrationResult {
+            cache_key_suffix,
+            response,
+        };
+    }
+
+    results
+}
+
+/// Async LLM call with retry logic (native async, no per-call Runtime)
+async fn call_llm_async(provider: &dyn LlmProvider, prompt: &str) -> Result<String> {
+    let max_retries = 2;
+    let mut last_error = None;
+
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            log::debug!("Retrying LLM narration (attempt {}/{})", attempt + 1, max_retries + 1);
+            tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
+        }
+
+        match provider.complete(prompt, false).await {
+            Ok(response) => return Ok(response),
+            Err(e) => {
+                log::debug!("LLM call attempt {} failed: {}", attempt + 1, e);
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed")))
 }
 
 /// Get the system prompt for digest narration

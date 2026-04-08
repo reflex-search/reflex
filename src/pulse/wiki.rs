@@ -5,6 +5,7 @@
 //! and optional LLM-generated summaries.
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,12 +58,29 @@ pub struct WikiSections {
     pub recent_changes: Option<String>,
 }
 
+/// Configuration for module discovery depth and filtering
+#[derive(Debug, Clone)]
+pub struct ModuleDiscoveryConfig {
+    /// Max tier level (1 = top-level only, 2 = include sub-modules)
+    pub max_depth: u8,
+    /// Minimum file count for a module to be included
+    pub min_files: usize,
+}
+
+impl Default for ModuleDiscoveryConfig {
+    fn default() -> Self {
+        Self { max_depth: 2, min_files: 1 }
+    }
+}
+
 /// Detect modules in the codebase using CodebaseContext
 ///
 /// Returns both top-level directories (Tier 1) and their immediate
 /// sub-directories with 3+ files (Tier 2). This produces granular modules
 /// like `src/parsers`, `src/semantic`, `src/pulse` instead of just `src`.
-pub fn detect_modules(cache: &CacheManager) -> Result<Vec<ModuleDefinition>> {
+///
+/// Use `config` to control discovery depth and minimum file filtering.
+pub fn detect_modules(cache: &CacheManager, config: &ModuleDiscoveryConfig) -> Result<Vec<ModuleDefinition>> {
     let context = CodebaseContext::extract(cache)
         .context("Failed to extract codebase context")?;
 
@@ -75,33 +93,41 @@ pub fn detect_modules(cache: &CacheManager) -> Result<Vec<ModuleDefinition>> {
     for dir in &context.top_level_dirs {
         let dir_path = dir.trim_end_matches('/');
         if let Some(module) = build_module_def(&conn, dir_path, 1)? {
-            modules.push(module);
-        }
-    }
-
-    // Tier 2: discover sub-modules under each Tier 1 module
-    let tier1_paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
-    for parent in &tier1_paths {
-        let sub_modules = discover_sub_modules(&conn, parent)?;
-        for sub_path in sub_modules {
-            // Skip exact duplicates
-            if modules.iter().any(|m| m.path == sub_path) {
-                continue;
-            }
-            if let Some(module) = build_module_def(&conn, &sub_path, 2)? {
+            if module.file_count >= config.min_files {
                 modules.push(module);
             }
         }
     }
 
-    // Also include common_paths that aren't covered by an exact match
-    for path in &context.common_paths {
-        let path_str = path.trim_end_matches('/');
-        if modules.iter().any(|m| m.path == path_str) {
-            continue;
+    // Tier 2: discover sub-modules under each Tier 1 module
+    if config.max_depth >= 2 {
+        let tier1_paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
+        for parent in &tier1_paths {
+            let sub_modules = discover_sub_modules(&conn, parent)?;
+            for sub_path in sub_modules {
+                // Skip exact duplicates
+                if modules.iter().any(|m| m.path == sub_path) {
+                    continue;
+                }
+                if let Some(module) = build_module_def(&conn, &sub_path, 2)? {
+                    if module.file_count >= config.min_files {
+                        modules.push(module);
+                    }
+                }
+            }
         }
-        if let Some(module) = build_module_def(&conn, path_str, 2)? {
-            modules.push(module);
+
+        // Also include common_paths that aren't covered by an exact match
+        for path in &context.common_paths {
+            let path_str = path.trim_end_matches('/');
+            if modules.iter().any(|m| m.path == path_str) {
+                continue;
+            }
+            if let Some(module) = build_module_def(&conn, path_str, 2)? {
+                if module.file_count >= config.min_files {
+                    modules.push(module);
+                }
+            }
         }
     }
 
@@ -225,8 +251,9 @@ pub fn generate_all_pages(
     snapshot_id: &str,
     provider: Option<&dyn LlmProvider>,
     llm_cache: Option<&LlmCache>,
+    discovery_config: &ModuleDiscoveryConfig,
 ) -> Result<Vec<WikiPage>> {
-    let modules = detect_modules(cache)?;
+    let modules = detect_modules(cache, discovery_config)?;
     let mut pages = Vec::new();
 
     if provider.is_some() {
@@ -250,6 +277,95 @@ pub fn generate_all_pages(
             }
         }
     }
+
+    Ok(pages)
+}
+
+/// A wiki page with pre-built narration context for batch LLM dispatch
+pub struct WikiPageWithContext {
+    pub page: WikiPage,
+    /// Combined structural context string for LLM narration (None if too brief)
+    pub narration_context: Option<String>,
+}
+
+/// Generate all wiki pages structurally (no LLM), using rayon for parallelism.
+///
+/// Each module's structural sections are built concurrently. Returns pages
+/// with `summary: None` and pre-built narration contexts for later batch dispatch.
+pub fn generate_all_pages_structural(
+    cache: &CacheManager,
+    diff: Option<&super::diff::SnapshotDiff>,
+    discovery_config: &ModuleDiscoveryConfig,
+) -> Result<Vec<WikiPageWithContext>> {
+    let modules = detect_modules(cache, discovery_config)?;
+
+    // Use rayon par_iter for concurrent structural builds.
+    // Each task opens its own DB connection and QueryEngine (safe for parallel use).
+    let results: Vec<_> = modules.par_iter().map(|module| {
+        let db_path = cache.path().join("meta.db");
+        let conn = match Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => return Err(anyhow::anyhow!("Failed to open meta.db for {}: {}", module.path, e)),
+        };
+        let deps_index = DependencyIndex::new(cache.clone());
+        let query_engine = QueryEngine::new(cache.clone());
+
+        let prefix = format!("{}/", module.path);
+        let child_modules: Vec<&ModuleDefinition> = modules.iter()
+            .filter(|m| m.path.starts_with(&prefix) && m.path != module.path)
+            .collect();
+
+        let structure = build_structure_section(&conn, &module.path, &child_modules)?;
+        let dependencies = build_dependencies_section(&conn, &module.path, &modules)?;
+        let dependents = build_dependents_section(&conn, &deps_index, &module.path, &modules)?;
+        let dependency_diagram = build_dependency_diagram(&conn, &module.path, &modules);
+        let circular_deps = build_circular_deps_section(&deps_index, &module.path);
+        let key_symbols = build_key_symbols_section(&conn, &module.path, &query_engine);
+        let metrics = build_metrics_section(module, &conn)?;
+        let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
+
+        // Build narration context string
+        let mut context = String::new();
+        context.push_str(&format!("Module: {}\n\n", module.path));
+        context.push_str(&format!("## Structure\n{}\n\n", structure));
+        context.push_str(&format!("## Dependencies\n{}\n\n", dependencies));
+        context.push_str(&format!("## Dependents\n{}\n\n", dependents));
+        context.push_str(&format!("## Key Symbols\n{}\n\n", key_symbols));
+        context.push_str(&format!("## Metrics\n{}\n", metrics));
+
+        let narration_context = Some(context);
+
+        Ok(WikiPageWithContext {
+            page: WikiPage {
+                module_path: module.path.clone(),
+                title: format!("{}/", module.path),
+                sections: WikiSections {
+                    summary: None,
+                    structure,
+                    dependencies,
+                    dependents,
+                    dependency_diagram,
+                    circular_deps,
+                    key_symbols,
+                    metrics,
+                    recent_changes,
+                },
+            },
+            narration_context,
+        })
+    }).collect();
+
+    // Collect results, logging failures
+    let mut pages = Vec::new();
+    for result in results {
+        match result {
+            Ok(page) => pages.push(page),
+            Err(e) => log::warn!("Failed to generate wiki page: {}", e),
+        }
+    }
+
+    // Sort by module path for deterministic output
+    pages.sort_by(|a, b| a.page.module_path.cmp(&b.page.module_path));
 
     Ok(pages)
 }
@@ -472,8 +588,8 @@ fn build_module_def(conn: &Connection, path: &str, tier: u8) -> Result<Option<Mo
     let pattern = format!("{}/%", path);
 
     let file_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM files WHERE path LIKE ?1 OR path LIKE ?2",
-        rusqlite::params![format!("{}/%", path), format!("{}", path)],
+        "SELECT COUNT(*) FROM files WHERE path LIKE ?1 OR path = ?2",
+        rusqlite::params![&pattern, path],
         |row| row.get(0),
     )?;
 
@@ -482,15 +598,15 @@ fn build_module_def(conn: &Connection, path: &str, tier: u8) -> Result<Option<Mo
     }
 
     let total_lines: usize = conn.query_row(
-        "SELECT COALESCE(SUM(line_count), 0) FROM files WHERE path LIKE ?1",
-        [&pattern],
+        "SELECT COALESCE(SUM(line_count), 0) FROM files WHERE path LIKE ?1 OR path = ?2",
+        rusqlite::params![&pattern, path],
         |row| row.get(0),
     )?;
 
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT language FROM files WHERE path LIKE ?1 AND language IS NOT NULL"
+        "SELECT DISTINCT language FROM files WHERE (path LIKE ?1 OR path = ?2) AND language IS NOT NULL"
     )?;
-    let languages: Vec<String> = stmt.query_map([&pattern], |row| row.get(0))?
+    let languages: Vec<String> = stmt.query_map(rusqlite::params![&pattern, path], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Some(ModuleDefinition {
@@ -752,6 +868,260 @@ const PRIORITY_SYMBOL_KINDS: &[&str] = &[
     "Enum", "Macro", "Type", "Constant",
 ];
 
+/// Extract a doc comment preceding (or following, for Python) a symbol definition.
+///
+/// Walks backwards from `start_line` to collect contiguous comment lines, skipping
+/// attributes/decorators. For Python, walks forward to find triple-quoted docstrings.
+/// Returns the cleaned comment text with syntax prefixes stripped, or None.
+fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> Option<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    if start_line == 0 || start_line > lines.len() {
+        return None;
+    }
+
+    // Python: walk forward from the definition line to find a docstring
+    if matches!(language, Language::Python) {
+        // Look at lines after the def/class line for a triple-quoted docstring
+        let search_start = start_line; // start_line is 1-indexed, so index = start_line - 1 is the def line
+        for i in search_start..lines.len().min(search_start + 3) {
+            let trimmed = lines[i].trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Check for triple-quoted docstring opening
+            if trimmed.starts_with("\"\"\"") || trimmed.starts_with("'''") {
+                let quote = &trimmed[..3];
+                // Single-line docstring: """text"""
+                if trimmed.len() > 6 && trimmed.ends_with(quote) {
+                    let inner = trimmed[3..trimmed.len() - 3].trim();
+                    if !inner.is_empty() {
+                        return Some(inner.to_string());
+                    }
+                }
+                // Multi-line docstring
+                let mut doc_lines = Vec::new();
+                let first_content = trimmed[3..].trim();
+                if !first_content.is_empty() {
+                    doc_lines.push(first_content.to_string());
+                }
+                for j in (i + 1)..lines.len() {
+                    let line = lines[j].trim();
+                    if line.contains(quote) {
+                        let before_close = line.trim_end_matches(quote).trim();
+                        if !before_close.is_empty() {
+                            doc_lines.push(before_close.to_string());
+                        }
+                        break;
+                    }
+                    doc_lines.push(line.to_string());
+                }
+                let result = doc_lines.join("\n").trim().to_string();
+                if !result.is_empty() {
+                    return Some(result);
+                }
+            }
+            break; // Non-empty, non-docstring line — no docstring
+        }
+        return None;
+    }
+
+    // All other languages: walk backwards from the line before the symbol
+    let mut idx = start_line.saturating_sub(2); // Convert to 0-indexed, then go one line up
+    let mut comment_lines: Vec<String> = Vec::new();
+
+    // Skip attributes/decorators walking backwards
+    loop {
+        if idx >= lines.len() {
+            break;
+        }
+        let trimmed = lines[idx].trim();
+        // Rust attributes: #[...] or #![...]
+        if trimmed.starts_with("#[") || trimmed.starts_with("#![") {
+            if idx == 0 { return None; }
+            idx -= 1;
+            continue;
+        }
+        // Java/Kotlin/Python-style decorators: @Something
+        if trimmed.starts_with('@') && trimmed.len() > 1 && trimmed[1..].starts_with(|c: char| c.is_alphabetic()) {
+            if idx == 0 { return None; }
+            idx -= 1;
+            continue;
+        }
+        // PHP attributes: #[Attribute]
+        if trimmed.starts_with("#[") {
+            if idx == 0 { return None; }
+            idx -= 1;
+            continue;
+        }
+        break;
+    }
+
+    // Determine comment style based on language
+    match language {
+        Language::Rust => {
+            // Rust: /// or //! line comments, or /** */ block comments
+            // Check for block comment ending on this line first
+            if idx < lines.len() && lines[idx].trim().ends_with("*/") {
+                return extract_block_comment(&lines, idx, "/**");
+            }
+            // Line comments: /// or //!
+            while idx < lines.len() {
+                let trimmed = lines[idx].trim();
+                if trimmed.starts_with("///") {
+                    let content = trimmed.trim_start_matches('/').trim();
+                    comment_lines.push(content.to_string());
+                } else if trimmed.starts_with("//!") {
+                    let content = trimmed[3..].trim().to_string();
+                    comment_lines.push(content);
+                } else {
+                    break;
+                }
+                if idx == 0 { break; }
+                idx -= 1;
+            }
+        }
+        Language::Go => {
+            // Go: // comment lines before func
+            while idx < lines.len() {
+                let trimmed = lines[idx].trim();
+                if trimmed.starts_with("//") {
+                    let content = trimmed[2..].trim().to_string();
+                    comment_lines.push(content);
+                } else {
+                    break;
+                }
+                if idx == 0 { break; }
+                idx -= 1;
+            }
+        }
+        Language::Ruby => {
+            // Ruby: # comment lines
+            while idx < lines.len() {
+                let trimmed = lines[idx].trim();
+                if trimmed.starts_with('#') && !trimmed.starts_with("#!") {
+                    let content = trimmed[1..].trim().to_string();
+                    comment_lines.push(content);
+                } else {
+                    break;
+                }
+                if idx == 0 { break; }
+                idx -= 1;
+            }
+        }
+        _ => {
+            // JS/TS/Java/Kotlin/PHP/C#/C/C++/Zig: /** */ block or /// line comments
+            if idx < lines.len() {
+                let trimmed = lines[idx].trim();
+                if trimmed.ends_with("*/") {
+                    return extract_block_comment(&lines, idx, "/**");
+                }
+                // /// line comments (TypeScript, C#, etc.)
+                if trimmed.starts_with("///") || trimmed.starts_with("//") {
+                    while idx < lines.len() {
+                        let t = lines[idx].trim();
+                        if t.starts_with("///") {
+                            comment_lines.push(t.trim_start_matches('/').trim().to_string());
+                        } else if t.starts_with("//") && !t.starts_with("///") {
+                            comment_lines.push(t[2..].trim().to_string());
+                        } else {
+                            break;
+                        }
+                        if idx == 0 { break; }
+                        idx -= 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if comment_lines.is_empty() {
+        return None;
+    }
+
+    // Reverse because we collected bottom-up
+    comment_lines.reverse();
+    let result = comment_lines.join("\n").trim().to_string();
+    if result.is_empty() { None } else { Some(result) }
+}
+
+/// Extract a block comment (/** ... */) by walking backwards from the closing line.
+fn extract_block_comment(lines: &[&str], end_idx: usize, open_marker: &str) -> Option<String> {
+    let mut doc_lines: Vec<String> = Vec::new();
+    let mut idx = end_idx;
+
+    loop {
+        let trimmed = lines[idx].trim();
+
+        // Check if this line contains the opening marker
+        if trimmed.starts_with(open_marker) || trimmed.starts_with("/*") {
+            // Single-line block comment: /** text */
+            let content = trimmed
+                .trim_start_matches(open_marker)
+                .trim_start_matches("/*")
+                .trim_end_matches("*/")
+                .trim_end_matches('*')
+                .trim();
+            if !content.is_empty() {
+                doc_lines.push(content.to_string());
+            }
+            break;
+        }
+
+        // Middle or end line of block comment
+        let content = trimmed
+            .trim_end_matches("*/")
+            .trim_start_matches('*')
+            .trim();
+        if !content.is_empty() {
+            doc_lines.push(content.to_string());
+        }
+
+        if idx == 0 { break; }
+        idx -= 1;
+    }
+
+    doc_lines.reverse();
+    let result = doc_lines.join("\n").trim().to_string();
+    if result.is_empty() { None } else { Some(result) }
+}
+
+/// HTML-escape text to prevent doc comments from being interpreted as markup.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+}
+
+/// Render a single "By Kind" entry as a pure HTML `<li>` element.
+/// Single-line docs are appended inline; multi-line docs use a `<details>` element.
+fn render_by_kind_entry(content: &mut String, name: &str, short_path: &str, doc: Option<&str>) {
+    match doc {
+        Some(d) if d.lines().count() > 1 => {
+            let first_line = html_escape(d.lines().next().unwrap_or(""));
+            let body: String = d.lines()
+                .map(|line| format!("<p>{}</p>", html_escape(line)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            content.push_str(&format!(
+                "<li><code>{}</code> ({})\n<details><summary>{}</summary>\n<div class=\"doc-comment\">\n{}\n</div>\n</details>\n</li>\n",
+                html_escape(name), html_escape(short_path), first_line, body
+            ));
+        }
+        Some(d) => {
+            content.push_str(&format!(
+                "<li><code>{}</code> ({}) — <span class=\"doc-comment-inline\">{}</span></li>\n",
+                html_escape(name), html_escape(short_path), html_escape(d)
+            ));
+        }
+        None => {
+            content.push_str(&format!(
+                "<li><code>{}</code> ({})</li>\n",
+                html_escape(name), html_escape(short_path)
+            ));
+        }
+    }
+}
+
 fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine: &QueryEngine) -> String {
     let pattern = format!("{}/%", module_path);
     let mut stmt = match conn.prepare(
@@ -776,7 +1146,8 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
     }
 
     // Parse each file and collect symbols
-    let mut by_kind: HashMap<String, Vec<(String, String, usize)>> = HashMap::new(); // kind -> [(name, path, size)]
+    // kind -> [(name, path, size, doc_comment)]
+    let mut by_kind: HashMap<String, Vec<(String, String, usize, Option<String>)>> = HashMap::new();
     let mut total_symbols = 0usize;
 
     for (path, lang_str) in &files {
@@ -806,10 +1177,11 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
 
                 let kind_name = format!("{}", sym.kind);
                 let size = sym.span.end_line.saturating_sub(sym.span.start_line) + 1;
+                let doc_comment = extract_doc_comment(&source, sym.span.start_line, &language);
                 by_kind
                     .entry(kind_name)
                     .or_default()
-                    .push((name.clone(), path.clone(), size));
+                    .push((name.clone(), path.clone(), size, doc_comment));
                 total_symbols += 1;
             }
         }
@@ -821,13 +1193,23 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
 
     let mut content = String::new();
 
+    // Build doc_comments lookup: symbol name -> doc comment
+    let mut doc_comments: HashMap<String, String> = HashMap::new();
+    for entries in by_kind.values() {
+        for (name, _path, _size, doc) in entries {
+            if let Some(d) = doc {
+                doc_comments.entry(name.clone()).or_insert_with(|| d.clone());
+            }
+        }
+    }
+
     // --- Top symbols by codebase importance (above the fold) ---
     // Deduplicate symbol names, preferring priority kinds
     let mut unique_symbols: HashMap<String, (String, String)> = HashMap::new(); // name -> (kind, path)
     // First pass: insert priority-kind symbols
     for (kind_str, entries) in &by_kind {
         if PRIORITY_SYMBOL_KINDS.contains(&kind_str.as_str()) {
-            for (name, path, _size) in entries {
+            for (name, path, _size, _doc) in entries {
                 unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
             }
         }
@@ -835,16 +1217,20 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
     // Second pass: fill in remaining kinds (won't overwrite priority entries)
     for (kind_str, entries) in &by_kind {
         if !PRIORITY_SYMBOL_KINDS.contains(&kind_str.as_str()) {
-            for (name, path, _size) in entries {
+            for (name, path, _size, _doc) in entries {
                 unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
             }
         }
     }
 
-    // Count references for each unique symbol via the trigram index
-    // Filter out blocklisted keywords, short names, and deprioritize Variable/Property kinds
-    let mut ranked: Vec<(String, String, String, usize)> = Vec::new(); // (name, kind, path, ref_count)
+    // Count references for priority-kind symbols only via the trigram index.
+    // Filter out blocklisted keywords and short names, cap at 15 candidates.
+    let mut candidates: Vec<(String, String, String, usize)> = Vec::new(); // (name, kind, path, span_size)
     for (name, (kind, path)) in &unique_symbols {
+        // Only query priority-kind symbols (functions, structs, traits, etc.)
+        if !PRIORITY_SYMBOL_KINDS.contains(&kind.as_str()) {
+            continue;
+        }
         // Skip short names (< 4 chars) — they're too generic
         if name.len() < 4 {
             continue;
@@ -861,6 +1247,23 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             }
         }
 
+        // Look up span size for this symbol (larger definitions are more important)
+        let span_size = by_kind.get(kind)
+            .and_then(|entries| entries.iter().find(|(n, _, _, _)| n == name))
+            .map(|(_, _, size, _)| *size)
+            .unwrap_or(1);
+
+        candidates.push((name.clone(), kind.clone(), path.clone(), span_size));
+    }
+
+    // Sort by span size desc, cap at 15 before querying
+    candidates.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
+    candidates.truncate(15);
+
+    // Query reference counts and file paths for the capped candidates
+    let mut ranked: Vec<(String, String, String, usize)> = Vec::new(); // (name, kind, path, ref_count)
+    let mut ref_files: HashMap<String, Vec<String>> = HashMap::new(); // symbol name -> referencing file short names
+    for (name, kind, path, _span_size) in &candidates {
         let filter = QueryFilter {
             paths_only: true,
             force: true,
@@ -868,87 +1271,77 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             limit: None,
             ..Default::default()
         };
-        let ref_count = match query_engine.search_with_metadata(name, filter) {
-            Ok(response) => response.results.len(),
-            Err(_) => 0,
-        };
-        ranked.push((name.clone(), kind.clone(), path.clone(), ref_count));
-    }
-
-    // Sort: priority kinds first, then by reference count desc
-    ranked.sort_by(|a, b| {
-        let a_priority = PRIORITY_SYMBOL_KINDS.contains(&a.1.as_str());
-        let b_priority = PRIORITY_SYMBOL_KINDS.contains(&b.1.as_str());
-        b_priority.cmp(&a_priority)
-            .then_with(|| b.3.cmp(&a.3))
-            .then_with(|| a.0.cmp(&b.0))
-    });
-
-    if !ranked.is_empty() {
-        content.push_str("**Key definitions:**\n");
-        for (name, kind, path, ref_count) in ranked.iter().take(5) {
-            let short = path.rsplit('/').next().unwrap_or(path);
-            content.push_str(&format!(
-                "- `{}` ({}) in {} — referenced in {} {}\n",
-                name, kind, short, ref_count,
-                if *ref_count == 1 { "file" } else { "files" }
-            ));
-        }
-        content.push('\n');
-    }
-
-    // --- Top symbols within this module (collapsible) ---
-    // Scope trigram search to files within the module only
-    let mut module_ranked: Vec<(String, String, String, usize)> = Vec::new();
-    for (name, (kind, path)) in &unique_symbols {
-        if name.len() < 4 {
-            continue;
-        }
-        if SYMBOL_BLOCKLIST.contains(&name.to_lowercase().as_str()) {
-            continue;
-        }
-        if name.starts_with('$') {
-            let stripped = &name[1..];
-            if stripped.len() < 4 || SYMBOL_BLOCKLIST.contains(&stripped.to_lowercase().as_str()) {
-                continue;
+        let def_short = path.rsplit('/').next().unwrap_or(path);
+        match query_engine.search_with_metadata(name, filter) {
+            Ok(response) => {
+                let ref_count = response.results.len();
+                // Collect unique short filenames, excluding the definition file
+                let mut files: Vec<String> = response.results.iter()
+                    .map(|r| r.path.rsplit('/').next().unwrap_or(&r.path).to_string())
+                    .filter(|f| f != def_short)
+                    .collect();
+                files.sort();
+                files.dedup();
+                ref_files.insert(name.clone(), files);
+                ranked.push((name.clone(), kind.clone(), path.clone(), ref_count));
+            }
+            Err(_) => {
+                ranked.push((name.clone(), kind.clone(), path.clone(), 0));
             }
         }
-
-        let filter = QueryFilter {
-            paths_only: true,
-            force: true,
-            suppress_output: true,
-            limit: None,
-            glob_patterns: vec![format!("{}/**", module_path)],
-            ..Default::default()
-        };
-        let ref_count = match query_engine.search_with_metadata(name, filter) {
-            Ok(response) => response.results.len(),
-            Err(_) => 0,
-        };
-        if ref_count > 0 {
-            module_ranked.push((name.clone(), kind.clone(), path.clone(), ref_count));
-        }
     }
-    module_ranked.sort_by(|a, b| {
-        let a_priority = PRIORITY_SYMBOL_KINDS.contains(&a.1.as_str());
-        let b_priority = PRIORITY_SYMBOL_KINDS.contains(&b.1.as_str());
-        b_priority.cmp(&a_priority)
-            .then_with(|| b.3.cmp(&a.3))
-            .then_with(|| a.0.cmp(&b.0))
-    });
 
-    if !module_ranked.is_empty() {
-        content.push_str("<details><summary><strong>Top symbols within this module</strong></summary>\n\n");
-        for (name, kind, path, ref_count) in module_ranked.iter().take(5) {
+    // Sort by reference count desc
+    ranked.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
+
+    if !ranked.is_empty() {
+        content.push_str("<p><strong>Key definitions:</strong></p>\n<ul>\n");
+        for (name, kind, path, ref_count) in ranked.iter().take(5) {
             let short = path.rsplit('/').next().unwrap_or(path);
+            content.push_str("<li>\n");
             content.push_str(&format!(
-                "- `{}` ({}) in {} — used in {} module {}\n",
-                name, kind, short, ref_count,
+                "<p><code>{}</code> ({}) in {} — referenced in {} {}</p>\n",
+                html_escape(name), html_escape(kind), html_escape(short), ref_count,
                 if *ref_count == 1 { "file" } else { "files" }
             ));
+
+            // Add doc comment if available
+            if let Some(doc) = doc_comments.get(name.as_str()) {
+                let first_line = html_escape(doc.lines().next().unwrap_or(""));
+                let is_multiline = doc.lines().count() > 1;
+                if is_multiline {
+                    let body: String = doc.lines()
+                        .map(|line| format!("<p>{}</p>", html_escape(line)))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    content.push_str(&format!(
+                        "<details><summary>{}</summary>\n<div class=\"doc-comment\">\n{}\n</div>\n</details>\n",
+                        first_line, body
+                    ));
+                } else {
+                    content.push_str(&format!(
+                        "<details><summary>{}</summary></details>\n",
+                        first_line
+                    ));
+                }
+            }
+
+            // Add reference file list (top 5 + overflow)
+            if let Some(files) = ref_files.get(name.as_str()) {
+                if !files.is_empty() {
+                    let show: Vec<&str> = files.iter().take(5).map(|s| s.as_str()).collect();
+                    let mut ref_line = format!("<ul><li class=\"ref-list\">Referenced by: {}", show.join(", "));
+                    if files.len() > 5 {
+                        ref_line.push_str(&format!(" +{} more", files.len() - 5));
+                    }
+                    ref_line.push_str("</li></ul>\n");
+                    content.push_str(&ref_line);
+                }
+            }
+
+            content.push_str("</li>\n");
         }
-        content.push_str("\n</details>\n\n");
+        content.push_str("</ul>\n\n");
     }
 
     // --- By Kind view (collapsible, showing ALL symbols) ---
@@ -963,12 +1356,12 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
         if let Some(entries) = by_kind.get_mut(&kind_str) {
             entries.sort_by(|a, b| b.2.cmp(&a.2));
             let count = entries.len();
-            content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n\n", kind, count));
-            for (name, path, _) in entries.iter() {
+            content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n<ul>\n", kind, count));
+            for (name, path, _size, doc) in entries.iter() {
                 let short = path.rsplit('/').next().unwrap_or(path);
-                content.push_str(&format!("- `{}` ({})\n", name, short));
+                render_by_kind_entry(&mut content, name, short, doc.as_deref());
             }
-            content.push_str("\n</details>\n\n");
+            content.push_str("</ul>\n</details>\n\n");
         }
     }
 
@@ -979,12 +1372,12 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
         }
         entries.sort_by(|a, b| b.2.cmp(&a.2));
         let count = entries.len();
-        content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n\n", kind, count));
-        for (name, path, _) in entries.iter() {
+        content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n<ul>\n", kind, count));
+        for (name, path, _size, doc) in entries.iter() {
             let short = path.rsplit('/').next().unwrap_or(path);
-            content.push_str(&format!("- `{}` ({})\n", name, short));
+            render_by_kind_entry(&mut content, name, short, doc.as_deref());
         }
-        content.push_str("\n</details>\n\n");
+        content.push_str("</ul>\n</details>\n\n");
     }
 
     if content.is_empty() {

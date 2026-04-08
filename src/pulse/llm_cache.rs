@@ -28,6 +28,16 @@ impl LlmCache {
         }
     }
 
+    /// Create from an already-resolved cache directory path
+    pub fn from_dir(cache_dir: PathBuf) -> Self {
+        Self { cache_dir }
+    }
+
+    /// Get the cache directory path
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
     /// Compute a cache key from structural context
     ///
     /// Key: blake3(snapshot_id + module_path + structural_context_hash)

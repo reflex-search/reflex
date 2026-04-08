@@ -57,7 +57,7 @@ fn generate_repo_map(cache: &CacheManager, format: MapFormat) -> Result<String> 
     let conn = Connection::open(&db_path)?;
 
     // Use detect_modules() for consistent sub-module resolution
-    let modules = wiki::detect_modules(cache)?;
+    let modules = wiki::detect_modules(cache, &wiki::ModuleDiscoveryConfig::default())?;
 
     // Build module info for node labels
     let module_info: Vec<(String, usize)> = modules.iter()
@@ -175,7 +175,15 @@ fn render_mermaid_repo(
 ) -> Result<String> {
     let mut out = String::from("graph LR\n");
 
+    // Only emit modules that participate in at least one edge
+    let connected: HashSet<&str> = edges.iter()
+        .flat_map(|(s, t, _)| [s.as_str(), t.as_str()])
+        .collect();
+
     for (module, count) in modules {
+        if !connected.contains(module.as_str()) {
+            continue;
+        }
         let id = sanitize_id(module);
         out.push_str(&format!("  {}[\"{}/ ({} files)\"]\n", id, module, count));
     }
@@ -203,13 +211,19 @@ fn render_mermaid_repo(
     out.push_str("  classDef hotspot fill:#4a1a1a,stroke:#f7768e,color:#f7768e\n");
     if !hotspot_modules.is_empty() {
         for module in hotspot_modules {
+            if !connected.contains(module.as_str()) {
+                continue;
+            }
             let id = sanitize_id(module);
             out.push_str(&format!("  class {} hotspot\n", id));
         }
     }
 
-    // Clickable nodes → wiki pages
+    // Clickable nodes → wiki pages (only connected modules)
     for (module, _) in modules {
+        if !connected.contains(module.as_str()) {
+            continue;
+        }
         let id = sanitize_id(module);
         let slug = module.replace('/', "-");
         out.push_str(&format!("  click {} \"/wiki/{}/\"\n", id, slug));
@@ -225,7 +239,7 @@ pub fn generate_layered_map(
 ) -> Result<String> {
     let db_path = cache.path().join("meta.db");
     let conn = Connection::open(&db_path)?;
-    let modules = wiki::detect_modules(cache)?;
+    let modules = wiki::detect_modules(cache, &wiki::ModuleDiscoveryConfig::default())?;
 
     let module_info: Vec<(String, usize, u8)> = modules.iter()
         .map(|m| (m.path.clone(), m.file_count, m.tier))
@@ -282,24 +296,41 @@ fn render_mermaid_layered(
     edges: &[(String, String, usize)],
     hotspot_modules: &HashSet<String>,
 ) -> Result<String> {
-    let mut out = String::from("graph TB\n");
+    let mut out = String::from("flowchart TB\n");
+
+    // Only emit modules that participate in at least one edge
+    let connected: HashSet<&str> = edges.iter()
+        .flat_map(|(s, t, _)| [s.as_str(), t.as_str()])
+        .collect();
 
     // Group Tier 2 modules under their Tier 1 parent
     let tier1: Vec<&(String, usize, u8)> = modules.iter().filter(|m| m.2 == 1).collect();
     let tier2: Vec<&(String, usize, u8)> = modules.iter().filter(|m| m.2 == 2).collect();
 
+    // Build proxy map: Tier 1 modules that become subgraphs get an inner proxy node.
+    // Mermaid v11 cannot target subgraph IDs with edges, classDef, or click handlers,
+    // so we create a real node inside the subgraph to receive those interactions.
+    let mut proxy_map: HashMap<String, String> = HashMap::new();
+
     for t1 in &tier1 {
+        if !connected.contains(t1.0.as_str()) {
+            continue;
+        }
         let t1_id = sanitize_id(&t1.0);
         let children: Vec<&&(String, usize, u8)> = tier2.iter()
-            .filter(|t2| t2.0.starts_with(&format!("{}/", t1.0)))
+            .filter(|t2| t2.0.starts_with(&format!("{}/", t1.0)) && connected.contains(t2.0.as_str()))
             .collect();
 
         if children.is_empty() {
-            // Standalone Tier 1 node
+            // Standalone Tier 1 node (no subgraph needed)
             out.push_str(&format!("  {}[\"{}/ ({} files)\"]\n", t1_id, t1.0, t1.1));
         } else {
-            // Subgraph containing children
-            out.push_str(&format!("  subgraph {}[\"{}/ ({} files)\"]\n", t1_id, t1.0, t1.1));
+            // Subgraph with proxy node for edges/styling/clicks
+            let proxy_id = format!("{}_self", t1_id);
+            proxy_map.insert(t1.0.clone(), proxy_id.clone());
+
+            out.push_str(&format!("  subgraph {} [\"{}/ \"]\n", t1_id, t1.0));
+            out.push_str(&format!("    {}[\"{}/ ({} files)\"]\n", proxy_id, t1.0, t1.1));
             for child in &children {
                 let child_id = sanitize_id(&child.0);
                 let short = child.0.strip_prefix(&format!("{}/", t1.0)).unwrap_or(&child.0);
@@ -311,6 +342,9 @@ fn render_mermaid_layered(
 
     // Orphan Tier 2 modules (no matching Tier 1 parent)
     for t2 in &tier2 {
+        if !connected.contains(t2.0.as_str()) {
+            continue;
+        }
         let has_parent = tier1.iter().any(|t1| t2.0.starts_with(&format!("{}/", t1.0)));
         if !has_parent {
             let id = sanitize_id(&t2.0);
@@ -321,10 +355,15 @@ fn render_mermaid_layered(
     out.push('\n');
 
     // Track thick edges for linkStyle directives
+    // Resolve edge endpoints through proxy_map so edges target proxy nodes, not subgraphs
     let mut thick_edge_indices: Vec<usize> = Vec::new();
     for (i, (src, tgt, count)) in edges.iter().enumerate() {
-        let src_id = sanitize_id(src);
-        let tgt_id = sanitize_id(tgt);
+        let src_id = proxy_map.get(src)
+            .cloned()
+            .unwrap_or_else(|| sanitize_id(src));
+        let tgt_id = proxy_map.get(tgt)
+            .cloned()
+            .unwrap_or_else(|| sanitize_id(tgt));
         out.push_str(&format!("  {} -->|{}| {}\n", src_id, count, tgt_id));
         if *count > 5 {
             thick_edge_indices.push(i);
@@ -336,17 +375,27 @@ fn render_mermaid_layered(
         out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#7aa2f7\n", idx));
     }
 
-    // Styling
+    // Styling — apply classDef to proxy nodes, not subgraph containers
     out.push_str("\n  classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
     out.push_str("  classDef hotspot fill:#4a1a1a,stroke:#f7768e,color:#f7768e\n");
     for module in hotspot_modules {
-        let id = sanitize_id(module);
+        if !connected.contains(module.as_str()) {
+            continue;
+        }
+        let id = proxy_map.get(module)
+            .cloned()
+            .unwrap_or_else(|| sanitize_id(module));
         out.push_str(&format!("  class {} hotspot\n", id));
     }
 
-    // Clickable nodes
+    // Clickable nodes — apply click to proxy nodes, not subgraph containers
     for (module, _, _) in modules {
-        let id = sanitize_id(module);
+        if !connected.contains(module.as_str()) {
+            continue;
+        }
+        let id = proxy_map.get(module)
+            .cloned()
+            .unwrap_or_else(|| sanitize_id(module));
         let slug = module.replace('/', "-");
         out.push_str(&format!("  click {} \"/wiki/{}/\"\n", id, slug));
     }
@@ -460,6 +509,71 @@ mod tests {
         let result = render_d2_repo(&modules, &edges, &hotspots).unwrap();
         assert!(result.contains("src:"));
         assert!(result.contains("#ff6b6b"));
+    }
+
+    #[test]
+    fn test_mermaid_repo_filters_orphans() {
+        let modules = vec![
+            ("src".to_string(), 50),
+            ("tests".to_string(), 10),
+            ("docs".to_string(), 5),       // orphan — no edges
+            ("scripts".to_string(), 2),    // orphan — no edges
+        ];
+        let edges = vec![("src".to_string(), "tests".to_string(), 3)];
+        let hotspots = HashSet::from(["docs".to_string()]);
+
+        let result = render_mermaid_repo(&modules, &edges, &hotspots).unwrap();
+
+        // Connected modules are present
+        assert!(result.contains("m_src["), "connected module 'src' should be in output");
+        assert!(result.contains("m_tests["), "connected module 'tests' should be in output");
+
+        // Orphan modules are excluded
+        assert!(!result.contains("m_docs"), "orphan 'docs' should not be in output");
+        assert!(!result.contains("m_scripts"), "orphan 'scripts' should not be in output");
+
+        // Hotspot styling for orphan should not appear
+        assert!(!result.contains("class m_docs hotspot"), "orphan hotspot should not be styled");
+
+        // Click handlers for orphans should not appear
+        assert!(!result.contains("click m_docs"), "orphan should not have click handler");
+        assert!(!result.contains("click m_scripts"), "orphan should not have click handler");
+    }
+
+    #[test]
+    fn test_mermaid_layered_proxy_nodes() {
+        let modules = vec![
+            ("src".to_string(), 80, 1u8),
+            ("src/parsers".to_string(), 15, 2u8),
+            ("tests".to_string(), 10, 1u8),
+        ];
+        let edges = vec![
+            ("src/parsers".to_string(), "src".to_string(), 16),
+            ("src".to_string(), "tests".to_string(), 3),
+        ];
+        let hotspots = HashSet::from(["src".to_string()]);
+
+        let result = render_mermaid_layered(&modules, &edges, &hotspots).unwrap();
+
+        // Subgraph for src should exist (it has children)
+        assert!(result.contains("subgraph m_src ["), "Tier 1 with children should be a subgraph");
+
+        // Proxy node inside the subgraph
+        assert!(result.contains("m_src_self["), "subgraph should contain proxy node");
+
+        // Edges should target proxy node, not subgraph ID
+        assert!(result.contains("m_src_self"), "edges should reference proxy node");
+        assert!(!result.contains(" -->|16| m_src\n"), "edges should NOT target bare subgraph ID");
+
+        // classDef should target proxy node
+        assert!(result.contains("class m_src_self hotspot"), "hotspot class should target proxy node");
+
+        // click should target proxy node
+        assert!(result.contains("click m_src_self"), "click handler should target proxy node");
+
+        // tests is standalone Tier 1 (no children), should be a regular node
+        assert!(result.contains("m_tests["), "standalone Tier 1 should be a regular node");
+        assert!(!result.contains("subgraph m_tests"), "standalone Tier 1 should not be a subgraph");
     }
 
     #[test]
