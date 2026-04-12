@@ -14,8 +14,12 @@ use crate::cache::CacheManager;
 use crate::semantic::providers::LlmProvider;
 use super::digest;
 use super::diff;
+use super::explorer;
+use super::git_intel;
+use super::glossary;
 use super::map::{self, MapFormat, MapZoom};
 use super::narrate;
+use super::onboard;
 use super::snapshot;
 use super::wiki;
 use super::zola;
@@ -55,6 +59,10 @@ pub enum Surface {
     Wiki,
     Digest,
     Map,
+    Onboard,
+    Timeline,
+    Glossary,
+    Explorer,
 }
 
 impl Default for SiteConfig {
@@ -63,7 +71,7 @@ impl Default for SiteConfig {
             output_dir: PathBuf::from("pulse-site"),
             base_url: "/".to_string(),
             title: "Pulse".to_string(),
-            surfaces: vec![Surface::Wiki, Surface::Digest, Surface::Map],
+            surfaces: vec![Surface::Wiki, Surface::Digest, Surface::Map, Surface::Onboard, Surface::Timeline, Surface::Glossary, Surface::Explorer],
             no_llm: true,
             clean: false,
             force_renarrate: false,
@@ -81,6 +89,10 @@ pub struct SiteReport {
     pub pages_generated: usize,
     pub digest_generated: bool,
     pub map_generated: bool,
+    pub onboard_generated: bool,
+    pub timeline_generated: bool,
+    pub glossary_generated: bool,
+    pub explorer_generated: bool,
     pub narration_mode: String,
     pub build_success: bool,
 }
@@ -116,7 +128,7 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     create_directory_structure(&config.output_dir)?;
 
     // Write Zola config
-    write_zola_config(&config.output_dir, &config.base_url, &config.title)?;
+    write_zola_config(&config.output_dir, &config.base_url, &config.title, &config.surfaces)?;
 
     // Write templates
     write_templates(&config.output_dir)?;
@@ -166,6 +178,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let mut pages_generated = 0;
     let mut digest_generated = false;
     let mut map_generated = false;
+    let mut onboard_generated = false;
+    let mut timeline_generated = false;
+    let mut glossary_generated = false;
+    let mut explorer_generated = false;
     let mut has_narration = false;
 
     let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
@@ -246,7 +262,55 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         arch_context = Some(build_architecture_context(cache, &wiki_page_index));
     }
 
-    // 1d. Project overview context
+    // 1d. Onboard: detect entry points + reading order
+    let mut onboard_data: Option<onboard::OnboardData> = None;
+    if config.surfaces.contains(&Surface::Onboard) {
+        eprintln!("Building onboard structural data...");
+        let module_count = wiki_page_index.len();
+        onboard_data = match onboard::generate_onboard_structural(cache, module_count) {
+            Ok(data) => Some(data),
+            Err(e) => { eprintln!("  Warning: onboard generation failed: {e}"); None }
+        };
+    }
+
+    // 1e. Timeline: extract git history
+    let mut timeline_data: Option<git_intel::GitIntel> = None;
+    if config.surfaces.contains(&Surface::Timeline) {
+        eprintln!("Extracting git history...");
+        let workspace_root = cache.path().parent().unwrap_or(std::path::Path::new("."));
+        timeline_data = match git_intel::extract_git_intel(workspace_root) {
+            Ok(data) => Some(data),
+            Err(e) => { eprintln!("  Warning: timeline generation failed: {e}"); None }
+        };
+    }
+
+    // 1f. Glossary: collect structural evidence for the LLM concept pass.
+    //     The actual concept list is generated in Phase 2 from a single
+    //     narration task; here we just gather module/symbol evidence.
+    let mut glossary_evidence: Option<glossary::GlossaryEvidence> = None;
+    let mut glossary_data: Option<glossary::GlossaryData> = None;
+    if config.surfaces.contains(&Surface::Glossary) {
+        eprintln!("Building glossary evidence...");
+        glossary_evidence = match glossary::collect_glossary_evidence(cache) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("  Warning: glossary evidence collection failed: {e}");
+                None
+            }
+        };
+    }
+
+    // 1g. Explorer: treemap data
+    let mut explorer_data: Option<explorer::ExplorerData> = None;
+    if config.surfaces.contains(&Surface::Explorer) {
+        eprintln!("Building explorer treemap...");
+        explorer_data = match explorer::generate_explorer(cache) {
+            Ok(data) => Some(data),
+            Err(e) => { eprintln!("  Warning: explorer generation failed: {e}"); None }
+        };
+    }
+
+    // 1h. Project overview context
     let overview_context = build_project_overview_context(cache, &wiki_page_index);
 
     eprintln!("  Structural phase: {:.1}s", structural_start.elapsed().as_secs_f64());
@@ -295,6 +359,45 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
                 snapshot_id: snapshot_id.to_string(),
                 cache_key_suffix: "architecture-narrative".to_string(),
             });
+        }
+
+        // Onboard narration task
+        if let Some(ref ob_data) = onboard_data {
+            let ctx = onboard::build_onboard_context(ob_data);
+            narration_tasks.push(narrate::NarrationTask {
+                system_prompt: narrate::onboard_system_prompt(),
+                structural_context: ctx,
+                snapshot_id: snapshot_id.to_string(),
+                cache_key_suffix: "onboard-guide".to_string(),
+            });
+        }
+
+        // Timeline narration task
+        if let Some(ref tl_data) = timeline_data {
+            let ctx = git_intel::build_timeline_context(tl_data);
+            narration_tasks.push(narrate::NarrationTask {
+                system_prompt: narrate::timeline_system_prompt(),
+                structural_context: ctx,
+                snapshot_id: snapshot_id.to_string(),
+                cache_key_suffix: "timeline-summary".to_string(),
+            });
+        }
+
+        // Glossary/Concepts: single product-concept task. The LLM receives
+        // structural evidence (modules + anchor symbols) and returns a JSON
+        // document containing the intro + 10-15 concepts with categories and
+        // related modules. Cache key bumped to `-v3` so v2 cache entries are
+        // bypassed.
+        if let Some(ref evidence) = glossary_evidence {
+            if !evidence.modules.is_empty() {
+                let concepts_ctx = glossary::build_concepts_context(evidence, &config.title);
+                narration_tasks.push(narrate::NarrationTask {
+                    system_prompt: narrate::concepts_system_prompt(),
+                    structural_context: concepts_ctx,
+                    snapshot_id: snapshot_id.to_string(),
+                    cache_key_suffix: "concepts-product-v3".to_string(),
+                });
+            }
         }
 
         // Project overview task
@@ -365,6 +468,49 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
             }
         }
 
+        // Fill onboard narration
+        if let Some(ref mut ob_data) = onboard_data {
+            if let Some(response) = result_map.get("onboard-guide") {
+                ob_data.narration = response.clone();
+                if ob_data.narration.is_some() {
+                    has_narration = true;
+                }
+            }
+        }
+
+        // Fill timeline narration
+        if let Some(ref mut tl_data) = timeline_data {
+            if let Some(response) = result_map.get("timeline-summary") {
+                tl_data.narration = response.clone();
+                if tl_data.narration.is_some() {
+                    has_narration = true;
+                }
+            }
+        }
+
+        // Parse the single concepts-product-v3 response into GlossaryData.
+        // On malformed JSON we log a warning and leave glossary_data as None
+        // so the page falls back to the no-LLM renderer (which still lists
+        // modules from the evidence bundle).
+        if let Some(Some(response)) = result_map.get("concepts-product-v3") {
+            match glossary::parse_concepts_response(response) {
+                Ok(parsed) => {
+                    let data: glossary::GlossaryData = parsed.into();
+                    if !data.concepts.is_empty() {
+                        has_narration = true;
+                    }
+                    glossary_data = Some(data);
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse concepts JSON from LLM: {}", e);
+                    eprintln!(
+                        "  Warning: glossary LLM response was not valid JSON ({})",
+                        e
+                    );
+                }
+            }
+        }
+
         // Update wiki page index descriptions with summaries
         for (i, pwc) in wiki_pages_with_context.iter().enumerate() {
             if let Some(summary) = &pwc.page.sections.summary {
@@ -413,14 +559,62 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         map_generated = true;
     }
 
-    // Write home page
+    // Write onboard
+    if let Some(ref ob_data) = onboard_data {
+        let onboard_md = onboard::render_onboard_markdown(ob_data);
+        write_onboard_page(&config.output_dir, &onboard_md, ob_data)?;
+        onboard_generated = true;
+    }
+
+    // Write timeline
+    if let Some(ref tl_data) = timeline_data {
+        let timeline_md = git_intel::render_timeline_markdown(tl_data);
+        write_timeline_page(&config.output_dir, &timeline_md, tl_data)?;
+        timeline_generated = true;
+    }
+
+    // Write glossary: prefer the LLM-generated concept list, otherwise fall
+    // back to the evidence-based "--no-llm" placeholder. The page is still
+    // emitted in either case so site navigation stays consistent.
+    if config.surfaces.contains(&Surface::Glossary) {
+        let glossary_md = match (&glossary_data, &glossary_evidence) {
+            (Some(gl_data), _) if !gl_data.concepts.is_empty() => {
+                glossary::render_glossary_markdown(gl_data)
+            }
+            (_, Some(ev)) => glossary::render_glossary_no_llm(ev),
+            _ => glossary::render_glossary_markdown(&glossary::GlossaryData::default()),
+        };
+        write_glossary_page(&config.output_dir, &glossary_md)?;
+        glossary_generated = true;
+    }
+
+    // Write explorer
+    if let Some(ref exp_data) = explorer_data {
+        match explorer::render_explorer_markdown(exp_data) {
+            Ok(explorer_md) => {
+                write_explorer_page(&config.output_dir, &explorer_md)?;
+                explorer_generated = true;
+            }
+            Err(e) => {
+                log::warn!("Failed to render explorer: {}", e);
+            }
+        }
+    }
+
+    // Write home page (enhanced with new surfaces)
     write_home_page(
         &config.output_dir,
         &config.title,
         &wiki_page_index,
         digest_generated,
         map_generated,
+        onboard_generated,
+        timeline_generated,
+        glossary_generated,
+        explorer_generated,
         project_overview.as_deref(),
+        onboard_data.as_ref(),
+        timeline_data.as_ref(),
     )?;
 
     // Compute narration mode
@@ -446,6 +640,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         pages_generated,
         digest_generated,
         map_generated,
+        onboard_generated,
+        timeline_generated,
+        glossary_generated,
+        explorer_generated,
         narration_mode,
         build_success,
     })
@@ -460,6 +658,10 @@ fn create_directory_structure(output_dir: &Path) -> Result<()> {
         "content/wiki",
         "content/digest",
         "content/map",
+        "content/onboard",
+        "content/timeline",
+        "content/glossary",
+        "content/explorer",
         "templates",
         "templates/shortcodes",
         "static",
@@ -476,7 +678,7 @@ fn create_directory_structure(output_dir: &Path) -> Result<()> {
 
 // ── Zola config ──────────────────────────────────────────────
 
-fn write_zola_config(output_dir: &Path, base_url: &str, title: &str) -> Result<()> {
+fn write_zola_config(output_dir: &Path, base_url: &str, title: &str, surfaces: &[Surface]) -> Result<()> {
     let config = format!(
 r#"# Zola configuration — generated by rfx pulse generate
 base_url = "{base_url}"
@@ -496,7 +698,20 @@ smart_punctuation = true
 
 [extra]
 generated_by = "Reflex Pulse"
-"#);
+has_onboard = {onboard}
+has_glossary = {glossary}
+has_digest = {digest}
+has_timeline = {timeline}
+has_map = {map}
+has_explorer = {explorer}
+"#,
+    onboard = surfaces.contains(&Surface::Onboard),
+    glossary = surfaces.contains(&Surface::Glossary),
+    digest = surfaces.contains(&Surface::Digest),
+    timeline = surfaces.contains(&Surface::Timeline),
+    map = surfaces.contains(&Surface::Map),
+    explorer = surfaces.contains(&Surface::Explorer),
+);
 
     std::fs::write(output_dir.join("config.toml"), config)
         .context("Failed to write Zola config.toml")
@@ -517,7 +732,7 @@ fn write_templates(output_dir: &Path) -> Result<()> {
     <link rel="stylesheet" href="{{ get_url(path='pagefind/pagefind-component-ui.css') }}">
     <script src="{{ get_url(path='pagefind/pagefind-component-ui.js') }}" type="module"></script>
 </head>
-<body>
+<body data-pf-theme="dark">
     <button class="mobile-menu-toggle" aria-label="Toggle menu" onclick="document.body.classList.toggle('sidebar-open')">
         <span></span><span></span><span></span>
     </button>
@@ -567,8 +782,24 @@ fn write_templates(output_dir: &Path) -> Result<()> {
                         {% endfor %}
                     </ul>
                 </li>
+                {% if config.extra.has_onboard %}
+                <li><a href="{{ get_url(path='onboard') }}" {% if current_path is starting_with("onboard") %}class="active"{% endif %}>Onboard</a></li>
+                {% endif %}
+                {% if config.extra.has_glossary %}
+                <li><a href="{{ get_url(path='glossary') }}" {% if current_path is starting_with("glossary") %}class="active"{% endif %}>Glossary</a></li>
+                {% endif %}
+                {% if config.extra.has_digest %}
                 <li><a href="{{ get_url(path='digest') }}" {% if current_path is starting_with("digest") %}class="active"{% endif %}>Digest</a></li>
+                {% endif %}
+                {% if config.extra.has_timeline %}
+                <li><a href="{{ get_url(path='timeline') }}" {% if current_path is starting_with("timeline") %}class="active"{% endif %}>Timeline</a></li>
+                {% endif %}
+                {% if config.extra.has_map %}
                 <li><a href="{{ get_url(path='map') }}" {% if current_path is starting_with("map") %}class="active"{% endif %}>Map</a></li>
+                {% endif %}
+                {% if config.extra.has_explorer %}
+                <li><a href="{{ get_url(path='explorer') }}" {% if current_path is starting_with("explorer") %}class="active"{% endif %}>Explorer</a></li>
+                {% endif %}
             </ul>
         </nav>
         <main class="content">
@@ -639,17 +870,30 @@ fn write_templates(output_dir: &Path) -> Result<()> {
         startOnLoad: true,
         theme: 'base',
         themeVariables: {
-            primaryColor: '#2d3250',
-            primaryTextColor: '#c0caf5',
-            primaryBorderColor: '#7aa2f7',
-            lineColor: '#565f89',
-            secondaryColor: '#292e42',
-            tertiaryColor: '#1a1b26',
+            primaryColor: '#1a1a2e',
+            primaryTextColor: '#e0e0e0',
+            primaryBorderColor: '#a78bfa',
+            lineColor: '#8888a8',
+            secondaryColor: '#252542',
+            tertiaryColor: '#0d0d0d',
             edgeLabelBackground: 'transparent',
-            clusterBkg: '#24283b',
-            clusterBorder: '#3b4261',
+            clusterBkg: '#1a1a2e',
+            clusterBorder: '#2a2a4a',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
             fontSize: '14px'
+        },
+        xyChart: {
+            backgroundColor: 'transparent',
+            titleColor: '#e0e0e0',
+            xAxisLabelColor: '#8888a8',
+            yAxisLabelColor: '#8888a8',
+            xAxisTitleColor: '#e0e0e0',
+            yAxisTitleColor: '#e0e0e0',
+            xAxisTickColor: '#2a2a4a',
+            yAxisTickColor: '#2a2a4a',
+            xAxisLineColor: '#2a2a4a',
+            yAxisLineColor: '#2a2a4a',
+            plotColorPalette: '#a78bfa'
         },
         securityLevel: 'loose'
     });
@@ -696,15 +940,30 @@ fn write_templates(output_dir: &Path) -> Result<()> {
         startOnLoad: true,
         theme: 'base',
         themeVariables: {
-            primaryColor: '#2d3250',
-            primaryTextColor: '#c0caf5',
-            primaryBorderColor: '#7aa2f7',
-            lineColor: '#565f89',
-            secondaryColor: '#292e42',
-            tertiaryColor: '#1a1b26',
+            primaryColor: '#1a1a2e',
+            primaryTextColor: '#e0e0e0',
+            primaryBorderColor: '#a78bfa',
+            lineColor: '#8888a8',
+            secondaryColor: '#252542',
+            tertiaryColor: '#0d0d0d',
             edgeLabelBackground: 'transparent',
+            clusterBkg: '#1a1a2e',
+            clusterBorder: '#2a2a4a',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
             fontSize: '14px'
+        },
+        xyChart: {
+            backgroundColor: 'transparent',
+            titleColor: '#e0e0e0',
+            xAxisLabelColor: '#8888a8',
+            yAxisLabelColor: '#8888a8',
+            xAxisTitleColor: '#e0e0e0',
+            yAxisTitleColor: '#e0e0e0',
+            xAxisTickColor: '#2a2a4a',
+            yAxisTickColor: '#2a2a4a',
+            xAxisLineColor: '#2a2a4a',
+            yAxisLineColor: '#2a2a4a',
+            plotColorPalette: '#a78bfa'
         },
         securityLevel: 'loose'
     });
@@ -730,17 +989,19 @@ fn write_templates(output_dir: &Path) -> Result<()> {
 
 fn write_static_assets(output_dir: &Path) -> Result<()> {
     let css = r#":root {
-    --bg: #1a1b26;
-    --bg-surface: #24283b;
-    --bg-hover: #292e42;
-    --bg-elevated: #1f2335;
-    --fg: #c0caf5;
-    --fg-muted: #565f89;
-    --fg-accent: #7aa2f7;
-    --fg-green: #9ece6a;
-    --fg-yellow: #e0af68;
-    --fg-red: #f7768e;
-    --border: #3b4261;
+    --bg: #0d0d0d;
+    --bg-surface: #1a1a2e;
+    --bg-hover: #252542;
+    --bg-elevated: #141428;
+    --fg: #e0e0e0;
+    --fg-muted: #8888a8;
+    --fg-accent: #a78bfa;
+    --fg-green: #4ade80;
+    --fg-yellow: #fbbf24;
+    --fg-red: #fb7185;
+    --fg-pink: #f472b6;
+    --fg-cyan: #67e8f9;
+    --border: #2a2a4a;
     --sidebar-width: 270px;
 }
 
@@ -764,6 +1025,8 @@ body {
     width: var(--sidebar-width);
     background: linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-elevated) 100%);
     border-right: 1px solid var(--border);
+    border-top: 2px solid var(--fg-accent);
+    box-shadow: inset 0 2px 12px rgba(167, 139, 250, 0.06);
     padding: 1.5rem 0;
     position: fixed;
     height: 100vh;
@@ -806,6 +1069,7 @@ body {
     border-left: 2px solid var(--fg-accent);
     padding-left: 0.5rem;
     margin-left: -0.5rem;
+    text-shadow: 0 0 8px rgba(167, 139, 250, 0.4);
 }
 
 /* ── Sidebar nav ─────────────────────────────── */
@@ -930,7 +1194,8 @@ h2 {
     font-size: 1.4rem;
     margin: 2rem 0 0.75rem;
     color: var(--fg-accent);
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid transparent;
+    border-image: linear-gradient(90deg, var(--fg-accent), var(--fg-pink)) 1;
     padding-bottom: 0.4rem;
 }
 
@@ -961,6 +1226,7 @@ pre {
     padding: 1rem;
     overflow-x: auto;
     margin: 1rem 0;
+    box-shadow: 0 0 8px rgba(167, 139, 250, 0.06);
 }
 
 pre code {
@@ -984,7 +1250,7 @@ th, td {
 }
 
 th {
-    background: var(--bg-surface);
+    background: var(--bg-elevated);
     font-weight: 600;
     color: var(--fg-accent);
     font-size: 0.85rem;
@@ -1024,8 +1290,8 @@ li { margin-bottom: 0.3rem; }
     color: var(--fg-muted);
 }
 
-.tier-1 { color: var(--fg-accent); border-color: var(--fg-accent); background: rgba(122, 162, 247, 0.1); }
-.tier-2 { color: var(--fg-green); border-color: var(--fg-green); background: rgba(158, 206, 106, 0.1); }
+.tier-1 { color: var(--fg-accent); border-color: var(--fg-accent); background: rgba(167, 139, 250, 0.1); box-shadow: 0 0 6px rgba(167, 139, 250, 0.15); }
+.tier-2 { color: var(--fg-green); border-color: var(--fg-green); background: rgba(74, 222, 128, 0.1); box-shadow: 0 0 6px rgba(74, 222, 128, 0.15); }
 
 /* ── Breadcrumbs ─────────────────────────────── */
 
@@ -1105,6 +1371,7 @@ li { margin-bottom: 0.3rem; }
 .page-card:hover {
     background: var(--bg-hover);
     border-color: var(--fg-accent);
+    box-shadow: 0 0 10px rgba(167, 139, 250, 0.1);
 }
 
 .page-card h3 { margin: 0 0 0.25rem; font-size: 1rem; }
@@ -1161,6 +1428,11 @@ li { margin-bottom: 0.3rem; }
     line-height: 1.2;
 }
 
+.metric-card:nth-child(4n+1) .metric-value { color: var(--fg-accent); }
+.metric-card:nth-child(4n+2) .metric-value { color: var(--fg-pink); }
+.metric-card:nth-child(4n+3) .metric-value { color: var(--fg-green); }
+.metric-card:nth-child(4n+4) .metric-value { color: var(--fg-yellow); }
+
 .metric-label {
     font-size: 0.8rem;
     color: var(--fg-muted);
@@ -1190,6 +1462,7 @@ li { margin-bottom: 0.3rem; }
     background: var(--bg-hover);
     border-color: var(--fg-accent);
     transform: translateY(-1px);
+    box-shadow: 0 0 12px rgba(167, 139, 250, 0.1);
 }
 
 .module-card h3 {
@@ -1386,33 +1659,101 @@ details[open] {
     .mermaid { padding: 1rem; }
 }
 
+/* ── Stats row ──────────────────────────────── */
+
+.stats-row {
+    display: flex;
+    gap: 1rem;
+    margin: 1.5rem 0;
+    flex-wrap: wrap;
+}
+
+.stat-card {
+    flex: 1;
+    min-width: 100px;
+    padding: 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: center;
+}
+
+.stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--fg-accent);
+    line-height: 1.2;
+}
+
+.stat-card:nth-child(4n+1) .stat-value { color: var(--fg-accent); }
+.stat-card:nth-child(4n+2) .stat-value { color: var(--fg-pink); }
+.stat-card:nth-child(4n+3) .stat-value { color: var(--fg-green); }
+.stat-card:nth-child(4n+4) .stat-value { color: var(--fg-yellow); }
+
+.stat-label {
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.25rem;
+}
+
+/* ── Quick links ────────────────────────────── */
+
+.quick-links {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+}
+
+.quick-link {
+    display: block;
+    padding: 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--fg);
+    text-decoration: none;
+    transition: border-color 0.2s, background 0.2s;
+    font-size: 0.9rem;
+}
+
+.quick-link:hover {
+    background: var(--bg-hover);
+    border-color: var(--fg-accent);
+}
+
+.quick-link strong {
+    color: var(--fg-accent);
+}
+
 /* ── Pagefind search ────────────────────────── */
 pagefind-modal {
-    --pf-modal-width: 700px;
+    --pf-modal-max-width: 700px;
     --pf-text: var(--fg);
+    --pf-text-secondary: #b0b0c8;
+    --pf-text-muted: #8888a8;
     --pf-background: var(--bg-surface);
     --pf-border: var(--border);
+    --pf-border-focus: #3a3a5a;
     --pf-border-radius: 6px;
-    --pf-active: var(--fg-accent);
-    --pf-active-background: var(--bg-hover);
+    --pf-hover: var(--bg-hover);
+    --pf-mark: var(--fg-accent);
+    --pf-skeleton: var(--bg-hover);
+    --pf-skeleton-shine: var(--border);
+    --pf-outline-focus: var(--fg-accent);
+    --pf-scroll-shadow: rgba(0, 0, 0, 0.4);
+    --pf-modal-backdrop: rgba(0, 0, 0, 0.8);
 }
 
 .sidebar-header pagefind-modal-trigger {
     display: block;
     margin-top: 0.5rem;
-    padding: 0.35rem 0.75rem;
-    background: var(--bg-hover);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--fg-muted);
-    font-size: 0.8rem;
+    background: transparent;
+    border: none;
+    outline: none;
     cursor: pointer;
-    text-align: left;
-}
-
-.sidebar-header pagefind-modal-trigger:hover {
-    border-color: var(--fg-accent);
-    color: var(--fg);
 }
 "#;
 
@@ -1432,13 +1773,20 @@ struct WikiPageMeta {
     parent_path: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_home_page(
     output_dir: &Path,
     title: &str,
     wiki_pages: &[WikiPageMeta],
     has_digest: bool,
     has_map: bool,
+    has_onboard: bool,
+    has_timeline: bool,
+    has_glossary: bool,
+    has_explorer: bool,
     project_overview: Option<&str>,
+    onboard_data: Option<&onboard::OnboardData>,
+    timeline_data: Option<&git_intel::GitIntel>,
 ) -> Result<()> {
     let mut content = String::new();
 
@@ -1455,6 +1803,91 @@ fn write_home_page(
         content.push_str("\n\n");
     } else {
         content.push_str("Auto-generated codebase documentation powered by [Reflex](https://github.com/reflex-search/reflex).\n\n");
+    }
+
+    // At-a-glance stats cards
+    if let Some(ob) = onboard_data {
+        content.push_str("<div class=\"stats-row\">\n");
+        content.push_str(&format!(
+            "<div class=\"stat-card\"><div class=\"stat-value\">{}</div><div class=\"stat-label\">Files</div></div>\n",
+            ob.project_stats.total_files
+        ));
+        content.push_str(&format!(
+            "<div class=\"stat-card\"><div class=\"stat-value\">{}</div><div class=\"stat-label\">Lines</div></div>\n",
+            ob.project_stats.total_lines
+        ));
+        content.push_str(&format!(
+            "<div class=\"stat-card\"><div class=\"stat-value\">{}</div><div class=\"stat-label\">Modules</div></div>\n",
+            ob.project_stats.module_count
+        ));
+        content.push_str(&format!(
+            "<div class=\"stat-card\"><div class=\"stat-value\">{}</div><div class=\"stat-label\">Languages</div></div>\n",
+            ob.project_stats.languages.len()
+        ));
+        if let Some(tl) = timeline_data {
+            if !tl.contributors.is_empty() {
+                content.push_str(&format!(
+                    "<div class=\"stat-card\"><div class=\"stat-value\">{}</div><div class=\"stat-label\">Contributors</div></div>\n",
+                    tl.contributors.len()
+                ));
+            }
+        }
+        content.push_str("</div>\n\n");
+
+        // Language distribution
+        if !ob.project_stats.languages.is_empty() {
+            content.push_str("### Language Distribution\n\n");
+            content.push_str("| Language | Files |\n|---|---|\n");
+            for (lang, count) in ob.project_stats.languages.iter().take(8) {
+                content.push_str(&format!("| {} | {} |\n", lang, count));
+            }
+            content.push('\n');
+        }
+    }
+
+    // Quick links
+    content.push_str("## Explore\n\n");
+    content.push_str("<div class=\"quick-links\">\n");
+    if has_onboard {
+        content.push_str("<a href=\"/onboard/\" class=\"quick-link\"><strong>Onboard</strong><br>Getting started guide</a>\n");
+    }
+    content.push_str("<a href=\"/wiki/\" class=\"quick-link\"><strong>Reference</strong><br>Per-module documentation</a>\n");
+    if has_glossary {
+        content.push_str("<a href=\"/glossary/\" class=\"quick-link\"><strong>Glossary</strong><br>Domain concepts &amp; vocabulary</a>\n");
+    }
+    if has_digest {
+        content.push_str("<a href=\"/digest/\" class=\"quick-link\"><strong>Digest</strong><br>Structural changes</a>\n");
+    }
+    if has_timeline {
+        content.push_str("<a href=\"/timeline/\" class=\"quick-link\"><strong>Timeline</strong><br>Development activity</a>\n");
+    }
+    if has_map {
+        content.push_str("<a href=\"/map/\" class=\"quick-link\"><strong>Map</strong><br>Dependency graph</a>\n");
+    }
+    if has_explorer {
+        content.push_str("<a href=\"/explorer/\" class=\"quick-link\"><strong>Explorer</strong><br>Visual treemap</a>\n");
+    }
+    content.push_str("</div>\n\n");
+
+    // Recent activity summary (from timeline)
+    if let Some(tl) = timeline_data {
+        if !tl.weekly_summaries.is_empty() {
+            content.push_str("## Recent Activity\n\n");
+            if let Some(week) = tl.weekly_summaries.first() {
+                content.push_str(&format!(
+                    "Week of {}: **{}** commits across **{}** files by **{}** contributors.\n\n",
+                    week.week_start, week.commit_count, week.files_changed, week.contributors.len()
+                ));
+            }
+            if !tl.churn.is_empty() {
+                content.push_str("Most active files: ");
+                let top: Vec<String> = tl.churn.iter().take(5)
+                    .map(|f| format!("`{}`", f.path))
+                    .collect();
+                content.push_str(&top.join(", "));
+                content.push_str("\n\n");
+            }
+        }
     }
 
     // Core Modules (Tier 1) as prominent cards
@@ -1514,24 +1947,6 @@ fn write_home_page(
         }
         content.push('\n');
     }
-
-    // Navigation
-    content.push_str("## Sections\n\n");
-    content.push_str("- [Reference](/wiki/) — Per-module documentation\n");
-    if has_digest {
-        content.push_str("- [Digest](/digest/) — Structural change report\n");
-    }
-    if has_map {
-        content.push_str("- [Map](/map/) — Architecture dependency graph\n");
-    }
-
-    // Reading Guide
-    content.push_str("\n## Reading Guide\n\n");
-    content.push_str("- **Tier 1** modules are top-level directories that define the project's major components.\n");
-    content.push_str("- **Tier 2** modules are sub-directories within Tier 1 modules that have 3+ files.\n");
-    content.push_str("- **Dependency hotspots** are files imported by many others — changes to these have wide blast radius.\n");
-    content.push_str("- **Circular dependencies** indicate tightly coupled modules that may be hard to refactor independently.\n");
-    content.push_str("- The **Map** page shows the full module dependency graph. Thick arrows indicate many file-level edges.\n");
 
     std::fs::write(output_dir.join("content/_index.md"), content)
         .context("Failed to write home page")
@@ -1732,6 +2147,78 @@ fn write_map_page(
 
     std::fs::write(output_dir.join("content/map/_index.md"), content)
         .context("Failed to write map page")
+}
+
+// ── New page writers ─────────────────────────────────────────
+
+fn write_onboard_page(
+    output_dir: &Path,
+    onboard_md: &str,
+    data: &onboard::OnboardData,
+) -> Result<()> {
+    let has_mermaid = !data.reading_order.layers.is_empty();
+    let mut content = String::new();
+    content.push_str("+++\n");
+    content.push_str("title = \"Getting Started\"\n");
+    content.push_str("template = \"section.html\"\n");
+    if has_mermaid {
+        content.push_str("\n[extra]\nhas_mermaid = true\n");
+    }
+    content.push_str("+++\n\n");
+    content.push_str(onboard_md);
+
+    std::fs::write(output_dir.join("content/onboard/_index.md"), content)
+        .context("Failed to write onboard page")
+}
+
+fn write_timeline_page(
+    output_dir: &Path,
+    timeline_md: &str,
+    data: &git_intel::GitIntel,
+) -> Result<()> {
+    let has_mermaid = !data.weekly_summaries.is_empty();
+    let mut content = String::new();
+    content.push_str("+++\n");
+    content.push_str("title = \"Timeline\"\n");
+    content.push_str("template = \"section.html\"\n");
+    if has_mermaid {
+        content.push_str("\n[extra]\nhas_mermaid = true\n");
+    }
+    content.push_str("+++\n\n");
+    content.push_str(timeline_md);
+
+    std::fs::write(output_dir.join("content/timeline/_index.md"), content)
+        .context("Failed to write timeline page")
+}
+
+fn write_glossary_page(
+    output_dir: &Path,
+    glossary_md: &str,
+) -> Result<()> {
+    let mut content = String::new();
+    content.push_str("+++\n");
+    content.push_str("title = \"Glossary\"\n");
+    content.push_str("template = \"section.html\"\n");
+    content.push_str("+++\n\n");
+    content.push_str(glossary_md);
+
+    std::fs::write(output_dir.join("content/glossary/_index.md"), content)
+        .context("Failed to write glossary page")
+}
+
+fn write_explorer_page(
+    output_dir: &Path,
+    explorer_md: &str,
+) -> Result<()> {
+    let mut content = String::new();
+    content.push_str("+++\n");
+    content.push_str("title = \"Explorer\"\n");
+    content.push_str("template = \"section.html\"\n");
+    content.push_str("+++\n\n");
+    content.push_str(explorer_md);
+
+    std::fs::write(output_dir.join("content/explorer/_index.md"), content)
+        .context("Failed to write explorer page")
 }
 
 // ── Context builders for LLM narration ───────────────────────

@@ -812,7 +812,7 @@ pub enum PulseSubcommand {
         #[arg(long)]
         title: Option<String>,
 
-        /// Surfaces to include (comma-separated: wiki,digest,map)
+        /// Surfaces to include (comma-separated: wiki,digest,map,onboard,timeline,glossary,explorer)
         #[arg(long)]
         include: Option<String>,
 
@@ -857,6 +857,31 @@ pub enum PulseSubcommand {
         /// Open browser automatically
         #[arg(long, default_value = "true")]
         open: bool,
+    },
+
+    /// Generate a developer onboarding guide
+    Onboard {
+        /// Skip LLM narration
+        #[arg(long)]
+        no_llm: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show development timeline from git history
+    Timeline {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Generate cross-cutting symbol glossary
+    Glossary {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1057,6 +1082,15 @@ impl Cli {
                     }
                     crate::cli::PulseSubcommand::Serve { output, port, open } => {
                         handle_pulse_serve(output, port, open)
+                    }
+                    crate::cli::PulseSubcommand::Onboard { no_llm, json } => {
+                        handle_pulse_onboard(no_llm, json)
+                    }
+                    crate::cli::PulseSubcommand::Timeline { json } => {
+                        handle_pulse_timeline(json)
+                    }
+                    crate::cli::PulseSubcommand::Glossary { json } => {
+                        handle_pulse_glossary(json)
                     }
                 }
             }
@@ -4024,7 +4058,11 @@ fn handle_pulse_generate(
                     "wiki" => Ok(pulse::site::Surface::Wiki),
                     "digest" => Ok(pulse::site::Surface::Digest),
                     "map" => Ok(pulse::site::Surface::Map),
-                    other => anyhow::bail!("Unknown surface '{}'. Supported: wiki, digest, map", other),
+                    "onboard" => Ok(pulse::site::Surface::Onboard),
+                    "timeline" => Ok(pulse::site::Surface::Timeline),
+                    "glossary" => Ok(pulse::site::Surface::Glossary),
+                    "explorer" => Ok(pulse::site::Surface::Explorer),
+                    other => anyhow::bail!("Unknown surface '{}'. Supported: wiki, digest, map, onboard, timeline, glossary, explorer", other),
                 })
                 .collect::<Result<Vec<_>>>()?
         }
@@ -4032,6 +4070,10 @@ fn handle_pulse_generate(
             pulse::site::Surface::Wiki,
             pulse::site::Surface::Digest,
             pulse::site::Surface::Map,
+            pulse::site::Surface::Onboard,
+            pulse::site::Surface::Timeline,
+            pulse::site::Surface::Glossary,
+            pulse::site::Surface::Explorer,
         ],
     };
 
@@ -4054,6 +4096,10 @@ fn handle_pulse_generate(
     eprintln!("  Wiki pages: {}", report.pages_generated);
     eprintln!("  Digest: {}", if report.digest_generated { "yes" } else { "no" });
     eprintln!("  Map: {}", if report.map_generated { "yes" } else { "no" });
+    eprintln!("  Onboard: {}", if report.onboard_generated { "yes" } else { "no" });
+    eprintln!("  Timeline: {}", if report.timeline_generated { "yes" } else { "no" });
+    eprintln!("  Glossary: {}", if report.glossary_generated { "yes" } else { "no" });
+    eprintln!("  Explorer: {}", if report.explorer_generated { "yes" } else { "no" });
     eprintln!("  Narration: {}", report.narration_mode);
     if report.build_success {
         eprintln!("  Build: success (HTML in {}/public/)", report.output_dir);
@@ -4114,6 +4160,128 @@ fn open_browser(url: &str) {
     if let Err(e) = result {
         eprintln!("Could not open browser: {e}");
     }
+}
+
+fn handle_pulse_onboard(no_llm: bool, json: bool) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    let modules = crate::pulse::wiki::detect_modules(&cache, &crate::pulse::wiki::ModuleDiscoveryConfig::default())?;
+    let mut data = crate::pulse::onboard::generate_onboard_structural(&cache, modules.len())?;
+
+    if !no_llm {
+        if let Ok(provider) = crate::pulse::narrate::create_pulse_provider() {
+            let llm_cache = crate::pulse::llm_cache::LlmCache::new(cache.path());
+            let ctx = crate::pulse::onboard::build_onboard_context(&data);
+            let narration = crate::pulse::narrate::narrate_section(
+                &*provider,
+                crate::pulse::narrate::onboard_system_prompt(),
+                &ctx,
+                &llm_cache,
+                "standalone",
+                "onboard-guide",
+            );
+            data.narration = narration;
+        }
+    }
+
+    if json {
+        let ctx = crate::pulse::onboard::build_onboard_context(&data);
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "entry_points": data.entry_points.iter().map(|ep| serde_json::json!({
+                "path": ep.path,
+                "kind": format!("{}", ep.kind),
+                "key_symbols": ep.key_symbols,
+            })).collect::<Vec<_>>(),
+            "reading_order_layers": data.reading_order.layers.len(),
+            "context": ctx,
+        }))?);
+    } else {
+        let md = crate::pulse::onboard::render_onboard_markdown(&data);
+        println!("{}", md);
+    }
+
+    Ok(())
+}
+
+fn handle_pulse_timeline(json: bool) -> Result<()> {
+    let data = crate::pulse::git_intel::extract_git_intel(".")?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "commits": data.commits.len(),
+            "contributors": data.contributors.iter().map(|c| serde_json::json!({
+                "name": c.name,
+                "email": c.email,
+                "commit_count": c.commit_count,
+            })).collect::<Vec<_>>(),
+            "churn_files": data.churn.len(),
+            "weekly_summaries": data.weekly_summaries.len(),
+        }))?);
+    } else {
+        let md = crate::pulse::git_intel::render_timeline_markdown(&data);
+        println!("{}", md);
+    }
+
+    Ok(())
+}
+
+fn handle_pulse_glossary(json: bool) -> Result<()> {
+    use crate::pulse::glossary;
+
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+
+    // The glossary is now LLM-generated. For the CLI, we only surface the
+    // structural evidence that would be handed to the LLM (modules + anchor
+    // symbol names). Full product-concept generation lives in the pulse
+    // narration pipeline — run `rfx pulse generate` to produce the site.
+    let evidence = glossary::collect_glossary_evidence(&cache)?;
+
+    let data = glossary::GlossaryData::default();
+
+    if json {
+        let module_summaries = evidence
+            .as_ref()
+            .map(|ev| {
+                ev.modules
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "path": m.path,
+                            "file_count": m.file_count,
+                            "anchor_symbols": m.anchor_symbols,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "total_concepts": data.concepts.len(),
+                "concepts": data.concepts.iter().map(|c| serde_json::json!({
+                    "name": c.name,
+                    "category": c.category,
+                })).collect::<Vec<_>>(),
+                "evidence_modules": module_summaries,
+            }))?
+        );
+    } else {
+        let md = if let Some(ev) = evidence.as_ref() {
+            glossary::render_glossary_no_llm(ev)
+        } else {
+            glossary::render_glossary_markdown(&data)
+        };
+        println!("{}", md);
+    }
+
+    Ok(())
 }
 
 fn handle_llm_config() -> Result<()> {

@@ -203,12 +203,12 @@ fn render_mermaid_repo(
 
     // Apply thick stroke to high-count edges via linkStyle
     for idx in &thick_edge_indices {
-        out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#7aa2f7\n", idx));
+        out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#a78bfa\n", idx));
     }
 
     // High-contrast styling for dark theme
-    out.push_str("\n  classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
-    out.push_str("  classDef hotspot fill:#4a1a1a,stroke:#f7768e,color:#f7768e\n");
+    out.push_str("\n  classDef default fill:#1a1a2e,stroke:#a78bfa,color:#e0e0e0\n");
+    out.push_str("  classDef hotspot fill:#2a1030,stroke:#f472b6,color:#f472b6\n");
     if !hotspot_modules.is_empty() {
         for module in hotspot_modules {
             if !connected.contains(module.as_str()) {
@@ -372,12 +372,12 @@ fn render_mermaid_layered(
 
     // Apply thick stroke to high-count edges via linkStyle
     for idx in &thick_edge_indices {
-        out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#7aa2f7\n", idx));
+        out.push_str(&format!("  linkStyle {} stroke-width:3px,stroke:#a78bfa\n", idx));
     }
 
     // Styling — apply classDef to proxy nodes, not subgraph containers
-    out.push_str("\n  classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
-    out.push_str("  classDef hotspot fill:#4a1a1a,stroke:#f7768e,color:#f7768e\n");
+    out.push_str("\n  classDef default fill:#1a1a2e,stroke:#a78bfa,color:#e0e0e0\n");
+    out.push_str("  classDef hotspot fill:#2a1030,stroke:#f472b6,color:#f472b6\n");
     for module in hotspot_modules {
         if !connected.contains(module.as_str()) {
             continue;

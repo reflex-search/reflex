@@ -483,7 +483,7 @@ fn build_dependency_diagram(
 
     let center_id = sanitize(module_path);
     diagram.push_str(&format!("    {}[\"<b>{}/</b>\"]\n", center_id, module_path));
-    diagram.push_str(&format!("    style {} fill:#7aa2f7,color:#1a1b26,stroke:#7aa2f7\n", center_id));
+    diagram.push_str(&format!("    style {} fill:#a78bfa,color:#0d0d0d,stroke:#a78bfa\n", center_id));
 
     // Track all nodes for clickable links
     let mut all_node_paths: Vec<String> = vec![module_path.to_string()];
@@ -514,7 +514,7 @@ fn build_dependency_diagram(
     }
 
     // High-contrast styling
-    diagram.push_str("    classDef default fill:#2d3250,stroke:#7aa2f7,color:#c0caf5\n");
+    diagram.push_str("    classDef default fill:#1a1a2e,stroke:#a78bfa,color:#e0e0e0\n");
 
     // Clickable nodes → wiki pages
     for node_path in &all_node_paths {

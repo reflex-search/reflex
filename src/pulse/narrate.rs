@@ -88,6 +88,78 @@ CRITICAL RULES:
 STRUCTURAL CONTEXT:
 ";
 
+/// System prompt for onboard guide narration
+const ONBOARD_SYSTEM_PROMPT: &str = "\
+You are a technical writer creating a \"Getting Started\" guide for a developer's first day on this codebase.
+You may ONLY describe facts present in the STRUCTURAL CONTEXT below.
+
+CRITICAL RULES:
+- Write 4-5 paragraphs in plain language that a new team member could follow.
+- Paragraph 1: What this project does — its purpose and primary function, in one or two sentences a non-developer could understand.
+- Paragraph 2: How the code is organized — the major directories/modules, what each is responsible for.
+- Paragraph 3: Where to start reading — which entry points to look at first, and why.
+- Paragraph 4: Key patterns and conventions — recurring design patterns, naming conventions, or architectural idioms a newcomer should know.
+- Use specific file and module names from the context.
+- Do NOT speculate or add information not in the context.
+- NEVER leave missing spaces between words. Proofread your output.
+
+STRUCTURAL CONTEXT:
+";
+
+/// System prompt for timeline narration
+const TIMELINE_SYSTEM_PROMPT: &str = "\
+You are a technical writer summarizing recent development activity for a codebase.
+You may ONLY describe facts present in the STRUCTURAL CONTEXT below.
+
+CRITICAL RULES:
+- Lead with the most active area of the codebase and explain what's happening there.
+- Identify stable modules (few recent changes) vs evolving modules (many recent changes).
+- Flag high-churn files that may warrant attention — files changing very frequently could indicate active development or instability.
+- Note contributor patterns — is this a solo project or a team effort? Who owns which areas?
+- Write 3-5 concise paragraphs with specific numbers, file names, and module names.
+- Do NOT speculate about intent or add information not in the context.
+- NEVER leave missing spaces between words. Proofread your output.
+
+STRUCTURAL CONTEXT:
+";
+
+/// System prompt for product-concept glossary generation.
+///
+/// The LLM receives structural evidence (module paths, anchor symbol names,
+/// scale stats) and returns a single JSON document containing an intro
+/// paragraph plus ~10-15 high-level product concepts with plain-language
+/// definitions. The response is parsed in `glossary::parse_concepts_response`.
+const CONCEPTS_SYSTEM_PROMPT: &str = "\
+You are documenting a software product's core vocabulary for a non-technical reader.
+
+From the structural evidence below, identify 10-15 HIGH-LEVEL product concepts that someone needs to understand to know what this product DOES and how it works. Concepts are NOUN PHRASES describing capabilities, data ideas, or workflows — NOT specific class names, function names, or file names.
+
+GOOD concept examples: 'Trigram Index', 'Symbol Cache', 'AST Query', 'Dependency Graph', 'LLM Narration', 'Runtime Symbol Detection'
+BAD concept examples: 'SearchResult struct', 'QueryEngine class', 'extract_symbols function'
+
+Rules:
+- Each definition must be 1-3 sentences in plain language a product person could understand.
+- Do NOT start definitions with 'This is a...', 'Represents a...', 'A struct that...'
+- Group concepts into 2-4 categories of your choice (e.g. 'Core Capabilities', 'Data Model', 'Workflows', 'Developer Tools').
+- Anchor each concept to 1-3 module paths from the evidence — these become wiki links.
+- Write exactly ONE intro paragraph (2-3 sentences) describing what kind of vocabulary this page catalogs for this specific product.
+
+Output VALID JSON MATCHING THIS SCHEMA EXACTLY — no markdown fences, no commentary before or after:
+{
+  \"intro\": \"...\",
+  \"concepts\": [
+    {
+      \"name\": \"Concept Name\",
+      \"category\": \"Category Name\",
+      \"definition\": \"1-3 sentence plain-language definition.\",
+      \"related_modules\": [\"src/foo\", \"src/bar\"]
+    }
+  ]
+}
+
+STRUCTURAL EVIDENCE:
+";
+
 /// Minimum word count to attempt narration.
 /// Sections below this threshold are too brief to produce useful summaries.
 const MIN_CONTENT_WORDS: usize = 15;
@@ -377,6 +449,21 @@ pub fn project_overview_system_prompt() -> &'static str {
 /// Get the system prompt for architecture narrative narration
 pub fn architecture_narrative_system_prompt() -> &'static str {
     ARCHITECTURE_NARRATIVE_SYSTEM_PROMPT
+}
+
+/// Get the system prompt for onboard guide narration
+pub fn onboard_system_prompt() -> &'static str {
+    ONBOARD_SYSTEM_PROMPT
+}
+
+/// Get the system prompt for timeline narration
+pub fn timeline_system_prompt() -> &'static str {
+    TIMELINE_SYSTEM_PROMPT
+}
+
+/// Get the system prompt for product-concept glossary generation.
+pub fn concepts_system_prompt() -> &'static str {
+    CONCEPTS_SYSTEM_PROMPT
 }
 
 /// Known compound words / proper nouns that should NOT be split by camelCase regex.
