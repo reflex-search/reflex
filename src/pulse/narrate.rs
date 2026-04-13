@@ -12,19 +12,31 @@ use crate::semantic::providers::{self, LlmProvider};
 
 use super::llm_cache::LlmCache;
 
-/// System prompt for digest section narration
-const DIGEST_SYSTEM_PROMPT: &str = "\
-You are a technical writer narrating a codebase change report.
-You may ONLY describe facts present in the STRUCTURAL CONTEXT below.
+/// System prompt for changelog narration
+const CHANGELOG_SYSTEM_PROMPT: &str = "\
+You are a technical writer creating a product-level changelog from recent development activity.
+Your audience is developers and stakeholders who want to understand what changed, why, and what it impacts — NOT the raw commit details.
 
 Guidelines:
-- Lead with the most significant structural change (largest file delta, new module, or dependency shift).
-- Call out dependency graph changes: new edges, removed edges, cycle changes.
-- Mention any threshold alerts or hotspot shifts with their numbers.
-- Write 3-6 concise sentences with specific numbers and file/module names.
-- Do NOT speculate about intent or add information not in the context.
+- Group related commits into 3-8 high-level changelog entries.
+- Each entry needs a clear title (what changed) and a 2-4 sentence description (why it matters, what it impacts).
+- Include an approximate date or date range in parentheses after each entry's title, like \"Added search (Apr 10–12)\".
+- Write at a product/feature level, not code level. Say \"Added search to documentation\" not \"Integrated pagefind library into site.rs\".
+- Focus on user-visible impact and system-level consequences.
+- Do NOT include commit hashes, file paths, or diff statistics in your output.
+- Do NOT speculate beyond what the commit messages and file changes reveal.
 
-STRUCTURAL CONTEXT:
+Output VALID JSON:
+{
+  \"entries\": [
+    {
+      \"title\": \"Short descriptive title (Apr 10–12)\",
+      \"description\": \"2-4 sentences explaining what changed, why, and what it impacts.\"
+    }
+  ]
+}
+
+COMMIT DATA:
 ";
 
 /// System prompt for wiki module summary
@@ -431,9 +443,9 @@ async fn call_llm_async(provider: &dyn LlmProvider, prompt: &str) -> Result<Stri
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed")))
 }
 
-/// Get the system prompt for digest narration
-pub fn digest_system_prompt() -> &'static str {
-    DIGEST_SYSTEM_PROMPT
+/// Get the system prompt for changelog narration
+pub fn changelog_system_prompt() -> &'static str {
+    CHANGELOG_SYSTEM_PROMPT
 }
 
 /// Get the system prompt for wiki narration
@@ -603,8 +615,8 @@ mod tests {
     }
 
     #[test]
-    fn test_digest_system_prompt() {
-        assert!(digest_system_prompt().contains("STRUCTURAL CONTEXT"));
+    fn test_changelog_system_prompt() {
+        assert!(changelog_system_prompt().contains("COMMIT DATA"));
     }
 
     #[test]

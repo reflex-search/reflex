@@ -11,7 +11,7 @@
 pub mod config;
 pub mod snapshot;
 pub mod diff;
-pub mod digest;
+pub mod changelog;
 pub mod wiki;
 pub mod llm_cache;
 pub mod narrate;

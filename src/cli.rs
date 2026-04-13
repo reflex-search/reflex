@@ -671,13 +671,13 @@ pub enum Command {
         command: Option<SnapshotSubcommand>,
     },
 
-    /// Generate codebase intelligence surfaces (digest, wiki, map, site)
+    /// Generate codebase intelligence surfaces (changelog, wiki, map, site)
     ///
     /// Pulse turns structural facts from the index into browsable documentation.
     /// The `generate` command creates a Zola project and builds it into a static HTML site.
     ///
     /// Examples:
-    ///   rfx pulse digest --no-llm           # Structural-only digest
+    ///   rfx pulse changelog --no-llm         # Structural-only changelog
     ///   rfx pulse wiki --no-llm             # Generate wiki pages
     ///   rfx pulse map                        # Architecture map (mermaid)
     ///   rfx pulse generate --no-llm          # Full static site (Zola)
@@ -741,15 +741,11 @@ pub enum SnapshotSubcommand {
 
 #[derive(Subcommand, Debug)]
 pub enum PulseSubcommand {
-    /// Generate a structural change digest
-    Digest {
-        /// Baseline snapshot ID
-        #[arg(long)]
-        baseline: Option<String>,
-
-        /// Current snapshot ID
-        #[arg(long)]
-        current: Option<String>,
+    /// Generate a product-level changelog from recent commits
+    Changelog {
+        /// Number of recent commits to include (default: 20)
+        #[arg(long, default_value = "20")]
+        count: usize,
 
         /// Skip LLM narration (structural content only)
         #[arg(long)]
@@ -812,7 +808,7 @@ pub enum PulseSubcommand {
         #[arg(long)]
         title: Option<String>,
 
-        /// Surfaces to include (comma-separated: wiki,digest,map,onboard,timeline,glossary,explorer)
+        /// Surfaces to include (comma-separated: wiki,changelog,map,onboard,timeline,glossary,explorer)
         #[arg(long)]
         include: Option<String>,
 
@@ -1068,8 +1064,8 @@ impl Cli {
             }
             Some(Command::Pulse { command }) => {
                 match command {
-                    crate::cli::PulseSubcommand::Digest { baseline, current, no_llm, json, pretty } => {
-                        handle_pulse_digest(baseline, current, no_llm, json, pretty)
+                    crate::cli::PulseSubcommand::Changelog { count, no_llm, json, pretty } => {
+                        handle_pulse_changelog(count, no_llm, json, pretty)
                     }
                     crate::cli::PulseSubcommand::Wiki { no_llm, output, json } => {
                         handle_pulse_wiki(no_llm, output, json)
@@ -3849,9 +3845,8 @@ fn handle_snapshot_gc(json: bool) -> Result<()> {
 
 // ── Pulse handlers ─────────────────────────────────────────────
 
-fn handle_pulse_digest(
-    baseline: Option<String>,
-    current: Option<String>,
+fn handle_pulse_changelog(
+    count: usize,
     no_llm: bool,
     json: bool,
     pretty: bool,
@@ -3861,76 +3856,52 @@ fn handle_pulse_digest(
         anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
     }
 
-    let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+    let workspace_root = cache.path().parent().unwrap_or(std::path::Path::new("."));
+    let mut changelog = pulse::changelog::extract_changelog(workspace_root, count)?;
 
-    // Auto-snapshot if index has changed since last snapshot
-    let ensure_result = pulse::snapshot::ensure_snapshot(&cache, &pulse_config.retention)?;
-    match &ensure_result {
-        pulse::snapshot::EnsureSnapshotResult::Created(info) => {
-            eprintln!("Auto-snapshot created: {} ({} files)", info.id, info.file_count);
-        }
-        pulse::snapshot::EnsureSnapshotResult::Reused(info) => {
-            eprintln!("Using snapshot: {} (index unchanged)", info.id);
-        }
-    }
-
-    let snapshots = pulse::snapshot::list_snapshots(&cache)?;
-
-    let current_snapshot = match &current {
-        Some(id) => snapshots.iter().find(|s| s.id == *id)
-            .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?,
-        None => snapshots.first()
-            .ok_or_else(|| anyhow::anyhow!("No snapshots found. Run `rfx snapshot` first."))?,
-    };
-
-    let snapshot_diff = match &baseline {
-        Some(id) => {
-            let bl = snapshots.iter().find(|s| s.id == *id)
-                .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?;
-            Some(pulse::diff::compute_diff(&bl.path, &current_snapshot.path, &pulse_config.thresholds)?)
-        }
-        None => {
-            snapshots.get(1).map(|bl| {
-                pulse::diff::compute_diff(&bl.path, &current_snapshot.path, &pulse_config.thresholds)
-            }).transpose()?
-        }
-    };
-
-    // Create provider for standalone digest command
-    let (provider, llm_cache) = if !no_llm {
+    if !no_llm && !changelog.raw_commits.is_empty() {
         match pulse::narrate::create_pulse_provider() {
-            Ok(p) => {
+            Ok(provider) => {
                 eprintln!("LLM provider ready.");
-                let c = pulse::llm_cache::LlmCache::new(cache.path());
-                (Some(p), Some(c))
+                let llm_cache = pulse::llm_cache::LlmCache::new(cache.path());
+
+                let pulse_config = pulse::config::load_pulse_config(cache.path())?;
+                let ensure_result = pulse::snapshot::ensure_snapshot(&cache, &pulse_config.retention)?;
+                let snapshot_id = match &ensure_result {
+                    pulse::snapshot::EnsureSnapshotResult::Created(info) => info.id.clone(),
+                    pulse::snapshot::EnsureSnapshotResult::Reused(info) => info.id.clone(),
+                };
+
+                let ctx = pulse::changelog::build_changelog_context(&changelog.raw_commits, &changelog.branch);
+                let response = pulse::narrate::narrate_section(
+                    provider.as_ref(),
+                    pulse::narrate::changelog_system_prompt(),
+                    &ctx,
+                    &llm_cache,
+                    &snapshot_id,
+                    "changelog",
+                );
+
+                if let Some(text) = response {
+                    changelog.entries = pulse::changelog::parse_changelog_response(&text, &changelog.raw_commits);
+                    changelog.narrated = true;
+                }
             }
             Err(e) => {
                 eprintln!("LLM unavailable: {}", e);
-                (None, None)
             }
         }
-    } else {
-        (None, None)
-    };
-
-    let digest = pulse::digest::generate_digest(
-        snapshot_diff.as_ref(),
-        current_snapshot,
-        Some(&cache),
-        no_llm,
-        provider.as_ref().map(|p| p.as_ref()),
-        llm_cache.as_ref(),
-    )?;
+    }
 
     if json || pretty {
         let output = if pretty {
-            serde_json::to_string_pretty(&digest)?
+            serde_json::to_string_pretty(&changelog)?
         } else {
-            serde_json::to_string(&digest)?
+            serde_json::to_string(&changelog)?
         };
         println!("{}", output);
     } else {
-        println!("{}", pulse::digest::render_markdown(&digest));
+        println!("{}", pulse::changelog::render_markdown(&changelog));
     }
 
     Ok(())
@@ -4056,19 +4027,19 @@ fn handle_pulse_generate(
             s.split(',')
                 .map(|part| match part.trim().to_lowercase().as_str() {
                     "wiki" => Ok(pulse::site::Surface::Wiki),
-                    "digest" => Ok(pulse::site::Surface::Digest),
+                    "changelog" | "digest" => Ok(pulse::site::Surface::Changelog),
                     "map" => Ok(pulse::site::Surface::Map),
                     "onboard" => Ok(pulse::site::Surface::Onboard),
                     "timeline" => Ok(pulse::site::Surface::Timeline),
                     "glossary" => Ok(pulse::site::Surface::Glossary),
                     "explorer" => Ok(pulse::site::Surface::Explorer),
-                    other => anyhow::bail!("Unknown surface '{}'. Supported: wiki, digest, map, onboard, timeline, glossary, explorer", other),
+                    other => anyhow::bail!("Unknown surface '{}'. Supported: wiki, changelog, map, onboard, timeline, glossary, explorer", other),
                 })
                 .collect::<Result<Vec<_>>>()?
         }
         None => vec![
             pulse::site::Surface::Wiki,
-            pulse::site::Surface::Digest,
+            pulse::site::Surface::Changelog,
             pulse::site::Surface::Map,
             pulse::site::Surface::Onboard,
             pulse::site::Surface::Timeline,
@@ -4080,7 +4051,18 @@ fn handle_pulse_generate(
     let config = pulse::site::SiteConfig {
         output_dir: output,
         base_url,
-        title: title.unwrap_or_else(|| "Pulse".to_string()),
+        title: title.unwrap_or_else(|| {
+            let name = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "Pulse".to_string());
+            let mut chars = name.chars();
+            let capitalized = match chars.next() {
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                None => name,
+            };
+            format!("{} Documentation", capitalized)
+        }),
         surfaces,
         no_llm,
         clean,
@@ -4094,7 +4076,7 @@ fn handle_pulse_generate(
 
     eprintln!("Zola project generated in {}/", report.output_dir);
     eprintln!("  Wiki pages: {}", report.pages_generated);
-    eprintln!("  Digest: {}", if report.digest_generated { "yes" } else { "no" });
+    eprintln!("  Changelog: {}", if report.changelog_generated { "yes" } else { "no" });
     eprintln!("  Map: {}", if report.map_generated { "yes" } else { "no" });
     eprintln!("  Onboard: {}", if report.onboard_generated { "yes" } else { "no" });
     eprintln!("  Timeline: {}", if report.timeline_generated { "yes" } else { "no" });

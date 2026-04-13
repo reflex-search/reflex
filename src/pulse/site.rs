@@ -1,6 +1,6 @@
 //! Static site generator
 //!
-//! Orchestrates wiki, digest, and map into a Zola project.
+//! Orchestrates wiki, changelog, and map into a Zola project.
 //! Generates markdown content with TOML front matter, Tera templates,
 //! and a Zola config. Optionally runs `zola build` to produce HTML.
 
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::cache::CacheManager;
 use crate::semantic::providers::LlmProvider;
-use super::digest;
+use super::changelog;
 use super::diff;
 use super::explorer;
 use super::git_intel;
@@ -57,7 +57,7 @@ pub struct SiteConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Surface {
     Wiki,
-    Digest,
+    Changelog,
     Map,
     Onboard,
     Timeline,
@@ -70,8 +70,8 @@ impl Default for SiteConfig {
         Self {
             output_dir: PathBuf::from("pulse-site"),
             base_url: "/".to_string(),
-            title: "Pulse".to_string(),
-            surfaces: vec![Surface::Wiki, Surface::Digest, Surface::Map, Surface::Onboard, Surface::Timeline, Surface::Glossary, Surface::Explorer],
+            title: "Documentation".to_string(),
+            surfaces: vec![Surface::Wiki, Surface::Changelog, Surface::Map, Surface::Onboard, Surface::Timeline, Surface::Glossary, Surface::Explorer],
             no_llm: true,
             clean: false,
             force_renarrate: false,
@@ -87,7 +87,7 @@ impl Default for SiteConfig {
 pub struct SiteReport {
     pub output_dir: String,
     pub pages_generated: usize,
-    pub digest_generated: bool,
+    pub changelog_generated: bool,
     pub map_generated: bool,
     pub onboard_generated: bool,
     pub timeline_generated: bool,
@@ -176,7 +176,7 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let llm_cache = provider.as_ref().map(|_| super::llm_cache::LlmCache::new(cache.path()));
 
     let mut pages_generated = 0;
-    let mut digest_generated = false;
+    let mut changelog_generated = false;
     let mut map_generated = false;
     let mut onboard_generated = false;
     let mut timeline_generated = false;
@@ -240,16 +240,17 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         });
     }
 
-    // 1b. Digest: structural build
-    let mut digest_data: Option<digest::Digest> = None;
-    if config.surfaces.contains(&Surface::Digest) {
-        if let Some(current) = current_snapshot {
-            digest_data = Some(digest::generate_digest_structural(
-                snapshot_diff.as_ref(),
-                current,
-                Some(cache),
-            )?);
-        }
+    // 1b. Changelog: extract recent commits
+    let mut changelog_data: Option<changelog::Changelog> = None;
+    if config.surfaces.contains(&Surface::Changelog) {
+        let workspace_root = cache.path().parent().unwrap_or(Path::new("."));
+        changelog_data = match changelog::extract_changelog(workspace_root, 20) {
+            Ok(cl) => Some(cl),
+            Err(e) => {
+                eprintln!("Warning: changelog failed: {e}");
+                None
+            }
+        };
     }
 
     // 1c. Map: generate map content + architecture context
@@ -339,14 +340,15 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
             }
         }
 
-        // Digest narration tasks
-        if let Some(ref digest) = digest_data {
-            for section in &digest.sections {
+        // Changelog narration task (single task for entire changelog)
+        if let Some(ref cl) = changelog_data {
+            if !cl.raw_commits.is_empty() {
+                let ctx = changelog::build_changelog_context(&cl.raw_commits, &cl.branch);
                 narration_tasks.push(narrate::NarrationTask {
-                    system_prompt: narrate::digest_system_prompt(),
-                    structural_context: section.structural_content.clone(),
+                    system_prompt: narrate::changelog_system_prompt(),
+                    structural_context: ctx,
                     snapshot_id: snapshot_id.to_string(),
-                    cache_key_suffix: format!("digest:{}", section.heading),
+                    cache_key_suffix: "changelog".to_string(),
                 });
             }
         }
@@ -440,17 +442,12 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
             }
         }
 
-        // Fill digest narratives
-        if let Some(ref mut digest) = digest_data {
-            for section in &mut digest.sections {
-                let key = format!("digest:{}", section.heading);
-                if let Some(response) = result_map.get(&key) {
-                    section.narrative = response.clone();
-                }
-            }
-            if digest.sections.iter().any(|s| s.narrative.is_some()) {
+        // Fill changelog narration
+        if let Some(ref mut cl) = changelog_data {
+            if let Some(Some(text)) = result_map.get("changelog") {
+                cl.entries = changelog::parse_changelog_response(text, &cl.raw_commits);
+                cl.narrated = true;
                 has_narration = true;
-                digest.narration_mode = digest::NarrationMode::Narrated;
             }
         }
 
@@ -541,11 +538,11 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         }
     }
 
-    // Write digest
-    if let Some(ref digest) = digest_data {
-        let digest_md = digest::render_markdown(digest);
-        write_digest_page(&config.output_dir, &digest_md, digest)?;
-        digest_generated = true;
+    // Write changelog
+    if let Some(ref cl) = changelog_data {
+        let changelog_md = changelog::render_markdown(cl);
+        write_changelog_page(&config.output_dir, &changelog_md, cl)?;
+        changelog_generated = true;
     }
 
     // Write map
@@ -606,7 +603,7 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         &config.output_dir,
         &config.title,
         &wiki_page_index,
-        digest_generated,
+        changelog_generated,
         map_generated,
         onboard_generated,
         timeline_generated,
@@ -638,7 +635,7 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     Ok(SiteReport {
         output_dir: config.output_dir.display().to_string(),
         pages_generated,
-        digest_generated,
+        changelog_generated,
         map_generated,
         onboard_generated,
         timeline_generated,
@@ -656,7 +653,7 @@ fn create_directory_structure(output_dir: &Path) -> Result<()> {
         "",
         "content",
         "content/wiki",
-        "content/digest",
+        "content/changelog",
         "content/map",
         "content/onboard",
         "content/timeline",
@@ -700,14 +697,14 @@ smart_punctuation = true
 generated_by = "Reflex Pulse"
 has_onboard = {onboard}
 has_glossary = {glossary}
-has_digest = {digest}
+has_changelog = {changelog}
 has_timeline = {timeline}
 has_map = {map}
 has_explorer = {explorer}
 "#,
     onboard = surfaces.contains(&Surface::Onboard),
     glossary = surfaces.contains(&Surface::Glossary),
-    digest = surfaces.contains(&Surface::Digest),
+    changelog = surfaces.contains(&Surface::Changelog),
     timeline = surfaces.contains(&Surface::Timeline),
     map = surfaces.contains(&Surface::Map),
     explorer = surfaces.contains(&Surface::Explorer),
@@ -788,8 +785,8 @@ fn write_templates(output_dir: &Path) -> Result<()> {
                 {% if config.extra.has_glossary %}
                 <li><a href="{{ get_url(path='glossary') }}" {% if current_path is starting_with("glossary") %}class="active"{% endif %}>Glossary</a></li>
                 {% endif %}
-                {% if config.extra.has_digest %}
-                <li><a href="{{ get_url(path='digest') }}" {% if current_path is starting_with("digest") %}class="active"{% endif %}>Digest</a></li>
+                {% if config.extra.has_changelog %}
+                <li><a href="{{ get_url(path='changelog') }}" {% if current_path is starting_with("changelog") %}class="active"{% endif %}>Changelog</a></li>
                 {% endif %}
                 {% if config.extra.has_timeline %}
                 <li><a href="{{ get_url(path='timeline') }}" {% if current_path is starting_with("timeline") %}class="active"{% endif %}>Timeline</a></li>
@@ -817,7 +814,7 @@ fn write_templates(output_dir: &Path) -> Result<()> {
 {{ section.content | safe }}
 {% endblock content %}"#;
 
-    // Section template (wiki/, digest/, map/)
+    // Section template (wiki/, changelog/, map/)
     let section_html = r#"{% extends "base.html" %}
 {% block title %}{{ section.title }} — {{ config.title }}{% endblock title %}
 {% block content %}
@@ -880,20 +877,20 @@ fn write_templates(output_dir: &Path) -> Result<()> {
             clusterBkg: '#1a1a2e',
             clusterBorder: '#2a2a4a',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-            fontSize: '14px'
-        },
-        xyChart: {
-            backgroundColor: 'transparent',
-            titleColor: '#e0e0e0',
-            xAxisLabelColor: '#8888a8',
-            yAxisLabelColor: '#8888a8',
-            xAxisTitleColor: '#e0e0e0',
-            yAxisTitleColor: '#e0e0e0',
-            xAxisTickColor: '#2a2a4a',
-            yAxisTickColor: '#2a2a4a',
-            xAxisLineColor: '#2a2a4a',
-            yAxisLineColor: '#2a2a4a',
-            plotColorPalette: '#a78bfa'
+            fontSize: '14px',
+            xyChart: {
+                backgroundColor: 'transparent',
+                titleColor: '#e0e0e0',
+                xAxisLabelColor: '#8888a8',
+                yAxisLabelColor: '#8888a8',
+                xAxisTitleColor: '#e0e0e0',
+                yAxisTitleColor: '#e0e0e0',
+                xAxisTickColor: '#2a2a4a',
+                yAxisTickColor: '#2a2a4a',
+                xAxisLineColor: '#2a2a4a',
+                yAxisLineColor: '#2a2a4a',
+                plotColorPalette: '#a78bfa'
+            }
         },
         securityLevel: 'loose'
     });
@@ -950,20 +947,20 @@ fn write_templates(output_dir: &Path) -> Result<()> {
             clusterBkg: '#1a1a2e',
             clusterBorder: '#2a2a4a',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-            fontSize: '14px'
-        },
-        xyChart: {
-            backgroundColor: 'transparent',
-            titleColor: '#e0e0e0',
-            xAxisLabelColor: '#8888a8',
-            yAxisLabelColor: '#8888a8',
-            xAxisTitleColor: '#e0e0e0',
-            yAxisTitleColor: '#e0e0e0',
-            xAxisTickColor: '#2a2a4a',
-            yAxisTickColor: '#2a2a4a',
-            xAxisLineColor: '#2a2a4a',
-            yAxisLineColor: '#2a2a4a',
-            plotColorPalette: '#a78bfa'
+            fontSize: '14px',
+            xyChart: {
+                backgroundColor: 'transparent',
+                titleColor: '#e0e0e0',
+                xAxisLabelColor: '#8888a8',
+                yAxisLabelColor: '#8888a8',
+                xAxisTitleColor: '#e0e0e0',
+                yAxisTitleColor: '#e0e0e0',
+                xAxisTickColor: '#2a2a4a',
+                yAxisTickColor: '#2a2a4a',
+                xAxisLineColor: '#2a2a4a',
+                yAxisLineColor: '#2a2a4a',
+                plotColorPalette: '#a78bfa'
+            }
         },
         securityLevel: 'loose'
     });
@@ -1402,7 +1399,7 @@ li { margin-bottom: 0.3rem; }
     color: var(--fg) !important;
 }
 
-/* ── Metric cards (digest summary) ──────────── */
+/* ── Metric cards (changelog summary) ──────────── */
 
 .metric-cards {
     display: flex;
@@ -1778,7 +1775,7 @@ fn write_home_page(
     output_dir: &Path,
     title: &str,
     wiki_pages: &[WikiPageMeta],
-    has_digest: bool,
+    has_changelog: bool,
     has_map: bool,
     has_onboard: bool,
     has_timeline: bool,
@@ -1855,8 +1852,8 @@ fn write_home_page(
     if has_glossary {
         content.push_str("<a href=\"/glossary/\" class=\"quick-link\"><strong>Glossary</strong><br>Domain concepts &amp; vocabulary</a>\n");
     }
-    if has_digest {
-        content.push_str("<a href=\"/digest/\" class=\"quick-link\"><strong>Digest</strong><br>Structural changes</a>\n");
+    if has_changelog {
+        content.push_str("<a href=\"/changelog/\" class=\"quick-link\"><strong>Changelog</strong><br>Recent changes</a>\n");
     }
     if has_timeline {
         content.push_str("<a href=\"/timeline/\" class=\"quick-link\"><strong>Timeline</strong><br>Development activity</a>\n");
@@ -2062,22 +2059,26 @@ fn write_wiki_page(
         .with_context(|| format!("Failed to write wiki page: {}", filename))
 }
 
-fn write_digest_page(
+fn write_changelog_page(
     output_dir: &Path,
-    digest_md: &str,
-    digest_data: &digest::Digest,
+    changelog_md: &str,
+    changelog_data: &changelog::Changelog,
 ) -> Result<()> {
-    // Section index — enable mermaid for pie chart
+    let title = if changelog_data.narrated {
+        "Changelog"
+    } else {
+        "Changelog"
+    };
+
     let mut index_content = String::new();
     index_content.push_str("+++\n");
-    index_content.push_str(&format!("title = \"{}\"\n", digest_data.title));
+    index_content.push_str(&format!("title = \"{}\"\n", title));
     index_content.push_str("template = \"section.html\"\n");
-    index_content.push_str("\n[extra]\nhas_mermaid = true\n");
     index_content.push_str("+++\n\n");
-    index_content.push_str(digest_md);
+    index_content.push_str(changelog_md);
 
-    std::fs::write(output_dir.join("content/digest/_index.md"), index_content)
-        .context("Failed to write digest page")
+    std::fs::write(output_dir.join("content/changelog/_index.md"), index_content)
+        .context("Failed to write changelog page")
 }
 
 fn write_map_page(

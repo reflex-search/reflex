@@ -127,17 +127,17 @@ fn extract_commits(root: &Path) -> Result<Vec<CommitInfo>> {
     Ok(commits)
 }
 
-/// Compute contributor stats from commits
+/// Compute contributor stats from commits (deduplicated by name)
 fn compute_contributors(commits: &[CommitInfo]) -> Vec<Contributor> {
-    let mut by_email: HashMap<String, (String, usize)> = HashMap::new();
+    let mut by_name: HashMap<String, (String, usize)> = HashMap::new();
     for commit in commits {
-        let entry = by_email.entry(commit.email.clone())
-            .or_insert_with(|| (commit.author.clone(), 0));
+        let entry = by_name.entry(commit.author.clone())
+            .or_insert_with(|| (commit.email.clone(), 0));
         entry.1 += 1;
     }
 
-    let mut contributors: Vec<Contributor> = by_email.into_iter()
-        .map(|(email, (name, count))| Contributor {
+    let mut contributors: Vec<Contributor> = by_name.into_iter()
+        .map(|(name, (email, count))| Contributor {
             name,
             email,
             commit_count: count,
@@ -335,7 +335,7 @@ fn compute_module_activity(churn: &[FileChurn]) -> Vec<ModuleActivity> {
 }
 
 /// Convert epoch seconds to YYYY-MM-DD string
-fn epoch_to_date_string(epoch_secs: i64) -> String {
+pub fn epoch_to_date_string(epoch_secs: i64) -> String {
     // Simple date calculation without external deps
     let days = epoch_secs / 86400;
     let (year, month, day) = days_to_ymd(days);
@@ -343,7 +343,7 @@ fn epoch_to_date_string(epoch_secs: i64) -> String {
 }
 
 /// Convert days since epoch to (year, month, day)
-fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+pub fn days_to_ymd(days: i64) -> (i64, u32, u32) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
