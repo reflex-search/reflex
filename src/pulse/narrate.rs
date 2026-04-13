@@ -177,19 +177,46 @@ STRUCTURAL EVIDENCE:
 const MIN_CONTENT_WORDS: usize = 15;
 
 /// Create an LLM provider using the user's ~/.reflex/config.toml (same config as `rfx ask`)
+///
+/// If the configured provider has no API key, auto-detects from available keys.
+/// This handles CI environments where users may set provider-specific secrets
+/// (e.g. `OPENROUTER_API_KEY`) without also setting `REFLEX_PROVIDER`.
 pub fn create_pulse_provider() -> Result<Box<dyn LlmProvider>> {
     let semantic_config = config::load_config(Path::new("."))?;
-    let api_key = config::get_api_key(&semantic_config.provider)?;
+
+    // Try the configured provider first
+    let (provider, api_key) = match config::get_api_key(&semantic_config.provider) {
+        Ok(key) => (semantic_config.provider.clone(), key),
+        Err(configured_err) => {
+            // Auto-detect: try other providers before giving up
+            let fallbacks: &[&str] = &["openrouter", "anthropic", "openai"];
+            let mut found = None;
+            for &candidate in fallbacks {
+                if candidate == semantic_config.provider {
+                    continue;
+                }
+                if let Ok(key) = config::get_api_key(candidate) {
+                    eprintln!(
+                        "Note: no API key for configured provider '{}', using auto-detected '{}'",
+                        semantic_config.provider, candidate
+                    );
+                    found = Some((candidate.to_string(), key));
+                    break;
+                }
+            }
+            found.ok_or(configured_err)?
+        }
+    };
 
     let model = if semantic_config.model.is_some() {
         semantic_config.model.clone()
     } else {
-        config::get_user_model(&semantic_config.provider)
+        config::get_user_model(&provider)
     };
 
-    let options = config::get_provider_options(&semantic_config.provider);
+    let options = config::get_provider_options(&provider);
 
-    providers::create_provider(&semantic_config.provider, api_key, model, options)
+    providers::create_provider(&provider, api_key, model, options)
 }
 
 /// Narrate a structural context block using LLM.
