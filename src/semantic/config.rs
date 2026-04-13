@@ -99,13 +99,17 @@ impl Default for SemanticConfig {
 /// This enables CI/headless usage where there's no ~/.reflex/config.toml.
 fn apply_env_overrides(mut config: SemanticConfig) -> SemanticConfig {
     if let Ok(provider) = env::var("REFLEX_PROVIDER") {
-        log::debug!("Overriding provider from REFLEX_PROVIDER env var: {}", provider);
-        config.provider = provider;
+        if !provider.is_empty() {
+            log::debug!("Overriding provider from REFLEX_PROVIDER env var: {}", provider);
+            config.provider = provider;
+        }
     }
 
     if let Ok(model) = env::var("REFLEX_MODEL") {
-        log::debug!("Overriding model from REFLEX_MODEL env var: {}", model);
-        config.model = Some(model);
+        if !model.is_empty() {
+            log::debug!("Overriding model from REFLEX_MODEL env var: {}", model);
+            config.model = Some(model);
+        }
     }
 
     config
@@ -232,8 +236,10 @@ pub fn get_api_key(provider: &str) -> Result<String> {
 
     // Check generic REFLEX_AI_API_KEY env var (provider-agnostic, useful for CI)
     if let Ok(key) = env::var("REFLEX_AI_API_KEY") {
-        log::debug!("Using API key from REFLEX_AI_API_KEY env var for provider '{}'", provider);
-        return Ok(key);
+        if !key.is_empty() {
+            log::debug!("Using API key from REFLEX_AI_API_KEY env var for provider '{}'", provider);
+            return Ok(key);
+        }
     }
 
     // Fall back to provider-specific environment variables
@@ -285,9 +291,11 @@ pub fn is_any_api_key_configured() -> bool {
     }
 
     // Check generic REFLEX_AI_API_KEY
-    if env::var("REFLEX_AI_API_KEY").is_ok() {
-        log::debug!("Found REFLEX_AI_API_KEY env var");
-        return true;
+    if let Ok(key) = env::var("REFLEX_AI_API_KEY") {
+        if !key.is_empty() {
+            log::debug!("Found REFLEX_AI_API_KEY env var");
+            return true;
+        }
     }
 
     // Check provider-specific environment variables
