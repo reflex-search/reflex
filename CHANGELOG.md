@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-04-27
+
+### Fixed
+
+- MCP stdio server now conforms to JSON-RPC 2.0 and is accepted by strict clients (e.g. Claude Code's Zod validators):
+  - Notifications (messages without an `id`, such as `notifications/initialized`) no longer receive a response.
+  - Responses never emit `"id": null`; the `id` field is now omitted when absent rather than serialized as null.
+
 ## [0.2.3](https://github.com/reflex-search/reflex/compare/v0.2.2...v0.2.3) - 2025-11-04
 
 ### Other

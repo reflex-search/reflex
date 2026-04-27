@@ -29,6 +29,11 @@ struct JsonRpcRequest {
 #[derive(Debug, Serialize)]
 struct JsonRpcResponse {
     jsonrpc: String,
+    // Per JSON-RPC 2.0, Notifications must omit `id` entirely (not set it to null).
+    // We never construct a JsonRpcResponse for a Notification, but skip_serializing_if
+    // is a defensive guard against ever emitting `"id": null`, which strict clients
+    // (e.g. Claude Code's Zod validators) reject.
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<Value>,
@@ -1543,13 +1548,29 @@ fn process_request(request: JsonRpcRequest) -> JsonRpcResponse {
     }
 }
 
-/// Run the MCP server on stdio
-pub fn run_mcp_server() -> Result<()> {
-    log::info!("Starting Reflex MCP server on stdio");
+/// Handle a JSON-RPC Notification. Notifications never receive a response.
+fn handle_notification(method: &str, _params: Option<Value>) {
+    match method {
+        "notifications/initialized" | "notifications/cancelled" => {
+            log::debug!("MCP notification: {}", method);
+        }
+        other => {
+            log::debug!("MCP unknown notification: {}", other);
+        }
+    }
+}
 
+/// Run the MCP server on stdio.
+pub fn run_mcp_server() -> Result<()> {
     let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let reader = stdin.lock();
+    let stdout = io::stdout();
+    run_mcp_server_io(stdin.lock(), stdout.lock())
+}
+
+/// Run the MCP server reading JSON-RPC messages from `reader` and writing
+/// responses to `writer`. Exposed at crate-level for integration tests.
+pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<()> {
+    log::info!("Starting Reflex MCP server on stdio");
 
     for line in reader.lines() {
         let line = line?;
@@ -1561,7 +1582,7 @@ pub fn run_mcp_server() -> Result<()> {
 
         log::debug!("MCP input: {}", line);
 
-        // Parse JSON-RPC request
+        // Parse JSON-RPC message
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
@@ -1570,13 +1591,17 @@ pub fn run_mcp_server() -> Result<()> {
             }
         };
 
-        // Process request
-        let response = process_request(request);
+        // Notifications (no `id`) must not receive a response per JSON-RPC 2.0.
+        if request.id.is_none() {
+            handle_notification(&request.method, request.params);
+            continue;
+        }
 
-        // Send response
+        // Process request and write response
+        let response = process_request(request);
         let response_json = serde_json::to_string(&response)?;
-        writeln!(stdout, "{}", response_json)?;
-        stdout.flush()?;
+        writeln!(writer, "{}", response_json)?;
+        writer.flush()?;
 
         log::debug!("MCP output: {}", response_json);
     }
