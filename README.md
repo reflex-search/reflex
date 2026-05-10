@@ -17,7 +17,7 @@ Reflex is a code search engine designed for developers and AI coding assistants.
 - **🖥️ Interactive Mode**: Live TUI for exploring code with instant search and filters
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
-- **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, OpenRouter)
+- **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, OpenRouter, or any OpenAI-compatible endpoint such as LMStudio, Ollama, llama.cpp, or litellm)
 - **📡 MCP Support**: Model Context Protocol server for AI assistants
 - **📦 Local-First**: Fully offline, all data stays on your machine
 - **🎨 Regex Support**: Trigram-optimized regex search
@@ -75,7 +75,7 @@ Don't want to remember search syntax? Use `rfx ask` to translate natural languag
 
 ### Setup
 
-First-time setup requires configuring an AI provider (OpenAI, Anthropic, or OpenRouter). This configuration is shared by `rfx ask` and `rfx pulse`.
+First-time setup requires configuring an AI provider. Reflex supports OpenAI, Anthropic, OpenRouter, and any **OpenAI-compatible endpoint** (LMStudio, Ollama, llama.cpp server, vLLM, litellm, etc.). This configuration is shared by `rfx ask` and `rfx pulse`.
 
 ```bash
 # Interactive configuration wizard (recommended)
@@ -87,19 +87,35 @@ rfx llm status
 
 This will guide you through:
 - Selecting an AI provider
-- Entering your API key
+- Entering your API key (or base URL for self-hosted endpoints)
 - Choosing a model (optional)
 
 Configuration is saved to `~/.reflex/config.toml`:
 
 ```toml
 [semantic]
-provider = "openai"  # or anthropic, openrouter
+provider = "openai"  # or anthropic, openrouter, openai-compatible
 
 [credentials]
 openai_api_key = "sk-..."
 openai_model = "gpt-4o-mini"  # optional
 ```
+
+#### Self-hosted / OpenAI-compatible endpoints
+
+Point Reflex at any server that implements the OpenAI Chat Completions schema — for example a local LMStudio, Ollama, llama.cpp, vLLM instance, or a litellm proxy. The API key is optional for keyless local servers.
+
+```toml
+[semantic]
+provider = "openai-compatible"
+
+[credentials]
+openai_compatible_base_url = "http://localhost:1234/v1"
+openai_compatible_model = "qwen2.5-coder-32b-instruct"
+# openai_compatible_api_key = "sk-..."   # optional; omit for local servers
+```
+
+The same settings can be supplied via env vars: `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`, `REFLEX_PROVIDER=openai-compatible`, `REFLEX_MODEL=…`.
 
 ### Usage
 
@@ -123,6 +139,9 @@ rfx ask "Find all TODOs in Rust files"
 
 # Use a specific provider
 rfx ask "Show me error handling code" --provider openrouter
+
+# Use a local OpenAI-compatible server (e.g. LMStudio)
+rfx ask "Show me error handling code" --provider openai-compatible
 
 # Agentic mode (multi-step reasoning with automatic context gathering)
 rfx ask "How does authentication work?" --agentic

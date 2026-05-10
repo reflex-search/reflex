@@ -539,14 +539,7 @@ fn initialize_provider(
     // Get API key
     let api_key = config::get_api_key(&semantic_config.provider)?;
 
-    // Determine model
-    let model = if let Some(model_override) = &config.model_override {
-        Some(model_override.clone())
-    } else if semantic_config.model.is_some() {
-        semantic_config.model.clone()
-    } else {
-        config::get_user_model(&semantic_config.provider)
-    };
+    let model = config::resolve_model(&semantic_config, config.model_override.as_deref());
 
     // Create provider
     create_provider(&semantic_config.provider, api_key, model, config::get_provider_options(&semantic_config.provider))

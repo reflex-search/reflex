@@ -344,17 +344,26 @@ Located in your home directory's `~/.reflex/` folder.
 **Example**:
 ```toml
 [semantic]
-provider = "openai"  # Options: openai, anthropic, openrouter
+provider = "openai"  # Options: openai, anthropic, openrouter, openai-compatible
 
 [credentials]
 openai_api_key = "sk-..."
 openai_model = "gpt-4o-mini"
 anthropic_api_key = "sk-ant-..."
+
+# OpenAI-compatible endpoints (LMStudio, Ollama, llama.cpp, vLLM, litellm, …)
+openai_compatible_base_url = "http://localhost:1234/v1"
+openai_compatible_model = "qwen2.5-coder-32b-instruct"
+# openai_compatible_api_key = "sk-..."   # optional; omit for keyless local servers
 ```
+
+**Env vars** (CI / headless usage):
+- `REFLEX_PROVIDER`, `REFLEX_MODEL`, `REFLEX_AI_API_KEY` (works with any provider)
+- Provider-specific: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_BASE_URL`
 
 **Git tracking**: Should NOT be committed (contains API keys).
 
-**Configuration wizard**: Run `rfx ask --configure` to set up interactively.
+**Configuration wizard**: Run `rfx llm config` to set up interactively.
 
 ### 3. Project Context (REFLEX.md)
 **Optional**: Create a `REFLEX.md` file at workspace root to customize `rfx ask` behavior with project-specific context.

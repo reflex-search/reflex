@@ -13,10 +13,11 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
+use std::collections::HashMap;
 use std::io::{self, Stdout};
 
 /// Available AI providers
-const PROVIDERS: &[&str] = &["openai", "anthropic", "openrouter"];
+const PROVIDERS: &[&str] = &["openai", "anthropic", "openrouter", "openai-compatible"];
 
 /// Available models per provider
 const OPENAI_MODELS: &[&str] = &[
@@ -45,9 +46,11 @@ const OPENROUTER_SORT_STRATEGIES: &[(&str, &str)] = &[
 #[derive(Debug, Clone, PartialEq)]
 enum WizardScreen {
     ProviderSelection,
+    BaseUrlInput,
     ApiKeyInput,
     FetchingModels,
     ModelSelection,
+    ModelTextInput,
     SortStrategySelection,
     ConnectivityTest,
     Result { success: bool, message: String },
@@ -56,15 +59,27 @@ enum WizardScreen {
 /// Load existing API key for a provider from ~/.reflex/config.toml
 fn load_existing_api_key(provider: &str) -> Option<String> {
     match crate::semantic::config::get_api_key(provider) {
-        Ok(key) => {
+        Ok(key) if !key.is_empty() => {
             log::debug!("Found existing API key for {}", provider);
             Some(key)
         }
-        Err(_) => {
+        _ => {
             log::debug!("No existing API key found for {}", provider);
             None
         }
     }
+}
+
+/// Load existing base URL for the openai-compatible provider
+fn load_existing_base_url() -> Option<String> {
+    crate::semantic::config::get_provider_options("openai-compatible")
+        .and_then(|opts| opts.get("base_url").cloned())
+        .filter(|s| !s.is_empty())
+}
+
+/// Load existing model preference for the openai-compatible provider
+fn load_existing_compatible_model() -> Option<String> {
+    crate::semantic::config::get_user_model("openai-compatible")
 }
 
 /// Mask API key for display (show first 7 and last 4 characters)
@@ -93,6 +108,16 @@ pub struct ConfigWizard {
     fetched_models: Vec<OpenRouterModel>,
     /// Current search/filter text for model selection
     model_filter: String,
+    /// Base URL for openai-compatible endpoints
+    base_url: String,
+    base_url_cursor: usize,
+    /// Free-text model name for openai-compatible (since we cannot enumerate)
+    model_text: String,
+    model_text_cursor: usize,
+    /// Previously-saved base URL (used to pre-populate the wizard on re-run)
+    existing_base_url: Option<String>,
+    /// Previously-saved openai-compatible model name
+    existing_compatible_model: Option<String>,
 }
 
 impl ConfigWizard {
@@ -108,6 +133,12 @@ impl ConfigWizard {
             existing_api_key: None,
             fetched_models: Vec::new(),
             model_filter: String::new(),
+            base_url: String::new(),
+            base_url_cursor: 0,
+            model_text: String::new(),
+            model_text_cursor: 0,
+            existing_base_url: None,
+            existing_compatible_model: None,
         }
     }
 
@@ -186,9 +217,11 @@ impl ConfigWizard {
 
         match &self.screen {
             WizardScreen::ProviderSelection => self.handle_provider_selection_key(key),
+            WizardScreen::BaseUrlInput => self.handle_base_url_input_key(key),
             WizardScreen::ApiKeyInput => self.handle_api_key_input_key(key),
             WizardScreen::FetchingModels => Ok(false), // No input during fetch
             WizardScreen::ModelSelection => self.handle_model_selection_key(key),
+            WizardScreen::ModelTextInput => self.handle_model_text_input_key(key),
             WizardScreen::SortStrategySelection => self.handle_sort_strategy_key(key),
             WizardScreen::ConnectivityTest => Ok(false), // No input during test
             WizardScreen::Result { .. } => {
@@ -218,13 +251,84 @@ impl ConfigWizard {
                 // Check if API key already exists for this provider
                 self.existing_api_key = load_existing_api_key(self.selected_provider());
 
-                // Move to API key input
-                self.screen = WizardScreen::ApiKeyInput;
-                self.api_key.clear();
-                self.api_key_cursor = 0;
+                if self.selected_provider() == "openai-compatible" {
+                    // Pre-populate base URL and model from any prior config
+                    self.existing_base_url = load_existing_base_url();
+                    self.existing_compatible_model = load_existing_compatible_model();
+                    self.base_url = self.existing_base_url.clone().unwrap_or_default();
+                    self.base_url_cursor = self.base_url.len();
+                    self.model_text = self.existing_compatible_model.clone().unwrap_or_default();
+                    self.model_text_cursor = self.model_text.len();
+                    self.error_message = None;
+                    self.screen = WizardScreen::BaseUrlInput;
+                } else {
+                    // Move to API key input for the standard providers
+                    self.screen = WizardScreen::ApiKeyInput;
+                    self.api_key.clear();
+                    self.api_key_cursor = 0;
+                }
             }
             KeyCode::Esc | KeyCode::Char('q') => {
                 return Ok(true); // Exit wizard
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    /// Handle keys for base URL input screen (openai-compatible only)
+    fn handle_base_url_input_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.base_url.insert(self.base_url_cursor, c);
+                self.base_url_cursor += 1;
+            }
+            KeyCode::Backspace => {
+                if self.base_url_cursor > 0 {
+                    self.base_url_cursor -= 1;
+                    self.base_url.remove(self.base_url_cursor);
+                }
+            }
+            KeyCode::Delete => {
+                if self.base_url_cursor < self.base_url.len() {
+                    self.base_url.remove(self.base_url_cursor);
+                }
+            }
+            KeyCode::Left => {
+                if self.base_url_cursor > 0 {
+                    self.base_url_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if self.base_url_cursor < self.base_url.len() {
+                    self.base_url_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.base_url_cursor = 0;
+            }
+            KeyCode::End => {
+                self.base_url_cursor = self.base_url.len();
+            }
+            KeyCode::Enter => {
+                let trimmed = self.base_url.trim().trim_end_matches('/');
+                if trimmed.is_empty() {
+                    self.error_message = Some("Base URL cannot be empty".to_string());
+                } else if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                    self.error_message =
+                        Some("Base URL must start with http:// or https://".to_string());
+                } else {
+                    self.base_url = trimmed.to_string();
+                    self.base_url_cursor = self.base_url.len();
+                    self.error_message = None;
+                    self.screen = WizardScreen::ApiKeyInput;
+                    self.api_key.clear();
+                    self.api_key_cursor = 0;
+                }
+            }
+            KeyCode::Esc => {
+                self.error_message = None;
+                self.screen = WizardScreen::ProviderSelection;
             }
             _ => {}
         }
@@ -266,37 +370,48 @@ impl ConfigWizard {
                 self.api_key_cursor = self.api_key.len();
             }
             KeyCode::Enter => {
-                // If API key is empty and we have an existing one, keep the existing one
+                let provider = self.selected_provider();
+                let is_compatible = provider == "openai-compatible";
+
+                // Determine the next screen for the chosen provider
+                let next_screen = match provider {
+                    "openrouter" => WizardScreen::FetchingModels,
+                    "openai-compatible" => WizardScreen::ModelTextInput,
+                    _ => WizardScreen::ModelSelection,
+                };
+
                 if self.api_key.is_empty() {
                     if let Some(ref existing_key) = self.existing_api_key {
-                        log::debug!("Keeping existing API key for {}", self.selected_provider());
+                        log::debug!("Keeping existing API key for {}", provider);
                         self.api_key = existing_key.clone();
                         self.error_message = None;
                         self.selected_model_idx = 0;
                         self.model_filter.clear();
-                        if self.selected_provider() == "openrouter" {
-                            self.screen = WizardScreen::FetchingModels;
-                        } else {
-                            self.screen = WizardScreen::ModelSelection;
-                        }
+                        self.screen = next_screen;
+                    } else if is_compatible {
+                        // Local servers (LMStudio, Ollama, llama.cpp) often don't need a key
+                        log::debug!("Proceeding without API key for openai-compatible");
+                        self.error_message = None;
+                        self.selected_model_idx = 0;
+                        self.model_filter.clear();
+                        self.screen = next_screen;
                     } else {
                         self.error_message = Some("API key cannot be empty".to_string());
                     }
                 } else {
-                    // Move to model selection (or fetching for OpenRouter)
                     self.error_message = None;
                     self.selected_model_idx = 0;
                     self.model_filter.clear();
-                    if self.selected_provider() == "openrouter" {
-                        self.screen = WizardScreen::FetchingModels;
-                    } else {
-                        self.screen = WizardScreen::ModelSelection;
-                    }
+                    self.screen = next_screen;
                 }
             }
             KeyCode::Esc => {
-                // Go back to provider selection
-                self.screen = WizardScreen::ProviderSelection;
+                // openai-compatible has BaseUrlInput as the previous screen
+                if self.selected_provider() == "openai-compatible" {
+                    self.screen = WizardScreen::BaseUrlInput;
+                } else {
+                    self.screen = WizardScreen::ProviderSelection;
+                }
             }
             _ => {}
         }
@@ -358,6 +473,57 @@ impl ConfigWizard {
         Ok(false)
     }
 
+    /// Handle keys for free-text model input (openai-compatible only)
+    fn handle_model_text_input_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.model_text.insert(self.model_text_cursor, c);
+                self.model_text_cursor += 1;
+            }
+            KeyCode::Backspace => {
+                if self.model_text_cursor > 0 {
+                    self.model_text_cursor -= 1;
+                    self.model_text.remove(self.model_text_cursor);
+                }
+            }
+            KeyCode::Delete => {
+                if self.model_text_cursor < self.model_text.len() {
+                    self.model_text.remove(self.model_text_cursor);
+                }
+            }
+            KeyCode::Left => {
+                if self.model_text_cursor > 0 {
+                    self.model_text_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if self.model_text_cursor < self.model_text.len() {
+                    self.model_text_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.model_text_cursor = 0;
+            }
+            KeyCode::End => {
+                self.model_text_cursor = self.model_text.len();
+            }
+            KeyCode::Enter => {
+                if self.model_text.trim().is_empty() {
+                    self.error_message = Some("Model name cannot be empty".to_string());
+                } else {
+                    self.error_message = None;
+                    self.screen = WizardScreen::ConnectivityTest;
+                }
+            }
+            KeyCode::Esc => {
+                self.error_message = None;
+                self.screen = WizardScreen::ApiKeyInput;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
     /// Handle keys for sort strategy selection screen (OpenRouter only)
     fn handle_sort_strategy_key(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
@@ -389,9 +555,11 @@ impl ConfigWizard {
         let screen = self.screen.clone();
         match &screen {
             WizardScreen::ProviderSelection => self.render_provider_selection(frame),
+            WizardScreen::BaseUrlInput => self.render_base_url_input(frame),
             WizardScreen::ApiKeyInput => self.render_api_key_input(frame),
             WizardScreen::FetchingModels => self.render_fetching_models(frame),
             WizardScreen::ModelSelection => self.render_model_selection(frame),
+            WizardScreen::ModelTextInput => self.render_model_text_input(frame),
             WizardScreen::SortStrategySelection => self.render_sort_strategy_selection(frame),
             WizardScreen::ConnectivityTest => self.render_connectivity_test(frame),
             WizardScreen::Result { success, message } => {
@@ -635,6 +803,144 @@ impl ConfigWizard {
         frame.render_widget(help, help_chunk);
     }
 
+    /// Render base URL input screen (openai-compatible only)
+    fn render_base_url_input(&mut self, frame: &mut Frame) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(2)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(frame.area());
+
+        let title = Paragraph::new("Configure OpenAI-Compatible Endpoint")
+            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(title, chunks[0]);
+
+        let input_text = if self.base_url_cursor < self.base_url.len() {
+            format!(
+                "{}█{}",
+                &self.base_url[..self.base_url_cursor],
+                &self.base_url[self.base_url_cursor..]
+            )
+        } else {
+            format!("{}█", self.base_url)
+        };
+
+        let input = Paragraph::new(input_text)
+            .style(Style::default().fg(Color::Yellow))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Base URL (e.g. http://localhost:1234/v1)"),
+            );
+        frame.render_widget(input, chunks[1]);
+
+        let message_widget = if let Some(ref error) = self.error_message {
+            Paragraph::new(error.as_str())
+                .style(Style::default().fg(Color::Red))
+                .alignment(Alignment::Center)
+        } else if let Some(ref existing) = self.existing_base_url {
+            Paragraph::new(format!(
+                "Current base URL: {}\n\
+                Examples: LMStudio http://localhost:1234/v1 · Ollama http://localhost:11434/v1\n\
+                Press Enter to continue.",
+                existing
+            ))
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+        } else {
+            Paragraph::new(
+                "Enter the base URL of your OpenAI-compatible endpoint.\n\
+                Examples: LMStudio http://localhost:1234/v1 · Ollama http://localhost:11434/v1\n\
+                The /chat/completions path will be appended automatically.",
+            )
+            .style(Style::default().fg(Color::Green))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+        };
+        frame.render_widget(message_widget, chunks[2]);
+
+        let help = Paragraph::new("Enter to continue, Esc to go back, Ctrl+C to quit")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(help, chunks[3]);
+    }
+
+    /// Render free-text model input screen (openai-compatible only)
+    fn render_model_text_input(&mut self, frame: &mut Frame) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(2)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(frame.area());
+
+        let title = Paragraph::new("Specify Model Name")
+            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(title, chunks[0]);
+
+        let input_text = if self.model_text_cursor < self.model_text.len() {
+            format!(
+                "{}█{}",
+                &self.model_text[..self.model_text_cursor],
+                &self.model_text[self.model_text_cursor..]
+            )
+        } else {
+            format!("{}█", self.model_text)
+        };
+
+        let input = Paragraph::new(input_text)
+            .style(Style::default().fg(Color::Yellow))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Model name (as it appears on your endpoint)"),
+            );
+        frame.render_widget(input, chunks[1]);
+
+        let message_widget = if let Some(ref error) = self.error_message {
+            Paragraph::new(error.as_str())
+                .style(Style::default().fg(Color::Red))
+                .alignment(Alignment::Center)
+        } else if let Some(ref existing) = self.existing_compatible_model {
+            Paragraph::new(format!(
+                "Current model: {}\n\
+                Type the exact model identifier loaded on your server.",
+                existing
+            ))
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+        } else {
+            Paragraph::new(
+                "Enter the model name your server hosts.\n\
+                Examples: qwen2.5-coder-32b-instruct, llama-3.1-8b-instruct, mistral-7b",
+            )
+            .style(Style::default().fg(Color::Green))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+        };
+        frame.render_widget(message_widget, chunks[2]);
+
+        let help = Paragraph::new("Enter to test connection, Esc to go back, Ctrl+C to quit")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(help, chunks[3]);
+    }
+
     /// Render fetching models loading screen
     fn render_fetching_models(&mut self, frame: &mut Frame) {
         let chunks = Layout::default()
@@ -854,21 +1160,47 @@ fn run_wizard_loop(
 
         // Handle connectivity test asynchronously
         if wizard.screen == WizardScreen::ConnectivityTest {
-            let selected_model = wizard.selected_model();
-            let result = test_connectivity(wizard.selected_provider(), &wizard.api_key);
+            let provider = wizard.selected_provider().to_string();
+            let is_compatible = provider == "openai-compatible";
+
+            // openai-compatible uses free-text model input; others use list selection
+            let selected_model = if is_compatible {
+                wizard.model_text.clone()
+            } else {
+                wizard.selected_model()
+            };
+
+            // Build provider options. openai-compatible needs base_url here, or
+            // the factory will bail and the connectivity test would never reach
+            // the network. OpenRouter passes sort via save (not test).
+            let options = if is_compatible {
+                let mut opts = HashMap::new();
+                opts.insert("base_url".to_string(), wizard.base_url.clone());
+                Some(opts)
+            } else {
+                None
+            };
+
+            let result = test_connectivity(&provider, &wizard.api_key, &selected_model, options);
             match result {
                 Ok(_) => {
                     // Save configuration
-                    let sort = if wizard.selected_provider() == "openrouter" {
+                    let sort = if provider == "openrouter" {
                         Some(wizard.selected_sort())
                     } else {
                         None
                     };
+                    let base_url = if is_compatible {
+                        Some(wizard.base_url.as_str())
+                    } else {
+                        None
+                    };
                     if let Err(e) = save_user_config(
-                        wizard.selected_provider(),
+                        &provider,
                         &wizard.api_key,
                         &selected_model,
                         sort,
+                        base_url,
                     ) {
                         wizard.screen = WizardScreen::Result {
                             success: false,
@@ -882,7 +1214,7 @@ fn run_wizard_loop(
                                 Provider: {}\n\
                                 Config file: ~/.reflex/config.toml\n\n\
                                 You can now use 'rfx ask' to query your codebase.",
-                                wizard.selected_provider()
+                                provider
                             ),
                         };
                     }
@@ -892,7 +1224,7 @@ fn run_wizard_loop(
                         success: false,
                         message: format!(
                             "Connectivity test failed: {}\n\n\
-                            Please check your API key and try again.",
+                            Please check your endpoint, model, and credentials and try again.",
                             e
                         ),
                     };
@@ -916,26 +1248,40 @@ fn run_wizard_loop(
 }
 
 /// Test connectivity to the selected provider
-fn test_connectivity(provider_name: &str, api_key: &str) -> Result<()> {
+fn test_connectivity(
+    provider_name: &str,
+    api_key: &str,
+    model: &str,
+    options: Option<HashMap<String, String>>,
+) -> Result<()> {
     // Create a tokio runtime for async operations
     let runtime = tokio::runtime::Runtime::new()
         .context("Failed to create async runtime")?;
 
     runtime.block_on(async {
+        // openai-compatible needs the model passed through; other providers
+        // can fall back to their built-in defaults if no model is given.
+        let model_arg = if model.is_empty() {
+            None
+        } else {
+            Some(model.to_string())
+        };
+
         // Create provider instance
         let provider = crate::semantic::providers::create_provider(
             provider_name,
             api_key.to_string(),
-            None,
-            None,
+            model_arg,
+            options,
         )?;
 
         // Try to make a simple API call to test connectivity
         // Note: Must contain "json" for OpenAI structured output requirement
         let test_prompt = "Please respond with valid JSON: {\"status\": \"ok\"}";
 
-        // Call complete method
-        provider.complete(test_prompt, true).await?;  // json_mode: true for test
+        // Call complete method (json_mode: true for test). Some local servers
+        // do not honor response_format, but the call should still complete.
+        provider.complete(test_prompt, true).await?;
 
         Ok::<(), anyhow::Error>(())
     })?;
@@ -953,9 +1299,14 @@ fn fetch_openrouter_models(api_key: &str) -> Result<Vec<OpenRouterModel>> {
 }
 
 /// Save user configuration to ~/.reflex/config.toml
-fn save_user_config(provider: &str, api_key: &str, model: &str, sort: Option<&str>) -> Result<()> {
+fn save_user_config(
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    sort: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<()> {
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
     use std::fs;
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -1004,18 +1355,28 @@ fn save_user_config(provider: &str, api_key: &str, model: &str, sort: Option<&st
         }
     };
 
-    // Update the semantic section with selected provider
+    // The [semantic] provider value stays in its user-facing kebab-case form
+    // (e.g. "openai-compatible"), but credential field names use underscores
+    // to match the serde fields on the Credentials struct.
     config.semantic.provider = provider.to_string();
+    let cred_prefix = provider.replace('-', "_");
 
     // Update the specific provider's key and model in credentials
-    let key_name = format!("{}_api_key", provider);
-    let model_name = format!("{}_model", provider);
+    let key_name = format!("{}_api_key", cred_prefix);
+    let model_name = format!("{}_model", cred_prefix);
     config.credentials.insert(key_name, api_key.to_string());
     config.credentials.insert(model_name, model.to_string());
 
     // Save sort strategy for OpenRouter
     if let Some(sort_value) = sort {
         config.credentials.insert("openrouter_sort".to_string(), sort_value.to_string());
+    }
+
+    // Save base URL for openai-compatible
+    if let Some(url) = base_url {
+        config
+            .credentials
+            .insert(format!("{}_base_url", cred_prefix), url.to_string());
     }
 
     // Serialize to TOML

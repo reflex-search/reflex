@@ -173,13 +173,19 @@ struct Credentials {
     #[serde(default)]
     openrouter_api_key: Option<String>,
     #[serde(default)]
+    openai_compatible_api_key: Option<String>,
+    #[serde(default)]
     openai_model: Option<String>,
     #[serde(default)]
     anthropic_model: Option<String>,
     #[serde(default)]
     openrouter_model: Option<String>,
     #[serde(default)]
+    openai_compatible_model: Option<String>,
+    #[serde(default)]
     openrouter_sort: Option<String>,
+    #[serde(default)]
+    openai_compatible_base_url: Option<String>,
 }
 
 /// Load user configuration from ~/.reflex/config.toml
@@ -216,14 +222,21 @@ fn load_user_config() -> Result<Option<UserConfig>> {
 /// 3. {PROVIDER}_API_KEY environment variable (e.g., OPENAI_API_KEY)
 /// 4. Error if not found
 pub fn get_api_key(provider: &str) -> Result<String> {
+    let provider_lc = provider.to_lowercase();
+    let is_openai_compatible =
+        provider_lc == "openai-compatible" || provider_lc == "openai_compatible";
+
     // First check user config file
     if let Ok(Some(user_config)) = load_user_config() {
         if let Some(credentials) = &user_config.credentials {
             // Get the appropriate key based on provider
-            let key = match provider.to_lowercase().as_str() {
+            let key = match provider_lc.as_str() {
                 "openai" => credentials.openai_api_key.as_ref(),
                 "anthropic" => credentials.anthropic_api_key.as_ref(),
                 "openrouter" => credentials.openrouter_api_key.as_ref(),
+                "openai-compatible" | "openai_compatible" => {
+                    credentials.openai_compatible_api_key.as_ref()
+                }
                 _ => None,
             };
 
@@ -243,26 +256,37 @@ pub fn get_api_key(provider: &str) -> Result<String> {
     }
 
     // Fall back to provider-specific environment variables
-    let env_var = match provider.to_lowercase().as_str() {
+    let env_var = match provider_lc.as_str() {
         "openai" => "OPENAI_API_KEY",
         "anthropic" => "ANTHROPIC_API_KEY",
         "openrouter" => "OPENROUTER_API_KEY",
+        "openai-compatible" | "openai_compatible" => "OPENAI_COMPATIBLE_API_KEY",
         _ => anyhow::bail!("Unknown provider: {}", provider),
     };
 
-    env::var(env_var).with_context(|| {
-        format!(
-            "API key not found for provider '{}'.\n\
-             \n\
-             Either:\n\
-             1. Run 'rfx ask --configure' to set up your API key interactively\n\
-             2. Set REFLEX_AI_API_KEY (works with any provider)\n\
-             3. Set the {} environment variable\n\
-             \n\
-             Example: export REFLEX_AI_API_KEY=sk-...",
-            provider, env_var
-        )
-    })
+    if let Ok(key) = env::var(env_var) {
+        return Ok(key);
+    }
+
+    // openai-compatible can run keyless against local servers — return empty
+    // string instead of erroring. Caller is responsible for ensuring base_url
+    // is configured separately.
+    if is_openai_compatible {
+        log::debug!("No API key configured for openai-compatible; sending requests without auth header");
+        return Ok(String::new());
+    }
+
+    Err(anyhow::anyhow!(
+        "API key not found for provider '{}'.\n\
+         \n\
+         Either:\n\
+         1. Run 'rfx llm config' to set up your API key interactively\n\
+         2. Set REFLEX_AI_API_KEY (works with any provider)\n\
+         3. Set the {} environment variable\n\
+         \n\
+         Example: export REFLEX_AI_API_KEY=sk-...",
+        provider, env_var
+    ))
 }
 
 /// Check if any API key is configured for any supported provider
@@ -274,8 +298,6 @@ pub fn get_api_key(provider: &str) -> Result<String> {
 ///
 /// Returns true if at least one API key is found for any provider.
 pub fn is_any_api_key_configured() -> bool {
-    let providers = ["openai", "anthropic", "openrouter"];
-
     // Check user config file first
     if let Ok(Some(user_config)) = load_user_config() {
         if let Some(credentials) = &user_config.credentials {
@@ -283,8 +305,12 @@ pub fn is_any_api_key_configured() -> bool {
             if credentials.openai_api_key.is_some()
                 || credentials.anthropic_api_key.is_some()
                 || credentials.openrouter_api_key.is_some()
+                || credentials.openai_compatible_api_key.is_some()
+                // openai-compatible can run keyless — a configured base_url
+                // counts as "configured" even without an API key.
+                || credentials.openai_compatible_base_url.is_some()
             {
-                log::debug!("Found API key in ~/.reflex/config.toml");
+                log::debug!("Found provider credential in ~/.reflex/config.toml");
                 return true;
             }
         }
@@ -299,21 +325,22 @@ pub fn is_any_api_key_configured() -> bool {
     }
 
     // Check provider-specific environment variables
-    for provider in &providers {
-        let env_var = match *provider {
-            "openai" => "OPENAI_API_KEY",
-            "anthropic" => "ANTHROPIC_API_KEY",
-            "openrouter" => "OPENROUTER_API_KEY",
-            _ => continue,
-        };
+    let env_vars = [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENROUTER_API_KEY",
+        "OPENAI_COMPATIBLE_API_KEY",
+        "OPENAI_COMPATIBLE_BASE_URL",
+    ];
 
+    for env_var in &env_vars {
         if env::var(env_var).is_ok() {
             log::debug!("Found {} environment variable", env_var);
             return true;
         }
     }
 
-    log::debug!("No API keys found in config or environment variables");
+    log::debug!("No provider credentials found in config or environment variables");
     false
 }
 
@@ -328,6 +355,9 @@ pub fn get_user_model(provider: &str) -> Option<String> {
                 "openai" => credentials.openai_model.as_ref(),
                 "anthropic" => credentials.anthropic_model.as_ref(),
                 "openrouter" => credentials.openrouter_model.as_ref(),
+                "openai-compatible" | "openai_compatible" => {
+                    credentials.openai_compatible_model.as_ref()
+                }
                 _ => None,
             };
 
@@ -339,6 +369,42 @@ pub fn get_user_model(provider: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Resolve the effective model for an LLM call.
+///
+/// Precedence:
+///   1. Explicit override (CLI flag, `--model`, `/model` command arg, etc.)
+///   2. `[semantic] model` from `~/.reflex/config.toml` (also receives
+///      `REFLEX_MODEL` env var via `apply_env_overrides`)
+///   3. `[credentials] {provider}_model` via `get_user_model`
+///   4. `None` — caller's provider constructor applies its own default
+///
+/// Returning `None` lets each provider keep its own built-in default
+/// (e.g. OpenAI → `gpt-4o-mini`). The openai-compatible provider has no
+/// default and will error if `None` is returned, which is the correct
+/// behavior for self-hosted endpoints — the fix is to configure a model.
+pub fn resolve_model(
+    config: &SemanticConfig,
+    override_model: Option<&str>,
+) -> Option<String> {
+    resolve_model_for(&config.provider, config.model.as_deref(), override_model)
+}
+
+/// Same as [`resolve_model`] but takes provider/project-model separately.
+///
+/// Use when the caller has resolved a provider that may not match
+/// `semantic_config.provider` — e.g. `pulse/narrate.rs` auto-detects a
+/// provider with a working API key when the configured one has none.
+pub fn resolve_model_for(
+    provider: &str,
+    project_model: Option<&str>,
+    override_model: Option<&str>,
+) -> Option<String> {
+    override_model
+        .map(String::from)
+        .or_else(|| project_model.map(String::from))
+        .or_else(|| get_user_model(provider))
 }
 
 /// Save user's provider/model preference to ~/.reflex/config.toml
@@ -394,27 +460,62 @@ pub fn save_user_provider(provider: &str, model: Option<&str>) -> Result<()> {
 /// Returns `Some(HashMap)` for providers that need extra settings (e.g., OpenRouter sort strategy).
 /// Returns `None` for providers with no additional options.
 pub fn get_provider_options(provider: &str) -> Option<HashMap<String, String>> {
-    if provider.to_lowercase() != "openrouter" {
-        return None;
-    }
+    let provider_lc = provider.to_lowercase();
 
-    if let Ok(Some(user_config)) = load_user_config() {
-        if let Some(credentials) = &user_config.credentials {
-            if let Some(sort) = &credentials.openrouter_sort {
-                let mut opts = HashMap::new();
-                opts.insert("sort".to_string(), sort.clone());
-                return Some(opts);
+    match provider_lc.as_str() {
+        "openrouter" => {
+            if let Ok(Some(user_config)) = load_user_config() {
+                if let Some(credentials) = &user_config.credentials {
+                    if let Some(sort) = &credentials.openrouter_sort {
+                        let mut opts = HashMap::new();
+                        opts.insert("sort".to_string(), sort.clone());
+                        return Some(opts);
+                    }
+                }
             }
+            None
         }
-    }
+        "openai-compatible" | "openai_compatible" => {
+            // base_url priority: config file → OPENAI_COMPATIBLE_BASE_URL env var
+            let base_url = load_user_config()
+                .ok()
+                .flatten()
+                .and_then(|cfg| cfg.credentials)
+                .and_then(|c| c.openai_compatible_base_url)
+                .or_else(|| env::var("OPENAI_COMPATIBLE_BASE_URL").ok())
+                .filter(|s| !s.is_empty());
 
-    None
+            base_url.map(|url| {
+                let mut opts = HashMap::new();
+                opts.insert("base_url".to_string(), url);
+                opts
+            })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
+
+    /// Tests in this module manipulate process-wide environment variables
+    /// (`HOME`, `OPENAI_API_KEY`, etc.). Cargo runs tests in parallel by
+    /// default, which causes races: one test's `env::remove_var("HOME")`
+    /// executes mid-flight while another test is reading config from a
+    /// `HOME`-rooted path. Acquire this mutex at the start of every test
+    /// that touches env state to serialize them. Tests that don't touch
+    /// env state can omit it.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the env-state lock for the duration of a test. Drops on
+    /// scope exit, restoring parallelism. Robust to poisoning from a
+    /// panicking test (recover instead of propagating).
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_default_config() {
@@ -427,6 +528,7 @@ mod tests {
 
     #[test]
     fn test_load_config_no_file() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
 
         // Set HOME to temp directory to avoid loading user's config
@@ -445,6 +547,7 @@ mod tests {
 
     #[test]
     fn test_load_config_with_semantic_section() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
         let reflex_dir = temp.path().join(".reflex");
         std::fs::create_dir_all(&reflex_dir).unwrap();
@@ -479,6 +582,7 @@ auto_execute = true
 
     #[test]
     fn test_load_config_without_semantic_section() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
         let reflex_dir = temp.path().join(".reflex");
         std::fs::create_dir_all(&reflex_dir).unwrap();
@@ -508,6 +612,7 @@ languages = []
 
     #[test]
     fn test_get_api_key_env_var() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
 
         // Set HOME to temp directory to avoid loading user's config
@@ -527,12 +632,14 @@ languages = []
 
     #[test]
     fn test_get_api_key_missing() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
 
         // Set HOME to temp directory to avoid loading user's config
         unsafe {
             env::set_var("HOME", temp.path());
             env::remove_var("OPENROUTER_API_KEY");
+            env::remove_var("REFLEX_AI_API_KEY");
         }
 
         let result = get_api_key("openrouter");
@@ -546,6 +653,7 @@ languages = []
 
     #[test]
     fn test_get_api_key_unknown_provider() {
+        let _g = env_guard();
         let result = get_api_key("unknown");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown provider"));
@@ -553,6 +661,7 @@ languages = []
 
     #[test]
     fn test_env_override_provider() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
 
         unsafe {
@@ -572,6 +681,7 @@ languages = []
 
     #[test]
     fn test_env_override_model() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
 
         unsafe {
@@ -593,6 +703,7 @@ languages = []
 
     #[test]
     fn test_get_api_key_generic_env_var() {
+        let _g = env_guard();
         let temp = TempDir::new().unwrap();
 
         unsafe {
@@ -608,5 +719,188 @@ languages = []
             env::remove_var("REFLEX_AI_API_KEY");
             env::remove_var("HOME");
         }
+    }
+
+    #[test]
+    fn test_get_api_key_openai_compatible_returns_empty_when_unset() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+            env::remove_var("OPENAI_COMPATIBLE_API_KEY");
+            env::remove_var("REFLEX_AI_API_KEY");
+        }
+
+        // For openai-compatible, missing key is OK (local servers don't require auth)
+        let key = get_api_key("openai-compatible").unwrap();
+        assert_eq!(key, "");
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn test_get_provider_options_openai_compatible_from_config() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+        let reflex_dir = temp.path().join(".reflex");
+        std::fs::create_dir_all(&reflex_dir).unwrap();
+        let config_path = reflex_dir.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+[credentials]
+openai_compatible_base_url = "http://localhost:1234/v1"
+openai_compatible_model = "qwen2.5-coder"
+            "#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+            env::remove_var("OPENAI_COMPATIBLE_BASE_URL");
+        }
+
+        let opts = get_provider_options("openai-compatible");
+        let model = get_user_model("openai-compatible");
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+
+        let opts = opts.expect("base_url should be discovered from config");
+        assert_eq!(
+            opts.get("base_url").map(|s| s.as_str()),
+            Some("http://localhost:1234/v1")
+        );
+        assert_eq!(model, Some("qwen2.5-coder".to_string()));
+    }
+
+    #[test]
+    fn test_get_provider_options_openai_compatible_from_env() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+            env::set_var("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:11434/v1");
+        }
+
+        let opts = get_provider_options("openai-compatible");
+
+        unsafe {
+            env::remove_var("OPENAI_COMPATIBLE_BASE_URL");
+            env::remove_var("HOME");
+        }
+
+        let opts = opts.expect("base_url should be discovered from env var");
+        assert_eq!(
+            opts.get("base_url").map(|s| s.as_str()),
+            Some("http://localhost:11434/v1")
+        );
+    }
+
+    fn config_with(provider: &str, project_model: Option<&str>) -> SemanticConfig {
+        SemanticConfig {
+            provider: provider.to_string(),
+            model: project_model.map(String::from),
+            ..SemanticConfig::default()
+        }
+    }
+
+    #[test]
+    fn resolve_model_prefers_override() {
+        let config = config_with("openai", Some("gpt-4o"));
+        let resolved = resolve_model(&config, Some("gpt-4o-2024-08-06"));
+        assert_eq!(resolved.as_deref(), Some("gpt-4o-2024-08-06"));
+    }
+
+    #[test]
+    fn resolve_model_falls_back_to_project_config() {
+        let config = config_with("openai", Some("gpt-4o"));
+        let resolved = resolve_model(&config, None);
+        assert_eq!(resolved.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn resolve_model_returns_none_when_unset() {
+        let _g = env_guard();
+        // No override, no [semantic] model, no [credentials] entry — caller
+        // is expected to fall back to the provider's own default.
+        let temp = TempDir::new().unwrap();
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
+
+        let config = config_with("openai", None);
+        let resolved = resolve_model(&config, None);
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolve_model_for_openai_compatible_reads_user_config() {
+        let _g = env_guard();
+        // The actual bug repro at the unit level: model lives in
+        // ~/.reflex/config.toml [credentials] openai_compatible_model and
+        // resolve_model_for must surface it when override + project are None.
+        let temp = TempDir::new().unwrap();
+        let reflex_dir = temp.path().join(".reflex");
+        std::fs::create_dir_all(&reflex_dir).unwrap();
+        std::fs::write(
+            reflex_dir.join("config.toml"),
+            r#"
+[credentials]
+openai_compatible_model = "gpt-oss:20b-cloud"
+            "#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
+
+        let resolved = resolve_model_for("openai-compatible", None, None);
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+
+        assert_eq!(resolved.as_deref(), Some("gpt-oss:20b-cloud"));
+    }
+
+    #[test]
+    fn resolve_model_for_override_beats_user_config() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+        let reflex_dir = temp.path().join(".reflex");
+        std::fs::create_dir_all(&reflex_dir).unwrap();
+        std::fs::write(
+            reflex_dir.join("config.toml"),
+            r#"
+[credentials]
+openrouter_model = "anthropic/claude-opus-4"
+            "#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
+
+        let resolved = resolve_model_for("openrouter", None, Some("openai/gpt-4o"));
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+
+        assert_eq!(resolved.as_deref(), Some("openai/gpt-4o"));
     }
 }

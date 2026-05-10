@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- New `openai-compatible` LLM provider for any endpoint that implements the OpenAI Chat Completions schema, including LMStudio, Ollama, llama.cpp server, vLLM, and litellm proxies. Configure via `rfx llm config` or by setting `[credentials] openai_compatible_base_url` (and optionally `openai_compatible_api_key` / `openai_compatible_model`) in `~/.reflex/config.toml`. The API key is optional for keyless local servers. Closes [#30](https://github.com/reflex-search/reflex/issues/30).
+
+### Changed
+
+- LLM model resolution centralized into `config::resolve_model` / `config::resolve_model_for`. **Previously, `~/.reflex/config.toml` `[credentials] {provider}_model` was silently ignored by chat_tui's runtime calls** (compaction, mid-session triage, in-session provider switches) and the provider's hard-coded constructor default was used instead. After this change those user-config values are honored everywhere. **If you set `openrouter_model = "anthropic/claude-opus-4"` (or similar) thinking it had no effect, your interactive sessions will now actually use that model — which may change costs.** Verify your `~/.reflex/config.toml` after upgrading.
+- Four near-duplicate model-resolution implementations across `semantic/mod.rs`, `semantic/agentic.rs`, `semantic/chat_tui.rs`, and `pulse/narrate.rs` collapsed into one helper.
+
+### Fixed
+
+- chat_tui no longer silently falls back to the provider's hard-coded default model when `~/.reflex/config.toml` has a model set. Previously this only worked on the initial chat session; runtime calls (compaction, triage, mid-session provider switches) used the constructor default. Invisible for openai/anthropic/openrouter (silent wrong-model); a hard error for the new `openai-compatible` provider (no default model available).
+- The `/model` command in interactive chat now accepts `openai-compatible` and no longer panics via `unreachable!()` when switching to a provider without a hard-coded default. It refuses the switch with a friendly status-bar message if no model is configured for the target provider.
+- Triage failures in interactive chat now surface in the status bar as a `PhaseUpdate::Notice` event instead of being written only to the log, so silent fallback to keyword-only search is no longer invisible to the user.
+
 ## [1.1.3] - 2026-04-27
 
 ### Fixed

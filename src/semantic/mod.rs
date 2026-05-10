@@ -55,15 +55,7 @@ pub async fn ask_question(
     // Get API key
     let api_key = config::get_api_key(&config.provider)?;
 
-    // Determine which model to use (priority order):
-    // 1. Project config model override (config.model from .reflex/config.toml)
-    // 2. User-configured model for this provider (~/.reflex/config.toml)
-    // 3. Provider default (handled by provider)
-    let model = if config.model.is_some() {
-        config.model.clone()
-    } else {
-        config::get_user_model(&config.provider)
-    };
+    let model = config::resolve_model(&config, None);
 
     // Create provider
     let provider = providers::create_provider(

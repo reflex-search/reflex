@@ -67,6 +67,12 @@ enum PhaseUpdate {
     Error {
         error: String,
     },
+    /// Non-fatal notice surfaced to the status bar (e.g. degraded LLM mode
+    /// when the LLM call failed but the path can still produce a useful
+    /// result via fallback).
+    Notice {
+        message: String,
+    },
     /// Processing complete
     Done,
 }
@@ -350,19 +356,20 @@ impl ChatApp {
         provider_name: String,
         model_override: Option<String>,
     ) -> Result<Self> {
-        // Get actual model name (priority: override > user config > provider default)
-        let model = if let Some(ref m) = model_override {
-            m.clone()
-        } else if let Some(user_model) = super::config::get_user_model(&provider_name) {
-            user_model
-        } else {
-            // Provider defaults
-            match provider_name.to_lowercase().as_str() {
-                "openai" => "gpt-4o-mini".to_string(),
-                "anthropic" => "claude-3-5-haiku-20241022".to_string(),
-                _ => "unknown".to_string(),
-            }
-        };
+        // Get actual model name (priority: override > user config > provider default).
+        // For self-hosted providers with no built-in default, fall back to
+        // a "(not configured)" placeholder for the session label — the
+        // failure will surface at send time as a Notice.
+        let model = super::config::resolve_model_for(&provider_name, None, model_override.as_deref())
+            .or_else(|| {
+                let d = super::providers::default_model_for(&provider_name);
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d.to_string())
+                }
+            })
+            .unwrap_or_else(|| "(not configured)".to_string());
 
         let session = ChatSession::new(provider_name.clone(), model);
 
@@ -1065,6 +1072,9 @@ impl ChatApp {
                 self.progress_rx = None;
                 self.scroll_offset = 0;
             }
+            PhaseUpdate::Notice { message } => {
+                self.status_message = Some(message);
+            }
             PhaseUpdate::Done => {
                 self.waiting = false;
                 self.status_message = None;
@@ -1148,7 +1158,7 @@ impl ChatApp {
             let mut config = super::config::load_config(self.cache.path())?;
             config.provider = self.provider_name.clone();
             let api_key = super::config::get_api_key(&config.provider)?;
-            let model = self.model_override.clone().or(config.model);
+            let model = super::config::resolve_model(&config, self.model_override.as_deref());
             super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider))?
         };
 
@@ -1204,7 +1214,7 @@ impl ChatApp {
         let new_model_arg = parts.get(2).map(|s| s.to_string());
 
         // Validate provider
-        let valid_providers = ["openai", "anthropic", "openrouter"];
+        let valid_providers = ["openai", "anthropic", "openrouter", "openai-compatible"];
         if !valid_providers.contains(&new_provider.as_str()) {
             self.status_message = Some(format!(
                 "Invalid provider '{}'. Available: {}",
@@ -1215,18 +1225,23 @@ impl ChatApp {
         }
 
         // Determine model (priority: command arg > user config > provider default)
-        let new_model = if let Some(model) = new_model_arg.clone() {
-            model
-        } else if let Some(user_model) = super::config::get_user_model(&new_provider) {
-            user_model
-        } else {
-            // Provider defaults
-            match new_provider.as_str() {
-                "openai" => "gpt-4o-mini".to_string(),
-                "anthropic" => "claude-3-5-haiku-20241022".to_string(),
-                _ => unreachable!(),
-            }
-        };
+        let new_model = super::config::resolve_model_for(
+            &new_provider,
+            None,
+            new_model_arg.as_deref(),
+        )
+        .unwrap_or_else(|| super::providers::default_model_for(&new_provider).to_string());
+
+        // openai-compatible has no built-in default; refuse the switch with a
+        // friendly message rather than persisting a blank model name.
+        if new_model.is_empty() {
+            self.status_message = Some(format!(
+                "/model {} requires a model name (e.g. /model {} <model>) — \
+                 self-hosted endpoints have no default. Run 'rfx llm config' first.",
+                new_provider, new_provider
+            ));
+            return Ok(());
+        }
 
         // Update session
         self.session.update_provider(new_provider.clone(), new_model.clone());
@@ -1321,7 +1336,7 @@ async fn triage_question(
         let mut config = super::config::load_config(cache_path)?;
         config.provider = provider_name.to_string();
         let api_key = super::config::get_api_key(&config.provider)?;
-        let model = model_override.map(|s| s.to_string()).or(config.model);
+        let model = super::config::resolve_model(&config, model_override);
         super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider))?
     };
 
@@ -1397,7 +1412,9 @@ async fn execute_query_async(
     ).await {
         Ok(decision) => decision,
         Err(e) => {
-            log::warn!("Triage failed, defaulting to search: {}", e);
+            let msg = format!("LLM unavailable, falling back to search: {}", e);
+            log::warn!("{}", msg);
+            let _ = tx.send(PhaseUpdate::Notice { message: msg });
             TriageDecision::NeedsSearch {
                 reasoning: "Triage failed, using search as fallback".to_string(),
             }
@@ -1414,7 +1431,7 @@ async fn execute_query_async(
                 let mut config = super::config::load_config(&cache_path)?;
                 config.provider = provider_name.to_string();
                 let api_key = super::config::get_api_key(&config.provider)?;
-                let model = model_override.map(|s| s.to_string()).or(config.model);
+                let model = super::config::resolve_model(&config, model_override);
                 super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider))
             })() {
                 Ok(provider) => provider,
@@ -1509,7 +1526,7 @@ async fn execute_query_async(
                                 let mut config = super::config::load_config(&cache_path)?;
                                 config.provider = provider_name.to_string();
                                 let api_key = super::config::get_api_key(&config.provider)?;
-                                let model = model_override.map(|s| s.to_string()).or(config.model);
+                                let model = super::config::resolve_model(&config, model_override);
                                 super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider))
                             })() {
                                 Ok(provider) => provider,
@@ -1629,7 +1646,7 @@ async fn execute_query_async(
                 let mut config = super::config::load_config(&cache_path)?;
                 config.provider = provider_name.to_string();
                 let api_key = super::config::get_api_key(&config.provider)?;
-                let model = model_override.map(|s| s.to_string()).or(config.model);
+                let model = super::config::resolve_model(&config, model_override);
                 super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider))
             })() {
                 Ok(provider) => provider,

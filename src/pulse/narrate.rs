@@ -208,11 +208,7 @@ pub fn create_pulse_provider() -> Result<Box<dyn LlmProvider>> {
         }
     };
 
-    let model = if semantic_config.model.is_some() {
-        semantic_config.model.clone()
-    } else {
-        config::get_user_model(&provider)
-    };
+    let model = config::resolve_model_for(&provider, semantic_config.model.as_deref(), None);
 
     let options = config::get_provider_options(&provider);
 
