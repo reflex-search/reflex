@@ -19,16 +19,22 @@ use std::io::{self, Stdout};
 /// Available AI providers
 const PROVIDERS: &[&str] = &["openai", "anthropic", "openrouter", "openai-compatible"];
 
-/// Available models per provider
-const OPENAI_MODELS: &[&str] = &[
+// OpenAI and Anthropic model lists are fetched dynamically from each provider's
+// /v1/models endpoint at wizard runtime (see fetch_openai_models_blocking,
+// fetch_anthropic_models_blocking). These small fallback lists are only used
+// when the live fetch fails (offline, key revoked, regional outage), so the
+// wizard remains usable without a network connection.
+const OPENAI_FALLBACK_MODELS: &[&str] = &[
     "gpt-5.1",
     "gpt-5.1-mini",
-    "gpt-5.1-nano",
     "gpt-5",
     "gpt-5-mini",
-    "gpt-5-nano",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
 ];
-const ANTHROPIC_MODELS: &[&str] = &[
+const ANTHROPIC_FALLBACK_MODELS: &[&str] = &[
     "claude-sonnet-4-5",
     "claude-haiku-4-5",
     "claude-sonnet-4",
@@ -106,6 +112,8 @@ pub struct ConfigWizard {
     existing_api_key: Option<String>,
     /// Dynamically fetched models (OpenRouter)
     fetched_models: Vec<OpenRouterModel>,
+    /// Dynamically fetched plain model IDs (OpenAI, Anthropic)
+    fetched_dynamic_models: Vec<String>,
     /// Current search/filter text for model selection
     model_filter: String,
     /// Base URL for openai-compatible endpoints
@@ -132,6 +140,7 @@ impl ConfigWizard {
             error_message: None,
             existing_api_key: None,
             fetched_models: Vec::new(),
+            fetched_dynamic_models: Vec::new(),
             model_filter: String::new(),
             base_url: String::new(),
             base_url_cursor: 0,
@@ -147,20 +156,31 @@ impl ConfigWizard {
         PROVIDERS[self.selected_provider_idx]
     }
 
-    /// Get available static models for the current provider (non-OpenRouter)
-    fn static_models(&self) -> &'static [&'static str] {
-        match self.selected_provider() {
-            "openai" => OPENAI_MODELS,
-            "anthropic" => ANTHROPIC_MODELS,
-            _ => &[],
-        }
+    /// True for providers whose model list supports a typed text filter.
+    /// OpenAI/Anthropic/OpenRouter are dynamically fetched and may be long;
+    /// type-to-filter narrows the displayed list.
+    fn supports_filter(&self) -> bool {
+        matches!(
+            self.selected_provider(),
+            "openrouter" | "openai" | "anthropic"
+        )
     }
 
-    /// Get filtered model IDs for display (considers search filter for OpenRouter)
+    /// Get available static models for the current provider.
+    ///
+    /// Returns empty for every provider since openai/anthropic/openrouter all
+    /// fetch dynamically and openai-compatible uses free-text input. Kept as a
+    /// hook in case a future provider ships with a static catalog.
+    fn static_models(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Get filtered model IDs for display (applies search filter for dynamic providers).
     fn filtered_model_ids(&self) -> Vec<String> {
-        if self.selected_provider() == "openrouter" {
-            let filter = self.model_filter.to_lowercase();
-            self.fetched_models
+        let filter = self.model_filter.to_lowercase();
+        match self.selected_provider() {
+            "openrouter" => self
+                .fetched_models
                 .iter()
                 .filter(|m| {
                     if filter.is_empty() {
@@ -170,9 +190,14 @@ impl ConfigWizard {
                         || m.name.to_lowercase().contains(&filter)
                 })
                 .map(|m| m.id.clone())
-                .collect()
-        } else {
-            self.static_models().iter().map(|s| s.to_string()).collect()
+                .collect(),
+            "openai" | "anthropic" => self
+                .fetched_dynamic_models
+                .iter()
+                .filter(|id| filter.is_empty() || id.to_lowercase().contains(&filter))
+                .cloned()
+                .collect(),
+            _ => self.static_models().iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -375,7 +400,7 @@ impl ConfigWizard {
 
                 // Determine the next screen for the chosen provider
                 let next_screen = match provider {
-                    "openrouter" => WizardScreen::FetchingModels,
+                    "openrouter" | "openai" | "anthropic" => WizardScreen::FetchingModels,
                     "openai-compatible" => WizardScreen::ModelTextInput,
                     _ => WizardScreen::ModelSelection,
                 };
@@ -421,6 +446,7 @@ impl ConfigWizard {
     /// Handle keys for model selection screen
     fn handle_model_selection_key(&mut self, key: KeyEvent) -> Result<bool> {
         let is_openrouter = self.selected_provider() == "openrouter";
+        let supports_filter = self.supports_filter();
         let model_count = self.filtered_model_ids().len();
 
         match key.code {
@@ -434,21 +460,23 @@ impl ConfigWizard {
                     self.selected_model_idx += 1;
                 }
             }
-            KeyCode::Char('k') if !is_openrouter => {
+            // j/k vim navigation only works when typing-to-filter is disabled,
+            // otherwise those characters would always be swallowed as filter input.
+            KeyCode::Char('k') if !supports_filter => {
                 if self.selected_model_idx > 0 {
                     self.selected_model_idx -= 1;
                 }
             }
-            KeyCode::Char('j') if !is_openrouter => {
+            KeyCode::Char('j') if !supports_filter => {
                 if model_count > 0 && self.selected_model_idx < model_count - 1 {
                     self.selected_model_idx += 1;
                 }
             }
-            KeyCode::Char(c) if is_openrouter && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c) if supports_filter && !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.model_filter.push(c);
                 self.selected_model_idx = 0;
             }
-            KeyCode::Backspace if is_openrouter => {
+            KeyCode::Backspace if supports_filter => {
                 self.model_filter.pop();
                 self.selected_model_idx = 0;
             }
@@ -692,6 +720,7 @@ impl ConfigWizard {
     /// Render model selection screen
     fn render_model_selection(&mut self, frame: &mut Frame) {
         let is_openrouter = self.selected_provider() == "openrouter";
+        let supports_filter = self.supports_filter();
         let filtered = self.filtered_model_ids();
         let model_count = filtered.len();
 
@@ -745,7 +774,7 @@ impl ConfigWizard {
         };
 
         // Model list
-        if model_count == 0 && is_openrouter {
+        if model_count == 0 && supports_filter {
             let empty_msg = Paragraph::new("No models match filter")
                 .style(Style::default().fg(Color::DarkGray))
                 .alignment(Alignment::Center)
@@ -773,7 +802,7 @@ impl ConfigWizard {
                 })
                 .collect();
 
-            let list_title = if is_openrouter {
+            let list_title = if supports_filter {
                 "Models (↑/↓ to navigate, type to filter, Enter to select, Esc to go back)"
             } else {
                 "Select Model (↑/↓ to navigate, Enter to select, Esc to go back, Ctrl+C to quit)"
@@ -792,7 +821,7 @@ impl ConfigWizard {
         }
 
         // Help text
-        let help_text = if is_openrouter {
+        let help_text = if supports_filter {
             "Type to filter, ↑/↓ to navigate, Enter to select, Esc to go back, Ctrl+C to quit"
         } else {
             "Use arrow keys or j/k to navigate, Enter to select, Esc to go back, Ctrl+C to quit"
@@ -959,8 +988,15 @@ impl ConfigWizard {
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
 
-        // Loading message
-        let message = Paragraph::new("Loading models from OpenRouter...\n\nPlease wait...")
+        // Loading message — name the actual provider being queried
+        let provider_label = match self.selected_provider() {
+            "openrouter" => "OpenRouter",
+            "openai" => "OpenAI",
+            "anthropic" => "Anthropic",
+            other => other,
+        };
+        let body = format!("Loading models from {}...\n\nPlease wait...", provider_label);
+        let message = Paragraph::new(body)
             .style(Style::default().fg(Color::Yellow))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true });
@@ -1135,24 +1171,80 @@ fn run_wizard_loop(
         // Render current screen
         terminal.draw(|frame| wizard.render(frame))?;
 
-        // Handle model fetching for OpenRouter
+        // Dispatch /v1/models fetch by provider. OpenRouter dead-ends on error
+        // because pricing data is critical to its UX; OpenAI and Anthropic fall
+        // back to a small offline list so the wizard remains usable.
         if wizard.screen == WizardScreen::FetchingModels {
-            let result = fetch_openrouter_models(&wizard.api_key);
-            match result {
-                Ok(models) => {
-                    wizard.fetched_models = models;
-                    wizard.selected_model_idx = 0;
+            let provider = wizard.selected_provider().to_string();
+            match provider.as_str() {
+                "openrouter" => match fetch_openrouter_models(&wizard.api_key) {
+                    Ok(models) => {
+                        wizard.fetched_models = models;
+                        wizard.selected_model_idx = 0;
+                        wizard.model_filter.clear();
+                        wizard.error_message = None;
+                        wizard.screen = WizardScreen::ModelSelection;
+                    }
+                    Err(e) => {
+                        wizard.screen = WizardScreen::Result {
+                            success: false,
+                            message: format!(
+                                "Failed to fetch models from OpenRouter: {}\n\n\
+                                Please check your API key and try again.",
+                                e
+                            ),
+                        };
+                    }
+                },
+                "openai" => match fetch_openai_models_blocking(&wizard.api_key) {
+                    Ok(ids) => {
+                        wizard.fetched_dynamic_models = ids;
+                        wizard.selected_model_idx = 0;
+                        wizard.model_filter.clear();
+                        wizard.error_message = None;
+                        wizard.screen = WizardScreen::ModelSelection;
+                    }
+                    Err(e) => {
+                        log::warn!("OpenAI /v1/models fetch failed, using fallback list: {}", e);
+                        wizard.fetched_dynamic_models =
+                            OPENAI_FALLBACK_MODELS.iter().map(|s| s.to_string()).collect();
+                        wizard.selected_model_idx = 0;
+                        wizard.model_filter.clear();
+                        wizard.error_message = Some(
+                            "Could not reach api.openai.com — showing recent models. \
+                            Some newer models may be missing."
+                                .to_string(),
+                        );
+                        wizard.screen = WizardScreen::ModelSelection;
+                    }
+                },
+                "anthropic" => match fetch_anthropic_models_blocking(&wizard.api_key) {
+                    Ok(ids) => {
+                        wizard.fetched_dynamic_models = ids;
+                        wizard.selected_model_idx = 0;
+                        wizard.model_filter.clear();
+                        wizard.error_message = None;
+                        wizard.screen = WizardScreen::ModelSelection;
+                    }
+                    Err(e) => {
+                        log::warn!("Anthropic /v1/models fetch failed, using fallback list: {}", e);
+                        wizard.fetched_dynamic_models = ANTHROPIC_FALLBACK_MODELS
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                        wizard.selected_model_idx = 0;
+                        wizard.model_filter.clear();
+                        wizard.error_message = Some(
+                            "Could not reach api.anthropic.com — showing recent models. \
+                            Some newer models may be missing."
+                                .to_string(),
+                        );
+                        wizard.screen = WizardScreen::ModelSelection;
+                    }
+                },
+                _ => {
+                    // Unexpected provider in FetchingModels; fall through.
                     wizard.screen = WizardScreen::ModelSelection;
-                }
-                Err(e) => {
-                    wizard.screen = WizardScreen::Result {
-                        success: false,
-                        message: format!(
-                            "Failed to fetch models from OpenRouter: {}\n\n\
-                            Please check your API key and try again.",
-                            e
-                        ),
-                    };
                 }
             }
             continue;
@@ -1295,6 +1387,24 @@ fn fetch_openrouter_models(api_key: &str) -> Result<Vec<OpenRouterModel>> {
         .context("Failed to create async runtime")?;
     runtime.block_on(async {
         crate::semantic::providers::openrouter::fetch_models(api_key).await
+    })
+}
+
+/// Fetch chat models from OpenAI's /v1/models (blocking wrapper)
+fn fetch_openai_models_blocking(api_key: &str) -> Result<Vec<String>> {
+    let runtime = tokio::runtime::Runtime::new()
+        .context("Failed to create async runtime")?;
+    runtime.block_on(async {
+        crate::semantic::providers::openai::fetch_models(api_key).await
+    })
+}
+
+/// Fetch chat models from Anthropic's /v1/models (blocking wrapper)
+fn fetch_anthropic_models_blocking(api_key: &str) -> Result<Vec<String>> {
+    let runtime = tokio::runtime::Runtime::new()
+        .context("Failed to create async runtime")?;
+    runtime.block_on(async {
+        crate::semantic::providers::anthropic::fetch_models(api_key).await
     })
 }
 

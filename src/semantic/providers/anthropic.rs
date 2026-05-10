@@ -78,6 +78,67 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+/// Fetch chat models from Anthropic's `/v1/models` endpoint.
+///
+/// Unlike OpenAI, Anthropic only ships chat-capable Claude models on this
+/// endpoint, so no allow/deny filtering is needed — every returned ID is a
+/// valid chat model.
+pub async fn fetch_models(api_key: &str) -> Result<Vec<String>> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://api.anthropic.com/v1/models?limit=1000")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .context("Failed to fetch models from Anthropic")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        anyhow::bail!("Anthropic API error ({}): {}", status, body);
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse Anthropic models response")?;
+
+    if data["has_more"].as_bool() == Some(true) {
+        log::warn!(
+            "Anthropic /v1/models returned has_more=true with limit=1000; pagination may be needed"
+        );
+    }
+
+    let arr = data["data"]
+        .as_array()
+        .context("No 'data' array in Anthropic models response")?;
+
+    let mut ids: Vec<String> = arr
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(String::from))
+        .collect();
+
+    sort_anthropic_models(&mut ids);
+    Ok(ids)
+}
+
+// Anthropic's API returns models in created_at-descending order, which we
+// preserve. The pin only re-orders if the preferred model is present; if it
+// isn't, the newest model naturally takes the recommended slot.
+fn sort_anthropic_models(ids: &mut Vec<String>) {
+    const PREFERRED: &str = "claude-sonnet-4-5";
+    if let Some(pos) = ids.iter().position(|id| id == PREFERRED) {
+        let pinned = ids.remove(pos);
+        ids.insert(0, pinned);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +157,29 @@ mod tests {
             Some("claude-3-5-sonnet-20241022".to_string())
         ).unwrap();
         assert_eq!(provider.model, "claude-3-5-sonnet-20241022");
+    }
+
+    #[test]
+    fn test_sort_pins_preferred_first() {
+        let mut ids = vec![
+            "claude-opus-4-7".to_string(),
+            "claude-sonnet-4-6".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ];
+        sort_anthropic_models(&mut ids);
+        assert_eq!(ids[0], "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn test_sort_preserves_order_when_preferred_absent() {
+        let mut ids = vec![
+            "claude-opus-4-7".to_string(),
+            "claude-sonnet-4-6".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ];
+        let before = ids.clone();
+        sort_anthropic_models(&mut ids);
+        assert_eq!(ids, before);
     }
 }
