@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// Git repository state
 #[derive(Debug, Clone)]
@@ -22,6 +23,22 @@ pub struct GitState {
 /// Check if the current directory is inside a git repository
 pub fn is_git_repo(root: impl AsRef<Path>) -> bool {
     root.as_ref().join(".git").exists()
+}
+
+/// Check whether the `git` binary is available on PATH.
+///
+/// Probes `git --version` once per process and caches the result.
+/// Returns `false` only when the OS reports the binary doesn't exist
+/// (`io::ErrorKind::NotFound`). A `git` that spawns but exits non-zero
+/// still counts as "available" so legitimate git errors propagate normally.
+pub fn is_git_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        match Command::new("git").arg("--version").output() {
+            Ok(_) => true,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        }
+    })
 }
 
 /// Get the current git branch name

@@ -2162,7 +2162,7 @@ impl QueryEngine {
     /// Returns (status, can_trust_results, warning) tuple for JSON output.
     /// This is optimized for AI agents to detect staleness and auto-reindex.
     fn get_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
-        let root = std::env::current_dir()?;
+        let root = self.cache.workspace_root();
 
         // Check git state if in a git repo
         if crate::git::is_git_repo(&root) {
@@ -2262,10 +2262,19 @@ impl QueryEngine {
     /// 2. Commit changed: HEAD moved since indexing
     /// 3. File changes: quick mtime check on sample of files (if available)
     fn check_index_freshness(&self, filter: &QueryFilter) -> Result<()> {
-        let root = std::env::current_dir()?;
+        let root = self.cache.workspace_root();
 
         // Check git state if in a git repo
         if crate::git::is_git_repo(&root) {
+            if !crate::git::is_git_available() {
+                static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                if !filter.suppress_output {
+                    WARNED.get_or_init(|| {
+                        output::warn("⚠️  git binary not found in PATH; index freshness checks disabled for this session.");
+                    });
+                }
+                return Ok(());
+            }
             if let Ok(current_branch) = crate::git::get_current_branch(&root) {
                 // Check if we're on a different branch than what was indexed
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
