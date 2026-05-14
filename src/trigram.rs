@@ -14,7 +14,6 @@
 //! See `.context/TRIGRAM_RESEARCH.md` for detailed algorithm documentation.
 
 use anyhow::{Context, Result};
-use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -142,7 +141,7 @@ fn decompress_posting_list(
 }
 
 /// Location of a trigram occurrence in the codebase
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FileLocation {
     /// File ID (index into file list)
     pub file_id: u32,
@@ -160,15 +159,6 @@ impl FileLocation {
             byte_offset,
         }
     }
-}
-
-/// Serializable trigram data (for rkyv zero-copy serialization)
-#[derive(Archive, Serialize, Deserialize)]
-struct TrigramData {
-    /// Inverted index: trigram → sorted locations
-    index: Vec<(Trigram, Vec<FileLocation>)>,
-    /// File ID to file path mapping
-    files: Vec<String>,
 }
 
 /// Directory entry for lazy-loaded trigram index
