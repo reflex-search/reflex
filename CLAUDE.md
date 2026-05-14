@@ -278,16 +278,23 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 - **Regex support**: Extracts guaranteed trigrams from patterns; falls back to full scan if needed
 - **Deterministic**: Same query always returns same results (sorted by file:line)
 - **Respects .gitignore**: Uses `ignore` crate to skip untracked files
-- **Programmatic output**: Line-based results with context:
+- **Programmatic output**: File-grouped results with spans and previews:
   ```json
   {
-    "file": "src/parsers/rust.rs",
-    "line": 67,
-    "column": 12,
-    "match": "extract_symbols(source, root, &query, ...)",
-    "context_before": ["    symbols.extend(extract_functions(...", ""],
-    "context_after": ["    symbols.extend(extract_structs(...", ""]
+    "path": "src/parsers/rust.rs",
+    "matches": [
+      {
+        "kind": "Function",
+        "symbol": "extract_symbols",
+        "span": { "start_line": 67, "end_line": 89 },
+        "preview": "pub fn extract_symbols(source: &str, ...) -> Vec<SearchResult> {"
+      }
+    ]
   }
+  ```
+- **`SymbolRef` — stable symbol reference type**: Symbol data serializes as a named struct, not a positional tuple. Fields are additive-safe (new optional fields can be appended without shifting existing positions or requiring a version bump):
+  ```json
+  { "name": "extract_symbols", "kind": "Function", "span": { "start_line": 67, "end_line": 89 } }
   ```
 - **Language field forward-compatibility**: The `language` field in `SearchResult` serializes as an enum string (e.g. `"Rust"`, `"Python"`). When a file type is unrecognized, the field serializes as `"Unknown"`. Callers **must not** exhaustively match on this field without a fallback — treat `"Unknown"` as the forward-compatible sentinel for any language Reflex does not yet recognise. New languages may be added in minor releases.
 
