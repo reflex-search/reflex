@@ -231,7 +231,7 @@ fn extract_attributes(
             if !is_attribute {
                 // Check base_list for inheritance
                 for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         if child.kind() == "base_list" {
                             let base_text = child.utf8_text(source.as_bytes()).unwrap_or("");
                             if base_text.contains("Attribute") {

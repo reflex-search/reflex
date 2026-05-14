@@ -20,7 +20,7 @@ pub mod cpp;
 pub mod csharp;
 pub mod ruby;
 pub mod kotlin;
-// pub mod swift;  // Temporarily disabled - requires tree-sitter 0.23
+// pub mod swift;  // Temporarily disabled - tree-sitter-swift 0.7.2 grammar node types diverged from this parser's queries
 pub mod zig;
 
 use anyhow::{anyhow, Result};
@@ -81,7 +81,7 @@ impl ParserFactory {
     ///
     /// Returns an error for:
     /// - Vue/Svelte (use line-based parsing instead of tree-sitter)
-    /// - Swift (temporarily disabled due to tree-sitter version incompatibility)
+    /// - Swift (parser queries are out of date with tree-sitter-swift 0.7.x grammar)
     /// - Unknown languages
     pub fn get_language_grammar(language: Language) -> Result<tree_sitter::Language> {
         match language {
@@ -99,7 +99,7 @@ impl ParserFactory {
             Language::Kotlin => Ok(tree_sitter_kotlin_ng::LANGUAGE.into()),
             Language::Zig => Ok(tree_sitter_zig::LANGUAGE.into()),
             Language::Swift => Err(anyhow!(
-                "Swift support temporarily disabled (requires tree-sitter 0.23)"
+                "Swift support temporarily disabled (parser queries out of date with tree-sitter-swift 0.7.x grammar)"
             )),
             Language::Vue => Err(anyhow!(
                 "Vue uses line-based parsing, not tree-sitter (tree-sitter-vue incompatible with tree-sitter 0.24+)"
@@ -185,7 +185,7 @@ impl ParserFactory {
             Language::Ruby => ruby::parse(path, source),
             Language::Kotlin => kotlin::parse(path, source),
             Language::Swift => {
-                log::warn!("Swift support temporarily disabled (requires tree-sitter 0.23): {}", path);
+                log::warn!("Swift support temporarily disabled (parser queries out of date with tree-sitter-swift 0.7.x grammar): {}", path);
                 Ok(vec![])
             }
             Language::Zig => zig::parse(path, source),

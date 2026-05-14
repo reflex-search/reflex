@@ -153,7 +153,7 @@ impl Language {
             Language::CSharp => true,
             Language::Ruby => true,
             Language::Kotlin => true,
-            Language::Swift => false,  // Temporarily disabled - requires tree-sitter 0.23
+            Language::Swift => false,  // Temporarily disabled - parser queries out of date with tree-sitter-swift 0.7.x grammar
             Language::Zig => true,
             Language::Unknown => false,
         }

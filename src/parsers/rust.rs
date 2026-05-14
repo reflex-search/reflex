@@ -311,7 +311,7 @@ fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Sear
             if let Some(parent) = func_node.parent() {
                 let mut func_index = None;
                 for i in 0..parent.child_count() {
-                    if let Some(child) = parent.child(i) {
+                    if let Some(child) = parent.child(i as u32) {
                         if child.id() == func_node.id() {
                             func_index = Some(i);
                             break;
@@ -321,7 +321,7 @@ fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Sear
 
                 if let Some(func_idx) = func_index {
                     for i in (0..func_idx).rev() {
-                        if let Some(child) = parent.child(i) {
+                        if let Some(child) = parent.child(i as u32) {
                             if child.kind() == "attribute_item" {
                                 let attr_text = child.utf8_text(source.as_bytes()).unwrap_or("");
                                 if attr_text.contains("proc_macro_attribute") {

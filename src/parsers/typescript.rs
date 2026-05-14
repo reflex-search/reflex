@@ -226,7 +226,7 @@ fn extract_variables(
             // Check if the value is an arrow function (skip those)
             let mut is_arrow_function = false;
             for i in 0..declarator.child_count() {
-                if let Some(child) = declarator.child(i) {
+                if let Some(child) = declarator.child(i as u32) {
                     if child.kind() == "arrow_function" {
                         is_arrow_function = true;
                         break;
