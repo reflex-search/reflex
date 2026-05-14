@@ -204,17 +204,20 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: Patch npm package security vulnerabilities
+      - name: Refresh npm package shrinkwrap against current CVE database
         shell: bash
         run: |
           NPM_PKG_DIR="target/distrib/reflex-search-npm-package"
           if [ -d "$NPM_PKG_DIR" ]; then
-            # Use the vetted package.json from source control (safe dep versions)
-            cp npm-package/package.json "$NPM_PKG_DIR/package.json"
             cd "$NPM_PKG_DIR"
+            # cargo-dist ships a shrinkwrap baked at its release time; regenerate
+            # it against today's registry so transitive CVEs get the fix versions.
             npm install
+            npm audit fix
+            # Hard gate: fail the release if anything high/critical remains.
+            npm audit --audit-level=high
             cd -
-            # Recreate the npm package tarball with patched deps
+            # Repackage with the refreshed shrinkwrap.
             TARBALL="target/distrib/reflex-search-npm-package.tar.gz"
             tar -czf "$TARBALL" -C target/distrib --transform 's|^reflex-search-npm-package|package|' reflex-search-npm-package
           fi
