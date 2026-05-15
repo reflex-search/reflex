@@ -17,21 +17,28 @@ Version format: `MAJOR.MINOR.PATCH` (e.g., `0.2.7`)
 
 ## Creating a Release
 
-**Simple 3-step process:**
+**Install `cargo-release` (one-time setup):**
 
 ```bash
-# 1. Update version in Cargo.toml
-vim Cargo.toml  # Change version = "0.2.6" to "0.2.7"
-
-# 2. Commit and push
-git add Cargo.toml
-git commit -m "chore: bump version to 0.2.7"
-git push origin main
-
-# 3. Create and push tag
-git tag v0.2.7
-git push origin v0.2.7
+cargo install cargo-release
 ```
+
+**One command to rule them all:**
+
+```bash
+cargo release patch   # bug fix   (e.g. 1.4.0 → 1.4.1)
+cargo release minor   # new feature (e.g. 1.4.0 → 1.5.0)
+cargo release major   # breaking change (e.g. 1.4.0 → 2.0.0)
+```
+
+`cargo-release` automatically:
+1. Bumps the version in `Cargo.toml`
+2. Commits with `chore: bump version to X.Y.Z`
+3. Creates and pushes the `vX.Y.Z` tag
+
+**Alternatively, trigger a release from the GitHub UI** without a local checkout:
+1. Go to **Actions → Bump & Release** in the GitHub repository
+2. Click **Run workflow**, choose `patch`, `minor`, or `major`, and confirm
 
 **That's it!** When you push the tag, GitHub Actions automatically:
 - Builds binaries for all platforms (Linux, macOS, Windows, ARM, x86_64)
@@ -60,8 +67,10 @@ The GitHub Release will contain:
 ## Workflow Configuration
 
 Releases are configured in:
+- **`release.toml`** - cargo-release configuration (tag format, commit message, publish disabled)
 - **`dist-workspace.toml`** - cargo-dist configuration (platforms, installers)
 - **`.github/workflows/release.yml`** - GitHub Actions workflow (builds binaries, extracts archives)
+- **`.github/workflows/bump-and-release.yml`** - workflow_dispatch trigger for UI-initiated releases
 
 **Key settings:**
 ```toml

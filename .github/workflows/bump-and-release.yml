@@ -1,0 +1,39 @@
+name: Bump & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Release level"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-release
+        run: cargo install cargo-release --locked
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and push tag
+        run: cargo release ${{ github.event.inputs.level }} --no-confirm --execute
