@@ -55,10 +55,7 @@ fn compute_schema_hash() -> String {
     let mut hasher = blake3::Hasher::new();
 
     // Use BTreeSet to ensure deterministic ordering (sorted by file path)
-    let files: BTreeSet<String> = CACHE_CRITICAL_FILES
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let files: BTreeSet<String> = CACHE_CRITICAL_FILES.iter().map(|s| s.to_string()).collect();
 
     // Hash each file's content in sorted order
     for file_path in &files {
@@ -69,8 +66,8 @@ fn compute_schema_hash() -> String {
         }
 
         // Read file content
-        let content = fs::read(path)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", file_path, e));
+        let content =
+            fs::read(path).unwrap_or_else(|e| panic!("Failed to read {}: {}", file_path, e));
 
         // Hash: file path (for identity) + file content (for changes)
         hasher.update(file_path.as_bytes());

@@ -47,7 +47,7 @@
 //! ```
 
 use crate::models::{Language, SearchResult, Span, SymbolKind};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
@@ -80,7 +80,6 @@ pub fn execute_ast_query(
     language: Language,
     file_contents: &HashMap<String, String>,
 ) -> Result<Vec<SearchResult>> {
-
     // Get Tree-sitter grammar for the language
     let mut parser = Parser::new();
     let ts_language = get_tree_sitter_language(language)?;
@@ -103,15 +102,17 @@ pub fn execute_ast_query(
 
     let mut matched_results = Vec::new();
 
-
     // Parse each file and execute query
     for (file_path, _candidates_in_file) in files_to_parse {
         // Get file content
         let content = match file_contents.get(&file_path) {
             Some(c) => c,
             None => {
-                log::warn!("File content not found for {}: available keys are {:?}",
-                          file_path, file_contents.keys().collect::<Vec<_>>());
+                log::warn!(
+                    "File content not found for {}: available keys are {:?}",
+                    file_path,
+                    file_contents.keys().collect::<Vec<_>>()
+                );
                 continue;
             }
         };
@@ -133,7 +134,10 @@ pub fn execute_ast_query(
         while let Some(m) = matches.next() {
             // Skip matches without captures - captures are required to extract nodes
             if m.captures.is_empty() {
-                log::warn!("Query pattern '{}' matched but has no captures - use '(node) @name' syntax", ast_pattern);
+                log::warn!(
+                    "Query pattern '{}' matched but has no captures - use '(node) @name' syntax",
+                    ast_pattern
+                );
                 continue;
             }
 
@@ -165,7 +169,8 @@ pub fn execute_ast_query(
                         end_line: end_pos.row + 1,
                     },
                     symbol: symbol_name,
-                    kind: symbol_kind.unwrap_or_else(|| SymbolKind::Unknown("ast_match".to_string())),
+                    kind: symbol_kind
+                        .unwrap_or_else(|| SymbolKind::Unknown("ast_match".to_string())),
                     preview: matched_text.to_string(),
                     dependencies: None,
                 });
@@ -189,7 +194,10 @@ fn get_tree_sitter_language(lang: Language) -> Result<tree_sitter::Language> {
 ///
 /// This is a best-effort function that tries to determine what kind of
 /// symbol a matched node represents (function, struct, etc.) and its name.
-fn extract_symbol_info(node: &tree_sitter::Node, source: &str) -> (Option<String>, Option<SymbolKind>) {
+fn extract_symbol_info(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> (Option<String>, Option<SymbolKind>) {
     // Try to identify the node kind and extract symbol name
     let kind = node.kind();
 
@@ -323,8 +331,16 @@ fn sync_helper() {
         // Should find all three functions
         assert_eq!(results.len(), 3);
         assert!(results.iter().any(|r| r.symbol.as_deref() == Some("main")));
-        assert!(results.iter().any(|r| r.symbol.as_deref() == Some("fetch_data")));
-        assert!(results.iter().any(|r| r.symbol.as_deref() == Some("sync_helper")));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.symbol.as_deref() == Some("fetch_data"))
+        );
+        assert!(
+            results
+                .iter()
+                .any(|r| r.symbol.as_deref() == Some("sync_helper"))
+        );
     }
 
     #[test]
@@ -363,7 +379,11 @@ struct Config {
         // Should find both structs
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|r| r.symbol == Some("User".to_string())));
-        assert!(results.iter().any(|r| r.symbol == Some("Config".to_string())));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.symbol == Some("Config".to_string()))
+        );
     }
 
     #[test]
@@ -389,13 +409,21 @@ struct Config {
         let result = execute_ast_query(candidates, ast_pattern, Language::Rust, &file_contents);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid AST query pattern"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid AST query pattern")
+        );
     }
 
     #[test]
     fn test_unsupported_language() {
         let mut file_contents = HashMap::new();
-        file_contents.insert("test.vue".to_string(), "<script>export default {}</script>".to_string());
+        file_contents.insert(
+            "test.vue".to_string(),
+            "<script>export default {}</script>".to_string(),
+        );
 
         let candidates = vec![SearchResult {
             path: "test.vue".to_string(),
@@ -415,7 +443,12 @@ struct Config {
         let result = execute_ast_query(candidates, ast_pattern, Language::Vue, &file_contents);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not supported for AST queries"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not supported for AST queries")
+        );
     }
 
     #[test]
@@ -455,7 +488,11 @@ def process(x):
         // Should find all three functions
         assert_eq!(results.len(), 3);
         assert!(results.iter().any(|r| r.preview.contains("def hello")));
-        assert!(results.iter().any(|r| r.preview.contains("async def fetch_data")));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.preview.contains("async def fetch_data"))
+        );
         assert!(results.iter().any(|r| r.preview.contains("def process")));
     }
 }

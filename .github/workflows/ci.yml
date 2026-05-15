@@ -32,9 +32,9 @@ jobs:
 
       - name: Security audit
         if: matrix.os == 'ubuntu-latest'
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
       - name: Check formatting
         run: cargo fmt --check
