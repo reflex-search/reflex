@@ -198,6 +198,6 @@ search_ast(pattern: "(function_item) @fn", lang: "rust")
 
 ## See Also
 
-- [AI Agent Integration Guide](./ai-agent-integration.md) — JSON output format, stale-index handling, auto-reindex patterns
+- [Claude Code + Reflex MCP Quickstart](./ai-agent-integration.md) — MCP setup, key tools, troubleshooting, and CLI/JSON fallback
 - [CLI Usage](../CLAUDE.md#cli-usage) — Human-facing `rfx` command reference
 - [Dependency Analysis](./DEPENDENCIES.md) — Deep dive into import extraction and graph analysis
