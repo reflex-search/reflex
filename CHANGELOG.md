@@ -11,6 +11,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - New `openai-compatible` LLM provider for any endpoint that implements the OpenAI Chat Completions schema, including LMStudio, Ollama, llama.cpp server, vLLM, and litellm proxies. Configure via `rfx llm config` or by setting `[credentials] openai_compatible_base_url` (and optionally `openai_compatible_api_key` / `openai_compatible_model`) in `~/.reflex/config.toml`. The API key is optional for keyless local servers. Closes [#30](https://github.com/reflex-search/reflex/issues/30).
 
+- **MCP server — full 17-tool suite for AI coding agents.** Reflex ships a first-class [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes the complete Reflex search and dependency-analysis engine to AI coding agents over stdio JSON-RPC 2.0. Start it with `rfx mcp`.
+
+  **Search tools:**
+  | Tool | Purpose |
+  |------|---------|
+  | `search_code` | Full-text or symbol-only search with line numbers, code previews, and pagination |
+  | `search_regex` | Regex pattern matching with trigram pre-filtering for speed |
+  | `search_ast` | Structure-aware Tree-sitter S-expression matching (advanced; use glob to limit scope) |
+  | `list_locations` | Fast `{path, line}` location discovery with no content payload — cheapest starting point |
+  | `count_occurrences` | Quick `{total, files}` stats without loading any content |
+  | `find_references` | Symbol definition + all usage sites in a single atomic call |
+
+  **Dependency graph tools:**
+  | Tool | Purpose |
+  |------|---------|
+  | `get_dependencies` | All static imports for a given file (internal / external / stdlib) |
+  | `get_dependents` | Reverse lookup: which files import this one |
+  | `get_transitive_deps` | Full dependency tree up to N levels deep |
+  | `find_hotspots` | Most-imported files ranked by dependent count |
+  | `find_circular` | Circular dependency cycles (A→B→C→A) |
+  | `find_unused` | Orphaned files with no importers |
+  | `find_islands` | Isolated subsystems in the dependency graph |
+  | `analyze_summary` | Codebase health at a glance: counts for circular deps, hotspots, unused files, and islands |
+
+  **Context & index tools:**
+  | Tool | Purpose |
+  |------|---------|
+  | `gather_context` | Project structure, detected frameworks, entry points, and file-type distribution |
+  | `check_index_status` | Verify index freshness (`fresh` / `stale` / `missing`) before searching |
+  | `index_project` | Build or incrementally update the trigram index; `force: true` for full rebuild |
+
+  **Claude Code integration** — add Reflex to your MCP settings (global: `~/.claude/claude_code_config.json`, or per-project: `.claude/claude_code_config.json`):
+
+  ```json
+  {
+    "mcpServers": {
+      "reflex": {
+        "command": "rfx",
+        "args": ["mcp"]
+      }
+    }
+  }
+  ```
+
+  Then index your project once:
+
+  ```bash
+  rfx index
+  ```
+
+  Claude Code starts `rfx mcp` automatically and Reflex tools are available in every conversation. See the [Claude Code + Reflex MCP Quickstart](./docs/ai-agent-integration.md) for step-by-step setup, usage examples, and troubleshooting.
+
 ### Changed
 
 - LLM model resolution centralized into `config::resolve_model` / `config::resolve_model_for`. **Previously, `~/.reflex/config.toml` `[credentials] {provider}_model` was silently ignored by chat_tui's runtime calls** (compaction, mid-session triage, in-session provider switches) and the provider's hard-coded constructor default was used instead. After this change those user-config values are honored everywhere. **If you set `openrouter_model = "anthropic/claude-opus-4"` (or similar) thinking it had no effect, your interactive sessions will now actually use that model — which may change costs.** Verify your `~/.reflex/config.toml` after upgrading.

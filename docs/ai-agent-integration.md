@@ -163,6 +163,17 @@ Returns all static imports for a file with their classification
 { "path": "src/auth/middleware.rs" }
 ```
 
+### `find_references` — definition and all usages in one call
+
+Returns the symbol definition and every usage site atomically — no separate definition search needed.
+
+```json
+{ "pattern": "CacheManager" }
+// → { "definition": { "path": "src/cache.rs", "line": 42, ... },
+//     "references": [{ "path": "src/query.rs", "line": 17, "preview": "..." }, ...],
+//     "total_references": 8 }
+```
+
 ### `index_project` — keep the index fresh
 
 Trigger a reindex after code changes (git pull, file creation, refactor).
@@ -173,9 +184,6 @@ Trigger a reindex after code changes (git pull, file creation, refactor).
 // Force a full rebuild if results seem wrong:
 { "force": true }
 ```
-
-> **Planned:** `find_references` for cross-file symbol usage tracking is coming in a
-> future release.
 
 ---
 

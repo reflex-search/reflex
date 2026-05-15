@@ -100,6 +100,143 @@ When connected via MCP, your AI assistant gets these tools:
 
 ---
 
+## AI coding workflow
+
+Reflex tools form a cost hierarchy. Start at the cheapest tier that answers your question — only escalate when you need more.
+
+```
+list_locations  →  search_code  →  search_code (expand: true)
+     ⚡                🟡                    🟡
+  file + line     preview + context       full body
+  (no content)                          (most tokens)
+```
+
+**Rule:** use `list_locations` to orient, `search_code` to inspect, `search_code` + `expand` only for the specific match you intend to read or edit.
+
+### Worked example — finding and understanding a function
+
+**Task:** "How does `process_payment` work? I need to add retry logic."
+
+**Without Reflex:** `grep -r "process_payment" src/` returns 40 lines of interleaved match output from 8 files. Then `cat src/payments/processor.rs` returns the full 420-line file. You read several hundred lines to find the 30 lines you actually need.
+
+**With Reflex — three targeted steps:**
+
+**Step 1 — Orient** (`list_locations`, cheapest)
+
+```json
+{
+  "tool": "list_locations",
+  "arguments": { "pattern": "process_payment" }
+}
+```
+
+Response — file and line only, no content loaded:
+
+```json
+[
+  { "path": "src/payments/processor.rs", "line": 47 },
+  { "path": "src/payments/processor.rs", "line": 112 },
+  { "path": "src/api/checkout.rs", "line": 88 },
+  { "path": "tests/integration/payment_test.rs", "line": 23 }
+]
+```
+
+4 locations across 3 files. The definition is almost certainly in `processor.rs:47`. Move to Step 2.
+
+**Step 2 — Confirm the definition** (`search_code` with `symbols: true`)
+
+```json
+{
+  "tool": "search_code",
+  "arguments": {
+    "pattern": "process_payment",
+    "symbols": true
+  }
+}
+```
+
+Response — definition only, with signature preview:
+
+```json
+{
+  "results": [
+    {
+      "path": "src/payments/processor.rs",
+      "kind": "Function",
+      "symbol": "process_payment",
+      "span": { "start_line": 47, "end_line": 78 },
+      "preview": "pub async fn process_payment(order: &Order, method: PaymentMethod) -> Result<Receipt, PaymentError> {"
+    }
+  ]
+}
+```
+
+It's a 31-line async function. Step 3 gets the body.
+
+**Step 3 — Read the body** (`search_code` with `expand: true`)
+
+```json
+{
+  "tool": "search_code",
+  "arguments": {
+    "pattern": "process_payment",
+    "symbols": true,
+    "expand": true
+  }
+}
+```
+
+Response — full implementation, lines 47–78 only. No surrounding file noise.
+
+**Result:** 3 targeted tool calls instead of reading 420 lines of file content. The agent now knows exactly where to insert retry logic without ever loading unrelated code.
+
+---
+
+### Dependency analysis — architecture context in two calls
+
+Built-in tools (`grep`, `read`) cannot tell you what depends on a file. Reflex can.
+
+**"Is `processor.rs` a critical file? What breaks if I change it?"**
+
+```json
+{
+  "tool": "get_dependents",
+  "arguments": { "path": "src/payments/processor.rs" }
+}
+```
+
+Response:
+
+```json
+{
+  "dependents": [
+    { "path": "src/api/checkout.rs", "import_count": 3 },
+    { "path": "src/api/subscriptions.rs", "import_count": 1 },
+    { "path": "src/workers/retry_queue.rs", "import_count": 2 },
+    { "path": "tests/integration/payment_test.rs", "import_count": 1 }
+  ]
+}
+```
+
+Three production callers. Any change to `processor.rs` signatures affects all three. Now check the broader architecture:
+
+```json
+{
+  "tool": "find_hotspots",
+  "arguments": { "min_dependents": 3 }
+}
+```
+
+Response — the most-imported files in the codebase, ranked by dependent count. `processor.rs` appearing here signals it's load-bearing infrastructure, not a leaf module — refactor with care.
+
+**This analysis is impossible with grep or read alone.** Dependency graph traversal requires the indexed import graph that Reflex builds at index time.
+
+---
+
+> For the full tool decision tree and filter reference, see [MCP Tool Selection Cheatsheet](docs/mcp-tool-cheatsheet.md).
+
+---
+
 ## CLI usage
 
 Reflex also works as a standalone CLI for humans and shell scripts.
