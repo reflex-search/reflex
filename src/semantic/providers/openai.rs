@@ -67,7 +67,15 @@ impl LlmProvider for OpenAiProvider {
             .json(&request_body)
             .send()
             .await
-            .context("Failed to send request to OpenAI API")?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    anyhow::anyhow!(
+                        "OpenAI request timed out. Set REFLEX_LLM_TIMEOUT_SECONDS to increase the limit."
+                    )
+                } else {
+                    anyhow::anyhow!("Failed to send request to OpenAI API: {}", e)
+                }
+            })?;
 
         // Check for HTTP errors
         if !response.status().is_success() {

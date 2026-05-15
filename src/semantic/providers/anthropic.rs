@@ -52,7 +52,15 @@ impl LlmProvider for AnthropicProvider {
             }))
             .send()
             .await
-            .context("Failed to send request to Anthropic API")?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    anyhow::anyhow!(
+                        "Anthropic request timed out. Set REFLEX_LLM_TIMEOUT_SECONDS to increase the limit."
+                    )
+                } else {
+                    anyhow::anyhow!("Failed to send request to Anthropic API: {}", e)
+                }
+            })?;
 
         // Check for HTTP errors
         if !response.status().is_success() {

@@ -176,7 +176,9 @@ pub fn load_config(_cache_dir: &Path) -> Result<SemanticConfig> {
 
     // REF-90: Warn about unknown keys within the [semantic] section
     let known_semantic_keys = [
-        "provider", "model", "auto_execute",
+        "provider", "model", "auto_execute", "timeout_seconds",
+        "enabled", "agentic_enabled", "max_iterations", "max_tools_per_phase",
+        "evaluation_enabled", "evaluation_strictness",
     ];
     if let Some(toml::Value::Table(sem_table)) = toml_value.get("semantic") {
         for key in sem_table.keys() {
@@ -954,5 +956,77 @@ openrouter_model = "anthropic/claude-opus-4"
         }
 
         assert_eq!(resolved.as_deref(), Some("openai/gpt-4o"));
+    }
+
+    #[test]
+    fn test_env_override_timeout_seconds() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+            env::set_var("REFLEX_LLM_TIMEOUT_SECONDS", "120");
+        }
+
+        let config = load_config(temp.path()).unwrap();
+
+        unsafe {
+            env::remove_var("REFLEX_LLM_TIMEOUT_SECONDS");
+            env::remove_var("HOME");
+        }
+
+        assert_eq!(config.timeout_seconds, 120);
+    }
+
+    #[test]
+    fn test_env_override_timeout_seconds_invalid_ignored() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+            env::set_var("REFLEX_LLM_TIMEOUT_SECONDS", "not-a-number");
+        }
+
+        let config = load_config(temp.path()).unwrap();
+
+        unsafe {
+            env::remove_var("REFLEX_LLM_TIMEOUT_SECONDS");
+            env::remove_var("HOME");
+        }
+
+        // Invalid value falls back to the default of 30
+        assert_eq!(config.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn test_timeout_seconds_from_config_file() {
+        let _g = env_guard();
+        let temp = TempDir::new().unwrap();
+        let reflex_dir = temp.path().join(".reflex");
+        std::fs::create_dir_all(&reflex_dir).unwrap();
+
+        std::fs::write(
+            reflex_dir.join("config.toml"),
+            r#"
+[semantic]
+provider = "openai"
+timeout_seconds = 60
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+            env::remove_var("REFLEX_LLM_TIMEOUT_SECONDS");
+        }
+
+        let config = load_config(temp.path()).unwrap();
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+
+        assert_eq!(config.timeout_seconds, 60);
     }
 }
