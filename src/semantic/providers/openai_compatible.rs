@@ -4,6 +4,10 @@
 //! schema, including LMStudio, llama.cpp server, vLLM, Ollama (via /v1 shim),
 //! and litellm proxies. The API key is optional since many local servers do
 //! not require authentication.
+//!
+//! Uses the OpenAI structured-outputs `json_schema` response_format (with a
+//! permissive schema) so requests work across servers that have dropped
+//! support for the legacy `json_object` mode (e.g. LMStudio).
 
 use super::LlmProvider;
 use anyhow::{Context, Result};
@@ -41,12 +45,9 @@ impl OpenAiCompatibleProvider {
             base_url: normalized_base,
         })
     }
-}
 
-#[async_trait]
-impl LlmProvider for OpenAiCompatibleProvider {
-    async fn complete(&self, prompt: &str, json_mode: bool) -> Result<String> {
-        let mut request_body = json!({
+    fn build_request_body(&self, prompt: &str, json_mode: bool) -> serde_json::Value {
+        let mut body = json!({
             "model": self.model,
             "messages": [
                 {
@@ -59,10 +60,27 @@ impl LlmProvider for OpenAiCompatibleProvider {
         });
 
         if json_mode {
-            request_body["response_format"] = json!({
-                "type": "json_object"
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "reflex_response",
+                    "strict": false,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                }
             });
         }
+
+        body
+    }
+}
+
+#[async_trait]
+impl LlmProvider for OpenAiCompatibleProvider {
+    async fn complete(&self, prompt: &str, json_mode: bool) -> Result<String> {
+        let request_body = self.build_request_body(prompt, json_mode);
 
         let url = format!("{}/chat/completions", self.base_url);
         let mut request = self
@@ -191,6 +209,40 @@ mod tests {
         if let Err(e) = result {
             assert!(e.to_string().contains("model name"));
         }
+    }
+
+    #[test]
+    fn test_build_request_body_with_json_mode_uses_json_schema() {
+        let provider = OpenAiCompatibleProvider::new(
+            None,
+            "qwen2.5-coder".to_string(),
+            "http://localhost:1234/v1".to_string(),
+            30
+        )
+        .unwrap();
+        let body = provider.build_request_body("hi", true);
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["name"], "reflex_response");
+        assert_eq!(body["response_format"]["json_schema"]["strict"], false);
+        assert_eq!(body["response_format"]["json_schema"]["schema"]["type"], "object");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["additionalProperties"],
+            true
+        );
+        assert_eq!(body["model"], "qwen2.5-coder");
+    }
+
+    #[test]
+    fn test_build_request_body_without_json_mode_omits_response_format() {
+        let provider = OpenAiCompatibleProvider::new(
+            None,
+            "qwen2.5-coder".to_string(),
+            "http://localhost:1234/v1".to_string(),
+            30
+        )
+        .unwrap();
+        let body = provider.build_request_body("hi", false);
+        assert!(body.get("response_format").is_none());
     }
 
     #[test]
