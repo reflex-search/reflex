@@ -232,7 +232,25 @@ impl Indexer {
                 let schema_ok = self.cache.check_schema_hash().unwrap_or(false);
 
                 if schema_ok && content_path.exists() && trigrams_path.exists() {
-                    if let Ok(reader) = ContentReader::open(&content_path) {
+                    // Validate trigrams.bin magic bytes before skipping a rebuild.
+                    // A disk-full mid-write leaves a file that still "exists" but is corrupt;
+                    // checking only existence would cause us to skip a needed rebuild.
+                    // This mirrors the magic-byte check in CacheManager::validate().
+                    let trigrams_ok = {
+                        use std::io::Read;
+                        std::fs::File::open(&trigrams_path)
+                            .and_then(|mut f| {
+                                let mut h = [0u8; 4];
+                                f.read_exact(&mut h).map(|_| h)
+                            })
+                            .map(|h| &h == b"RFTG")
+                            .unwrap_or(false)
+                    };
+                    if !trigrams_ok {
+                        log::warn!(
+                            "trigrams.bin corrupted or too small despite hashes matching - forcing rebuild"
+                        );
+                    } else if let Ok(reader) = ContentReader::open(&content_path) {
                         if reader.file_count() > 0 {
                             log::info!("No files changed - skipping index rebuild");
                             let mut stats = self.cache.stats()?;
@@ -241,8 +259,10 @@ impl Indexer {
                             stats.skipped_bytes_too_large = skipped_bytes_too_large;
                             return Ok(stats);
                         }
+                        log::warn!("content.bin has no files despite hashes matching - forcing rebuild");
+                    } else {
+                        log::warn!("content.bin invalid despite hashes matching - forcing rebuild");
                     }
-                    log::warn!("content.bin invalid despite hashes matching - forcing rebuild");
                 } else if !schema_ok {
                     log::info!("Schema hash changed - forcing full rebuild");
                 } else {
@@ -1517,7 +1537,11 @@ impl Indexer {
 
         log::info!("Indexed {} files", files_indexed);
 
-        // Step 3: Write trigram index
+        // Step 3: Write trigram index.
+        // Non-atomic write: trigrams.bin is overwritten in-place (truncate + stream write).
+        // No temp-file-then-rename is used. A disk-full mid-write leaves a corrupt file;
+        // the fast-path incremental check above validates the magic bytes on re-index,
+        // so the next `rfx index` will detect corruption and rebuild from scratch.
         *progress_status.lock().unwrap() = "Writing trigram index...".to_string();
         if show_progress {
             pb.set_message("Writing trigram index...".to_string());

@@ -2543,3 +2543,119 @@ fn test_broad_query_glob_filter_applied_before_check() {
     assert!(result.is_ok(), "Query should succeed when glob filter reduces candidate set below threshold. \
                              Without the fix, this would error: 'Query too broad - would be expensive to execute'");
 }
+
+// ==================== Partial-Write Recovery Tests ====================
+// Audit finding A1 (REF-6): verify the cache survives a simulated disk-full mid-write.
+//
+// trigrams.bin and content.bin use a non-atomic write pattern (truncate + stream).
+// A disk-full condition can leave either file corrupt. The recovery contract is:
+// re-running `rfx index` detects corruption via magic-byte validation and rebuilds
+// from scratch. Tests below simulate this with set_len(2) on the binary files.
+
+#[test]
+fn test_partial_write_recovery_trigrams_bin() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("hello.rs"), "fn greet() -> &'static str { \"hello\" }").unwrap();
+    fs::write(project.join("lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }").unwrap();
+
+    // Build a valid initial index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    let cache = CacheManager::new(project);
+    assert!(cache.validate().is_ok(), "Initial cache should be valid");
+
+    // Simulate disk-full mid-write: truncate trigrams.bin below the 4-byte magic header
+    let trigrams_path = project.join(".reflex/trigrams.bin");
+    {
+        let file = std::fs::OpenOptions::new().write(true).open(&trigrams_path).unwrap();
+        file.set_len(2).unwrap();
+    }
+
+    // validate() must detect the corruption
+    let cache = CacheManager::new(project);
+    let result = cache.validate();
+    assert!(result.is_err(), "Truncated trigrams.bin must fail validate()");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("trigrams.bin"),
+        "Error must name the corrupted file, got: {err_msg}"
+    );
+
+    // Recovery: re-index must detect the corrupt file via magic-byte check and rebuild cleanly
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    let result = indexer.index(project, false);
+    assert!(
+        result.is_ok(),
+        "Re-indexing after partial trigrams.bin write must succeed, got: {:?}",
+        result.err()
+    );
+
+    // Rebuilt cache must pass full validation
+    let cache = CacheManager::new(project);
+    assert!(cache.validate().is_ok(), "Rebuilt cache must pass validate()");
+
+    // Rebuilt cache must return correct query results
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let results = engine.search("greet", QueryFilter::default()).unwrap();
+    assert!(!results.is_empty(), "Should find 'greet' in rebuilt cache");
+}
+
+#[test]
+fn test_partial_write_recovery_content_bin() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn main() { println!(\"world\"); }").unwrap();
+    fs::write(project.join("util.rs"), "pub fn helper() {}").unwrap();
+
+    // Build a valid initial index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    let cache = CacheManager::new(project);
+    assert!(cache.validate().is_ok(), "Initial cache should be valid");
+
+    // Simulate disk-full mid-write: truncate content.bin below the 4-byte magic header
+    let content_path = project.join(".reflex/content.bin");
+    {
+        let file = std::fs::OpenOptions::new().write(true).open(&content_path).unwrap();
+        file.set_len(2).unwrap();
+    }
+
+    // validate() must detect the corruption
+    let cache = CacheManager::new(project);
+    let result = cache.validate();
+    assert!(result.is_err(), "Truncated content.bin must fail validate()");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("content.bin"),
+        "Error must name the corrupted file, got: {err_msg}"
+    );
+
+    // Recovery: re-index must detect the invalid content.bin and rebuild cleanly
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    let result = indexer.index(project, false);
+    assert!(
+        result.is_ok(),
+        "Re-indexing after partial content.bin write must succeed, got: {:?}",
+        result.err()
+    );
+
+    // Rebuilt cache must pass full validation
+    let cache = CacheManager::new(project);
+    assert!(cache.validate().is_ok(), "Rebuilt cache must pass validate()");
+
+    // Rebuilt cache must return correct query results
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let results = engine.search("world", QueryFilter::default()).unwrap();
+    assert!(!results.is_empty(), "Should find 'world' in rebuilt cache");
+}

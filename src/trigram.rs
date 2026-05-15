@@ -948,7 +948,10 @@ impl TrigramIndex {
             return self.merge_partial_indices_to_file(path);
         }
 
-        // Standard write path (no batch flushing)
+        // Standard write path (no batch flushing).
+        // Non-atomic: writes directly to the target path with truncate(true).
+        // On disk-full mid-write the file is left corrupt; the indexer fast-path
+        // validates the "RFTG" magic bytes on re-index, forcing a clean rebuild.
         let file = OpenOptions::new()
             .create(true)
             .write(true)
