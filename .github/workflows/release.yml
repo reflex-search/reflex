@@ -254,12 +254,15 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+          fetch-depth: 0
       - name: Install cached dist
         uses: actions/download-artifact@v4
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
+      - name: Install git-cliff
+        run: cargo install git-cliff --locked
       # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
         uses: actions/download-artifact@v4
@@ -293,7 +296,7 @@ jobs:
           rm -f artifacts/*-dist-manifest.json
       - name: Extract raw binaries from archives
         run: |
-          set -e
+          set -euo pipefail
           cd artifacts
 
           echo "=== Files in artifacts directory before extraction ==="
@@ -314,7 +317,11 @@ jobs:
                 # Extract platform from archive filename and transform to friendly name
                 platform=$(echo "$archive" | sed 's/^reflex-//' | sed 's/\.tar\.xz$//')
 
-                # Transform to friendly names
+                # Map cargo-dist Rust target triples → human-friendly release names.
+                # Convention: rfx-<os>-<arch>[.exe]  (matches install-script expectations).
+                # If a new target triple is added to cargo-dist config, the wildcard
+                # fallback below will produce rfx-<triple>, which is safe but ugly —
+                # add an explicit case entry for any new platform.
                 case "$platform" in
                   x86_64-unknown-linux-gnu)
                     friendly_name="rfx-linux-x64"
@@ -361,7 +368,7 @@ jobs:
                 # Extract platform from archive filename and transform to friendly name
                 platform=$(echo "$archive" | sed 's/^reflex-//' | sed 's/\.zip$//')
 
-                # Transform to friendly name
+                # Map Windows target triples → human-friendly release names (see Unix comment above).
                 case "$platform" in
                   x86_64-pc-windows-msvc)
                     friendly_name="rfx-windows-x64.exe"
@@ -382,11 +389,19 @@ jobs:
             fi
           done
 
+          # Hard gate: fail loudly if no binaries were produced so the release is never empty.
+          binary_count=$(ls rfx-* 2>/dev/null | wc -l)
+          if [ "$binary_count" -eq 0 ]; then
+            echo "ERROR: No binaries extracted — release would be empty"
+            exit 1
+          fi
+          echo "Extracted $binary_count platform binaries"
+
           echo "=== Files to be uploaded to release ==="
           ls -lh
 
           echo "=== Binaries found ==="
-          ls -lh rfx* 2>/dev/null || echo "No binaries found!"
+          ls -lh rfx-*
 
           echo "=== Installers found ==="
           ls -lh *installer* 2>/dev/null || echo "No installers found!"
@@ -394,11 +409,10 @@ jobs:
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
-          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
           RELEASE_COMMIT: "${{ github.sha }}"
         run: |
-          # Write and read notes from a file to avoid quoting breaking things
-          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          # Generate release notes from conventional commits since last tag
+          git-cliff --latest --strip header > $RUNNER_TEMP/notes.txt
 
           # Upload binaries, installers, and archives (archives needed for npm/homebrew)
           cd artifacts
@@ -413,19 +427,3 @@ jobs:
             *.tar.xz \
             *.zip
 
-  announce:
-    needs:
-      - plan
-      - host
-    # use "always() && ..." to allow us to wait for all publish jobs while
-    # still allowing individual publish jobs to skip themselves (for prereleases).
-    # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' }}
-    runs-on: "ubuntu-24.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive

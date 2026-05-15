@@ -6,3 +6,7 @@ tag-name = "v{{version}}"
 pre-release-commit-message = "chore: bump version to {{version}}"
 # cargo-dist handles publishing; disable cargo publish here
 publish = false
+
+[[pre-release-hook]]
+command = "git-cliff"
+args = ["--output", "CHANGELOG.md", "--tag", "{{version}}"]
