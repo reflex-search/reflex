@@ -1,14 +1,12 @@
 name: Publish Packages
 
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
-    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish'
+        description: "Release tag to publish (escape hatch)"
         required: true
 
 permissions:
@@ -19,6 +17,7 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    if: ${{ !github.event.release.prerelease }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +36,7 @@ jobs:
   publish-npm:
     name: Publish to NPM
     runs-on: ubuntu-latest
+    if: ${{ !github.event.release.prerelease }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,14 +45,11 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
-            # Extract tag from the Release workflow that triggered us
-            TAG="${{ github.event.workflow_run.head_branch }}"
           else
             TAG="${{ github.event.release.tag_name }}"
           fi
 
-          # Ensure tag has 'v' prefix if it's a version number
+          # Ensure tag has 'v' prefix if it's a bare version number
           if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             TAG="v${TAG}"
           fi
