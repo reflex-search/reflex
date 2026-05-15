@@ -1,12 +1,7 @@
-[workspace]
 push = true
 push-remote = "origin"
 tag = true
 tag-name = "v{{version}}"
 pre-release-commit-message = "chore: bump version to {{version}}"
-# cargo-dist handles publishing; disable cargo publish here
+# cargo-dist handles publishing to crates.io and npm; disable here
 publish = false
-
-[[pre-release-hook]]
-command = "git-cliff"
-args = ["--output", "CHANGELOG.md", "--tag", "{{version}}"]
