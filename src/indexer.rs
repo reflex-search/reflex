@@ -286,6 +286,7 @@ impl Indexer {
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
+        trigram_index.set_max_posting_list_entries(self.config.max_posting_list_entries);
         let mut content_writer = ContentWriter::new();
 
         // Enable batch-flush mode for trigram index if we have lots of files

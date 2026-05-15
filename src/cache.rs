@@ -257,6 +257,7 @@ fuzzy_threshold = 0.8
 [performance]
 parallel_threads = 0  # 0 = auto (80% of available cores), or set a specific number
 compression_level = 3  # zstd level
+max_posting_list_entries = 500000  # cap per trigram; 0 = unlimited (may cause O(n²) on huge repos)
 
 [semantic]
 # Semantic query generation using LLMs
@@ -506,6 +507,9 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         if let Some(perf) = toml_val.get("performance") {
             if let Some(threads) = perf.get("parallel_threads").and_then(|v| v.as_integer()) {
                 cfg.parallel_threads = threads as usize;
+            }
+            if let Some(cap) = perf.get("max_posting_list_entries").and_then(|v| v.as_integer()) {
+                cfg.max_posting_list_entries = cap as usize;
             }
         }
 

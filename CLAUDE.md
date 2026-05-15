@@ -12,6 +12,8 @@ immediately, and once the indexing completes, run the previously failed tool aga
 
 **Not sure which MCP tool to use?** See the [MCP Tool Selection Cheatsheet](./docs/mcp-tool-cheatsheet.md) for a decision tree organized by goal: finding locations, definitions, file dependencies, and codebase structure.
 
+**Full parameter reference:** See [docs/mcp-tool-reference.md](./docs/mcp-tool-reference.md) for complete documentation of every MCP tool — parameters, example calls, example responses, and when to use each tool vs. alternatives.
+
 ## Project Overview
 **Reflex** is a local-first, full-text code search engine written in Rust. It's a fast, deterministic replacement for Sourcegraph Code Search, designed specifically for AI coding workflows and automation.
 
@@ -274,6 +276,7 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 
 ## Design Notes
 - **Trigram Algorithm**: Extracts 3-character substrings; builds inverted index for O(1) lookups
+- **High-frequency trigram cap** (`max_posting_list_entries`, default 500 000): Common trigrams such as ` = `, `// `, and `the` can appear millions of times in large codebases, making posting-list intersection O(n²). Reflex caps each posting list at this threshold during `finalize()` and the streaming k-way merge. Entries beyond the cap are dropped (first-occurrence bias). **Tradeoff**: queries for those exact trigrams may miss matches in the tail of very large files, but query latency is bounded and index size is predictable. The cap is configurable in `.reflex/config.toml` `[performance]`; set to `0` to disable (not recommended on repos > 50 k files).
 - **Runtime Symbol Detection**: Parse only candidate files at query time (10-100 files vs 62K+ files at index time)
 - **Incremental by content**: Files reindexed only if `blake3` hash changes
 - **Memory-mapped I/O**: Zero-copy access to trigrams.bin and content.bin

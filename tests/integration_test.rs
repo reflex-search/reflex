@@ -2659,3 +2659,64 @@ fn test_partial_write_recovery_content_bin() {
     let results = engine.search("world", QueryFilter::default()).unwrap();
     assert!(!results.is_empty(), "Should find 'world' in rebuilt cache");
 }
+
+// ==================== Trigram Cap Tests ====================
+
+/// Unit test: TrigramIndex enforces max_posting_list_entries at finalize() time.
+#[test]
+fn test_trigram_cap_unit() {
+    use reflex::trigram::TrigramIndex;
+
+    let cap = 5usize;
+
+    // Build an index with one file that has "aaa" on 20 distinct lines.
+    // Each line creates a unique FileLocation (different line_no), so dedup won't remove them.
+    let content = "aaa\n".repeat(20);
+    let mut idx = TrigramIndex::new();
+    idx.set_max_posting_list_entries(cap);
+    let file_id = idx.add_file(std::path::PathBuf::from("test.txt"));
+    idx.index_file(file_id, &content);
+    idx.finalize();
+
+    // "aaa" = trigram packed as little-endian bytes — search for it and verify capped.
+    let trigram_aaa: u32 = (b'a' as u32) | ((b'a' as u32) << 8) | ((b'a' as u32) << 16);
+    let locations = idx.get_posting_list(trigram_aaa)
+        .expect("trigram 'aaa' must exist after indexing content with 'aaa'");
+    assert!(
+        locations.len() <= cap,
+        "Posting list should be capped at {cap}, got {}",
+        locations.len()
+    );
+}
+
+/// Integration test: high-frequency trigrams are capped during full indexer pipeline.
+#[test]
+fn test_trigram_cap_integration() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Produce a Rust file with 200 lines of "aaa" — far above a cap of 10.
+    // Using a Rust source extension so the indexer's language filter accepts it.
+    let pathological = "// aaa\n".repeat(200);
+    fs::write(project.join("many_aaa.rs"), &pathological).unwrap();
+
+    let mut config = IndexConfig::default();
+    config.max_posting_list_entries = 10;
+
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, config);
+    // Indexing must succeed even with a very aggressive cap.
+    let stats = indexer.index(project, false).unwrap();
+    assert_eq!(stats.total_files, 1);
+
+    // Search must still return results (capped list is still useful).
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let results = engine.search("aaa", QueryFilter::default()).unwrap();
+    // Cap is 10 but the file has 200 occurrences — the search must still
+    // find *some* lines (up to the cap), not return empty.
+    assert!(
+        !results.is_empty(),
+        "Search must return results even when posting list is capped; got 0 results"
+    );
+}
