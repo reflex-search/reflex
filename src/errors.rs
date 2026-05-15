@@ -102,4 +102,23 @@ mod tests {
         };
         assert_eq!(exit_code, 1, "Non-ReflexError should fall back to exit code 1");
     }
+
+    /// Mirrors the exact downcast path used by main.rs so exit-code wiring
+    /// is verified independently of the binary.
+    #[test]
+    fn test_main_exit_code_via_anyhow_downcast() {
+        fn resolve(err: ReflexError) -> i32 {
+            let wrapped: anyhow::Error = err.into();
+            wrapped
+                .downcast_ref::<ReflexError>()
+                .map(|re| re.exit_code())
+                .unwrap_or(1)
+        }
+
+        assert_eq!(resolve(ReflexError::IndexNotFound), 2);
+        assert_eq!(resolve(ReflexError::QuerySyntaxError("bad".into())), 3);
+        assert_eq!(resolve(ReflexError::IoError("disk".into())), 4);
+        assert_eq!(resolve(ReflexError::ParseError("oops".into())), 5);
+        assert_eq!(resolve(ReflexError::LlmError("timeout".into())), 6);
+    }
 }

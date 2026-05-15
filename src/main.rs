@@ -9,8 +9,11 @@ fn main() {
     let cli = Cli::parse();
 
     if let Err(e) = cli.execute() {
-        // Display error in red with clean formatting
         output::error(&format!("Error: {:#}", e));
-        std::process::exit(1);
+        let code = e
+            .downcast_ref::<reflex::errors::ReflexError>()
+            .map(|re| re.exit_code())
+            .unwrap_or(1);
+        std::process::exit(code);
     }
 }

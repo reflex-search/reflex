@@ -153,3 +153,49 @@ fn string_id_is_preserved() {
     assert_eq!(v["id"], Value::from("req-abc"));
     assert_response_well_formed(&out[0]);
 }
+
+// ── REF-9: structured error shape at MCP boundary ─────────────────────────
+
+/// Unknown method returns error with `data.kind` = "MethodNotFound".
+#[test]
+fn error_unknown_method_has_kind_field() {
+    let req = r#"{"jsonrpc":"2.0","id":10,"method":"totally/unknown","params":{}}"#;
+    let out = run_exchange(&[req]);
+
+    assert_eq!(out.len(), 1);
+    let v: Value = serde_json::from_str(&out[0]).unwrap();
+    assert!(v["error"].is_object(), "response must have an error object");
+    assert_eq!(v["error"]["code"], -32601);
+    let kind = v["error"]["data"]["kind"].as_str().unwrap_or("");
+    assert_eq!(kind, "MethodNotFound", "data.kind must identify the error class");
+}
+
+/// Malformed JSON returns -32700 with a null id per JSON-RPC 2.0.
+#[test]
+fn error_parse_error_returns_minus_32700() {
+    let bad_json = "this is not json at all";
+    let out = run_exchange(&[bad_json]);
+
+    assert_eq!(out.len(), 1);
+    let v: Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(v["error"]["code"], -32700);
+    // Per JSON-RPC 2.0, id must be null when the id cannot be recovered
+    assert_eq!(v["id"], Value::Null);
+}
+
+/// tools/call with a missing tool name returns -32602 InvalidParams.
+#[test]
+fn error_tools_call_unknown_tool_returns_invalid_params() {
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
+    let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}"#;
+    let out = run_exchange(&[init, call]);
+
+    // First response is initialize; second is for tools/call
+    assert_eq!(out.len(), 2);
+    let v: Value = serde_json::from_str(&out[1]).unwrap();
+    assert!(v["error"].is_object());
+    // Unknown tool should map to -32602 (InvalidParams)
+    assert_eq!(v["error"]["code"], -32602);
+    let kind = v["error"]["data"]["kind"].as_str().unwrap_or("");
+    assert_eq!(kind, "InvalidParams");
+}
