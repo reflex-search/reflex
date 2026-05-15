@@ -60,23 +60,23 @@ impl Default for QueryFilter {
             kind: None,
             use_ast: false,
             use_regex: false,
-            limit: Some(100),  // Default: limit to 100 results for token efficiency
+            limit: Some(100), // Default: limit to 100 results for token efficiency
             symbols_mode: false,
             expand: false,
             file_pattern: None,
             exact: false,
-            use_contains: false,  // Default: word-boundary matching
-            timeout_secs: 30, // 30 seconds default timeout
+            use_contains: false, // Default: word-boundary matching
+            timeout_secs: 30,    // 30 seconds default timeout
             glob_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             paths_only: false,
             offset: None,
-            force: false,  // Default: enable broad query detection
-            suppress_output: false,  // Default: show warnings/info
-            include_dependencies: false,  // Default: don't load dependencies for performance
-            context_lines: 0,  // Default: no context lines shown
-            test_large_index_threshold: None,  // Default: use production threshold (20,000)
-            test_short_pattern_threshold: None,  // Default: use production threshold (4)
+            force: false,                       // Default: enable broad query detection
+            suppress_output: false,             // Default: show warnings/info
+            include_dependencies: false,        // Default: don't load dependencies for performance
+            context_lines: 0,                   // Default: no context lines shown
+            test_large_index_threshold: None,   // Default: use production threshold (20,000)
+            test_short_pattern_threshold: None, // Default: use production threshold (4)
         }
     }
 }
@@ -93,7 +93,7 @@ pub fn keyword_to_kind(keyword: &str) -> Option<SymbolKind> {
         "interface" => Some(SymbolKind::Interface),
         "trait" => Some(SymbolKind::Trait),
         "type" => Some(SymbolKind::Type),
-        "record" => Some(SymbolKind::Struct),  // C# record types
+        "record" => Some(SymbolKind::Struct), // C# record types
         "function" | "fn" | "def" | "func" => Some(SymbolKind::Function),
         "const" | "static" => Some(SymbolKind::Constant),
         "var" | "let" => Some(SymbolKind::Variable),
@@ -114,7 +114,10 @@ pub fn has_word_boundary_match(line: &str, pattern: &str) -> bool {
     if let Ok(re) = Regex::new(&pattern_with_boundaries) {
         re.is_match(line)
     } else {
-        log::debug!("Word boundary regex failed for pattern '{}', falling back to substring", pattern);
+        log::debug!(
+            "Word boundary regex failed for pattern '{}', falling back to substring",
+            pattern
+        );
         line.contains(pattern)
     }
 }

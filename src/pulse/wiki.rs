@@ -69,7 +69,10 @@ pub struct ModuleDiscoveryConfig {
 
 impl Default for ModuleDiscoveryConfig {
     fn default() -> Self {
-        Self { max_depth: 2, min_files: 1 }
+        Self {
+            max_depth: 2,
+            min_files: 1,
+        }
     }
 }
 
@@ -80,9 +83,11 @@ impl Default for ModuleDiscoveryConfig {
 /// like `src/parsers`, `src/semantic`, `src/pulse` instead of just `src`.
 ///
 /// Use `config` to control discovery depth and minimum file filtering.
-pub fn detect_modules(cache: &CacheManager, config: &ModuleDiscoveryConfig) -> Result<Vec<ModuleDefinition>> {
-    let context = CodebaseContext::extract(cache)
-        .context("Failed to extract codebase context")?;
+pub fn detect_modules(
+    cache: &CacheManager,
+    config: &ModuleDiscoveryConfig,
+) -> Result<Vec<ModuleDefinition>> {
+    let context = CodebaseContext::extract(cache).context("Failed to extract codebase context")?;
 
     let db_path = cache.path().join("meta.db");
     let conn = Connection::open(&db_path)?;
@@ -154,13 +159,13 @@ fn discover_sub_modules(conn: &Connection, parent_path: &str) -> Result<Vec<Stri
            AND INSTR(SUBSTR(path, ?2 + 1), '/') > 0
          GROUP BY sub_dir
          HAVING file_count >= 3
-         ORDER BY file_count DESC"
+         ORDER BY file_count DESC",
     )?;
 
-    let rows: Vec<String> = stmt.query_map(
-        rusqlite::params![pattern, prefix_len],
-        |row| row.get(0),
-    )?.filter_map(|r| r.ok()).collect();
+    let rows: Vec<String> = stmt
+        .query_map(rusqlite::params![pattern, prefix_len], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(rows)
 }
@@ -183,7 +188,8 @@ pub fn generate_wiki_page(
 
     // Find child modules of this module
     let prefix = format!("{}/", module.path);
-    let child_modules: Vec<&ModuleDefinition> = all_modules.iter()
+    let child_modules: Vec<&ModuleDefinition> = all_modules
+        .iter()
         .filter(|m| m.path.starts_with(&prefix) && m.path != module.path)
         .collect();
 
@@ -301,59 +307,69 @@ pub fn generate_all_pages_structural(
 
     // Use rayon par_iter for concurrent structural builds.
     // Each task opens its own DB connection and QueryEngine (safe for parallel use).
-    let results: Vec<_> = modules.par_iter().map(|module| {
-        let db_path = cache.path().join("meta.db");
-        let conn = match Connection::open(&db_path) {
-            Ok(c) => c,
-            Err(e) => return Err(anyhow::anyhow!("Failed to open meta.db for {}: {}", module.path, e)),
-        };
-        let deps_index = DependencyIndex::new(cache.clone());
-        let query_engine = QueryEngine::new(cache.clone());
+    let results: Vec<_> = modules
+        .par_iter()
+        .map(|module| {
+            let db_path = cache.path().join("meta.db");
+            let conn = match Connection::open(&db_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "Failed to open meta.db for {}: {}",
+                        module.path,
+                        e
+                    ));
+                }
+            };
+            let deps_index = DependencyIndex::new(cache.clone());
+            let query_engine = QueryEngine::new(cache.clone());
 
-        let prefix = format!("{}/", module.path);
-        let child_modules: Vec<&ModuleDefinition> = modules.iter()
-            .filter(|m| m.path.starts_with(&prefix) && m.path != module.path)
-            .collect();
+            let prefix = format!("{}/", module.path);
+            let child_modules: Vec<&ModuleDefinition> = modules
+                .iter()
+                .filter(|m| m.path.starts_with(&prefix) && m.path != module.path)
+                .collect();
 
-        let structure = build_structure_section(&conn, &module.path, &child_modules)?;
-        let dependencies = build_dependencies_section(&conn, &module.path, &modules)?;
-        let dependents = build_dependents_section(&conn, &deps_index, &module.path, &modules)?;
-        let dependency_diagram = build_dependency_diagram(&conn, &module.path, &modules);
-        let circular_deps = build_circular_deps_section(&deps_index, &module.path);
-        let key_symbols = build_key_symbols_section(&conn, &module.path, &query_engine);
-        let metrics = build_metrics_section(module, &conn)?;
-        let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
+            let structure = build_structure_section(&conn, &module.path, &child_modules)?;
+            let dependencies = build_dependencies_section(&conn, &module.path, &modules)?;
+            let dependents = build_dependents_section(&conn, &deps_index, &module.path, &modules)?;
+            let dependency_diagram = build_dependency_diagram(&conn, &module.path, &modules);
+            let circular_deps = build_circular_deps_section(&deps_index, &module.path);
+            let key_symbols = build_key_symbols_section(&conn, &module.path, &query_engine);
+            let metrics = build_metrics_section(module, &conn)?;
+            let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
 
-        // Build narration context string
-        let mut context = String::new();
-        context.push_str(&format!("Module: {}\n\n", module.path));
-        context.push_str(&format!("## Structure\n{}\n\n", structure));
-        context.push_str(&format!("## Dependencies\n{}\n\n", dependencies));
-        context.push_str(&format!("## Dependents\n{}\n\n", dependents));
-        context.push_str(&format!("## Key Symbols\n{}\n\n", key_symbols));
-        context.push_str(&format!("## Metrics\n{}\n", metrics));
+            // Build narration context string
+            let mut context = String::new();
+            context.push_str(&format!("Module: {}\n\n", module.path));
+            context.push_str(&format!("## Structure\n{}\n\n", structure));
+            context.push_str(&format!("## Dependencies\n{}\n\n", dependencies));
+            context.push_str(&format!("## Dependents\n{}\n\n", dependents));
+            context.push_str(&format!("## Key Symbols\n{}\n\n", key_symbols));
+            context.push_str(&format!("## Metrics\n{}\n", metrics));
 
-        let narration_context = Some(context);
+            let narration_context = Some(context);
 
-        Ok(WikiPageWithContext {
-            page: WikiPage {
-                module_path: module.path.clone(),
-                title: format!("{}/", module.path),
-                sections: WikiSections {
-                    summary: None,
-                    structure,
-                    dependencies,
-                    dependents,
-                    dependency_diagram,
-                    circular_deps,
-                    key_symbols,
-                    metrics,
-                    recent_changes,
+            Ok(WikiPageWithContext {
+                page: WikiPage {
+                    module_path: module.path.clone(),
+                    title: format!("{}/", module.path),
+                    sections: WikiSections {
+                        summary: None,
+                        structure,
+                        dependencies,
+                        dependents,
+                        dependency_diagram,
+                        circular_deps,
+                        key_symbols,
+                        metrics,
+                        recent_changes,
+                    },
                 },
-            },
-            narration_context,
+                narration_context,
+            })
         })
-    }).collect();
+        .collect();
 
     // Collect results, logging failures
     let mut pages = Vec::new();
@@ -372,58 +388,61 @@ pub fn generate_all_pages_structural(
 
 /// Render wiki pages as (filename, markdown) pairs
 pub fn render_wiki_markdown(pages: &[WikiPage]) -> Vec<(String, String)> {
-    pages.iter().map(|page| {
-        let filename = page.module_path.replace('/', "_") + ".md";
-        let mut md = String::new();
+    pages
+        .iter()
+        .map(|page| {
+            let filename = page.module_path.replace('/', "_") + ".md";
+            let mut md = String::new();
 
-        md.push_str(&format!("# {}\n\n", page.title));
+            md.push_str(&format!("# {}\n\n", page.title));
 
-        if let Some(summary) = &page.sections.summary {
-            md.push_str(summary);
+            if let Some(summary) = &page.sections.summary {
+                md.push_str(summary);
+                md.push_str("\n\n");
+            }
+
+            md.push_str("## Structure\n\n");
+            md.push_str(&page.sections.structure);
             md.push_str("\n\n");
-        }
 
-        md.push_str("## Structure\n\n");
-        md.push_str(&page.sections.structure);
-        md.push_str("\n\n");
+            if let Some(diagram) = &page.sections.dependency_diagram {
+                md.push_str("## Dependency Diagram\n\n");
+                md.push_str("```mermaid\n");
+                md.push_str(diagram);
+                md.push_str("```\n\n");
+            }
 
-        if let Some(diagram) = &page.sections.dependency_diagram {
-            md.push_str("## Dependency Diagram\n\n");
-            md.push_str("```mermaid\n");
-            md.push_str(diagram);
-            md.push_str("```\n\n");
-        }
-
-        md.push_str("## Dependencies\n\n");
-        md.push_str(&page.sections.dependencies);
-        md.push_str("\n\n");
-
-        md.push_str("## Dependents\n\n");
-        md.push_str(&page.sections.dependents);
-        md.push_str("\n\n");
-
-        if let Some(circular) = &page.sections.circular_deps {
-            md.push_str("## Circular Dependencies\n\n");
-            md.push_str(circular);
+            md.push_str("## Dependencies\n\n");
+            md.push_str(&page.sections.dependencies);
             md.push_str("\n\n");
-        }
 
-        md.push_str("## Key Symbols\n\n");
-        md.push_str(&page.sections.key_symbols);
-        md.push_str("\n\n");
-
-        md.push_str("## Metrics\n\n");
-        md.push_str(&page.sections.metrics);
-        md.push_str("\n\n");
-
-        if let Some(changes) = &page.sections.recent_changes {
-            md.push_str("## Recent Changes\n\n");
-            md.push_str(changes);
+            md.push_str("## Dependents\n\n");
+            md.push_str(&page.sections.dependents);
             md.push_str("\n\n");
-        }
 
-        (filename, md)
-    }).collect()
+            if let Some(circular) = &page.sections.circular_deps {
+                md.push_str("## Circular Dependencies\n\n");
+                md.push_str(circular);
+                md.push_str("\n\n");
+            }
+
+            md.push_str("## Key Symbols\n\n");
+            md.push_str(&page.sections.key_symbols);
+            md.push_str("\n\n");
+
+            md.push_str("## Metrics\n\n");
+            md.push_str(&page.sections.metrics);
+            md.push_str("\n\n");
+
+            if let Some(changes) = &page.sections.recent_changes {
+                md.push_str("## Recent Changes\n\n");
+                md.push_str(changes);
+                md.push_str("\n\n");
+            }
+
+            (filename, md)
+        })
+        .collect()
 }
 
 // --- Private helpers ---
@@ -443,7 +462,7 @@ fn build_dependency_diagram(
         "SELECT f2.path FROM file_dependencies fd
          JOIN files f1 ON fd.file_id = f1.id
          JOIN files f2 ON fd.resolved_file_id = f2.id
-         WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1"
+         WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1",
     ) {
         if let Ok(rows) = stmt.query_map([&pattern], |row| row.get::<_, String>(0)) {
             for dep_file in rows.flatten() {
@@ -459,7 +478,7 @@ fn build_dependency_diagram(
         "SELECT f1.path FROM file_dependencies fd
          JOIN files f1 ON fd.file_id = f1.id
          JOIN files f2 ON fd.resolved_file_id = f2.id
-         WHERE f2.path LIKE ?1 AND f1.path NOT LIKE ?1"
+         WHERE f2.path LIKE ?1 AND f1.path NOT LIKE ?1",
     ) {
         if let Ok(rows) = stmt.query_map([&pattern], |row| row.get::<_, String>(0)) {
             for dep_file in rows.flatten() {
@@ -477,13 +496,14 @@ fn build_dependency_diagram(
     diagram.push_str("graph LR\n");
 
     // Sanitize node IDs with m_ prefix to avoid Mermaid reserved word collisions
-    let sanitize = |s: &str| -> String {
-        format!("m_{}", s.replace(['/', '.', '-', ' '], "_"))
-    };
+    let sanitize = |s: &str| -> String { format!("m_{}", s.replace(['/', '.', '-', ' '], "_")) };
 
     let center_id = sanitize(module_path);
     diagram.push_str(&format!("    {}[\"<b>{}/</b>\"]\n", center_id, module_path));
-    diagram.push_str(&format!("    style {} fill:#a78bfa,color:#0d0d0d,stroke:#a78bfa\n", center_id));
+    diagram.push_str(&format!(
+        "    style {} fill:#a78bfa,color:#0d0d0d,stroke:#a78bfa\n",
+        center_id
+    ));
 
     // Track all nodes for clickable links
     let mut all_node_paths: Vec<String> = vec![module_path.to_string()];
@@ -550,7 +570,8 @@ fn build_circular_deps_section(deps_index: &DependencyIndex, module_path: &str) 
     // Filter cycles that involve at least one file in this module
     let mut relevant_cycles: Vec<Vec<String>> = Vec::new();
     for cycle in &cycles {
-        let paths: Vec<String> = cycle.iter()
+        let paths: Vec<String> = cycle
+            .iter()
             .filter_map(|id| path_map.get(id).cloned())
             .collect();
 
@@ -567,18 +588,26 @@ fn build_circular_deps_section(deps_index: &DependencyIndex, module_path: &str) 
     content.push_str(&format!(
         "**{} circular {}** involving this module:\n\n",
         relevant_cycles.len(),
-        if relevant_cycles.len() == 1 { "dependency" } else { "dependencies" }
+        if relevant_cycles.len() == 1 {
+            "dependency"
+        } else {
+            "dependencies"
+        }
     ));
 
     for (i, cycle) in relevant_cycles.iter().take(10).enumerate() {
-        let short_paths: Vec<String> = cycle.iter()
+        let short_paths: Vec<String> = cycle
+            .iter()
             .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
             .collect();
         content.push_str(&format!("{}. {}\n", i + 1, short_paths.join(" → ")));
     }
 
     if relevant_cycles.len() > 10 {
-        content.push_str(&format!("\n... and {} more. Run `rfx analyze --circular` for full list.\n", relevant_cycles.len() - 10));
+        content.push_str(&format!(
+            "\n... and {} more. Run `rfx analyze --circular` for full list.\n",
+            relevant_cycles.len() - 10
+        ));
     }
 
     Some(content)
@@ -606,7 +635,8 @@ fn build_module_def(conn: &Connection, path: &str, tier: u8) -> Result<Option<Mo
     let mut stmt = conn.prepare(
         "SELECT DISTINCT language FROM files WHERE (path LIKE ?1 OR path = ?2) AND language IS NOT NULL"
     )?;
-    let languages: Vec<String> = stmt.query_map(rusqlite::params![&pattern, path], |row| row.get(0))?
+    let languages: Vec<String> = stmt
+        .query_map(rusqlite::params![&pattern, path], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Some(ModuleDefinition {
@@ -631,7 +661,9 @@ fn build_structure_section(
     if !child_modules.is_empty() {
         content.push_str("### Sub-modules\n\n");
         for child in child_modules {
-            let short_name = child.path.strip_prefix(module_path)
+            let short_name = child
+                .path
+                .strip_prefix(module_path)
                 .unwrap_or(&child.path)
                 .trim_start_matches('/');
             let child_slug = child.path.replace('/', "-");
@@ -652,12 +684,14 @@ fn build_structure_section(
     let mut stmt = conn.prepare(
         "SELECT path, language, COALESCE(line_count, 0) FROM files
          WHERE path LIKE ?1
-         ORDER BY line_count DESC"
+         ORDER BY line_count DESC",
     )?;
 
-    let files: Vec<(String, Option<String>, i64)> = stmt.query_map([&pattern], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?.collect::<Result<Vec<_>, _>>()?;
+    let files: Vec<(String, Option<String>, i64)> = stmt
+        .query_map([&pattern], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Group by immediate subdirectory
     let mut by_subdir: HashMap<String, (usize, i64)> = HashMap::new(); // subdir -> (file_count, total_lines)
@@ -703,11 +737,14 @@ fn build_structure_section(
 
     // Top 10 largest files, with expandable overflow
     content.push_str("\n### Largest Files\n\n");
-    let all_sorted: Vec<_> = files.iter()
+    let all_sorted: Vec<_> = files
+        .iter()
         .map(|(path, _, lines)| (path.as_str(), *lines))
         .collect();
     for (path, lines) in all_sorted.iter().take(10) {
-        let short = path.strip_prefix(&format!("{}/", module_path)).unwrap_or(path);
+        let short = path
+            .strip_prefix(&format!("{}/", module_path))
+            .unwrap_or(path);
         content.push_str(&format!("- `{}` ({} lines)\n", short, lines));
     }
 
@@ -718,7 +755,9 @@ fn build_structure_section(
             total - 10
         ));
         for (path, lines) in all_sorted.iter().skip(10) {
-            let short = path.strip_prefix(&format!("{}/", module_path)).unwrap_or(path);
+            let short = path
+                .strip_prefix(&format!("{}/", module_path))
+                .unwrap_or(path);
             content.push_str(&format!("- `{}` ({} lines)\n", short, lines));
         }
         content.push_str("\n</details>\n");
@@ -739,10 +778,11 @@ fn build_dependencies_section(
          JOIN files f1 ON fd.file_id = f1.id
          JOIN files f2 ON fd.resolved_file_id = f2.id
          WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1
-         ORDER BY f2.path"
+         ORDER BY f2.path",
     )?;
 
-    let deps: Vec<String> = stmt.query_map([&pattern], |row| row.get(0))?
+    let deps: Vec<String> = stmt
+        .query_map([&pattern], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
 
     if deps.is_empty() {
@@ -753,7 +793,10 @@ fn build_dependencies_section(
     let mut by_module: HashMap<String, Vec<String>> = HashMap::new();
     for dep in &deps {
         let target_module = find_owning_module(dep, all_modules);
-        by_module.entry(target_module).or_default().push(dep.clone());
+        by_module
+            .entry(target_module)
+            .or_default()
+            .push(dep.clone());
     }
 
     let mut groups: Vec<_> = by_module.into_iter().collect();
@@ -769,7 +812,12 @@ fn build_dependencies_section(
 
     for (module, files) in &groups {
         let module_slug = module.replace('/', "-");
-        content.push_str(&format!("**[{}/](@/wiki/{}.md)** ({} files):\n", module, module_slug, files.len()));
+        content.push_str(&format!(
+            "**[{}/](@/wiki/{}.md)** ({} files):\n",
+            module,
+            module_slug,
+            files.len()
+        ));
         for f in files.iter().take(5) {
             let short = f.rsplit('/').next().unwrap_or(f);
             content.push_str(&format!("- `{}`\n", short));
@@ -796,10 +844,11 @@ fn build_dependents_section(
          JOIN files f1 ON fd.file_id = f1.id
          JOIN files f2 ON fd.resolved_file_id = f2.id
          WHERE f2.path LIKE ?1 AND f1.path NOT LIKE ?1
-         ORDER BY f1.path"
+         ORDER BY f1.path",
     )?;
 
-    let dependents: Vec<String> = stmt.query_map([&pattern], |row| row.get(0))?
+    let dependents: Vec<String> = stmt
+        .query_map([&pattern], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
 
     if dependents.is_empty() {
@@ -810,7 +859,10 @@ fn build_dependents_section(
     let mut by_module: HashMap<String, Vec<String>> = HashMap::new();
     for dep in &dependents {
         let source_module = find_owning_module(dep, all_modules);
-        by_module.entry(source_module).or_default().push(dep.clone());
+        by_module
+            .entry(source_module)
+            .or_default()
+            .push(dep.clone());
     }
 
     let mut groups: Vec<_> = by_module.into_iter().collect();
@@ -826,7 +878,12 @@ fn build_dependents_section(
 
     for (module, files) in &groups {
         let module_slug = module.replace('/', "-");
-        content.push_str(&format!("**[{}/](@/wiki/{}.md)** ({} files):\n", module, module_slug, files.len()));
+        content.push_str(&format!(
+            "**[{}/](@/wiki/{}.md)** ({} files):\n",
+            module,
+            module_slug,
+            files.len()
+        ));
         for f in files.iter().take(5) {
             let short = f.rsplit('/').next().unwrap_or(f);
             content.push_str(&format!("- `{}`\n", short));
@@ -844,28 +901,128 @@ fn build_dependents_section(
 /// These appear in thousands of files and tell users nothing about the module.
 const SYMBOL_BLOCKLIST: &[&str] = &[
     // Multi-language keywords
-    "return", "this", "self", "super", "new", "null", "true", "false", "none",
-    "class", "function", "var", "let", "const", "static", "public", "private",
-    "protected", "abstract", "virtual", "override", "final", "async", "await",
-    "import", "export", "module", "package", "namespace", "use", "from", "as",
-    "if", "else", "for", "while", "do", "switch", "case", "default", "break",
-    "continue", "try", "catch", "throw", "throws", "finally", "yield",
-    "void", "int", "bool", "string", "float", "double", "char", "byte",
-    "struct", "enum", "trait", "impl", "interface", "type", "where",
+    "return",
+    "this",
+    "self",
+    "super",
+    "new",
+    "null",
+    "true",
+    "false",
+    "none",
+    "class",
+    "function",
+    "var",
+    "let",
+    "const",
+    "static",
+    "public",
+    "private",
+    "protected",
+    "abstract",
+    "virtual",
+    "override",
+    "final",
+    "async",
+    "await",
+    "import",
+    "export",
+    "module",
+    "package",
+    "namespace",
+    "use",
+    "from",
+    "as",
+    "if",
+    "else",
+    "for",
+    "while",
+    "do",
+    "switch",
+    "case",
+    "default",
+    "break",
+    "continue",
+    "try",
+    "catch",
+    "throw",
+    "throws",
+    "finally",
+    "yield",
+    "void",
+    "int",
+    "bool",
+    "string",
+    "float",
+    "double",
+    "char",
+    "byte",
+    "struct",
+    "enum",
+    "trait",
+    "impl",
+    "interface",
+    "type",
+    "where",
     // Common generic variable names
-    "data", "value", "name", "key", "item", "items", "list", "result",
-    "error", "err", "msg", "args", "opts", "params", "config", "options",
-    "index", "count", "size", "length", "path", "file", "line", "text",
-    "input", "output", "request", "response", "context", "state", "props",
-    "init", "main", "run", "get", "set", "add", "delete", "update", "create",
-    "test", "setup", "describe", "expect",
+    "data",
+    "value",
+    "name",
+    "key",
+    "item",
+    "items",
+    "list",
+    "result",
+    "error",
+    "err",
+    "msg",
+    "args",
+    "opts",
+    "params",
+    "config",
+    "options",
+    "index",
+    "count",
+    "size",
+    "length",
+    "path",
+    "file",
+    "line",
+    "text",
+    "input",
+    "output",
+    "request",
+    "response",
+    "context",
+    "state",
+    "props",
+    "init",
+    "main",
+    "run",
+    "get",
+    "set",
+    "add",
+    "delete",
+    "update",
+    "create",
+    "test",
+    "setup",
+    "describe",
+    "expect",
 ];
 
 /// Symbol kinds considered high-value for "Key definitions" rankings.
 /// These represent meaningful domain abstractions, not individual variables.
 const PRIORITY_SYMBOL_KINDS: &[&str] = &[
-    "Function", "Struct", "Class", "Trait", "Interface",
-    "Enum", "Macro", "Type", "Constant",
+    "Function",
+    "Struct",
+    "Class",
+    "Trait",
+    "Interface",
+    "Enum",
+    "Macro",
+    "Type",
+    "Constant",
 ];
 
 /// Extract a doc comment preceding (or following, for Python) a symbol definition.
@@ -937,19 +1094,28 @@ fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> 
         let trimmed = lines[idx].trim();
         // Rust attributes: #[...] or #![...]
         if trimmed.starts_with("#[") || trimmed.starts_with("#![") {
-            if idx == 0 { return None; }
+            if idx == 0 {
+                return None;
+            }
             idx -= 1;
             continue;
         }
         // Java/Kotlin/Python-style decorators: @Something
-        if trimmed.starts_with('@') && trimmed.len() > 1 && trimmed[1..].starts_with(|c: char| c.is_alphabetic()) {
-            if idx == 0 { return None; }
+        if trimmed.starts_with('@')
+            && trimmed.len() > 1
+            && trimmed[1..].starts_with(|c: char| c.is_alphabetic())
+        {
+            if idx == 0 {
+                return None;
+            }
             idx -= 1;
             continue;
         }
         // PHP attributes: #[Attribute]
         if trimmed.starts_with("#[") {
-            if idx == 0 { return None; }
+            if idx == 0 {
+                return None;
+            }
             idx -= 1;
             continue;
         }
@@ -976,7 +1142,9 @@ fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> 
                 } else {
                     break;
                 }
-                if idx == 0 { break; }
+                if idx == 0 {
+                    break;
+                }
                 idx -= 1;
             }
         }
@@ -990,7 +1158,9 @@ fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> 
                 } else {
                     break;
                 }
-                if idx == 0 { break; }
+                if idx == 0 {
+                    break;
+                }
                 idx -= 1;
             }
         }
@@ -1004,7 +1174,9 @@ fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> 
                 } else {
                     break;
                 }
-                if idx == 0 { break; }
+                if idx == 0 {
+                    break;
+                }
                 idx -= 1;
             }
         }
@@ -1026,7 +1198,9 @@ fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> 
                         } else {
                             break;
                         }
-                        if idx == 0 { break; }
+                        if idx == 0 {
+                            break;
+                        }
                         idx -= 1;
                     }
                 }
@@ -1041,7 +1215,11 @@ fn extract_doc_comment(source: &str, start_line: usize, language: &Language) -> 
     // Reverse because we collected bottom-up
     comment_lines.reverse();
     let result = comment_lines.join("\n").trim().to_string();
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Extract a block comment (/** ... */) by walking backwards from the closing line.
@@ -1076,20 +1254,26 @@ fn extract_block_comment(lines: &[&str], end_idx: usize, open_marker: &str) -> O
             doc_lines.push(content.to_string());
         }
 
-        if idx == 0 { break; }
+        if idx == 0 {
+            break;
+        }
         idx -= 1;
     }
 
     doc_lines.reverse();
     let result = doc_lines.join("\n").trim().to_string();
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// HTML-escape text to prevent doc comments from being interpreted as markup.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Render a single "By Kind" entry as a pure HTML `<li>` element.
@@ -1098,7 +1282,8 @@ fn render_by_kind_entry(content: &mut String, name: &str, short_path: &str, doc:
     match doc {
         Some(d) if d.lines().count() > 1 => {
             let first_line = html_escape(d.lines().next().unwrap_or(""));
-            let body: String = d.lines()
+            let body: String = d
+                .lines()
                 .map(|line| format!("<p>{}</p>", html_escape(line)))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -1110,25 +1295,32 @@ fn render_by_kind_entry(content: &mut String, name: &str, short_path: &str, doc:
         Some(d) => {
             content.push_str(&format!(
                 "<li><code>{}</code> ({}) — <span class=\"doc-comment-inline\">{}</span></li>\n",
-                html_escape(name), html_escape(short_path), html_escape(d)
+                html_escape(name),
+                html_escape(short_path),
+                html_escape(d)
             ));
         }
         None => {
             content.push_str(&format!(
                 "<li><code>{}</code> ({})</li>\n",
-                html_escape(name), html_escape(short_path)
+                html_escape(name),
+                html_escape(short_path)
             ));
         }
     }
 }
 
-fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine: &QueryEngine) -> String {
+fn build_key_symbols_section(
+    conn: &Connection,
+    module_path: &str,
+    query_engine: &QueryEngine,
+) -> String {
     let pattern = format!("{}/%", module_path);
     let mut stmt = match conn.prepare(
         "SELECT path, language FROM files
          WHERE path LIKE ?1 AND language IS NOT NULL
          ORDER BY COALESCE(line_count, 0) DESC
-         LIMIT 20"
+         LIMIT 20",
     ) {
         Ok(s) => s,
         Err(_) => return "No symbols extracted.".to_string(),
@@ -1171,17 +1363,22 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             if let Some(name) = &sym.symbol {
                 // Skip imports, exports, and unknown kinds
                 match &sym.kind {
-                    SymbolKind::Import | SymbolKind::Export | SymbolKind::Variable | SymbolKind::Unknown(_) => continue,
+                    SymbolKind::Import
+                    | SymbolKind::Export
+                    | SymbolKind::Variable
+                    | SymbolKind::Unknown(_) => continue,
                     _ => {}
                 }
 
                 let kind_name = format!("{}", sym.kind);
                 let size = sym.span.end_line.saturating_sub(sym.span.start_line) + 1;
                 let doc_comment = extract_doc_comment(&source, sym.span.start_line, &language);
-                by_kind
-                    .entry(kind_name)
-                    .or_default()
-                    .push((name.clone(), path.clone(), size, doc_comment));
+                by_kind.entry(kind_name).or_default().push((
+                    name.clone(),
+                    path.clone(),
+                    size,
+                    doc_comment,
+                ));
                 total_symbols += 1;
             }
         }
@@ -1198,7 +1395,9 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
     for entries in by_kind.values() {
         for (name, _path, _size, doc) in entries {
             if let Some(d) = doc {
-                doc_comments.entry(name.clone()).or_insert_with(|| d.clone());
+                doc_comments
+                    .entry(name.clone())
+                    .or_insert_with(|| d.clone());
             }
         }
     }
@@ -1210,7 +1409,9 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
     for (kind_str, entries) in &by_kind {
         if PRIORITY_SYMBOL_KINDS.contains(&kind_str.as_str()) {
             for (name, path, _size, _doc) in entries {
-                unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
+                unique_symbols
+                    .entry(name.clone())
+                    .or_insert_with(|| (kind_str.clone(), path.clone()));
             }
         }
     }
@@ -1218,7 +1419,9 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
     for (kind_str, entries) in &by_kind {
         if !PRIORITY_SYMBOL_KINDS.contains(&kind_str.as_str()) {
             for (name, path, _size, _doc) in entries {
-                unique_symbols.entry(name.clone()).or_insert_with(|| (kind_str.clone(), path.clone()));
+                unique_symbols
+                    .entry(name.clone())
+                    .or_insert_with(|| (kind_str.clone(), path.clone()));
             }
         }
     }
@@ -1248,7 +1451,8 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
         }
 
         // Look up span size for this symbol (larger definitions are more important)
-        let span_size = by_kind.get(kind)
+        let span_size = by_kind
+            .get(kind)
             .and_then(|entries| entries.iter().find(|(n, _, _, _)| n == name))
             .map(|(_, _, size, _)| *size)
             .unwrap_or(1);
@@ -1276,7 +1480,9 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             Ok(response) => {
                 let ref_count = response.results.len();
                 // Collect unique short filenames, excluding the definition file
-                let mut files: Vec<String> = response.results.iter()
+                let mut files: Vec<String> = response
+                    .results
+                    .iter()
                     .map(|r| r.path.rsplit('/').next().unwrap_or(&r.path).to_string())
                     .filter(|f| f != def_short)
                     .collect();
@@ -1301,7 +1507,10 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             content.push_str("<li>\n");
             content.push_str(&format!(
                 "<p><code>{}</code> ({}) in {} — referenced in {} {}</p>\n",
-                html_escape(name), html_escape(kind), html_escape(short), ref_count,
+                html_escape(name),
+                html_escape(kind),
+                html_escape(short),
+                ref_count,
                 if *ref_count == 1 { "file" } else { "files" }
             ));
 
@@ -1310,7 +1519,8 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
                 let first_line = html_escape(doc.lines().next().unwrap_or(""));
                 let is_multiline = doc.lines().count() > 1;
                 if is_multiline {
-                    let body: String = doc.lines()
+                    let body: String = doc
+                        .lines()
                         .map(|line| format!("<p>{}</p>", html_escape(line)))
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -1330,7 +1540,10 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
             if let Some(files) = ref_files.get(name.as_str()) {
                 if !files.is_empty() {
                     let show: Vec<&str> = files.iter().take(5).map(|s| s.as_str()).collect();
-                    let mut ref_line = format!("<ul><li class=\"ref-list\">Referenced by: {}", show.join(", "));
+                    let mut ref_line = format!(
+                        "<ul><li class=\"ref-list\">Referenced by: {}",
+                        show.join(", ")
+                    );
                     if files.len() > 5 {
                         ref_line.push_str(&format!(" +{} more", files.len() - 5));
                     }
@@ -1346,9 +1559,21 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
 
     // --- By Kind view (collapsible, showing ALL symbols) ---
     let display_order = [
-        "Function", "Struct", "Class", "Trait", "Interface",
-        "Enum", "Method", "Constant", "Type", "Macro",
-        "Variable", "Module", "Namespace", "Property", "Attribute",
+        "Function",
+        "Struct",
+        "Class",
+        "Trait",
+        "Interface",
+        "Enum",
+        "Method",
+        "Constant",
+        "Type",
+        "Macro",
+        "Variable",
+        "Module",
+        "Namespace",
+        "Property",
+        "Attribute",
     ];
 
     for kind in &display_order {
@@ -1356,7 +1581,10 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
         if let Some(entries) = by_kind.get_mut(&kind_str) {
             entries.sort_by(|a, b| b.2.cmp(&a.2));
             let count = entries.len();
-            content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n<ul>\n", kind, count));
+            content.push_str(&format!(
+                "<details><summary><strong>{}</strong> ({})</summary>\n<ul>\n",
+                kind, count
+            ));
             for (name, path, _size, doc) in entries.iter() {
                 let short = path.rsplit('/').next().unwrap_or(path);
                 render_by_kind_entry(&mut content, name, short, doc.as_deref());
@@ -1372,7 +1600,10 @@ fn build_key_symbols_section(conn: &Connection, module_path: &str, query_engine:
         }
         entries.sort_by(|a, b| b.2.cmp(&a.2));
         let count = entries.len();
-        content.push_str(&format!("<details><summary><strong>{}</strong> ({})</summary>\n<ul>\n", kind, count));
+        content.push_str(&format!(
+            "<details><summary><strong>{}</strong> ({})</summary>\n<ul>\n",
+            kind, count
+        ));
         for (name, path, _size, doc) in entries.iter() {
             let short = path.rsplit('/').next().unwrap_or(path);
             render_by_kind_entry(&mut content, name, short, doc.as_deref());
@@ -1398,26 +1629,30 @@ fn build_metrics_section(module: &ModuleDefinition, conn: &Connection) -> Result
     };
 
     // Outgoing dependency count
-    let outgoing: usize = conn.query_row(
-        "SELECT COUNT(DISTINCT fd.resolved_file_id)
+    let outgoing: usize = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT fd.resolved_file_id)
          FROM file_dependencies fd
          JOIN files f1 ON fd.file_id = f1.id
          JOIN files f2 ON fd.resolved_file_id = f2.id
          WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1",
-        [&pattern],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            [&pattern],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Incoming dependency count
-    let incoming: usize = conn.query_row(
-        "SELECT COUNT(DISTINCT fd.file_id)
+    let incoming: usize = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT fd.file_id)
          FROM file_dependencies fd
          JOIN files f1 ON fd.file_id = f1.id
          JOIN files f2 ON fd.resolved_file_id = f2.id
          WHERE f2.path LIKE ?1 AND f1.path NOT LIKE ?1",
-        [&pattern],
-        |row| row.get(0),
-    ).unwrap_or(0);
+            [&pattern],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     Ok(format!(
         "| Metric | Value |\n|---|---|\n\
@@ -1463,13 +1698,19 @@ fn build_recent_changes(diff: &super::diff::SnapshotDiff, module_path: &str) -> 
     let prefix = format!("{}/", module_path);
     let mut content = String::new();
 
-    let added: Vec<_> = diff.files_added.iter()
+    let added: Vec<_> = diff
+        .files_added
+        .iter()
         .filter(|f| f.path.starts_with(&prefix))
         .collect();
-    let removed: Vec<_> = diff.files_removed.iter()
+    let removed: Vec<_> = diff
+        .files_removed
+        .iter()
         .filter(|f| f.path.starts_with(&prefix))
         .collect();
-    let modified: Vec<_> = diff.files_modified.iter()
+    let modified: Vec<_> = diff
+        .files_modified
+        .iter()
         .filter(|f| f.path.starts_with(&prefix))
         .collect();
 

@@ -1,11 +1,11 @@
 //! LLM provider implementations
 
-pub mod openai;
 pub mod anthropic;
-pub mod openrouter;
-pub mod openai_compatible;
 #[cfg(test)]
 pub mod mock;
+pub mod openai;
+pub mod openai_compatible;
+pub mod openrouter;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -52,11 +52,24 @@ pub fn create_provider(
     timeout_secs: u64,
 ) -> Result<Box<dyn LlmProvider>> {
     match provider_name.to_lowercase().as_str() {
-        "openai" => Ok(Box::new(openai::OpenAiProvider::new(api_key, model, timeout_secs)?)),
-        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(api_key, model, timeout_secs)?)),
+        "openai" => Ok(Box::new(openai::OpenAiProvider::new(
+            api_key,
+            model,
+            timeout_secs,
+        )?)),
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(
+            api_key,
+            model,
+            timeout_secs,
+        )?)),
         "openrouter" => {
             let sort = options.as_ref().and_then(|o| o.get("sort").cloned());
-            Ok(Box::new(openrouter::OpenRouterProvider::new(api_key, model, sort, timeout_secs)?))
+            Ok(Box::new(openrouter::OpenRouterProvider::new(
+                api_key,
+                model,
+                sort,
+                timeout_secs,
+            )?))
         }
         "openai-compatible" | "openai_compatible" => {
             let base_url = options
@@ -68,9 +81,16 @@ pub fn create_provider(
                      or the OPENAI_COMPATIBLE_BASE_URL env var)",
                 )?;
             let model = model.unwrap_or_default();
-            let key = if api_key.is_empty() { None } else { Some(api_key) };
+            let key = if api_key.is_empty() {
+                None
+            } else {
+                Some(api_key)
+            };
             Ok(Box::new(openai_compatible::OpenAiCompatibleProvider::new(
-                key, model, base_url, timeout_secs,
+                key,
+                model,
+                base_url,
+                timeout_secs,
             )?))
         }
         _ => anyhow::bail!(
@@ -141,7 +161,10 @@ mod tests {
     #[test]
     fn test_create_provider_openai_compatible_with_base_url() {
         let mut opts = HashMap::new();
-        opts.insert("base_url".to_string(), "http://localhost:1234/v1".to_string());
+        opts.insert(
+            "base_url".to_string(),
+            "http://localhost:1234/v1".to_string(),
+        );
         let provider = create_provider(
             "openai-compatible",
             "test-key".to_string(),
@@ -156,7 +179,10 @@ mod tests {
     #[test]
     fn test_create_provider_openai_compatible_accepts_underscore_alias() {
         let mut opts = HashMap::new();
-        opts.insert("base_url".to_string(), "http://localhost:1234/v1".to_string());
+        opts.insert(
+            "base_url".to_string(),
+            "http://localhost:1234/v1".to_string(),
+        );
         let provider = create_provider(
             "openai_compatible",
             "test-key".to_string(),
@@ -170,7 +196,10 @@ mod tests {
     #[test]
     fn test_create_provider_openai_compatible_allows_empty_api_key() {
         let mut opts = HashMap::new();
-        opts.insert("base_url".to_string(), "http://localhost:1234/v1".to_string());
+        opts.insert(
+            "base_url".to_string(),
+            "http://localhost:1234/v1".to_string(),
+        );
         let provider = create_provider(
             "openai-compatible",
             String::new(),
@@ -199,14 +228,11 @@ mod tests {
     #[test]
     fn test_create_provider_openai_compatible_requires_model() {
         let mut opts = HashMap::new();
-        opts.insert("base_url".to_string(), "http://localhost:1234/v1".to_string());
-        let provider = create_provider(
-            "openai-compatible",
-            String::new(),
-            None,
-            Some(opts),
-            300,
+        opts.insert(
+            "base_url".to_string(),
+            "http://localhost:1234/v1".to_string(),
         );
+        let provider = create_provider("openai-compatible", String::new(), None, Some(opts), 300);
         assert!(provider.is_err());
     }
 }

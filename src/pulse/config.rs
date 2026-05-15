@@ -52,9 +52,15 @@ impl Default for RetentionConfig {
     }
 }
 
-fn default_daily() -> usize { 7 }
-fn default_weekly() -> usize { 4 }
-fn default_monthly() -> usize { 12 }
+fn default_daily() -> usize {
+    7
+}
+fn default_weekly() -> usize {
+    4
+}
+fn default_monthly() -> usize {
+    12
+}
 
 /// Threshold configuration for structural alerts
 ///
@@ -90,11 +96,21 @@ impl Default for ThresholdConfig {
     }
 }
 
-fn default_fan_in_warning() -> usize { 10 }
-fn default_fan_in_critical() -> usize { 25 }
-fn default_cycle_length() -> usize { 3 }
-fn default_module_file_count() -> usize { 50 }
-fn default_line_count_growth() -> f64 { 2.0 }
+fn default_fan_in_warning() -> usize {
+    10
+}
+fn default_fan_in_critical() -> usize {
+    25
+}
+fn default_cycle_length() -> usize {
+    3
+}
+fn default_module_file_count() -> usize {
+    50
+}
+fn default_line_count_growth() -> f64 {
+    2.0
+}
 
 /// Load Pulse configuration from the project's `.reflex/config.toml`
 ///

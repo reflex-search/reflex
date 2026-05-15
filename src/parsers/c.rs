@@ -9,10 +9,10 @@
 //! - Variables (global, local, static, extern)
 //! - Macros (#define for function-like and constant macros)
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse C source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -66,8 +66,7 @@ fn extract_functions(
                     declarator: (identifier) @name))) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -83,8 +82,7 @@ fn extract_structs(
             name: (type_identifier) @name) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create struct query")?;
+    let query = Query::new(language, query_str).context("Failed to create struct query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Struct, None)
 }
@@ -100,8 +98,7 @@ fn extract_enums(
             name: (type_identifier) @name) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -117,8 +114,7 @@ fn extract_unions(
             name: (type_identifier) @name) @union
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create union query")?;
+    let query = Query::new(language, query_str).context("Failed to create union query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -134,8 +130,7 @@ fn extract_typedefs(
             declarator: (type_identifier) @name) @typedef
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create typedef query")?;
+    let query = Query::new(language, query_str).context("Failed to create typedef query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -155,8 +150,7 @@ fn extract_variables(
             declarator: (identifier) @name) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create variable query")?;
 
     // Extract all variable declarations (global and local)
     let mut cursor = QueryCursor::new();
@@ -171,7 +165,13 @@ fn extract_variables(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else if capture_name == "var" {
                 var_node = Some(capture.node);
             }
@@ -210,8 +210,7 @@ fn extract_macros(
             name: (identifier) @name) @macro
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create macro query")?;
+    let query = Query::new(language, query_str).context("Failed to create macro query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Macro, None)
 }
@@ -237,7 +236,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -269,7 +274,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -349,12 +354,17 @@ typedef int UserID;
 
         let symbols = parse("test.c", source).unwrap();
 
-        let typedef_symbols: Vec<_> = symbols.iter()
+        let typedef_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .collect();
 
         assert!(typedef_symbols.len() >= 1);
-        assert!(typedef_symbols.iter().any(|s| s.symbol.as_deref() == Some("Point")));
+        assert!(
+            typedef_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Point"))
+        );
     }
 
     #[test]
@@ -369,7 +379,8 @@ union Data {
 
         let symbols = parse("test.c", source).unwrap();
 
-        let union_symbols: Vec<_> = symbols.iter()
+        let union_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .collect();
 
@@ -387,14 +398,27 @@ extern int external_value;
 
         let symbols = parse("test.c", source).unwrap();
 
-        let var_symbols: Vec<_> = symbols.iter()
+        let var_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         assert_eq!(var_symbols.len(), 3);
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("global_counter")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("internal_state")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("external_value")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("global_counter"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("internal_state"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("external_value"))
+        );
     }
 
     #[test]
@@ -455,7 +479,8 @@ struct Node {
         assert!(kinds.contains(&&SymbolKind::Struct));
 
         // Verify the macro symbol is found
-        let macro_symbols: Vec<_> = symbols.iter()
+        let macro_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Macro))
             .collect();
         assert_eq!(macro_symbols.len(), 1);
@@ -491,14 +516,23 @@ int calculate(int x) {
 
         let symbols = parse("test.c", source).unwrap();
 
-        let var_symbols: Vec<_> = symbols.iter()
+        let var_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Should find both global_var and local_var
         assert_eq!(var_symbols.len(), 2);
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("global_var")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("local_var")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("global_var"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("local_var"))
+        );
     }
 
     #[test]
@@ -515,15 +549,28 @@ int main() {
 
         let symbols = parse("test.c", source).unwrap();
 
-        let macro_symbols: Vec<_> = symbols.iter()
+        let macro_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Macro))
             .collect();
 
         // Should find all three macros
         assert_eq!(macro_symbols.len(), 3);
-        assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("MIN")));
-        assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEBUG_PRINT")));
+        assert!(
+            macro_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            macro_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MIN"))
+        );
+        assert!(
+            macro_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DEBUG_PRINT"))
+        );
     }
 }
 
@@ -562,10 +609,7 @@ impl DependencyExtractor for CDependencyExtractor {
 }
 
 /// Extract C #include directives
-fn extract_c_includes(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_c_includes(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_c::LANGUAGE;
 
     let query_str = r#"
@@ -576,8 +620,8 @@ fn extract_c_includes(
             path: (system_lib_string) @include_path) @include
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create C include query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create C include query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -594,7 +638,11 @@ fn extract_c_includes(
                 "include_path" => {
                     // Remove quotes or angle brackets from path
                     let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
-                    include_path = Some(raw_path.trim_matches(|c| c == '"' || c == '<' || c == '>').to_string());
+                    include_path = Some(
+                        raw_path
+                            .trim_matches(|c| c == '"' || c == '<' || c == '>')
+                            .to_string(),
+                    );
                 }
                 "include" => {
                     include_node = Some(capture.node);
@@ -636,11 +684,31 @@ fn classify_c_include(include_path: &str, source: &str, node: &tree_sitter::Node
 
     // C standard library headers (angle brackets)
     const STDLIB_HEADERS: &[&str] = &[
-        "stdio.h", "stdlib.h", "string.h", "math.h", "time.h",
-        "ctype.h", "assert.h", "errno.h", "limits.h", "float.h",
-        "stddef.h", "stdint.h", "stdbool.h", "stdarg.h", "setjmp.h",
-        "signal.h", "locale.h", "wchar.h", "wctype.h", "complex.h",
-        "fenv.h", "inttypes.h", "iso646.h", "tgmath.h", "threads.h",
+        "stdio.h",
+        "stdlib.h",
+        "string.h",
+        "math.h",
+        "time.h",
+        "ctype.h",
+        "assert.h",
+        "errno.h",
+        "limits.h",
+        "float.h",
+        "stddef.h",
+        "stdint.h",
+        "stdbool.h",
+        "stdarg.h",
+        "setjmp.h",
+        "signal.h",
+        "locale.h",
+        "wchar.h",
+        "wctype.h",
+        "complex.h",
+        "fenv.h",
+        "inttypes.h",
+        "iso646.h",
+        "tgmath.h",
+        "threads.h",
     ];
 
     if STDLIB_HEADERS.contains(&include_path) {
@@ -699,10 +767,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_c_include_same_directory() {
-        let result = resolve_c_include_to_path(
-            "helper.h",
-            Some("/project/src/main.c"),
-        );
+        let result = resolve_c_include_to_path("helper.h", Some("/project/src/main.c"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -711,10 +776,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_c_include_subdirectory() {
-        let result = resolve_c_include_to_path(
-            "utils/helper.h",
-            Some("/project/src/main.c"),
-        );
+        let result = resolve_c_include_to_path("utils/helper.h", Some("/project/src/main.c"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -723,10 +785,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_c_include_parent_directory() {
-        let result = resolve_c_include_to_path(
-            "../include/common.h",
-            Some("/project/src/main.c"),
-        );
+        let result = resolve_c_include_to_path("../include/common.h", Some("/project/src/main.c"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -735,10 +794,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_c_include_no_current_file() {
-        let result = resolve_c_include_to_path(
-            "helper.h",
-            None,
-        );
+        let result = resolve_c_include_to_path("helper.h", None);
 
         assert!(result.is_none());
     }
@@ -798,8 +854,16 @@ mod dependency_extraction_tests {
         // Verify macro-based includes are NOT captured
         assert!(!deps.iter().any(|d| d.imported_path.contains("HEADER_NAME")));
         assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic.h")));
-        assert!(!deps.iter().any(|d| d.imported_path.contains("runtime_header")));
-        assert!(!deps.iter().any(|d| d.imported_path.contains("FEATURE_HEADER")));
+        assert!(
+            !deps
+                .iter()
+                .any(|d| d.imported_path.contains("runtime_header"))
+        );
+        assert!(
+            !deps
+                .iter()
+                .any(|d| d.imported_path.contains("FEATURE_HEADER"))
+        );
     }
 
     #[test]
@@ -814,17 +878,26 @@ mod dependency_extraction_tests {
 
         // Check stdlib classification
         let stdio_dep = deps.iter().find(|d| d.imported_path == "stdio.h").unwrap();
-        assert!(matches!(stdio_dep.import_type, ImportType::Stdlib),
-                "stdio.h should be classified as Stdlib");
+        assert!(
+            matches!(stdio_dep.import_type, ImportType::Stdlib),
+            "stdio.h should be classified as Stdlib"
+        );
 
         // Check internal classification (quoted includes)
         let utils_dep = deps.iter().find(|d| d.imported_path == "utils.h").unwrap();
-        assert!(matches!(utils_dep.import_type, ImportType::Internal),
-                "quoted include should be classified as Internal");
+        assert!(
+            matches!(utils_dep.import_type, ImportType::Internal),
+            "quoted include should be classified as Internal"
+        );
 
         // Check external classification (non-stdlib angle bracket includes)
-        let mylib_dep = deps.iter().find(|d| d.imported_path == "mylib/api.h").unwrap();
-        assert!(matches!(mylib_dep.import_type, ImportType::External),
-                "non-stdlib angle bracket include should be classified as External");
+        let mylib_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "mylib/api.h")
+            .unwrap();
+        assert!(
+            matches!(mylib_dep.import_type, ImportType::External),
+            "non-stdlib angle bracket include should be classified as External"
+        );
     }
 }

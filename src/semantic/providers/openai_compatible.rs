@@ -18,7 +18,12 @@ pub struct OpenAiCompatibleProvider {
 }
 
 impl OpenAiCompatibleProvider {
-    pub fn new(api_key: Option<String>, model: String, base_url: String, timeout_secs: u64) -> Result<Self> {
+    pub fn new(
+        api_key: Option<String>,
+        model: String,
+        base_url: String,
+        timeout_secs: u64,
+    ) -> Result<Self> {
         if model.trim().is_empty() {
             anyhow::bail!(
                 "openai-compatible provider requires a model name (no default available for self-hosted endpoints)"
@@ -195,12 +200,7 @@ mod tests {
 
     #[test]
     fn test_new_rejects_empty_base_url() {
-        let result = OpenAiCompatibleProvider::new(
-            None,
-            "llama-3".to_string(),
-            String::new(),
-            30,
-        );
+        let result = OpenAiCompatibleProvider::new(None, "llama-3".to_string(), String::new(), 30);
         assert!(result.is_err());
         if let Err(e) = result {
             assert!(e.to_string().contains("base_url"));
@@ -220,22 +220,38 @@ mod tests {
                 if let Ok((mut stream, _)) = listener.accept().await {
                     tokio::spawn(async move {
                         let mut buf = [0u8; 1024];
-                        loop { match stream.read(&mut buf).await { Ok(0) | Err(_) => break, Ok(_) => {} } }
+                        loop {
+                            match stream.read(&mut buf).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(_) => {}
+                            }
+                        }
                     });
                 }
             }
         });
 
         let provider = OpenAiCompatibleProvider::new(
-            None, "test-model".to_string(), format!("http://{}", addr), 1,
-        ).unwrap();
+            None,
+            "test-model".to_string(),
+            format!("http://{}", addr),
+            1,
+        )
+        .unwrap();
 
         let start = Instant::now();
         let result = provider.complete("hello", false).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("timed out"), "expected timed out in error");
-        assert!(elapsed.as_secs() < 2, "timeout too long: {}s", elapsed.as_secs());
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "expected timed out in error"
+        );
+        assert!(
+            elapsed.as_secs() < 2,
+            "timeout too long: {}s",
+            elapsed.as_secs()
+        );
     }
 }

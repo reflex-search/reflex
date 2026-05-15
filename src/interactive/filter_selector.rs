@@ -1,10 +1,10 @@
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
+    Frame,
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
 use super::theme::ThemeManager;
@@ -139,8 +139,10 @@ impl FilterSelector {
                 let col = event.column;
                 let row = event.row;
 
-                if col >= self.modal_area.x && col < self.modal_area.x + self.modal_area.width
-                    && row >= self.modal_area.y && row < self.modal_area.y + self.modal_area.height
+                if col >= self.modal_area.x
+                    && col < self.modal_area.x + self.modal_area.width
+                    && row >= self.modal_area.y
+                    && row < self.modal_area.y + self.modal_area.height
                 {
                     // Click is within modal
                     // Calculate which option was clicked (accounting for border and title)
@@ -175,7 +177,8 @@ impl FilterSelector {
 
         // Create centered modal
         let modal_width = 40.min(area.width.saturating_sub(4));
-        let modal_height = (self.options.len() + 4).min(area.height.saturating_sub(4) as usize) as u16;
+        let modal_height =
+            (self.options.len() + 4).min(area.height.saturating_sub(4) as usize) as u16;
         let modal_x = (area.width.saturating_sub(modal_width)) / 2;
         let modal_y = (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = Rect::new(
@@ -189,8 +192,7 @@ impl FilterSelector {
         self.modal_area = modal_area;
 
         // Render background (dimmed)
-        let background = Block::default()
-            .style(Style::default().bg(Color::Black));
+        let background = Block::default().style(Style::default().bg(Color::Black));
         f.render_widget(background, area);
 
         // Create modal title
@@ -249,11 +251,26 @@ impl FilterSelector {
             1,
         );
         let footer = Paragraph::new(Line::from(vec![
-            Span::styled("↑↓/j/k", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "↑↓/j/k",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" navigate  ", Style::default().fg(palette.muted)),
-            Span::styled("Enter", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" select  ", Style::default().fg(palette.muted)),
-            Span::styled("Esc", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" cancel", Style::default().fg(palette.muted)),
         ]))
         .alignment(Alignment::Center);

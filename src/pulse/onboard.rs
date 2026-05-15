@@ -78,12 +78,12 @@ pub struct ProjectStats {
 /// Detect entry points by matching well-known file patterns and names
 pub fn detect_entry_points(cache: &CacheManager) -> Result<Vec<EntryPoint>> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)
-        .context("Failed to open meta.db")?;
+    let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
     // Get all file paths
     let mut stmt = conn.prepare("SELECT path FROM files ORDER BY path")?;
-    let paths: Vec<String> = stmt.query_map([], |row| row.get(0))?
+    let paths: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -91,61 +91,113 @@ pub fn detect_entry_points(cache: &CacheManager) -> Result<Vec<EntryPoint>> {
     let mut seen_paths = HashSet::new();
 
     for path in &paths {
-        let filename = Path::new(path).file_name()
+        let filename = Path::new(path)
+            .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or("");
         let lower = filename.to_lowercase();
 
         // CLI binary entry points
-        if matches!(filename, "main.rs" | "main.go" | "main.py" | "main.c" | "main.cpp" | "main.zig")
-            || (filename == "cli.rs" || filename == "cli.ts" || filename == "cli.py" || filename == "cli.js")
+        if matches!(
+            filename,
+            "main.rs" | "main.go" | "main.py" | "main.c" | "main.cpp" | "main.zig"
+        ) || (filename == "cli.rs"
+            || filename == "cli.ts"
+            || filename == "cli.py"
+            || filename == "cli.js")
         {
             if seen_paths.insert(path.clone()) {
                 let kind = EntryPointKind::CliBinary;
                 let symbols = extract_key_symbols_for_entry(&conn, path);
-                entry_points.push(EntryPoint { path: path.clone(), kind, key_symbols: symbols });
+                entry_points.push(EntryPoint {
+                    path: path.clone(),
+                    kind,
+                    key_symbols: symbols,
+                });
             }
             continue;
         }
 
         // HTTP server entry points
-        if matches!(filename, "server.rs" | "server.ts" | "server.js" | "server.py" | "server.go"
-            | "app.rs" | "app.ts" | "app.js" | "app.py" | "app.go"
-            | "routes.rs" | "routes.ts" | "routes.js" | "routes.py")
-        {
+        if matches!(
+            filename,
+            "server.rs"
+                | "server.ts"
+                | "server.js"
+                | "server.py"
+                | "server.go"
+                | "app.rs"
+                | "app.ts"
+                | "app.js"
+                | "app.py"
+                | "app.go"
+                | "routes.rs"
+                | "routes.ts"
+                | "routes.js"
+                | "routes.py"
+        ) {
             if seen_paths.insert(path.clone()) {
                 let symbols = extract_key_symbols_for_entry(&conn, path);
-                entry_points.push(EntryPoint { path: path.clone(), kind: EntryPointKind::HttpServer, key_symbols: symbols });
+                entry_points.push(EntryPoint {
+                    path: path.clone(),
+                    kind: EntryPointKind::HttpServer,
+                    key_symbols: symbols,
+                });
             }
             continue;
         }
 
         // Library entry points
-        if matches!(filename, "lib.rs" | "mod.rs" | "index.ts" | "index.js" | "__init__.py" | "mod.go") {
+        if matches!(
+            filename,
+            "lib.rs" | "mod.rs" | "index.ts" | "index.js" | "__init__.py" | "mod.go"
+        ) {
             // Only include top-level or shallow lib/index files, not deeply nested ones
             let depth = path.matches('/').count();
             if depth <= 2 && seen_paths.insert(path.clone()) {
                 let symbols = extract_key_symbols_for_entry(&conn, path);
-                entry_points.push(EntryPoint { path: path.clone(), kind: EntryPointKind::Library, key_symbols: symbols });
+                entry_points.push(EntryPoint {
+                    path: path.clone(),
+                    kind: EntryPointKind::Library,
+                    key_symbols: symbols,
+                });
             }
             continue;
         }
 
         // Script entry points (package.json scripts, Makefile, etc.)
-        if matches!(filename, "Makefile" | "Rakefile" | "Taskfile.yml" | "justfile") {
+        if matches!(
+            filename,
+            "Makefile" | "Rakefile" | "Taskfile.yml" | "justfile"
+        ) {
             if seen_paths.insert(path.clone()) {
-                entry_points.push(EntryPoint { path: path.clone(), kind: EntryPointKind::Script, key_symbols: vec![] });
+                entry_points.push(EntryPoint {
+                    path: path.clone(),
+                    kind: EntryPointKind::Script,
+                    key_symbols: vec![],
+                });
             }
             continue;
         }
 
         // Test runners
-        if matches!(lower.as_str(), "conftest.py" | "jest.config.js" | "jest.config.ts"
-            | "vitest.config.ts" | "vitest.config.js" | "pytest.ini" | "setup.cfg")
-            && path.matches('/').count() <= 1
+        if matches!(
+            lower.as_str(),
+            "conftest.py"
+                | "jest.config.js"
+                | "jest.config.ts"
+                | "vitest.config.ts"
+                | "vitest.config.js"
+                | "pytest.ini"
+                | "setup.cfg"
+        ) && path.matches('/').count() <= 1
         {
             if seen_paths.insert(path.clone()) {
-                entry_points.push(EntryPoint { path: path.clone(), kind: EntryPointKind::TestRunner, key_symbols: vec![] });
+                entry_points.push(EntryPoint {
+                    path: path.clone(),
+                    kind: EntryPointKind::TestRunner,
+                    key_symbols: vec![],
+                });
             }
         }
     }
@@ -168,22 +220,30 @@ pub fn detect_entry_points(cache: &CacheManager) -> Result<Vec<EntryPoint>> {
 /// serialized JSON blob (`symbols_json` column containing `Vec<SearchResult>`).
 fn extract_key_symbols_for_entry(conn: &Connection, path: &str) -> Vec<String> {
     // Get file_id
-    let file_id: Option<i64> = conn.query_row(
-        "SELECT id FROM files WHERE path = ?1",
-        [path],
-        |row| row.get(0),
-    ).ok();
+    let file_id: Option<i64> = conn
+        .query_row("SELECT id FROM files WHERE path = ?1", [path], |row| {
+            row.get(0)
+        })
+        .ok();
 
-    let Some(file_id) = file_id else { return vec![] };
+    let Some(file_id) = file_id else {
+        return vec![];
+    };
 
     // Query the symbols table for this file's serialized symbols
-    let symbols_json: Option<String> = conn.query_row(
-        "SELECT symbols_json FROM symbols WHERE file_id = ?1",
-        [file_id],
-        |row| row.get(0),
-    ).optional().ok().flatten();
+    let symbols_json: Option<String> = conn
+        .query_row(
+            "SELECT symbols_json FROM symbols WHERE file_id = ?1",
+            [file_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
 
-    let Some(json) = symbols_json else { return vec![] };
+    let Some(json) = symbols_json else {
+        return vec![];
+    };
 
     // Deserialize and filter to key symbol kinds
     let symbols: Vec<SearchResult> = match serde_json::from_str(&json) {
@@ -191,18 +251,28 @@ fn extract_key_symbols_for_entry(conn: &Connection, path: &str) -> Vec<String> {
         Err(_) => return vec![],
     };
 
-    symbols.iter()
-        .filter(|sr| matches!(sr.kind,
-            SymbolKind::Function | SymbolKind::Struct | SymbolKind::Class
-            | SymbolKind::Trait | SymbolKind::Interface
-        ))
+    symbols
+        .iter()
+        .filter(|sr| {
+            matches!(
+                sr.kind,
+                SymbolKind::Function
+                    | SymbolKind::Struct
+                    | SymbolKind::Class
+                    | SymbolKind::Trait
+                    | SymbolKind::Interface
+            )
+        })
         .filter_map(|sr| sr.symbol.clone())
         .take(8)
         .collect()
 }
 
 /// Compute reading order via BFS from entry points through the dependency graph
-pub fn compute_reading_order(cache: &CacheManager, entry_points: &[EntryPoint]) -> Result<ReadingOrder> {
+pub fn compute_reading_order(
+    cache: &CacheManager,
+    entry_points: &[EntryPoint],
+) -> Result<ReadingOrder> {
     let db_path = cache.path().join("meta.db");
     let conn = Connection::open(&db_path)?;
 
@@ -226,9 +296,7 @@ pub fn compute_reading_order(cache: &CacheManager, entry_points: &[EntryPoint]) 
     let mut stmt = conn.prepare(
         "SELECT file_id, resolved_file_id FROM file_dependencies WHERE resolved_file_id IS NOT NULL"
     )?;
-    let edges = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-    })?;
+    let edges = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
     for edge in edges.flatten() {
         deps.entry(edge.0).or_default().push(edge.1);
     }
@@ -247,7 +315,9 @@ pub fn compute_reading_order(cache: &CacheManager, entry_points: &[EntryPoint]) 
     }
 
     while let Some((file_id, depth)) = queue.pop_front() {
-        if depth > 5 { continue; } // Cap depth to keep reading order manageable
+        if depth > 5 {
+            continue;
+        } // Cap depth to keep reading order manageable
 
         if let Some(path) = id_to_path.get(&file_id) {
             layers_map.entry(depth).or_default().push(path.clone());
@@ -293,14 +363,20 @@ pub fn gather_project_stats(cache: &CacheManager, module_count: usize) -> Result
     let conn = Connection::open(&db_path)?;
 
     let total_files: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
-    let total_lines: usize = conn.query_row("SELECT COALESCE(SUM(line_count), 0) FROM files", [], |r| r.get(0))?;
+    let total_lines: usize =
+        conn.query_row("SELECT COALESCE(SUM(line_count), 0) FROM files", [], |r| {
+            r.get(0)
+        })?;
 
     let mut stmt = conn.prepare(
         "SELECT COALESCE(language, 'other'), COUNT(*) FROM files GROUP BY language ORDER BY COUNT(*) DESC LIMIT 10"
     )?;
-    let languages: Vec<(String, usize)> = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
-    })?.filter_map(|r| r.ok()).collect();
+    let languages: Vec<(String, usize)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(ProjectStats {
         total_files,
@@ -311,7 +387,10 @@ pub fn gather_project_stats(cache: &CacheManager, module_count: usize) -> Result
 }
 
 /// Generate the full onboard data (structural phase)
-pub fn generate_onboard_structural(cache: &CacheManager, module_count: usize) -> Result<OnboardData> {
+pub fn generate_onboard_structural(
+    cache: &CacheManager,
+    module_count: usize,
+) -> Result<OnboardData> {
     let entry_points = detect_entry_points(cache)?;
     let reading_order = compute_reading_order(cache, &entry_points)?;
     let project_stats = gather_project_stats(cache, module_count)?;
@@ -356,7 +435,12 @@ pub fn build_onboard_context(data: &OnboardData) -> String {
     // Reading order
     ctx.push_str("Suggested reading order (BFS from entry points through dependencies):\n");
     for layer in &data.reading_order.layers {
-        ctx.push_str(&format!("Layer {} — {} ({} files):\n", layer.depth, layer.label, layer.files.len()));
+        ctx.push_str(&format!(
+            "Layer {} — {} ({} files):\n",
+            layer.depth,
+            layer.label,
+            layer.files.len()
+        ));
         for file in layer.files.iter().take(15) {
             ctx.push_str(&format!("  - {}\n", file));
         }
@@ -396,7 +480,11 @@ pub fn render_onboard_markdown(data: &OnboardData) -> String {
         let symbols = if ep.key_symbols.is_empty() {
             "—".to_string()
         } else {
-            ep.key_symbols.iter().map(|s| format!("`{}`", s)).collect::<Vec<_>>().join(", ")
+            ep.key_symbols
+                .iter()
+                .map(|s| format!("`{}`", s))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         md.push_str(&format!("| `{}` | {} | {} |\n", ep.path, ep.kind, symbols));
     }
@@ -405,15 +493,21 @@ pub fn render_onboard_markdown(data: &OnboardData) -> String {
     // Reading order as Mermaid flowchart
     if !data.reading_order.layers.is_empty() {
         md.push_str("## Reading Order\n\n");
-        md.push_str("Start at the top and work your way down. Each layer depends on the one below it.\n\n");
+        md.push_str(
+            "Start at the top and work your way down. Each layer depends on the one below it.\n\n",
+        );
 
         md.push_str("{% mermaid() %}\nflowchart TD\n");
         for layer in &data.reading_order.layers {
             let node_id = format!("L{}", layer.depth);
-            let file_list: String = layer.files.iter().take(6)
+            let file_list: String = layer
+                .files
+                .iter()
+                .take(6)
                 .map(|f| {
                     // Extract just the filename for readability
-                    Path::new(f).file_name()
+                    Path::new(f)
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or(f)
                 })

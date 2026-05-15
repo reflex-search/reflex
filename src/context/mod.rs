@@ -6,8 +6,8 @@
 pub mod detection;
 pub mod structure;
 
-use anyhow::Result;
 use crate::cache::CacheManager;
+use anyhow::Result;
 
 /// Context generation options
 #[derive(Debug, Clone)]
@@ -80,14 +80,18 @@ impl ContextOptions {
 /// Returns formatted context string (human-readable or JSON)
 pub fn generate_context(cache: &CacheManager, opts: &ContextOptions) -> Result<String> {
     let workspace_root = cache.workspace_root();
-    let target_path = opts.path.as_ref()
+    let target_path = opts
+        .path
+        .as_ref()
         .map(|p| workspace_root.join(p))
         .unwrap_or_else(|| workspace_root.clone());
 
     // Validate target path exists
     if !target_path.exists() {
-        anyhow::bail!("Path '{}' does not exist in workspace",
-            opts.path.as_deref().unwrap_or("."));
+        anyhow::bail!(
+            "Path '{}' does not exist in workspace",
+            opts.path.as_deref().unwrap_or(".")
+        );
     }
 
     // Apply defaults if no flags specified
@@ -119,7 +123,8 @@ fn generate_text_context(
     let mut sections = Vec::new();
 
     // Header
-    let path_display = target_path.strip_prefix(cache.workspace_root())
+    let path_display = target_path
+        .strip_prefix(cache.workspace_root())
         .unwrap_or(target_path)
         .display();
     sections.push(format!("# Project Context: {}\n", path_display));

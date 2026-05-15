@@ -8,10 +8,10 @@
 //! - Variables (var declarations and short declarations with :=)
 //! - Packages/Imports
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse Go source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -58,8 +58,7 @@ fn extract_functions(
             name: (identifier) @name) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -77,8 +76,7 @@ fn extract_types(
                 type: (struct_type))) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create struct query")?;
+    let query = Query::new(language, query_str).context("Failed to create struct query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Struct, None)
 }
@@ -96,8 +94,7 @@ fn extract_interfaces(
                 type: (interface_type))) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface query")?;
+    let query = Query::new(language, query_str).context("Failed to create interface query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Interface, None)
 }
@@ -116,8 +113,7 @@ fn extract_methods(
             name: (field_identifier) @method_name) @method
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -133,10 +129,22 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "receiver_type" => {
-                    receiver_type = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    receiver_type = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method" => {
                     method_node = Some(capture.node);
@@ -145,7 +153,9 @@ fn extract_methods(
             }
         }
 
-        if let (Some(receiver_type), Some(method_name), Some(node)) = (receiver_type, method_name, method_node) {
+        if let (Some(receiver_type), Some(method_name), Some(node)) =
+            (receiver_type, method_name, method_node)
+        {
             // Clean up receiver type (remove * if pointer)
             let clean_receiver = receiver_type.trim_start_matches('*');
             let scope = format!("type {}", clean_receiver);
@@ -179,8 +189,7 @@ fn extract_constants(
                 name: (identifier) @name)) @const
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create const query")?;
+    let query = Query::new(language, query_str).context("Failed to create const query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
@@ -200,8 +209,7 @@ fn extract_variables(
             left: (expression_list (identifier) @name)) @short_var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create var query")?;
+    let query = Query::new(language, query_str).context("Failed to create var query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -216,7 +224,13 @@ fn extract_variables(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "var" | "short_var" => {
                     decl_node = Some(capture.node);
@@ -265,7 +279,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -297,7 +317,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -388,13 +408,22 @@ func (u User) SetName(name string) {
 
         let symbols = parse("test.go", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("GetName")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("SetName")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("GetName"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("SetName"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -418,15 +447,32 @@ const (
 
         let symbols = parse("test.go", source).unwrap();
 
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         assert_eq!(const_symbols.len(), 4);
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MaxSize")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DefaultTimeout")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("StatusActive")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("StatusInactive")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MaxSize"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DefaultTimeout"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("StatusActive"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("StatusInactive"))
+        );
     }
 
     #[test]
@@ -443,14 +489,27 @@ var (
 
         let symbols = parse("test.go", source).unwrap();
 
-        let var_symbols: Vec<_> = symbols.iter()
+        let var_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         assert_eq!(var_symbols.len(), 3);
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("GlobalConfig")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("Logger")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("Version")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("GlobalConfig"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Logger"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Version"))
+        );
     }
 
     #[test]
@@ -515,14 +574,27 @@ func (c *Calculator) Multiply(a, b int) int {
 
         let symbols = parse("test.go", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Subtract")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Multiply")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Subtract"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Multiply"))
+        );
     }
 
     #[test]
@@ -542,7 +614,8 @@ type Config struct {
         let symbols = parse("test.go", source).unwrap();
 
         // Should find the Config struct (type aliases UserID and Age are type_spec but not struct_type)
-        let struct_symbols: Vec<_> = symbols.iter()
+        let struct_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Struct))
             .collect();
 
@@ -571,14 +644,27 @@ type ReadWriter interface {
 
         let symbols = parse("test.go", source).unwrap();
 
-        let interface_symbols: Vec<_> = symbols.iter()
+        let interface_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Interface))
             .collect();
 
         assert_eq!(interface_symbols.len(), 3);
-        assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("Reader")));
-        assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("Writer")));
-        assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("ReadWriter")));
+        assert!(
+            interface_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Reader"))
+        );
+        assert!(
+            interface_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Writer"))
+        );
+        assert!(
+            interface_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("ReadWriter"))
+        );
     }
 
     #[test]
@@ -597,15 +683,28 @@ func calculate(x int) int {
 
         let symbols = parse("test.go", source).unwrap();
 
-        let var_symbols: Vec<_> = symbols.iter()
+        let var_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Should find globalCount, localVar (short declaration), and anotherLocal (var declaration)
         assert_eq!(var_symbols.len(), 3);
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalCount")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("anotherLocal")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("globalCount"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("anotherLocal"))
+        );
     }
 
     #[test]
@@ -629,27 +728,50 @@ func main() {
         assert_eq!(deps.len(), 4, "Should extract 4 import statements");
         assert!(deps.iter().any(|d| d.imported_path == "fmt"));
         assert!(deps.iter().any(|d| d.imported_path == "encoding/json"));
-        assert!(deps.iter().any(|d| d.imported_path == "github.com/gin-gonic/gin"));
-        assert!(deps.iter().any(|d| d.imported_path == "myproject/internal/models"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "github.com/gin-gonic/gin")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "myproject/internal/models")
+        );
 
         // Check stdlib classification
         let fmt_dep = deps.iter().find(|d| d.imported_path == "fmt").unwrap();
-        assert!(matches!(fmt_dep.import_type, ImportType::Stdlib),
-                "fmt should be classified as Stdlib");
+        assert!(
+            matches!(fmt_dep.import_type, ImportType::Stdlib),
+            "fmt should be classified as Stdlib"
+        );
 
-        let json_dep = deps.iter().find(|d| d.imported_path == "encoding/json").unwrap();
-        assert!(matches!(json_dep.import_type, ImportType::Stdlib),
-                "encoding/json should be classified as Stdlib");
+        let json_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "encoding/json")
+            .unwrap();
+        assert!(
+            matches!(json_dep.import_type, ImportType::Stdlib),
+            "encoding/json should be classified as Stdlib"
+        );
 
         // Check external classification
-        let gin_dep = deps.iter().find(|d| d.imported_path == "github.com/gin-gonic/gin").unwrap();
-        assert!(matches!(gin_dep.import_type, ImportType::External),
-                "github.com/gin-gonic/gin should be classified as External");
+        let gin_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "github.com/gin-gonic/gin")
+            .unwrap();
+        assert!(
+            matches!(gin_dep.import_type, ImportType::External),
+            "github.com/gin-gonic/gin should be classified as External"
+        );
 
         // Check myproject classification (ambiguous but should be External)
-        let models_dep = deps.iter().find(|d| d.imported_path == "myproject/internal/models").unwrap();
-        assert!(matches!(models_dep.import_type, ImportType::External),
-                "myproject/internal/models should be classified as External");
+        let models_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "myproject/internal/models")
+            .unwrap();
+        assert!(
+            matches!(models_dep.import_type, ImportType::External),
+            "myproject/internal/models should be classified as External"
+        );
     }
 
     #[test]
@@ -679,16 +801,23 @@ func main() {
         }
 
         // Should extract all imports, even those with _ alias and comments
-        assert!(deps.len() >= 4, "Should extract at least 4 imports, got {}", deps.len());
+        assert!(
+            deps.len() >= 4,
+            "Should extract at least 4 imports, got {}",
+            deps.len()
+        );
         assert!(deps.iter().any(|d| d.imported_path == "os"));
         assert!(deps.iter().any(|d| d.imported_path == "time/tzdata"));
-        assert!(deps.iter().any(|d| d.imported_path == "k8s.io/component-base/cli"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "k8s.io/component-base/cli")
+        );
     }
 
     #[test]
     fn test_find_all_go_mods() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -696,11 +825,19 @@ func main() {
         // Create multiple Go modules
         let service1 = root.join("services/auth");
         fs::create_dir_all(&service1).unwrap();
-        fs::write(service1.join("go.mod"), "module github.com/myorg/auth\n\ngo 1.21\n").unwrap();
+        fs::write(
+            service1.join("go.mod"),
+            "module github.com/myorg/auth\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         let service2 = root.join("services/api");
         fs::create_dir_all(&service2).unwrap();
-        fs::write(service2.join("go.mod"), "module github.com/myorg/api\n\ngo 1.21\n").unwrap();
+        fs::write(
+            service2.join("go.mod"),
+            "module github.com/myorg/api\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         // Create vendor directory that should be skipped
         let vendor = root.join("vendor");
@@ -717,8 +854,8 @@ func main() {
 
     #[test]
     fn test_parse_all_go_modules() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -728,15 +865,17 @@ func main() {
         fs::create_dir_all(&service1).unwrap();
         fs::write(
             service1.join("go.mod"),
-            "module github.com/myorg/auth\n\ngo 1.21\n"
-        ).unwrap();
+            "module github.com/myorg/auth\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         let service2 = root.join("cmd/api");
         fs::create_dir_all(&service2).unwrap();
         fs::write(
             service2.join("go.mod"),
-            "module github.com/myorg/api\n\ngo 1.21\n"
-        ).unwrap();
+            "module github.com/myorg/api\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         let modules = parse_all_go_modules(root).unwrap();
 
@@ -750,15 +889,18 @@ func main() {
 
         // Check project roots
         for module in &modules {
-            assert!(module.project_root.starts_with("services/") || module.project_root.starts_with("cmd/"));
+            assert!(
+                module.project_root.starts_with("services/")
+                    || module.project_root.starts_with("cmd/")
+            );
             assert!(module.abs_project_root.ends_with(&module.project_root));
         }
     }
 
     #[test]
     fn test_resolve_go_import() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -768,19 +910,17 @@ func main() {
         fs::create_dir_all(myapp.join("pkg/models")).unwrap();
         fs::write(
             myapp.join("go.mod"),
-            "module github.com/myorg/myapp\n\ngo 1.21\n"
-        ).unwrap();
+            "module github.com/myorg/myapp\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         let modules = parse_all_go_modules(root).unwrap();
         assert_eq!(modules.len(), 1);
 
         // Test sub-package import resolution
         // "github.com/myorg/myapp/pkg/models" → "myapp/pkg/models.go" or "myapp/pkg/models/models.go"
-        let resolved = resolve_go_import_to_path(
-            "github.com/myorg/myapp/pkg/models",
-            &modules,
-            None
-        );
+        let resolved =
+            resolve_go_import_to_path("github.com/myorg/myapp/pkg/models", &modules, None);
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -790,8 +930,8 @@ func main() {
 
     #[test]
     fn test_resolve_go_import_module_root() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -800,17 +940,14 @@ func main() {
         fs::create_dir_all(&myapp).unwrap();
         fs::write(
             myapp.join("go.mod"),
-            "module github.com/myorg/server\n\ngo 1.21\n"
-        ).unwrap();
+            "module github.com/myorg/server\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         let modules = parse_all_go_modules(root).unwrap();
 
         // Test module root import (no sub-package)
-        let resolved = resolve_go_import_to_path(
-            "github.com/myorg/server",
-            &modules,
-            None
-        );
+        let resolved = resolve_go_import_to_path("github.com/myorg/server", &modules, None);
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -821,8 +958,8 @@ func main() {
 
     #[test]
     fn test_resolve_go_import_not_found() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -831,17 +968,14 @@ func main() {
         fs::create_dir_all(&myapp).unwrap();
         fs::write(
             myapp.join("go.mod"),
-            "module github.com/myorg/myapp\n\ngo 1.21\n"
-        ).unwrap();
+            "module github.com/myorg/myapp\n\ngo 1.21\n",
+        )
+        .unwrap();
 
         let modules = parse_all_go_modules(root).unwrap();
 
         // Try to resolve an import for a different module
-        let resolved = resolve_go_import_to_path(
-            "github.com/other/package",
-            &modules,
-            None
-        );
+        let resolved = resolve_go_import_to_path("github.com/other/package", &modules, None);
 
         // Should return None for modules not in the monorepo
         assert!(resolved.is_none());
@@ -852,11 +986,8 @@ func main() {
         let modules = vec![];
 
         // Relative imports are not supported yet
-        let resolved = resolve_go_import_to_path(
-            "./utils",
-            &modules,
-            Some("myapp/pkg/api/handler.go"),
-        );
+        let resolved =
+            resolve_go_import_to_path("./utils", &modules, Some("myapp/pkg/api/handler.go"));
 
         assert!(resolved.is_none());
     }
@@ -865,43 +996,41 @@ func main() {
     fn test_resolve_go_import_root_module_no_leading_slash() {
         // When go.mod is at the repo root, project_root is "" and paths must not
         // start with "/" (which would cause ambiguous fuzzy matches in the DB).
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
 
         // go.mod at repo root → project_root = ""
-        fs::write(
-            root.join("go.mod"),
-            "module k8s.io/kubernetes\n\ngo 1.21\n",
-        ).unwrap();
+        fs::write(root.join("go.mod"), "module k8s.io/kubernetes\n\ngo 1.21\n").unwrap();
 
         let modules = parse_all_go_modules(root).unwrap();
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].project_root, "");
 
         // Sub-package import
-        let resolved = resolve_go_import_to_path(
-            "k8s.io/kubernetes/test/internal/metric",
-            &modules,
-            None,
-        );
+        let resolved =
+            resolve_go_import_to_path("k8s.io/kubernetes/test/internal/metric", &modules, None);
         assert!(resolved.is_some());
         let path = resolved.unwrap();
-        assert!(!path.starts_with('/'), "path must not start with '/': {}", path);
+        assert!(
+            !path.starts_with('/'),
+            "path must not start with '/': {}",
+            path
+        );
         assert!(path.ends_with(".go"));
         assert!(path.contains("test/internal/metric"));
 
         // Module-root import
-        let resolved = resolve_go_import_to_path(
-            "k8s.io/kubernetes",
-            &modules,
-            None,
-        );
+        let resolved = resolve_go_import_to_path("k8s.io/kubernetes", &modules, None);
         assert!(resolved.is_some());
         let path = resolved.unwrap();
-        assert!(!path.starts_with('/'), "path must not start with '/': {}", path);
+        assert!(
+            !path.starts_with('/'),
+            "path must not start with '/': {}",
+            path
+        );
         assert!(path.ends_with(".go"));
     }
 }
@@ -941,10 +1070,7 @@ impl DependencyExtractor for GoDependencyExtractor {
 }
 
 /// Extract Go import statements
-fn extract_go_imports(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_go_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_go::LANGUAGE;
 
     // Go imports can be single or in groups
@@ -959,8 +1085,8 @@ fn extract_go_imports(
                     path: (interpreted_string_literal) @import_path))) @import
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create Go import query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create Go import query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -1066,11 +1192,40 @@ fn classify_go_import_impl(import_path: &str, module_prefix: Option<&str>) -> Im
 
     // Go standard library modules (common ones)
     const STDLIB_MODULES: &[&str] = &[
-        "fmt", "io", "os", "path", "strings", "bytes", "bufio", "errors",
-        "context", "sync", "time", "encoding/json", "encoding/xml", "encoding/csv",
-        "net/http", "net/url", "net", "crypto", "crypto/tls", "crypto/sha256",
-        "database/sql", "log", "math", "regexp", "strconv", "sort", "reflect",
-        "runtime", "testing", "flag", "filepath", "unicode", "html", "text/template",
+        "fmt",
+        "io",
+        "os",
+        "path",
+        "strings",
+        "bytes",
+        "bufio",
+        "errors",
+        "context",
+        "sync",
+        "time",
+        "encoding/json",
+        "encoding/xml",
+        "encoding/csv",
+        "net/http",
+        "net/url",
+        "net",
+        "crypto",
+        "crypto/tls",
+        "crypto/sha256",
+        "database/sql",
+        "log",
+        "math",
+        "regexp",
+        "strconv",
+        "sort",
+        "reflect",
+        "runtime",
+        "testing",
+        "flag",
+        "filepath",
+        "unicode",
+        "html",
+        "text/template",
     ];
 
     // Check if it's a stdlib module
@@ -1126,9 +1281,7 @@ pub fn find_all_go_mods(index_root: &std::path::Path) -> Result<Vec<std::path::P
             continue;
         }
 
-        let filename = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         // Look for go.mod files
         if filename == "go.mod" {
@@ -1225,7 +1378,8 @@ pub fn resolve_go_import_to_path(
         if import_path.starts_with(&module.name) {
             // Strip module name to get sub-package path
             // "k8s.io/kubernetes/pkg/api" with module "k8s.io/kubernetes" → "pkg/api"
-            let sub_path = import_path.strip_prefix(&module.name)
+            let sub_path = import_path
+                .strip_prefix(&module.name)
                 .unwrap_or(import_path)
                 .trim_start_matches('/');
 
@@ -1234,10 +1388,7 @@ pub fn resolve_go_import_to_path(
                 // Try common patterns
                 let basename = module.name.split('/').last().unwrap_or("main");
                 let candidates = if module.project_root.is_empty() {
-                    vec![
-                        "main.go".to_string(),
-                        format!("{}.go", basename),
-                    ]
+                    vec!["main.go".to_string(), format!("{}.go", basename)]
                 } else {
                     vec![
                         format!("{}/main.go", module.project_root),

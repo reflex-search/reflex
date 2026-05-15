@@ -45,7 +45,10 @@ impl QueryEngine {
         // Create dependency index
         // Note: We need to pass the workspace root, not the cache directory
         // The cache path is .reflex/, so its parent is the workspace root (.)
-        let workspace_root = self.cache.path().parent()
+        let workspace_root = self
+            .cache
+            .path()
+            .parent()
             .ok_or_else(|| anyhow::anyhow!("Cache path has no parent"))?;
         let cache_for_deps = CacheManager::new(workspace_root);
         let dep_index = crate::dependency::DependencyIndex::new(cache_for_deps);
@@ -62,7 +65,11 @@ impl QueryEngine {
                     // Get dependencies for this file
                     match dep_index.get_dependencies_info(file_id) {
                         Ok(dep_infos) => {
-                            log::debug!("Loaded {} dependencies for file_id={}", dep_infos.len(), file_id);
+                            log::debug!(
+                                "Loaded {} dependencies for file_id={}",
+                                dep_infos.len(),
+                                file_id
+                            );
                             if !dep_infos.is_empty() {
                                 result.dependencies = Some(dep_infos);
                             }
@@ -92,8 +99,8 @@ impl QueryEngine {
         include_deps: bool,
         context_lines: usize,
     ) -> Result<Vec<crate::models::FileGroupedResult>> {
-        use std::collections::HashMap;
         use crate::models::{FileGroupedResult, MatchResult};
+        use std::collections::HashMap;
 
         if results.is_empty() {
             return Ok(Vec::new());
@@ -102,15 +109,15 @@ impl QueryEngine {
         // Group results by file path (preserving language from first match)
         let mut grouped: HashMap<String, Vec<SearchResult>> = HashMap::new();
         for result in results {
-            grouped
-                .entry(result.path.clone())
-                .or_default()
-                .push(result);
+            grouped.entry(result.path.clone()).or_default().push(result);
         }
 
         // Create dependency index if needed
         let dep_index = if include_deps {
-            let workspace_root = self.cache.path().parent()
+            let workspace_root = self
+                .cache
+                .path()
+                .parent()
                 .ok_or_else(|| anyhow::anyhow!("Cache path has no parent"))?;
             let cache_for_deps = CacheManager::new(workspace_root);
             Some(crate::dependency::DependencyIndex::new(cache_for_deps))
@@ -133,19 +140,21 @@ impl QueryEngine {
                 let dependencies = if let Some(dep_idx) = &dep_index {
                     let normalized_path = path.strip_prefix("./").unwrap_or(&path);
                     match self.cache.get_file_id(normalized_path) {
-                        Ok(Some(file_id)) => {
-                            match dep_idx.get_dependencies_info(file_id) {
-                                Ok(dep_infos) if !dep_infos.is_empty() => {
-                                    log::debug!("Loaded {} dependencies for file: {}", dep_infos.len(), path);
-                                    Some(dep_infos)
-                                }
-                                Ok(_) => None,
-                                Err(e) => {
-                                    log::warn!("Failed to get dependencies for {}: {}", path, e);
-                                    None
-                                }
+                        Ok(Some(file_id)) => match dep_idx.get_dependencies_info(file_id) {
+                            Ok(dep_infos) if !dep_infos.is_empty() => {
+                                log::debug!(
+                                    "Loaded {} dependencies for file: {}",
+                                    dep_infos.len(),
+                                    path
+                                );
+                                Some(dep_infos)
                             }
-                        }
+                            Ok(_) => None,
+                            Err(e) => {
+                                log::warn!("Failed to get dependencies for {}: {}", path, e);
+                                None
+                            }
+                        },
                         Ok(None) => {
                             log::warn!("No file_id found for path: {}", path);
                             None
@@ -168,8 +177,12 @@ impl QueryEngine {
                 } else {
                     None
                 };
-                log::debug!("Context extraction: file={}, file_id={:?}, content_reader={}",
-                    path, file_id_for_context, content_reader_opt.is_some());
+                log::debug!(
+                    "Context extraction: file={}, file_id={:?}, content_reader={}",
+                    path,
+                    file_id_for_context,
+                    content_reader_opt.is_some()
+                );
 
                 // Convert SearchResults to MatchResults (strip path and dependencies) and extract context
                 let matches: Vec<MatchResult> = file_matches
@@ -177,18 +190,37 @@ impl QueryEngine {
                     .map(|r| {
                         // Extract context lines if requested (0 = disabled)
                         let (context_before, context_after) = if context_lines > 0 {
-                            if let (Some(reader), Some(fid)) = (&content_reader_opt, file_id_for_context) {
-                                let result = reader.get_context_by_line(fid as u32, r.span.start_line, context_lines)
+                            if let (Some(reader), Some(fid)) =
+                                (&content_reader_opt, file_id_for_context)
+                            {
+                                let result = reader
+                                    .get_context_by_line(
+                                        fid as u32,
+                                        r.span.start_line,
+                                        context_lines,
+                                    )
                                     .unwrap_or_else(|e| {
-                                        log::warn!("Failed to extract context for {}:{}: {}", path, r.span.start_line, e);
+                                        log::warn!(
+                                            "Failed to extract context for {}:{}: {}",
+                                            path,
+                                            r.span.start_line,
+                                            e
+                                        );
                                         (vec![], vec![])
                                     });
-                                log::debug!("Extracted context for {}:{} - before: {}, after: {}",
-                                    path, r.span.start_line, result.0.len(), result.1.len());
+                                log::debug!(
+                                    "Extracted context for {}:{} - before: {}, after: {}",
+                                    path,
+                                    r.span.start_line,
+                                    result.0.len(),
+                                    result.1.len()
+                                );
                                 result
                             } else {
                                 if content_reader_opt.is_none() {
-                                    log::debug!("No ContentReader available for context extraction");
+                                    log::debug!(
+                                        "No ContentReader available for context extraction"
+                                    );
                                 }
                                 if file_id_for_context.is_none() {
                                     log::debug!("No file_id found for {}", path);
@@ -229,14 +261,20 @@ impl QueryEngine {
     ///
     /// This is the preferred method for programmatic/JSON output as it includes
     /// index freshness information that AI agents can use to decide whether to re-index.
-    pub fn search_with_metadata(&self, pattern: &str, filter: QueryFilter) -> Result<QueryResponse> {
-        log::info!("Executing query with metadata: pattern='{}', filter={:?}", pattern, filter);
+    pub fn search_with_metadata(
+        &self,
+        pattern: &str,
+        filter: QueryFilter,
+    ) -> Result<QueryResponse> {
+        log::info!(
+            "Executing query with metadata: pattern='{}', filter={:?}",
+            pattern,
+            filter
+        );
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!(
-                "Index not found. Run 'rfx index' to build the cache first."
-            );
+            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
         }
 
         // Validate cache integrity
@@ -265,10 +303,14 @@ impl QueryEngine {
 
         // Always use grouped format (group results by file)
         // Dependencies are loaded only when include_dependencies is true
-        let grouped_results = self.group_and_load_dependencies(results, filter.include_dependencies, filter.context_lines)?;
+        let grouped_results = self.group_and_load_dependencies(
+            results,
+            filter.include_dependencies,
+            filter.context_lines,
+        )?;
 
         Ok(QueryResponse {
-            ai_instruction: None,  // AI instruction is generated by CLI/MCP layer, not here
+            ai_instruction: None, // AI instruction is generated by CLI/MCP layer, not here
             status,
             can_trust_results,
             warning,
@@ -282,13 +324,15 @@ impl QueryEngine {
     /// This method prints warnings to stderr and returns just the results.
     /// For programmatic use, prefer `search_with_metadata()`.
     pub fn search(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
-        log::info!("Executing query: pattern='{}', filter={:?}", pattern, filter);
+        log::info!(
+            "Executing query: pattern='{}', filter={:?}",
+            pattern,
+            filter
+        );
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!(
-                "Index not found. Run 'rfx index' to build the cache first."
-            );
+            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
         }
 
         // Validate cache integrity
@@ -313,7 +357,11 @@ impl QueryEngine {
 
     /// Internal search implementation (used by both search methods)
     /// Returns (results, total_count) where total_count is the count before offset/limit
-    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<(Vec<SearchResult>, usize)> {
+    fn search_internal(
+        &self,
+        pattern: &str,
+        filter: QueryFilter,
+    ) -> Result<(Vec<SearchResult>, usize)> {
         use std::time::{Duration, Instant};
 
         // Start timeout timer if configured
@@ -346,10 +394,14 @@ impl QueryEngine {
         // KEYWORD-TO-KIND MAPPING: If user searches for a keyword without --kind, infer the kind
         // Example: "class" → SymbolKind::Class, "function" → SymbolKind::Function
         // This ensures keyword queries return only the relevant symbol type
-        let mut filter = filter.clone();  // Clone so we can modify it
+        let mut filter = filter.clone(); // Clone so we can modify it
         if is_keyword_query && filter.kind.is_none() {
             if let Some(inferred_kind) = Self::keyword_to_kind(pattern) {
-                log::info!("Keyword '{}' mapped to kind {:?} (auto-inferred)", pattern, inferred_kind);
+                log::info!(
+                    "Keyword '{}' mapped to kind {:?} (auto-inferred)",
+                    pattern,
+                    inferred_kind
+                );
                 filter.kind = Some(inferred_kind);
             }
         }
@@ -411,15 +463,26 @@ impl QueryEngine {
             // KEYWORD QUERY MODE: Scan all files (or files of target language if --lang specified)
             // This ensures we find ALL classes/functions/etc, not just those in the first 100 trigram matches
             if let Some(lang) = filter.language {
-                log::info!("Keyword query detected for '{}' - scanning all {:?} files (bypassing trigram search)",
-                          pattern, lang);
+                log::info!(
+                    "Keyword query detected for '{}' - scanning all {:?} files (bypassing trigram search)",
+                    pattern,
+                    lang
+                );
             } else {
-                log::info!("Keyword query detected for '{}' - scanning all files (bypassing trigram search)", pattern);
+                log::info!(
+                    "Keyword query detected for '{}' - scanning all files (bypassing trigram search)",
+                    pattern
+                );
             }
             self.get_all_language_files(&filter)?
         } else if filter.use_regex {
             // Regex pattern search with trigram optimization
-            self.get_regex_candidates(pattern, timeout.as_ref(), &start_time, filter.suppress_output)?
+            self.get_regex_candidates(
+                pattern,
+                timeout.as_ref(),
+                &start_time,
+                filter.suppress_output,
+            )?
         } else {
             // Standard trigram-based full-text search
             self.get_trigram_candidates(pattern, &filter)?
@@ -558,7 +621,8 @@ impl QueryEngine {
 
             // Condition 2: AST query without glob restriction on large codebases
             // Allow on small codebases (< 100 files) but require glob for larger ones
-            let is_broad_ast = filter.use_ast && filter.glob_patterns.is_empty() && candidate_count >= 100;
+            let is_broad_ast =
+                filter.use_ast && filter.glob_patterns.is_empty() && candidate_count >= 100;
 
             // Condition 3: Query-type-aware threshold for symbol/AST parsing
             // Different thresholds based on actual performance characteristics:
@@ -567,27 +631,39 @@ impl QueryEngine {
             // - Keyword queries: 20,000 files (~3 seconds max) - scan all files of language
             // - Trigram-filtered symbols: 50,000 files (~5 seconds max) - very fast due to trigram filtering
             let threshold = if filter.use_ast && filter.glob_patterns.is_empty() {
-                100  // AST without glob - allow small codebases
+                100 // AST without glob - allow small codebases
             } else if filter.use_ast {
-                10_000  // AST with glob restriction
+                10_000 // AST with glob restriction
             } else if is_keyword_query {
-                20_000  // Keyword queries (e.g., "class", "function")
+                20_000 // Keyword queries (e.g., "class", "function")
             } else {
-                50_000  // Trigram-filtered symbol queries
+                50_000 // Trigram-filtered symbol queries
             };
 
-            let has_many_candidates = candidate_count > threshold &&
-                                     (filter.symbols_mode || filter.kind.is_some() || filter.use_ast);
+            let has_many_candidates = candidate_count > threshold
+                && (filter.symbols_mode || filter.kind.is_some() || filter.use_ast);
 
             if is_short_pattern || has_many_candidates || is_broad_ast {
                 let reason = if is_short_pattern {
-                    format!("Pattern '{}' is too short ({} characters). Short patterns bypass trigram optimization and require scanning many files.", pattern, pattern_len)
+                    format!(
+                        "Pattern '{}' is too short ({} characters). Short patterns bypass trigram optimization and require scanning many files.",
+                        pattern, pattern_len
+                    )
                 } else if is_broad_ast {
-                    format!("AST query without --glob restriction will scan the entire codebase ({} files). AST queries are SLOW (500ms-10s+).", candidate_count)
+                    format!(
+                        "AST query without --glob restriction will scan the entire codebase ({} files). AST queries are SLOW (500ms-10s+).",
+                        candidate_count
+                    )
                 } else if is_keyword_query {
-                    format!("Keyword query '{}' matched {} files. This query scans all files of the target language, which will take significant time and produce excessive results.", pattern, candidate_count)
+                    format!(
+                        "Keyword query '{}' matched {} files. This query scans all files of the target language, which will take significant time and produce excessive results.",
+                        pattern, candidate_count
+                    )
                 } else {
-                    format!("Query matched {} files. Parsing this many files with --symbols or --kind will take significant time and produce excessive results.", candidate_count)
+                    format!(
+                        "Query matched {} files. Parsing this many files with --symbols or --kind will take significant time and produce excessive results.",
+                        candidate_count
+                    )
                 };
 
                 let suggestions = if is_short_pattern {
@@ -595,13 +671,13 @@ impl QueryEngine {
                         "• Use a longer, more specific pattern (3+ characters recommended)",
                         "• Add a language filter: --lang <language>",
                         "• Add a file path filter: --file <path> or --glob <pattern>",
-                        "• Use --force to bypass this check if you really need all results"
+                        "• Use --force to bypass this check if you really need all results",
                     ]
                 } else if is_broad_ast {
                     vec![
                         "• Add --glob to restrict AST query to specific files: --glob 'src/**/*.rs'",
                         "• Use --symbols instead (10-100x faster in 95% of cases)",
-                        "• Use --force to bypass this check if you need a full codebase scan"
+                        "• Use --force to bypass this check if you need a full codebase scan",
                     ]
                 } else if is_keyword_query {
                     vec![
@@ -609,14 +685,14 @@ impl QueryEngine {
                         "• Add glob patterns to search specific directories: --glob 'src/**/*.rs'",
                         "• Add --kind to filter to specific symbol types: --kind function",
                         "• Use a more specific pattern instead of a keyword",
-                        "• Use --force to bypass this check if you need all results"
+                        "• Use --force to bypass this check if you need all results",
                     ]
                 } else {
                     vec![
                         "• Add a language filter to reduce candidate set: --lang <language>",
                         "• Add glob patterns to search specific directories: --glob 'src/**/*.rs'",
                         "• Use a more specific search pattern",
-                        "• Use --force to bypass this check if you need all results"
+                        "• Use --force to bypass this check if you need all results",
                     ]
                 };
 
@@ -663,7 +739,8 @@ impl QueryEngine {
         // This ensures results are always returned in the same order
         if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
             results.sort_by(|a, b| {
-                a.path.cmp(&b.path)
+                a.path
+                    .cmp(&b.path)
                     .then_with(|| a.span.start_line.cmp(&b.span.start_line))
             });
 
@@ -672,11 +749,13 @@ impl QueryEngine {
             if candidate_count > 1000 && !filter.suppress_output {
                 output::warn(&format!(
                     "Pattern '{}' matched {} files - parsing may take some time. Consider using --file, --glob, or a more specific pattern to narrow the search.",
-                    pattern,
-                    candidate_count
+                    pattern, candidate_count
                 ));
             } else if candidate_count > 100 {
-                log::info!("Parsing {} candidate files for symbol extraction", candidate_count);
+                log::info!(
+                    "Parsing {} candidate files for symbol extraction",
+                    candidate_count
+                );
             }
         }
 
@@ -762,7 +841,8 @@ impl QueryEngine {
 
         // Step 5: Sort results deterministically (by path, then line number)
         results.sort_by(|a, b| {
-            a.path.cmp(&b.path)
+            a.path
+                .cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
@@ -785,7 +865,11 @@ impl QueryEngine {
             results.truncate(limit);
         }
 
-        log::info!("Query returned {} results (total before pagination: {})", results.len(), total_count);
+        log::info!(
+            "Query returned {} results (total before pagination: {})",
+            results.len(),
+            total_count
+        );
 
         Ok((results, total_count))
     }
@@ -830,8 +914,16 @@ impl QueryEngine {
     /// # Requirements
     /// - Language must be specified (AST queries are language-specific)
     /// - AST pattern must be valid S-expression syntax
-    pub fn search_ast_all_files(&self, ast_pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
-        log::info!("Executing AST query on all files: pattern='{}', filter={:?}", ast_pattern, filter);
+    pub fn search_ast_all_files(
+        &self,
+        ast_pattern: &str,
+        filter: QueryFilter,
+    ) -> Result<Vec<SearchResult>> {
+        log::info!(
+            "Executing AST query on all files: pattern='{}', filter={:?}",
+            ast_pattern,
+            filter
+        );
 
         // Require language for AST queries
         let lang = filter.language.ok_or_else(|| anyhow::anyhow!(
@@ -842,9 +934,7 @@ impl QueryEngine {
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!(
-                "Index not found. Run 'rfx index' to build the cache first."
-            );
+            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
         }
 
         // Show non-blocking warnings about branch state and staleness
@@ -852,8 +942,8 @@ impl QueryEngine {
 
         // Load content store
         let content_path = self.cache.path().join("content.bin");
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content store")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content store")?;
 
         // Build glob matchers ONCE before file iteration (performance optimization)
         use globset::{Glob, GlobSetBuilder};
@@ -896,9 +986,7 @@ impl QueryEngine {
             };
 
             // Detect language from file extension
-            let ext = file_path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let detected_lang = Language::from_extension(ext);
 
             // Filter by language
@@ -909,8 +997,12 @@ impl QueryEngine {
             let file_path_str = file_path.to_string_lossy().to_string();
 
             // Apply glob/exclude filters BEFORE loading content (performance optimization)
-            let included = include_matcher.as_ref().map_or(true, |m| m.is_match(&file_path_str));
-            let excluded = exclude_matcher.as_ref().map_or(false, |m| m.is_match(&file_path_str));
+            let included = include_matcher
+                .as_ref()
+                .map_or(true, |m| m.is_match(&file_path_str));
+            let excluded = exclude_matcher
+                .as_ref()
+                .map_or(false, |m| m.is_match(&file_path_str));
 
             if !included || excluded {
                 continue;
@@ -920,7 +1012,10 @@ impl QueryEngine {
             candidates.push(SearchResult {
                 path: file_path_str,
                 lang: detected_lang,
-                span: Span { start_line: 1, end_line: 1 },
+                span: Span {
+                    start_line: 1,
+                    end_line: 1,
+                },
                 symbol: None,
                 kind: SymbolKind::Unknown("ast_query".to_string()),
                 preview: String::new(),
@@ -928,7 +1023,11 @@ impl QueryEngine {
             });
         }
 
-        log::info!("AST query scanning {} files for language {:?}", candidates.len(), lang);
+        log::info!(
+            "AST query scanning {} files for language {:?}",
+            candidates.len(),
+            lang
+        );
 
         // BROAD QUERY DETECTION: Block large AST queries without glob restriction
         // Allow small codebases (<100 files) but require --glob for larger ones
@@ -959,7 +1058,10 @@ impl QueryEngine {
 
         if candidates.is_empty() {
             if !filter.suppress_output {
-                output::warn(&format!("No files found for language {:?}. Check your language filter or glob patterns.", lang));
+                output::warn(&format!(
+                    "No files found for language {:?}. Check your language filter or glob patterns.",
+                    lang
+                ));
             }
             return Ok(Vec::new());
         }
@@ -1017,7 +1119,8 @@ impl QueryEngine {
 
         // Sort results deterministically
         results.sort_by(|a, b| {
-            a.path.cmp(&b.path)
+            a.path
+                .cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
@@ -1060,14 +1163,16 @@ impl QueryEngine {
         ast_pattern: &str,
         filter: QueryFilter,
     ) -> Result<Vec<SearchResult>> {
-        log::info!("Executing AST query with text filter: text='{}', ast='{}', filter={:?}",
-                   text_pattern, ast_pattern, filter);
+        log::info!(
+            "Executing AST query with text filter: text='{}', ast='{}', filter={:?}",
+            text_pattern,
+            ast_pattern,
+            filter
+        );
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!(
-                "Index not found. Run 'rfx index' to build the cache first."
-            );
+            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
         }
 
         // Show non-blocking warnings about branch state and staleness
@@ -1084,7 +1189,12 @@ impl QueryEngine {
 
         // PHASE 1: Get initial candidates using text pattern (trigram search)
         let candidates = if filter.use_regex {
-            self.get_regex_candidates(text_pattern, timeout.as_ref(), &start_time, filter.suppress_output)?
+            self.get_regex_candidates(
+                text_pattern,
+                timeout.as_ref(),
+                &start_time,
+                filter.suppress_output,
+            )?
         } else {
             self.get_trigram_candidates(text_pattern, &filter)?
         };
@@ -1148,8 +1258,12 @@ impl QueryEngine {
             };
 
             results.retain(|r| {
-                let included = include_matcher.as_ref().map_or(true, |m| m.is_match(&r.path));
-                let excluded = exclude_matcher.as_ref().map_or(false, |m| m.is_match(&r.path));
+                let included = include_matcher
+                    .as_ref()
+                    .map_or(true, |m| m.is_match(&r.path));
+                let excluded = exclude_matcher
+                    .as_ref()
+                    .map_or(false, |m| m.is_match(&r.path));
                 included && !excluded
             });
         }
@@ -1183,7 +1297,8 @@ impl QueryEngine {
 
         // Sort results deterministically
         results.sort_by(|a, b| {
-            a.path.cmp(&b.path)
+            a.path
+                .cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
@@ -1237,11 +1352,16 @@ impl QueryEngine {
     /// # Optimizations
     /// 1. Language filtering: Skips files with unsupported languages (no parsers)
     /// 2. Parallel processing: Uses Rayon to parse files concurrently across CPU cores
-    fn enrich_with_symbols(&self, candidates: Vec<SearchResult>, pattern: &str, filter: &QueryFilter) -> Result<Vec<SearchResult>> {
+    fn enrich_with_symbols(
+        &self,
+        candidates: Vec<SearchResult>,
+        pattern: &str,
+        filter: &QueryFilter,
+    ) -> Result<Vec<SearchResult>> {
         // Load content store for file reading
         let content_path = self.cache.path().join("content.bin");
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content store")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content store")?;
 
         // Load trigram index for file path lookups
         let trigrams_path = self.cache.path().join("trigrams.bin");
@@ -1257,11 +1377,17 @@ impl QueryEngine {
 
         // Load file hashes for current branch for cache lookups
         let root = self.cache.workspace_root();
-        let branch = crate::git::get_current_branch(&root)
-            .unwrap_or_else(|_| "_default".to_string());
-        let file_hashes = self.cache.load_hashes_for_branch(&branch)
+        let branch =
+            crate::git::get_current_branch(&root).unwrap_or_else(|_| "_default".to_string());
+        let file_hashes = self
+            .cache
+            .load_hashes_for_branch(&branch)
             .context("Failed to load file hashes")?;
-        log::debug!("Loaded {} file hashes for branch '{}' for symbol cache lookups", file_hashes.len(), branch);
+        log::debug!(
+            "Loaded {} file hashes for branch '{}' for symbol cache lookups",
+            file_hashes.len(),
+            branch
+        );
 
         // Group candidates by file, filtering out unsupported languages
         use std::collections::HashMap;
@@ -1282,15 +1408,17 @@ impl QueryEngine {
         }
 
         let total_files = files_by_path.len();
-        log::debug!("Processing {} candidate files for symbol enrichment (skipped {} unsupported language files)",
-                   total_files, skipped_unsupported);
+        log::debug!(
+            "Processing {} candidate files for symbol enrichment (skipped {} unsupported language files)",
+            total_files,
+            skipped_unsupported
+        );
 
         // Warn if pattern is very broad (may take time to parse all files)
         if total_files > 1000 && !filter.suppress_output {
             output::warn(&format!(
                 "Pattern '{}' matched {} files. This may take some time to parse. Consider using a more specific pattern or adding --lang/--file filters to narrow the search.",
-                pattern,
-                total_files
+                pattern, total_files
             ));
         }
 
@@ -1312,10 +1440,11 @@ impl QueryEngine {
             // Get line filter for this language (if available)
             if let Some(line_filter) = crate::line_filter::get_filter(lang) {
                 // Find file_id for this path
-                let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, file_path) {
-                    Some(id) => id,
-                    None => continue,
-                };
+                let file_id =
+                    match Self::find_file_id_by_path(&content_reader, &trigram_index, file_path) {
+                        Some(id) => id,
+                        None => continue,
+                    };
 
                 // Load file content
                 let content = match content_reader.get_file_content(file_id) {
@@ -1354,7 +1483,10 @@ impl QueryEngine {
                     // Double-check: make sure there was at least one occurrence
                     if content.contains(pattern) {
                         files_to_skip.insert(file_path.clone());
-                        log::debug!("Pre-filter: Skipping {} (all matches in comments/strings)", file_path);
+                        log::debug!(
+                            "Pre-filter: Skipping {} (all matches in comments/strings)",
+                            file_path
+                        );
                     }
                 }
             }
@@ -1363,8 +1495,11 @@ impl QueryEngine {
         // Filter out files we're skipping
         files_to_process.retain(|path| !files_to_skip.contains(path));
 
-        log::debug!("Pre-filter: Skipped {} files where all matches are in comments/strings (parsing {} files)",
-                   files_to_skip.len(), files_to_process.len());
+        log::debug!(
+            "Pre-filter: Skipped {} files where all matches are in comments/strings (parsing {} files)",
+            files_to_skip.len(),
+            files_to_process.len()
+        );
 
         // Configure thread pool for parallel processing (use 80% of available cores, capped at 8)
         let num_threads = {
@@ -1373,12 +1508,18 @@ impl QueryEngine {
                 .unwrap_or(4);
             // Use 80% of available cores (minimum 1, maximum 8) to avoid locking the system
             // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
-            ((available_cores as f64 * 0.8).ceil() as usize).max(1).min(8)
+            ((available_cores as f64 * 0.8).ceil() as usize)
+                .max(1)
+                .min(8)
         };
 
-        log::debug!("Using {} threads for parallel symbol extraction (out of {} available cores)",
-                   num_threads,
-                   std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+        log::debug!(
+            "Using {} threads for parallel symbol extraction (out of {} available cores)",
+            num_threads,
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        );
 
         // Build a custom thread pool with limited threads
         let pool = rayon::ThreadPoolBuilder::new()
@@ -1397,7 +1538,9 @@ impl QueryEngine {
             .collect();
 
         // Step 2: Batch lookup file_ids for all paths
-        let file_id_map = self.cache.batch_get_file_ids(&files_with_hashes)
+        let file_id_map = self
+            .cache
+            .batch_get_file_ids(&files_with_hashes)
             .context("Failed to batch lookup file IDs")?;
 
         // Step 3: Build (file_id, hash, path) tuples for batch_get_with_kind
@@ -1411,7 +1554,8 @@ impl QueryEngine {
             .collect();
 
         // Step 4: Batch read symbols with kind filtering (uses junction table + integer joins)
-        let batch_results = symbol_cache.batch_get_with_kind(&file_lookup_tuples, filter.kind.clone())
+        let batch_results = symbol_cache
+            .batch_get_with_kind(&file_lookup_tuples, filter.kind.clone())
             .context("Failed to batch read symbol cache")?;
 
         // Step 5: Separate files into cached vs need-to-parse
@@ -1458,52 +1602,56 @@ impl QueryEngine {
             files_needing_parse
                 .par_iter()
                 .flat_map(|file_path| {
-                // Find file_id for this path
-                let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, file_path) {
-                    Some(id) => id,
-                    None => {
-                        log::warn!("Could not find file_id for path: {}", file_path);
-                        return Vec::new();
-                    }
-                };
+                    // Find file_id for this path
+                    let file_id = match Self::find_file_id_by_path(
+                        &content_reader,
+                        &trigram_index,
+                        file_path,
+                    ) {
+                        Some(id) => id,
+                        None => {
+                            log::warn!("Could not find file_id for path: {}", file_path);
+                            return Vec::new();
+                        }
+                    };
 
-                let content = match content_reader.get_file_content(file_id) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::warn!("Failed to read file {}: {}", file_path, e);
-                        return Vec::new();
-                    }
-                };
+                    let content = match content_reader.get_file_content(file_id) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::warn!("Failed to read file {}: {}", file_path, e);
+                            return Vec::new();
+                        }
+                    };
 
-                // Detect language
-                let ext = std::path::Path::new(file_path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                let lang = Language::from_extension(ext);
+                    // Detect language
+                    let ext = std::path::Path::new(file_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    let lang = Language::from_extension(ext);
 
-                // Parse file to extract symbols
-                let symbols = match ParserFactory::parse(file_path, content, lang) {
-                    Ok(symbols) => {
-                        log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
-                        symbols
-                    }
-                    Err(e) => {
-                        log::debug!("Failed to parse {}: {}", file_path, e);
-                        Vec::new()
-                    }
-                };
+                    // Parse file to extract symbols
+                    let symbols = match ParserFactory::parse(file_path, content, lang) {
+                        Ok(symbols) => {
+                            log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
+                            symbols
+                        }
+                        Err(e) => {
+                            log::debug!("Failed to parse {}: {}", file_path, e);
+                            Vec::new()
+                        }
+                    };
 
-                // Cache the parsed symbols (ignore errors - caching is best-effort)
-                if let Some(file_hash) = file_hashes.get(file_path.as_str()) {
-                    if let Err(e) = symbol_cache.set(file_path, file_hash, &symbols) {
-                        log::debug!("Failed to cache symbols for {}: {}", file_path, e);
+                    // Cache the parsed symbols (ignore errors - caching is best-effort)
+                    if let Some(file_hash) = file_hashes.get(file_path.as_str()) {
+                        if let Err(e) = symbol_cache.set(file_path, file_hash, &symbols) {
+                            log::debug!("Failed to cache symbols for {}: {}", file_path, e);
+                        }
                     }
-                }
 
-                symbols
-            })
-            .collect()
+                    symbols
+                })
+                .collect()
         });
 
         // Combine cached and parsed symbols
@@ -1534,24 +1682,26 @@ impl QueryEngine {
                 // No language filter - check all languages that appear in the actual symbols
                 // (not candidates, but the parsed symbols that made it through)
                 // This handles mixed-language codebases correctly
-                let mut langs: Vec<Language> = all_symbols.iter()
-                    .map(|s| s.lang)
-                    .collect::<Vec<_>>();
+                let mut langs: Vec<Language> =
+                    all_symbols.iter().map(|s| s.lang).collect::<Vec<_>>();
                 langs.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b))); // Deterministic ordering
                 langs.dedup(); // Remove duplicates after sorting
                 langs
             };
 
             // Check if pattern matches a keyword in any of the relevant languages
-            lang_to_check.iter().any(|lang| {
-                ParserFactory::get_keywords(*lang).contains(&pattern)
-            })
+            lang_to_check
+                .iter()
+                .any(|lang| ParserFactory::get_keywords(*lang).contains(&pattern))
         };
 
         // If pattern is a keyword (like "class" or "function"), skip name-based filtering
         // and return all symbols (kind filtering happens in Phase 3)
         let filtered: Vec<SearchResult> = if is_keyword_query {
-            log::info!("Pattern '{}' is a language keyword - listing all symbols (kind filtering will be applied in Phase 3)", pattern);
+            log::info!(
+                "Pattern '{}' is a language keyword - listing all symbols (kind filtering will be applied in Phase 3)",
+                pattern
+            );
             all_symbols
         } else if filter.use_regex {
             // For regex queries, candidates already matched content via regex in Phase 1.
@@ -1599,7 +1749,11 @@ impl QueryEngine {
                 .collect()
         };
 
-        log::info!("Symbol enrichment found {} matches for pattern '{}'", filtered.len(), pattern);
+        log::info!(
+            "Symbol enrichment found {} matches for pattern '{}'",
+            filtered.len(),
+            pattern
+        );
 
         Ok(filtered)
     }
@@ -1622,7 +1776,12 @@ impl QueryEngine {
     /// # Requirements
     /// - Language must be specified (AST queries are language-specific)
     /// - AST pattern must be valid S-expression syntax
-    fn enrich_with_ast(&self, candidates: Vec<SearchResult>, ast_pattern: &str, language: Option<Language>) -> Result<Vec<SearchResult>> {
+    fn enrich_with_ast(
+        &self,
+        candidates: Vec<SearchResult>,
+        ast_pattern: &str,
+        language: Option<Language>,
+    ) -> Result<Vec<SearchResult>> {
         // Require language for AST queries
         let lang = language.ok_or_else(|| anyhow::anyhow!(
             "Language must be specified for AST pattern matching. Use --lang to specify the language."
@@ -1630,8 +1789,8 @@ impl QueryEngine {
 
         // Load content store for file reading
         let content_path = self.cache.path().join("content.bin");
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content store")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content store")?;
 
         // Load trigram index for file path lookups
         let trigrams_path = self.cache.path().join("trigrams.bin");
@@ -1651,7 +1810,11 @@ impl QueryEngine {
             }
 
             // Find file_id for this path
-            let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, &candidate.path) {
+            let file_id = match Self::find_file_id_by_path(
+                &content_reader,
+                &trigram_index,
+                &candidate.path,
+            ) {
                 Some(id) => id,
                 None => {
                     log::warn!("Could not find file_id for path: {}", candidate.path);
@@ -1671,12 +1834,21 @@ impl QueryEngine {
             file_contents.insert(candidate.path.clone(), content.to_string());
         }
 
-        log::debug!("Executing AST query on {} candidate files with language {:?}", file_contents.len(), lang);
+        log::debug!(
+            "Executing AST query on {} candidate files with language {:?}",
+            file_contents.len(),
+            lang
+        );
 
         // Execute AST query using the ast_query module
-        let results = crate::ast_query::execute_ast_query(candidates, ast_pattern, lang, &file_contents)?;
+        let results =
+            crate::ast_query::execute_ast_query(candidates, ast_pattern, lang, &file_contents)?;
 
-        log::info!("AST query found {} matches for pattern '{}'", results.len(), ast_pattern);
+        log::info!(
+            "AST query found {} matches for pattern '{}'",
+            results.len(),
+            ast_pattern
+        );
 
         Ok(results)
     }
@@ -1732,8 +1904,8 @@ impl QueryEngine {
 
         // Load content store
         let content_path = self.cache.path().join("content.bin");
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content store")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content store")?;
 
         // Build glob matchers if specified (for filtering)
         use globset::{Glob, GlobSetBuilder};
@@ -1774,9 +1946,7 @@ impl QueryEngine {
             };
 
             // Detect language from file extension
-            let ext = file_path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let detected_lang = Language::from_extension(ext);
 
             // Filter by language (if specified)
@@ -1789,8 +1959,12 @@ impl QueryEngine {
             let file_path_str = file_path.to_string_lossy().to_string();
 
             // Apply glob/exclude filters
-            let included = include_matcher.as_ref().map_or(true, |m| m.is_match(&file_path_str));
-            let excluded = exclude_matcher.as_ref().map_or(false, |m| m.is_match(&file_path_str));
+            let included = include_matcher
+                .as_ref()
+                .map_or(true, |m| m.is_match(&file_path_str));
+            let excluded = exclude_matcher
+                .as_ref()
+                .map_or(false, |m| m.is_match(&file_path_str));
 
             if !included || excluded {
                 continue;
@@ -1808,7 +1982,10 @@ impl QueryEngine {
             candidates.push(SearchResult {
                 path: file_path_str,
                 lang: detected_lang,
-                span: Span { start_line: 1, end_line: 1 },
+                span: Span {
+                    start_line: 1,
+                    end_line: 1,
+                },
                 symbol: None,
                 kind: SymbolKind::Unknown("keyword_query".to_string()),
                 preview: String::new(),
@@ -1817,20 +1994,31 @@ impl QueryEngine {
         }
 
         if let Some(lang) = filter.language {
-            log::info!("Keyword query will scan {} {:?} files for symbol extraction", candidates.len(), lang);
+            log::info!(
+                "Keyword query will scan {} {:?} files for symbol extraction",
+                candidates.len(),
+                lang
+            );
         } else {
-            log::info!("Keyword query will scan {} files (all languages) for symbol extraction", candidates.len());
+            log::info!(
+                "Keyword query will scan {} files (all languages) for symbol extraction",
+                candidates.len()
+            );
         }
 
         Ok(candidates)
     }
 
     /// Get candidate results using trigram-based full-text search
-    fn get_trigram_candidates(&self, pattern: &str, filter: &QueryFilter) -> Result<Vec<SearchResult>> {
+    fn get_trigram_candidates(
+        &self,
+        pattern: &str,
+        filter: &QueryFilter,
+    ) -> Result<Vec<SearchResult>> {
         // Load content store
         let content_path = self.cache.path().join("content.bin");
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content store")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content store")?;
 
         // Patterns shorter than 3 chars have no trigrams, so the trigram index always
         // returns empty.  Fall back to a linear scan of the content store so that
@@ -1849,8 +2037,11 @@ impl QueryEngine {
         let trigram_index = if trigrams_path.exists() {
             match TrigramIndex::load(&trigrams_path) {
                 Ok(index) => {
-                    log::debug!("Loaded trigram index from disk: {} trigrams, {} files",
-                               index.trigram_count(), index.file_count());
+                    log::debug!(
+                        "Loaded trigram index from disk: {} trigrams, {} files",
+                        index.trigram_count(),
+                        index.file_count()
+                    );
                     index
                 }
                 Err(e) => {
@@ -1866,7 +2057,10 @@ impl QueryEngine {
 
         // Search using trigrams
         let candidates = trigram_index.search(pattern);
-        log::debug!("Found {} candidate locations from trigram search", candidates.len());
+        log::debug!(
+            "Found {} candidate locations from trigram search",
+            candidates.len()
+        );
 
         // Clone pattern to owned String for thread safety
         let pattern_owned = pattern.to_string();
@@ -1886,7 +2080,8 @@ impl QueryEngine {
 
         // Group candidates by file for efficient processing
         use std::collections::HashMap;
-        let mut candidates_by_file: HashMap<u32, Vec<crate::trigram::FileLocation>> = HashMap::new();
+        let mut candidates_by_file: HashMap<u32, Vec<crate::trigram::FileLocation>> =
+            HashMap::new();
         for loc in candidates {
             candidates_by_file
                 .entry(loc.file_id)
@@ -1894,7 +2089,10 @@ impl QueryEngine {
                 .push(loc);
         }
 
-        log::debug!("Scanning {} files with trigram matches", candidates_by_file.len());
+        log::debug!(
+            "Scanning {} files with trigram matches",
+            candidates_by_file.len()
+        );
 
         // Process files in parallel using rayon
         use rayon::prelude::*;
@@ -1916,16 +2114,15 @@ impl QueryEngine {
                 let file_path_str = file_path.to_string_lossy().to_string();
 
                 // Detect language once per file
-                let ext = file_path.extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 let lang = Language::from_extension(ext);
 
                 // Split content into lines once
                 let lines: Vec<&str> = content.lines().collect();
 
                 // Use a HashSet to deduplicate results by line number
-                let mut seen_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                let mut seen_lines: std::collections::HashSet<usize> =
+                    std::collections::HashSet::new();
                 let mut file_results = Vec::new();
 
                 // Only check the specific lines indicated by trigram posting lists
@@ -1939,7 +2136,11 @@ impl QueryEngine {
 
                     // Bounds check
                     if line_no == 0 || line_no > lines.len() {
-                        log::debug!("Line {} out of bounds (file has {} lines)", line_no, lines.len());
+                        log::debug!(
+                            "Line {} out of bounds (file has {} lines)",
+                            line_no,
+                            lines.len()
+                        );
                         continue;
                     }
 
@@ -1952,7 +2153,8 @@ impl QueryEngine {
                     let line_matches = if filter.use_regex {
                         // Regex matching - use pre-compiled regex for efficiency
                         // The regex was compiled once outside the parallel loop
-                        compiled_regex.as_ref()
+                        compiled_regex
+                            .as_ref()
                             .map(|re| re.is_match(line))
                             .unwrap_or(false)
                     } else if filter.use_contains {
@@ -1974,7 +2176,7 @@ impl QueryEngine {
                         path: file_path_str.clone(),
                         lang: lang.clone(),
                         kind: SymbolKind::Unknown("text_match".to_string()),
-                        symbol: None,  // No symbol name for text matches (avoid duplication)
+                        symbol: None, // No symbol name for text matches (avoid duplication)
                         span: Span {
                             start_line: line_no,
                             end_line: line_no,
@@ -2044,7 +2246,10 @@ impl QueryEngine {
                     }
 
                     let line_matches = if filter.use_regex {
-                        compiled_regex.as_ref().map(|re| re.is_match(line)).unwrap_or(false)
+                        compiled_regex
+                            .as_ref()
+                            .map(|re| re.is_match(line))
+                            .unwrap_or(false)
                     } else if filter.use_contains {
                         line.contains(&pattern_owned)
                     } else {
@@ -2061,7 +2266,10 @@ impl QueryEngine {
                         lang: lang.clone(),
                         kind: SymbolKind::Unknown("text_match".to_string()),
                         symbol: None,
-                        span: Span { start_line: line_no, end_line: line_no },
+                        span: Span {
+                            start_line: line_no,
+                            end_line: line_no,
+                        },
                         preview: line.to_string(),
                         dependencies: None,
                     });
@@ -2073,7 +2281,9 @@ impl QueryEngine {
 
         log::info!(
             "Linear scan (short pattern '{}') found {} results across {} files",
-            pattern, results.len(), file_count
+            pattern,
+            results.len(),
+            file_count
         );
         Ok(results)
     }
@@ -2101,10 +2311,16 @@ impl QueryEngine {
     /// - Best case (pattern with literals): <20ms (trigram optimization)
     /// - Typical case (alternation/sequential): 5-15ms on small codebases (<100 files)
     /// - Worst case (no literals like `.*`): ~100ms (full scan)
-    fn get_regex_candidates(&self, pattern: &str, timeout: Option<&std::time::Duration>, start_time: &std::time::Instant, suppress_output: bool) -> Result<Vec<SearchResult>> {
+    fn get_regex_candidates(
+        &self,
+        pattern: &str,
+        timeout: Option<&std::time::Duration>,
+        start_time: &std::time::Instant,
+        suppress_output: bool,
+    ) -> Result<Vec<SearchResult>> {
         // Step 1: Compile the regex
-        let regex = Regex::new(pattern)
-            .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+        let regex =
+            Regex::new(pattern).with_context(|| format!("Invalid regex pattern: {}", pattern))?;
 
         // Check timeout before expensive operations
         if let Some(timeout_duration) = timeout {
@@ -2121,8 +2337,8 @@ impl QueryEngine {
 
         // Load content store
         let content_path = self.cache.path().join("content.bin");
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content store")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content store")?;
 
         let mut results = Vec::new();
 
@@ -2137,20 +2353,19 @@ impl QueryEngine {
 
             // Scan all files
             for file_id in 0..content_reader.file_count() {
-                let file_path = content_reader.get_file_path(file_id as u32)
+                let file_path = content_reader
+                    .get_file_path(file_id as u32)
                     .context("Invalid file_id")?;
                 let content = content_reader.get_file_content(file_id as u32)?;
 
-                self.find_regex_matches_in_file(
-                    &regex,
-                    file_path,
-                    content,
-                    &mut results,
-                )?;
+                self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
             }
         } else {
             // Use trigrams to narrow down candidates
-            log::debug!("Using {} trigrams to narrow regex search candidates", trigrams.len());
+            log::debug!(
+                "Using {} trigrams to narrow regex search candidates",
+                trigrams.len()
+            );
 
             // Load trigram index
             let trigrams_path = self.cache.path().join("trigrams.bin");
@@ -2165,10 +2380,13 @@ impl QueryEngine {
             let literals = extract_literal_sequences(pattern);
 
             if literals.is_empty() {
-                log::warn!("Regex extraction found trigrams but no literal sequences - this shouldn't happen");
+                log::warn!(
+                    "Regex extraction found trigrams but no literal sequences - this shouldn't happen"
+                );
                 // Fall back to full scan
                 for file_id in 0..content_reader.file_count() {
-                    let file_path = content_reader.get_file_path(file_id as u32)
+                    let file_path = content_reader
+                        .get_file_path(file_id as u32)
                         .context("Invalid file_id")?;
                     let content = content_reader.get_file_content(file_id as u32)?;
                     self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
@@ -2194,25 +2412,28 @@ impl QueryEngine {
                 }
 
                 let final_candidates = candidate_files;
-                log::debug!("After union: searching {} files that contain any literal", final_candidates.len());
+                log::debug!(
+                    "After union: searching {} files that contain any literal",
+                    final_candidates.len()
+                );
 
                 // Verify regex matches in candidate files only
                 for &file_id in &final_candidates {
-                    let file_path = trigram_index.get_file(file_id)
+                    let file_path = trigram_index
+                        .get_file(file_id)
                         .context("Invalid file_id from trigram search")?;
                     let content = content_reader.get_file_content(file_id)?;
 
-                    self.find_regex_matches_in_file(
-                        &regex,
-                        file_path,
-                        content,
-                        &mut results,
-                    )?;
+                    self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
                 }
             }
         }
 
-        log::info!("Regex search found {} matches for pattern '{}'", results.len(), pattern);
+        log::info!(
+            "Regex search found {} matches for pattern '{}'",
+            results.len(),
+            pattern
+        );
         Ok(results)
     }
 
@@ -2227,9 +2448,7 @@ impl QueryEngine {
         let file_path_str = file_path.to_string_lossy().to_string();
 
         // Detect language from file extension
-        let ext = file_path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = Language::from_extension(ext);
 
         // Find all regex matches line by line
@@ -2247,7 +2466,7 @@ impl QueryEngine {
                     path: file_path_str.clone(),
                     lang: lang.clone(),
                     kind: SymbolKind::Unknown("regex_match".to_string()),
-                    symbol: None,  // No symbol name for regex matches
+                    symbol: None, // No symbol name for regex matches
                     span: Span {
                         start_line: line_no,
                         end_line: line_no,
@@ -2304,9 +2523,10 @@ impl QueryEngine {
                 }
 
                 // Branch exists - check if commit changed
-                if let (Ok(current_commit), Ok(branch_info)) =
-                    (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
-
+                if let (Ok(current_commit), Ok(branch_info)) = (
+                    crate::git::get_current_commit(&root),
+                    self.cache.get_branch_info(&current_branch),
+                ) {
                     if branch_info.commit_sha != current_commit {
                         let warning = IndexWarning {
                             reason: format!(
@@ -2339,9 +2559,11 @@ impl QueryEngine {
                             if let Ok(metadata) = std::fs::metadata(file_path) {
                                 if let Ok(modified) = metadata.modified() {
                                     let indexed_time = branch_info.last_indexed;
-                                    let file_time = modified.duration_since(std::time::UNIX_EPOCH)
+                                    let file_time = modified
+                                        .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
-                                        .as_secs() as i64;
+                                        .as_secs()
+                                        as i64;
 
                                     if file_time > indexed_time {
                                         // File modified after indexing - likely stale
@@ -2354,7 +2576,10 @@ impl QueryEngine {
 
                         if changed > 0 {
                             let warning = IndexWarning {
-                                reason: format!("{} of {} sampled files modified", changed, checked),
+                                reason: format!(
+                                    "{} of {} sampled files modified",
+                                    changed, checked
+                                ),
                                 action_required: "rfx index".to_string(),
                                 files_modified: Some(changed as u32),
                                 details: Some(IndexWarningDetails {
@@ -2402,19 +2627,26 @@ impl QueryEngine {
                 // Check if we're on a different branch than what was indexed
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
                     if !filter.suppress_output {
-                        output::warn(&format!("⚠️  WARNING: Index not found for branch '{}'. Run 'rfx index' to index this branch.", current_branch));
+                        output::warn(&format!(
+                            "⚠️  WARNING: Index not found for branch '{}'. Run 'rfx index' to index this branch.",
+                            current_branch
+                        ));
                     }
                     return Ok(());
                 }
 
                 // Branch exists - check if commit changed
-                if let (Ok(current_commit), Ok(branch_info)) =
-                    (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
-
+                if let (Ok(current_commit), Ok(branch_info)) = (
+                    crate::git::get_current_commit(&root),
+                    self.cache.get_branch_info(&current_branch),
+                ) {
                     if branch_info.commit_sha != current_commit {
                         if !filter.suppress_output {
-                            output::warn(&format!("⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'rfx index'.",
-                                     &branch_info.commit_sha[..7], &current_commit[..7]));
+                            output::warn(&format!(
+                                "⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'rfx index'.",
+                                &branch_info.commit_sha[..7],
+                                &current_commit[..7]
+                            ));
                         }
                         return Ok(());
                     }
@@ -2434,9 +2666,11 @@ impl QueryEngine {
                             if let Ok(metadata) = std::fs::metadata(file_path) {
                                 if let Ok(modified) = metadata.modified() {
                                     let indexed_time = branch_info.last_indexed;
-                                    let file_time = modified.duration_since(std::time::UNIX_EPOCH)
+                                    let file_time = modified
+                                        .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
-                                        .as_secs() as i64;
+                                        .as_secs()
+                                        as i64;
 
                                     // If file modified after indexing, it might be stale
                                     if file_time > indexed_time {
@@ -2451,7 +2685,10 @@ impl QueryEngine {
                         }
 
                         if changed > 0 && !filter.suppress_output {
-                            output::warn(&format!("⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'rfx index'.", changed, checked));
+                            output::warn(&format!(
+                                "⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'rfx index'.",
+                                changed, checked
+                            ));
                         }
                     }
                 }
@@ -2488,86 +2725,97 @@ pub fn generate_ai_instruction(
 
     // Priority 2: Query too broad (500+ results)
     if total_count >= 500 {
-        return Some(
-            format!("Query too broad: {} results found. STOP. Do not list results. Refine search automatically by adding filters: kind parameter (Function/Struct/Class), lang parameter (rust/python/etc), or glob parameter (['src/**/*.rs']). Call search_code again with appropriate filters.", total_count)
-        );
+        return Some(format!(
+            "Query too broad: {} results found. STOP. Do not list results. Refine search automatically by adding filters: kind parameter (Function/Struct/Class), lang parameter (rust/python/etc), or glob parameter (['src/**/*.rs']). Call search_code again with appropriate filters.",
+            total_count
+        ));
     }
 
     // Priority 3: Paginated results
     if has_more {
-        return Some(
-            format!("Showing {} of {} results. PAGINATED - there are more results available. Do not automatically fetch all results. Show current page, ask user if these results answer their question before fetching more with --offset parameter.", result_count, total_count)
-        );
+        return Some(format!(
+            "Showing {} of {} results. PAGINATED - there are more results available. Do not automatically fetch all results. Show current page, ask user if these results answer their question before fetching more with --offset parameter.",
+            result_count, total_count
+        ));
     }
 
     // Priority 4: Single precise result (symbols mode)
     if result_count == 1 && symbols_mode {
         return Some(
-            "Found 1 precise result. Respond concisely: '[symbol] at [path]:[line]'.".to_string()
+            "Found 1 precise result. Respond concisely: '[symbol] at [path]:[line]'.".to_string(),
         );
     }
 
     // Priority 5: Few precise results (symbols mode)
     if result_count >= 2 && result_count <= 10 && symbols_mode {
-        return Some(
-            format!("Found {} precise results (definitions only, not usages). List locations concisely: '[symbol] at [path]:[line]' for each result.", result_count)
-        );
+        return Some(format!(
+            "Found {} precise results (definitions only, not usages). List locations concisely: '[symbol] at [path]:[line]' for each result.",
+            result_count
+        ));
     }
 
     // Priority 6: Many results (101-500)
     if total_count >= 101 && total_count < 500 {
-        return Some(
-            format!("Found {} results - this is broad. Suggest refining search with: kind parameter (Function/Struct/Class/etc), lang parameter (rust/python/etc), or glob parameter to narrow file scope.", total_count)
-        );
+        return Some(format!(
+            "Found {} results - this is broad. Suggest refining search with: kind parameter (Function/Struct/Class/etc), lang parameter (rust/python/etc), or glob parameter to narrow file scope.",
+            total_count
+        ));
     }
 
     // Priority 7: Full-text mode with many results (suggest symbols mode)
     if result_count >= 100 && !symbols_mode {
-        return Some(
-            format!("Found {} results in full-text search mode (includes definitions AND all usages). Consider using symbols=true parameter to filter to definitions only. This typically reduces results by 80-90%.", result_count)
-        );
+        return Some(format!(
+            "Found {} results in full-text search mode (includes definitions AND all usages). Consider using symbols=true parameter to filter to definitions only. This typically reduces results by 80-90%.",
+            result_count
+        ));
     }
 
     // Priority 8: Paths-only mode
     if paths_only {
-        return Some(
-            format!("Found {} unique files (paths-only mode - no code content included). Next step: Use Read tool on specific files that look relevant based on their paths.", result_count)
-        );
+        return Some(format!(
+            "Found {} unique files (paths-only mode - no code content included). Next step: Use Read tool on specific files that look relevant based on their paths.",
+            result_count
+        ));
     }
 
     // Priority 9: AST query results
     if use_ast {
-        return Some(
-            format!("Found {} results using AST pattern matching. These are structure-based matches using Tree-sitter patterns, not text search.", result_count)
-        );
+        return Some(format!(
+            "Found {} results using AST pattern matching. These are structure-based matches using Tree-sitter patterns, not text search.",
+            result_count
+        ));
     }
 
     // Priority 10: Regex with many results
     if use_regex && result_count >= 100 {
-        return Some(
-            format!("Found {} results using regex pattern matching. Regex matches are expansive. Consider using exact text search or symbols mode for more precise results.", result_count)
-        );
+        return Some(format!(
+            "Found {} results using regex pattern matching. Regex matches are expansive. Consider using exact text search or symbols mode for more precise results.",
+            result_count
+        ));
     }
 
     // Priority 11: Language filter with few results
     if language_filter && result_count <= 5 {
-        return Some(
-            format!("Found {} results with language filter active. Results are limited to this language only. Remove lang parameter if you want to search all languages.", result_count)
-        );
+        return Some(format!(
+            "Found {} results with language filter active. Results are limited to this language only. Remove lang parameter if you want to search all languages.",
+            result_count
+        ));
     }
 
     // Priority 12: Glob filter with few results
     if glob_filter && result_count <= 10 {
-        return Some(
-            format!("Found {} results with glob filter active. Results are limited to matching paths. Remove glob parameter to search entire codebase.", result_count)
-        );
+        return Some(format!(
+            "Found {} results with glob filter active. Results are limited to matching paths. Remove glob parameter to search entire codebase.",
+            result_count
+        ));
     }
 
     // Priority 13: Exact mode with few results
     if exact_mode && result_count <= 5 {
-        return Some(
-            format!("Found {} results in exact match mode. Only exact symbol name matches are included. Remove exact parameter to allow substring matching.", result_count)
-        );
+        return Some(format!(
+            "Found {} results in exact match mode. Only exact symbol name matches are included. Remove exact parameter to allow substring matching.",
+            result_count
+        ));
     }
 
     // Normal case (11-100 results, no special conditions) - no instruction
@@ -2623,7 +2871,11 @@ mod tests {
         fs::create_dir(&project).unwrap();
 
         // Create test files
-        fs::write(project.join("main.rs"), "fn main() {\n    println!(\"hello\");\n}").unwrap();
+        fs::write(
+            project.join("main.rs"),
+            "fn main() {\n    println!(\"hello\");\n}",
+        )
+        .unwrap();
         fs::write(project.join("lib.rs"), "pub fn hello() {}").unwrap();
 
         // Index the project
@@ -2652,8 +2904,9 @@ mod tests {
         // Create test file with function definition and call
         fs::write(
             project.join("main.rs"),
-            "fn greet() {}\nfn main() {\n    greet();\n}"
-        ).unwrap();
+            "fn greet() {}\nfn main() {\n    greet();\n}",
+        )
+        .unwrap();
 
         // Index
         let cache = CacheManager::new(&project);
@@ -2683,8 +2936,9 @@ mod tests {
 
         fs::write(
             project.join("main.rs"),
-            "fn test1() {}\nfn test2() {}\nfn other() {}"
-        ).unwrap();
+            "fn test1() {}\nfn test2() {}\nfn other() {}",
+        )
+        .unwrap();
 
         let cache = CacheManager::new(&project);
         let indexer = Indexer::new(cache, IndexConfig::default());
@@ -2742,8 +2996,9 @@ mod tests {
 
         fs::write(
             project.join("main.rs"),
-            "struct Point {}\nfn main() {}\nimpl Point { fn new() {} }"
-        ).unwrap();
+            "struct Point {}\nfn main() {}\nimpl Point { fn new() {} }",
+        )
+        .unwrap();
 
         let cache = CacheManager::new(&project);
         let indexer = Indexer::new(cache, IndexConfig::default());
@@ -2757,7 +3012,7 @@ mod tests {
         let filter = QueryFilter {
             symbols_mode: true,
             kind: Some(SymbolKind::Function),
-            use_contains: true,  // "mai" is substring of "main"
+            use_contains: true, // "mai" is substring of "main"
             ..Default::default()
         };
         // Search for "mai" which should match "main" (tri gram pattern will def be in index)
@@ -2765,7 +3020,10 @@ mod tests {
 
         // Should find main function
         assert!(results.len() > 0, "Should find at least one result");
-        assert!(results.iter().any(|r| r.symbol.as_deref() == Some("main")), "Should find 'main' function");
+        assert!(
+            results.iter().any(|r| r.symbol.as_deref() == Some("main")),
+            "Should find 'main' function"
+        );
     }
 
     #[test]
@@ -2804,7 +3062,10 @@ mod tests {
         fs::create_dir(&project).unwrap();
 
         // Create file with many matches
-        let content = (0..20).map(|i| format!("fn test{}() {{}}", i)).collect::<Vec<_>>().join("\n");
+        let content = (0..20)
+            .map(|i| format!("fn test{}() {{}}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         fs::write(project.join("main.rs"), content).unwrap();
 
         let cache = CacheManager::new(&project);
@@ -2818,7 +3079,7 @@ mod tests {
         // Limit to 5 results
         let filter = QueryFilter {
             limit: Some(5),
-            use_contains: true,  // "test" is substring of "test0", "test1", etc.
+            use_contains: true, // "test" is substring of "test0", "test1", etc.
             ..Default::default()
         };
         let results = engine.search("test", filter).unwrap();
@@ -2834,8 +3095,9 @@ mod tests {
 
         fs::write(
             project.join("main.rs"),
-            "fn test() {}\nfn test_helper() {}\nfn other_test() {}"
-        ).unwrap();
+            "fn test() {}\nfn test_helper() {}\nfn other_test() {}",
+        )
+        .unwrap();
 
         let cache = CacheManager::new(&project);
         let indexer = Indexer::new(cache, IndexConfig::default());
@@ -2868,8 +3130,9 @@ mod tests {
 
         fs::write(
             project.join("main.rs"),
-            "fn greet() {\n    println!(\"Hello\");\n    println!(\"World\");\n}"
-        ).unwrap();
+            "fn greet() {\n    println!(\"Hello\");\n    println!(\"World\");\n}",
+        )
+        .unwrap();
 
         let cache = CacheManager::new(&project);
         let indexer = Indexer::new(cache, IndexConfig::default());
@@ -2966,8 +3229,8 @@ mod tests {
 
         let engine = QueryEngine::new(cache);
         let filter = QueryFilter {
-            use_contains: true,  // Unicode word boundaries may not work as expected
-            force: true,  // Bypass broad query detection for 2-char Unicode pattern
+            use_contains: true, // Unicode word boundaries may not work as expected
+            force: true,        // Bypass broad query detection for 2-char Unicode pattern
             ..Default::default()
         };
 
@@ -3040,8 +3303,8 @@ mod tests {
             let curr = &results1[i];
             let next = &results1[i + 1];
             assert!(
-                curr.path < next.path ||
-                (curr.path == next.path && curr.span.start_line <= next.span.start_line)
+                curr.path < next.path
+                    || (curr.path == next.path && curr.span.start_line <= next.span.start_line)
             );
         }
     }
@@ -3113,8 +3376,9 @@ mod tests {
 
         fs::write(
             project.join("main.rs"),
-            "struct Point {}\nfn test() {}\nstruct Line {}"
-        ).unwrap();
+            "struct Point {}\nfn test() {}\nstruct Line {}",
+        )
+        .unwrap();
 
         let cache = CacheManager::new(&project);
         let indexer = Indexer::new(cache, IndexConfig::default());
@@ -3128,7 +3392,7 @@ mod tests {
         let filter = QueryFilter {
             kind: Some(SymbolKind::Struct),
             symbols_mode: true,
-            use_contains: true,  // "oin" is substring of "Point"
+            use_contains: true, // "oin" is substring of "Point"
             ..Default::default()
         };
         let results = engine.search("oin", filter).unwrap();

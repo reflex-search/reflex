@@ -72,7 +72,10 @@ impl LlmProvider for OpenAiProvider {
         // Check for HTTP errors
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             anyhow::bail!("OpenAI API error ({}): {}", status, error_text);
         }
 
@@ -184,26 +187,46 @@ mod tests {
 
     #[test]
     fn test_new_with_custom_model() {
-        let provider = OpenAiProvider::new("test-key".to_string(), Some("gpt-4o".to_string()), 300).unwrap();
+        let provider =
+            OpenAiProvider::new("test-key".to_string(), Some("gpt-4o".to_string()), 300).unwrap();
         assert_eq!(provider.model, "gpt-4o");
     }
 
     #[test]
     fn test_is_chat_model_keeps_chat_families() {
-        for id in ["gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
-                   "o1", "o1-mini", "o3", "o3-mini", "o4-mini",
-                   "chatgpt-4o-latest"] {
+        for id in [
+            "gpt-5.1",
+            "gpt-5",
+            "gpt-4.1",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1",
+            "o1-mini",
+            "o3",
+            "o3-mini",
+            "o4-mini",
+            "chatgpt-4o-latest",
+        ] {
             assert!(is_chat_model(id), "expected chat model: {}", id);
         }
     }
 
     #[test]
     fn test_is_chat_model_rejects_non_chat() {
-        for id in ["text-embedding-3-large", "tts-1", "whisper-1",
-                   "dall-e-3", "gpt-image-1", "omni-moderation-latest",
-                   "gpt-4o-realtime-preview", "gpt-4o-audio-preview",
-                   "gpt-4o-transcribe", "gpt-4o-search-preview",
-                   "babbage-002", "davinci-002"] {
+        for id in [
+            "text-embedding-3-large",
+            "tts-1",
+            "whisper-1",
+            "dall-e-3",
+            "gpt-image-1",
+            "omni-moderation-latest",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-audio-preview",
+            "gpt-4o-transcribe",
+            "gpt-4o-search-preview",
+            "babbage-002",
+            "davinci-002",
+        ] {
             assert!(!is_chat_model(id), "expected non-chat model: {}", id);
         }
     }
@@ -222,11 +245,7 @@ mod tests {
 
     #[test]
     fn test_sort_without_gpt_51_falls_through() {
-        let mut ids = vec![
-            "gpt-4o".to_string(),
-            "gpt-5".to_string(),
-            "o3".to_string(),
-        ];
+        let mut ids = vec!["gpt-4o".to_string(), "gpt-5".to_string(), "o3".to_string()];
         sort_with_recommended_first(&mut ids);
         // Reverse-alpha: o3 > gpt-5 > gpt-4o
         assert_eq!(ids[0], "o3");

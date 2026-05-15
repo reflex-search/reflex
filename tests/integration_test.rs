@@ -72,8 +72,16 @@ fn test_index_and_fulltext_search_workflow() {
     let project = temp.path();
 
     // Create multiple source files
-    fs::write(project.join("main.rs"), "fn main() {\n    println!(\"hello world\");\n}").unwrap();
-    fs::write(project.join("lib.rs"), "pub fn hello() -> String {\n    \"hello\".to_string()\n}").unwrap();
+    fs::write(
+        project.join("main.rs"),
+        "fn main() {\n    println!(\"hello world\");\n}",
+    )
+    .unwrap();
+    fs::write(
+        project.join("lib.rs"),
+        "pub fn hello() -> String {\n    \"hello\".to_string()\n}",
+    )
+    .unwrap();
     fs::write(project.join("utils.rs"), "// hello helper\nfn helper() {}").unwrap();
 
     // Index
@@ -103,8 +111,9 @@ fn test_index_and_symbol_search_workflow() {
     // Create files with symbols
     fs::write(
         project.join("main.rs"),
-        "fn greet() {}\nfn main() {\n    greet();\n}"
-    ).unwrap();
+        "fn greet() {}\nfn main() {\n    greet();\n}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -132,8 +141,9 @@ fn test_index_and_regex_search_workflow() {
 
     fs::write(
         project.join("main.rs"),
-        "fn test1() {}\nfn test2() {}\nfn other() {}"
-    ).unwrap();
+        "fn test1() {}\nfn test2() {}\nfn other() {}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -178,7 +188,7 @@ fn test_incremental_indexing_workflow() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        use_contains: true,  // "mai" is substring of "main", not at word boundary
+        use_contains: true, // "mai" is substring of "main", not at word boundary
         ..Default::default()
     };
     let results = engine.search("mai", filter).unwrap(); // "mai" is a trigram in "main"
@@ -203,7 +213,7 @@ fn test_modify_file_and_reindex_workflow() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
-        use_contains: true,  // "old" in "old_function" is not at word boundary
+        use_contains: true, // "old" in "old_function" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("old", filter.clone()).unwrap();
@@ -222,7 +232,11 @@ fn test_modify_file_and_reindex_workflow() {
     let engine = QueryEngine::new(cache);
     let results = engine.search("new", filter).unwrap();
     assert!(results.len() >= 1);
-    assert!(results.iter().any(|r| r.symbol.as_ref().map_or(false, |s| s.contains("new"))));
+    assert!(
+        results
+            .iter()
+            .any(|r| r.symbol.as_ref().map_or(false, |s| s.contains("new")))
+    );
 }
 
 // ==================== Multi-language Workflow Tests ====================
@@ -291,12 +305,10 @@ fn test_combined_filters_workflow() {
 
     fs::write(
         project.join("src/lib.rs"),
-        "struct Point {}\nfn point_new() {}"
-    ).unwrap();
-    fs::write(
-        project.join("tests/test.rs"),
-        "fn test_point() {}"
-    ).unwrap();
+        "struct Point {}\nfn point_new() {}",
+    )
+    .unwrap();
+    fs::write(project.join("tests/test.rs"), "fn test_point() {}").unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -311,7 +323,7 @@ fn test_combined_filters_workflow() {
         kind: Some(SymbolKind::Function),
         file_pattern: Some("src/".to_string()),
         symbols_mode: true,
-        use_contains: true,  // "poi" in "point_new" is not at word boundary
+        use_contains: true, // "poi" in "point_new" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("poi", filter).unwrap();
@@ -328,7 +340,10 @@ fn test_limit_and_sorting_workflow() {
     let project = temp.path();
 
     // Create files that will produce many matches
-    let content = (0..20).map(|i| format!("fn test{}() {{}}", i)).collect::<Vec<_>>().join("\n");
+    let content = (0..20)
+        .map(|i| format!("fn test{}() {{}}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
     fs::write(project.join("many.rs"), content).unwrap();
 
     // Index
@@ -341,7 +356,7 @@ fn test_limit_and_sorting_workflow() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         limit: Some(5),
-        use_contains: true,  // "test" in "test0", "test1" is not at word boundary
+        use_contains: true, // "test" in "test0", "test1" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("test", filter).unwrap();
@@ -558,7 +573,11 @@ fn test_glob_wildcard_patterns() {
 
     // Should only match test_*.rs files
     assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|r| r.path.contains("test_") && r.path.ends_with(".rs")));
+    assert!(
+        results
+            .iter()
+            .all(|r| r.path.contains("test_") && r.path.ends_with(".rs"))
+    );
     assert!(!results.iter().any(|r| r.path.contains("other.rs")));
     assert!(!results.iter().any(|r| r.path.contains("main.py")));
 }
@@ -633,7 +652,11 @@ fn test_exclude_single_pattern() {
     fs::create_dir_all(project.join("build")).unwrap();
 
     fs::write(project.join("src/main.rs"), "fn extract_pattern() {}").unwrap();
-    fs::write(project.join("build/generated.rs"), "fn extract_pattern() {}").unwrap();
+    fs::write(
+        project.join("build/generated.rs"),
+        "fn extract_pattern() {}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -774,7 +797,7 @@ fn another_extract_pattern() {}
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         paths_only: true,
-        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
+        use_contains: true, // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -824,7 +847,10 @@ fn test_paths_only_single_match_per_file() {
     let project = temp.path();
 
     // File with many matches
-    let content = (0..50).map(|i| format!("fn test{}() {{}}", i)).collect::<Vec<_>>().join("\n");
+    let content = (0..50)
+        .map(|i| format!("fn test{}() {{}}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
     fs::write(project.join("many.rs"), content).unwrap();
 
     // Index
@@ -837,7 +863,7 @@ fn test_paths_only_single_match_per_file() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         paths_only: true,
-        use_contains: true,  // "test" in "test0", "test1" is not at word boundary (followed by digit)
+        use_contains: true, // "test" in "test0", "test1" is not at word boundary (followed by digit)
         ..Default::default()
     };
     let results = engine.search("test", filter).unwrap();
@@ -973,7 +999,7 @@ fn test() {
         glob_patterns: vec!["**/src/**".to_string()],
         exclude_patterns: vec!["**/tests/**".to_string()],
         symbols_mode: true,
-        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
+        use_contains: true, // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -994,7 +1020,11 @@ fn test_all_filters_together() {
     fs::create_dir_all(project.join("build")).unwrap();
 
     // Multiple occurrences in src/main.rs
-    fs::write(project.join("src/main.rs"), "fn extract_pattern() {}\nfn other_extract() {}").unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn extract_pattern() {}\nfn other_extract() {}",
+    )
+    .unwrap();
     fs::write(project.join("tests/test.rs"), "fn extract_pattern() {}").unwrap();
     fs::write(project.join("build/gen.rs"), "fn extract_pattern() {}").unwrap();
 
@@ -1012,7 +1042,7 @@ fn test_all_filters_together() {
         language: Some(reflex::Language::Rust),
         symbols_mode: true,
         paths_only: true,
-        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
+        use_contains: true, // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -1065,8 +1095,9 @@ fn test_ast_query_basic_rust() {
     // Create Rust files with functions
     fs::write(
         project.join("main.rs"),
-        "fn hello() {}\nfn world() {}\nstruct Point {}"
-    ).unwrap();
+        "fn hello() {}\nfn world() {}\nstruct Point {}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1081,7 +1112,9 @@ fn test_ast_query_basic_rust() {
         use_ast: true,
         ..Default::default()
     };
-    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+    let results = engine
+        .search_ast_all_files("(function_item) @fn", filter)
+        .unwrap();
 
     // Should find both functions but not the struct
     assert_eq!(results.len(), 2);
@@ -1116,7 +1149,9 @@ fn test_ast_query_with_glob_pattern() {
         glob_patterns: vec!["**/src/**/*.rs".to_string()],
         ..Default::default()
     };
-    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+    let results = engine
+        .search_ast_all_files("(function_item) @fn", filter)
+        .unwrap();
 
     // Should only find function in src/, not tests/
     assert_eq!(results.len(), 1);
@@ -1149,7 +1184,9 @@ fn test_ast_query_with_exclude_pattern() {
         exclude_patterns: vec!["**/build/**".to_string()],
         ..Default::default()
     };
-    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+    let results = engine
+        .search_ast_all_files("(function_item) @fn", filter)
+        .unwrap();
 
     // Should only find function in src/
     assert_eq!(results.len(), 1);
@@ -1178,7 +1215,9 @@ fn test_ast_query_multiple_languages() {
         use_ast: true,
         ..Default::default()
     };
-    let results_rust = engine.search_ast_all_files("(function_item) @fn", filter_rust).unwrap();
+    let results_rust = engine
+        .search_ast_all_files("(function_item) @fn", filter_rust)
+        .unwrap();
     assert_eq!(results_rust.len(), 1);
     assert_eq!(results_rust[0].symbol.as_deref(), Some("rust_func"));
 
@@ -1188,7 +1227,9 @@ fn test_ast_query_multiple_languages() {
         use_ast: true,
         ..Default::default()
     };
-    let results_python = engine.search_ast_all_files("(function_definition) @fn", filter_python).unwrap();
+    let results_python = engine
+        .search_ast_all_files("(function_definition) @fn", filter_python)
+        .unwrap();
     assert_eq!(results_python.len(), 1);
     assert!(results_python[0].preview.contains("python_func"));
 }
@@ -1209,7 +1250,7 @@ fn test_ast_query_requires_language() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        language: None,  // Missing language!
+        language: None, // Missing language!
         use_ast: true,
         ..Default::default()
     };
@@ -1227,8 +1268,9 @@ fn test_ast_query_structs() {
 
     fs::write(
         project.join("main.rs"),
-        "struct Point {}\nstruct Line {}\nfn test() {}"
-    ).unwrap();
+        "struct Point {}\nstruct Line {}\nfn test() {}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1243,7 +1285,9 @@ fn test_ast_query_structs() {
         use_ast: true,
         ..Default::default()
     };
-    let results = engine.search_ast_all_files("(struct_item) @struct", filter).unwrap();
+    let results = engine
+        .search_ast_all_files("(struct_item) @struct", filter)
+        .unwrap();
 
     // Should find both structs but not the function
     assert_eq!(results.len(), 2);
@@ -1262,7 +1306,11 @@ fn test_ast_query_glob_and_exclude_together() {
     fs::create_dir_all(project.join("tests")).unwrap();
 
     fs::write(project.join("src/parsers/rust.rs"), "fn parse_rust() {}").unwrap();
-    fs::write(project.join("src/parsers/generated.rs"), "fn gen_parse() {}").unwrap();
+    fs::write(
+        project.join("src/parsers/generated.rs"),
+        "fn gen_parse() {}",
+    )
+    .unwrap();
     fs::write(project.join("src/utils/helpers.rs"), "fn helper() {}").unwrap();
     fs::write(project.join("tests/test.rs"), "fn test() {}").unwrap();
 
@@ -1281,13 +1329,27 @@ fn test_ast_query_glob_and_exclude_together() {
         exclude_patterns: vec!["**/generated.rs".to_string()],
         ..Default::default()
     };
-    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+    let results = engine
+        .search_ast_all_files("(function_item) @fn", filter)
+        .unwrap();
 
     // Should find parse_rust and helper but not gen_parse or test
     assert_eq!(results.len(), 2);
-    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("parse_rust")));
-    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("helper")));
-    assert!(!results.iter().any(|r| r.symbol.as_deref() == Some("gen_parse")));
+    assert!(
+        results
+            .iter()
+            .any(|r| r.symbol.as_deref() == Some("parse_rust"))
+    );
+    assert!(
+        results
+            .iter()
+            .any(|r| r.symbol.as_deref() == Some("helper"))
+    );
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.symbol.as_deref() == Some("gen_parse"))
+    );
     assert!(!results.iter().any(|r| r.symbol.as_deref() == Some("test")));
 }
 
@@ -1298,8 +1360,9 @@ fn test_ast_query_python_classes() {
 
     fs::write(
         project.join("app.py"),
-        "class User:\n    pass\n\nclass Product:\n    pass\n\ndef helper():\n    pass"
-    ).unwrap();
+        "class User:\n    pass\n\nclass Product:\n    pass\n\ndef helper():\n    pass",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1314,7 +1377,9 @@ fn test_ast_query_python_classes() {
         use_ast: true,
         ..Default::default()
     };
-    let results = engine.search_ast_all_files("(class_definition) @class", filter).unwrap();
+    let results = engine
+        .search_ast_all_files("(class_definition) @class", filter)
+        .unwrap();
 
     // Should find both classes but not the function
     assert_eq!(results.len(), 2);
@@ -1468,7 +1533,7 @@ fn test_keyword_without_lang_flag() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
-        language: None,  // No language filter!
+        language: None, // No language filter!
         ..Default::default()
     };
     let results = engine.search("class", filter).unwrap();
@@ -1569,7 +1634,11 @@ fn test_exact_counts_rust_corpus() {
     let results = engine.search("struct", filter).unwrap();
 
     // Per corpus file: 11 structs expected
-    assert_eq!(results.len(), 11, "Expected 11 structs in rust/structs.rs corpus");
+    assert_eq!(
+        results.len(),
+        11,
+        "Expected 11 structs in rust/structs.rs corpus"
+    );
     assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
 }
 
@@ -1651,8 +1720,9 @@ fn test_non_keyword_search_normal_mode() {
     // Create file with struct and identifier containing "struct"
     fs::write(
         project.join("test.rs"),
-        "struct Point {}\nfn my_struct_builder() {}\nlet my_struct = Point {};"
-    ).unwrap();
+        "struct Point {}\nfn my_struct_builder() {}\nlet my_struct = Point {};",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1664,7 +1734,7 @@ fn test_non_keyword_search_normal_mode() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
-        use_contains: true,  // "my_struct" in identifiers
+        use_contains: true, // "my_struct" in identifiers
         ..Default::default()
     };
     let results = engine.search("my_struct", filter).unwrap();
@@ -1683,8 +1753,9 @@ fn test_uppercase_keyword_not_trigger() {
     // Create file with uppercase and lowercase structs
     fs::write(
         project.join("test.rs"),
-        "struct lowercase {}\nstruct UPPERCASE {}"
-    ).unwrap();
+        "struct lowercase {}\nstruct UPPERCASE {}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1715,8 +1786,9 @@ fn test_explicit_kind_overrides_keyword_inference() {
     // Create file with functions and structs
     fs::write(
         project.join("test.rs"),
-        "fn greet() {}\nfn process() {}\nstruct Point {}"
-    ).unwrap();
+        "fn greet() {}\nfn process() {}\nstruct Point {}",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1728,7 +1800,7 @@ fn test_explicit_kind_overrides_keyword_inference() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
-        kind: Some(SymbolKind::Function),  // Explicit kind override
+        kind: Some(SymbolKind::Function), // Explicit kind override
         ..Default::default()
     };
     let results = engine.search("struct", filter).unwrap();
@@ -1736,7 +1808,7 @@ fn test_explicit_kind_overrides_keyword_inference() {
     // Should use explicit kind (Function), not infer from keyword
     // Keyword mode + explicit kind = list all symbols of explicit kind
     // So "struct" keyword + kind=Function = list all functions
-    assert_eq!(results.len(), 2);  // Both functions (greet and process)
+    assert_eq!(results.len(), 2); // Both functions (greet and process)
     assert!(results.iter().all(|r| r.kind == SymbolKind::Function));
 }
 
@@ -1759,7 +1831,7 @@ fn test_partial_keyword_match_normal_search() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
-        use_contains: true,  // "struct_builder" contains "struct"
+        use_contains: true, // "struct_builder" contains "struct"
         ..Default::default()
     };
     let results = engine.search("struct_builder", filter).unwrap();
@@ -1767,7 +1839,11 @@ fn test_partial_keyword_match_normal_search() {
     // Should find function named struct_builder, NOT trigger keyword mode
     assert!(results.len() >= 1);
     assert!(results.iter().any(|r| r.kind == SymbolKind::Function));
-    assert!(results.iter().any(|r| r.symbol.as_ref().map_or(false, |s| s.contains("struct_builder"))));
+    assert!(results.iter().any(|r| {
+        r.symbol
+            .as_ref()
+            .map_or(false, |s| s.contains("struct_builder"))
+    }));
 }
 
 #[test]
@@ -1778,8 +1854,9 @@ fn test_keyword_exact_match_required() {
     // Create file with "fn" in various contexts
     fs::write(
         project.join("test.rs"),
-        "fn test() {}\nfn another() {}\nlet fn_pointer = test;"
-    ).unwrap();
+        "fn test() {}\nfn another() {}\nlet fn_pointer = test;",
+    )
+    .unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1809,10 +1886,7 @@ fn test_keyword_empty_results() {
     let project = temp.path();
 
     // Create file with NO structs (only functions)
-    fs::write(
-        project.join("test.rs"),
-        "fn test() {}\nfn another() {}"
-    ).unwrap();
+    fs::write(project.join("test.rs"), "fn test() {}\nfn another() {}").unwrap();
 
     // Index
     let cache = CacheManager::new(project);
@@ -1869,8 +1943,8 @@ fn test_multi_language_exact_counts() {
     // Verify language distribution
     let python_count = results.iter().filter(|r| r.path.ends_with(".py")).count();
     let java_count = results.iter().filter(|r| r.path.ends_with(".java")).count();
-    assert_eq!(python_count, 13);  // Includes nested, metaclass, mixin
-    assert_eq!(java_count, 11);    // Includes nested, inner, anonymous
+    assert_eq!(python_count, 13); // Includes nested, metaclass, mixin
+    assert_eq!(java_count, 11); // Includes nested, inner, anonymous
 }
 
 #[test]
@@ -1880,8 +1954,16 @@ fn test_keyword_with_paths_only() {
 
     // Create multiple files with structs
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/models.rs"), "struct User {}\nstruct Post {}").unwrap();
-    fs::write(project.join("src/types.rs"), "struct Config {}\nstruct State {}").unwrap();
+    fs::write(
+        project.join("src/models.rs"),
+        "struct User {}\nstruct Post {}",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/types.rs"),
+        "struct Config {}\nstruct State {}",
+    )
+    .unwrap();
     fs::write(project.join("src/lib.rs"), "struct App {}").unwrap();
 
     // Index
@@ -2018,7 +2100,7 @@ fn test_broad_query_short_pattern_blocked() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        force: false,  // Not forcing
+        force: false, // Not forcing
         ..Default::default()
     };
     let result = engine.search("ab", filter);
@@ -2048,7 +2130,7 @@ fn test_broad_query_short_pattern_bypass_with_force() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        force: true,  // Force bypass
+        force: true, // Force bypass
         ..Default::default()
     };
     let result = engine.search("ab", filter);
@@ -2081,8 +2163,8 @@ fn test_broad_query_ast_without_glob_blocked() {
     let filter = QueryFilter {
         language: Some(reflex::Language::Rust),
         use_ast: true,
-        force: false,  // Not forcing
-        glob_patterns: vec![],  // No glob!
+        force: false,          // Not forcing
+        glob_patterns: vec![], // No glob!
         ..Default::default()
     };
     let result = engine.search_ast_all_files("(function_item) @fn", filter);
@@ -2114,8 +2196,8 @@ fn test_broad_query_ast_without_glob_bypass_with_force() {
     let filter = QueryFilter {
         language: Some(reflex::Language::Rust),
         use_ast: true,
-        force: true,  // Force bypass
-        glob_patterns: vec![],  // No glob, but forced
+        force: true,           // Force bypass
+        glob_patterns: vec![], // No glob, but forced
         ..Default::default()
     };
     let result = engine.search_ast_all_files("(function_item) @fn", filter);
@@ -2148,8 +2230,8 @@ fn test_broad_query_ast_with_glob_allowed() {
     let filter = QueryFilter {
         language: Some(reflex::Language::Rust),
         use_ast: true,
-        force: false,  // Not forcing, but has glob
-        glob_patterns: vec!["**/src/**/*.rs".to_string()],  // Glob provided
+        force: false,                                      // Not forcing, but has glob
+        glob_patterns: vec!["**/src/**/*.rs".to_string()], // Glob provided
         ..Default::default()
     };
     let result = engine.search_ast_all_files("(function_item) @fn", filter);
@@ -2178,8 +2260,8 @@ fn test_broad_query_long_pattern_allowed() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        force: false,  // Not forcing
-        use_contains: true,  // "extract" in "extract_symbols"
+        force: false,       // Not forcing
+        use_contains: true, // "extract" in "extract_symbols"
         ..Default::default()
     };
     let result = engine.search("extract", filter);
@@ -2208,7 +2290,7 @@ fn test_broad_query_regex_short_pattern_allowed() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         use_regex: true,
-        force: false,  // Not forcing
+        force: false, // Not forcing
         ..Default::default()
     };
     let result = engine.search("ab", filter);
@@ -2306,8 +2388,8 @@ fn test_broad_query_with_exclude_still_requires_glob_for_ast() {
         language: Some(reflex::Language::Rust),
         use_ast: true,
         force: false,
-        glob_patterns: vec![],  // No glob!
-        exclude_patterns: vec!["**/target/**".to_string()],  // Has exclude, but not enough
+        glob_patterns: vec![],                              // No glob!
+        exclude_patterns: vec!["**/target/**".to_string()], // Has exclude, but not enough
         ..Default::default()
     };
     let result = engine.search_ast_all_files("(function_item) @fn", filter);
@@ -2340,8 +2422,8 @@ fn test_broad_query_large_index_short_pattern_early_check() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        force: false,  // Not forcing
-        test_large_index_threshold: Some(100),  // Override for testing (150 > 100)
+        force: false,                          // Not forcing
+        test_large_index_threshold: Some(100), // Override for testing (150 > 100)
         ..Default::default()
     };
     let result = engine.search("get", filter);
@@ -2351,8 +2433,8 @@ fn test_broad_query_large_index_short_pattern_early_check() {
     let error_msg = result.unwrap_err().to_string();
     assert!(error_msg.contains("Query too broad"));
     assert!(error_msg.contains("large index"));
-    assert!(error_msg.contains("150 files"));  // Should mention the file count
-    assert!(error_msg.contains("3 characters"));  // Should mention pattern length
+    assert!(error_msg.contains("150 files")); // Should mention the file count
+    assert!(error_msg.contains("3 characters")); // Should mention pattern length
     assert!(error_msg.contains("--force"));
 }
 
@@ -2382,9 +2464,9 @@ fn test_broad_query_large_index_force_bypass() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        force: true,  // Force bypass
-        use_contains: true,  // Enable substring matching (default is word-boundary)
-        test_large_index_threshold: Some(100),  // Override for testing (150 > 100)
+        force: true,                           // Force bypass
+        use_contains: true, // Enable substring matching (default is word-boundary)
+        test_large_index_threshold: Some(100), // Override for testing (150 > 100)
         ..Default::default()
     };
     let result = engine.search("get", filter);
@@ -2392,7 +2474,7 @@ fn test_broad_query_large_index_force_bypass() {
     // Should succeed (bypass the early check)
     assert!(result.is_ok());
     let results = result.unwrap();
-    assert!(results.len() >= 1);  // Should find "get" in "get_data"
+    assert!(results.len() >= 1); // Should find "get" in "get_data"
 }
 
 #[test]
@@ -2415,8 +2497,8 @@ fn test_broad_query_small_index_short_pattern_allowed() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        force: false,  // Not forcing
-        use_contains: true,  // Enable substring matching (default is word-boundary)
+        force: false,       // Not forcing
+        use_contains: true, // Enable substring matching (default is word-boundary)
         ..Default::default()
     };
     let result = engine.search("get", filter);
@@ -2442,8 +2524,9 @@ fn test_broad_query_language_filter_applied_before_check() {
     for i in 0..120 {
         fs::write(
             project.join(format!("kernel{}.c", i)),
-            "int index_lookup(void) { return 0; }"
-        ).unwrap();
+            "int index_lookup(void) { return 0; }",
+        )
+        .unwrap();
     }
 
     // Create a smaller number of Rust files containing "index"
@@ -2451,8 +2534,9 @@ fn test_broad_query_language_filter_applied_before_check() {
     for i in 0..80 {
         fs::write(
             project.join(format!("rust{}.rs", i)),
-            "fn index_lookup() -> usize { 0 }"
-        ).unwrap();
+            "fn index_lookup() -> usize { 0 }",
+        )
+        .unwrap();
     }
 
     // Index
@@ -2468,21 +2552,27 @@ fn test_broad_query_language_filter_applied_before_check() {
     let filter = QueryFilter {
         symbols_mode: true,
         language: Some(reflex::Language::Rust),
-        use_contains: true,  // Match "index" within "index_lookup"
-        force: false,  // Should succeed WITHOUT force
-        test_large_index_threshold: Some(100),  // Override for testing (200 total > 100, but 80 Rust < 100)
+        use_contains: true, // Match "index" within "index_lookup"
+        force: false,       // Should succeed WITHOUT force
+        test_large_index_threshold: Some(100), // Override for testing (200 total > 100, but 80 Rust < 100)
         ..Default::default()
     };
     let result = engine.search("index", filter);
 
     // Should succeed - language filter is applied BEFORE broad query check
-    assert!(result.is_ok(), "Query should succeed when language filter reduces candidate set below threshold");
+    assert!(
+        result.is_ok(),
+        "Query should succeed when language filter reduces candidate set below threshold"
+    );
     let results = result.unwrap();
 
     // The key assertion is that the query SUCCEEDED without --force
     // This proves language filter was applied BEFORE broad query check
     // (Without the fix, this would error with "Query too broad - 200 files")
-    assert!(results.len() > 0, "Should find at least one symbol matching 'index' in Rust files");
+    assert!(
+        results.len() > 0,
+        "Should find at least one symbol matching 'index' in Rust files"
+    );
 }
 
 #[test]
@@ -2503,8 +2593,9 @@ fn test_broad_query_glob_filter_applied_before_check() {
     for i in 0..120 {
         fs::write(
             project.join(format!("build/file{}.rs", i)),
-            "fn index_lookup() -> usize { 0 }"
-        ).unwrap();
+            "fn index_lookup() -> usize { 0 }",
+        )
+        .unwrap();
     }
 
     // Create a smaller number of files in src/ directory (should be included by glob)
@@ -2513,8 +2604,9 @@ fn test_broad_query_glob_filter_applied_before_check() {
     for i in 0..80 {
         fs::write(
             project.join(format!("src/file{}.rs", i)),
-            "fn index_lookup() -> usize { 0 }"
-        ).unwrap();
+            "fn index_lookup() -> usize { 0 }",
+        )
+        .unwrap();
     }
 
     // Index
@@ -2530,9 +2622,9 @@ fn test_broad_query_glob_filter_applied_before_check() {
     let filter = QueryFilter {
         symbols_mode: true,
         glob_patterns: vec!["src/**/*.rs".to_string()],
-        use_contains: true,  // Match "index" within "index_lookup"
-        force: false,  // Should succeed WITHOUT force
-        test_large_index_threshold: Some(100),  // Override for testing (200 total > 100, but 80 in src/ < 100)
+        use_contains: true, // Match "index" within "index_lookup"
+        force: false,       // Should succeed WITHOUT force
+        test_large_index_threshold: Some(100), // Override for testing (200 total > 100, but 80 in src/ < 100)
         ..Default::default()
     };
     let result = engine.search("index", filter);
@@ -2540,8 +2632,11 @@ fn test_broad_query_glob_filter_applied_before_check() {
     // The key assertion is that the query SUCCEEDED without --force
     // This proves glob filter was applied BEFORE broad query check
     // (Without the fix, this would error with "Query too broad - 200 files")
-    assert!(result.is_ok(), "Query should succeed when glob filter reduces candidate set below threshold. \
-                             Without the fix, this would error: 'Query too broad - would be expensive to execute'");
+    assert!(
+        result.is_ok(),
+        "Query should succeed when glob filter reduces candidate set below threshold. \
+                             Without the fix, this would error: 'Query too broad - would be expensive to execute'"
+    );
 }
 
 // ==================== Partial-Write Recovery Tests ====================
@@ -2557,8 +2652,16 @@ fn test_partial_write_recovery_trigrams_bin() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    fs::write(project.join("hello.rs"), "fn greet() -> &'static str { \"hello\" }").unwrap();
-    fs::write(project.join("lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }").unwrap();
+    fs::write(
+        project.join("hello.rs"),
+        "fn greet() -> &'static str { \"hello\" }",
+    )
+    .unwrap();
+    fs::write(
+        project.join("lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }",
+    )
+    .unwrap();
 
     // Build a valid initial index
     let cache = CacheManager::new(project);
@@ -2571,14 +2674,20 @@ fn test_partial_write_recovery_trigrams_bin() {
     // Simulate disk-full mid-write: truncate trigrams.bin below the 4-byte magic header
     let trigrams_path = project.join(".reflex/trigrams.bin");
     {
-        let file = std::fs::OpenOptions::new().write(true).open(&trigrams_path).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&trigrams_path)
+            .unwrap();
         file.set_len(2).unwrap();
     }
 
     // validate() must detect the corruption
     let cache = CacheManager::new(project);
     let result = cache.validate();
-    assert!(result.is_err(), "Truncated trigrams.bin must fail validate()");
+    assert!(
+        result.is_err(),
+        "Truncated trigrams.bin must fail validate()"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("trigrams.bin"),
@@ -2597,7 +2706,10 @@ fn test_partial_write_recovery_trigrams_bin() {
 
     // Rebuilt cache must pass full validation
     let cache = CacheManager::new(project);
-    assert!(cache.validate().is_ok(), "Rebuilt cache must pass validate()");
+    assert!(
+        cache.validate().is_ok(),
+        "Rebuilt cache must pass validate()"
+    );
 
     // Rebuilt cache must return correct query results
     let cache = CacheManager::new(project);
@@ -2611,7 +2723,11 @@ fn test_partial_write_recovery_content_bin() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    fs::write(project.join("main.rs"), "fn main() { println!(\"world\"); }").unwrap();
+    fs::write(
+        project.join("main.rs"),
+        "fn main() { println!(\"world\"); }",
+    )
+    .unwrap();
     fs::write(project.join("util.rs"), "pub fn helper() {}").unwrap();
 
     // Build a valid initial index
@@ -2625,14 +2741,20 @@ fn test_partial_write_recovery_content_bin() {
     // Simulate disk-full mid-write: truncate content.bin below the 4-byte magic header
     let content_path = project.join(".reflex/content.bin");
     {
-        let file = std::fs::OpenOptions::new().write(true).open(&content_path).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&content_path)
+            .unwrap();
         file.set_len(2).unwrap();
     }
 
     // validate() must detect the corruption
     let cache = CacheManager::new(project);
     let result = cache.validate();
-    assert!(result.is_err(), "Truncated content.bin must fail validate()");
+    assert!(
+        result.is_err(),
+        "Truncated content.bin must fail validate()"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("content.bin"),
@@ -2651,7 +2773,10 @@ fn test_partial_write_recovery_content_bin() {
 
     // Rebuilt cache must pass full validation
     let cache = CacheManager::new(project);
-    assert!(cache.validate().is_ok(), "Rebuilt cache must pass validate()");
+    assert!(
+        cache.validate().is_ok(),
+        "Rebuilt cache must pass validate()"
+    );
 
     // Rebuilt cache must return correct query results
     let cache = CacheManager::new(project);

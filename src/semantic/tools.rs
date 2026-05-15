@@ -5,13 +5,13 @@
 //! - Executing exploratory queries
 //! - Running codebase analysis (hotspots, unused files, etc.)
 
-use anyhow::{Context as AnyhowContext, Result};
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 use crate::query::QueryEngine;
+use anyhow::{Context as AnyhowContext, Result};
 
 use super::executor::parse_command;
-use super::schema_agentic::{ToolCall, ContextGatheringParams, AnalysisType};
+use super::schema_agentic::{AnalysisType, ContextGatheringParams, ToolCall};
 
 /// Result of executing a tool call
 #[derive(Debug, Clone)]
@@ -27,26 +27,20 @@ pub struct ToolResult {
 }
 
 /// Execute a single tool call
-pub async fn execute_tool(
-    tool: &ToolCall,
-    cache: &CacheManager,
-) -> Result<ToolResult> {
+pub async fn execute_tool(tool: &ToolCall, cache: &CacheManager) -> Result<ToolResult> {
     match tool {
-        ToolCall::GatherContext { params } => {
-            execute_gather_context(params, cache)
-        }
-        ToolCall::ExploreCodebase { description, command } => {
-            execute_explore_codebase(description, command, cache).await
-        }
+        ToolCall::GatherContext { params } => execute_gather_context(params, cache),
+        ToolCall::ExploreCodebase {
+            description,
+            command,
+        } => execute_explore_codebase(description, command, cache).await,
         ToolCall::AnalyzeStructure { analysis_type } => {
             execute_analyze_structure(*analysis_type, cache)
         }
         ToolCall::SearchDocumentation { query, files } => {
             execute_search_documentation(query, files.as_deref(), cache)
         }
-        ToolCall::GetStatistics => {
-            execute_get_statistics(cache)
-        }
+        ToolCall::GetStatistics => execute_get_statistics(cache),
         ToolCall::GetDependencies { file_path, reverse } => {
             execute_get_dependencies(file_path, *reverse, cache)
         }
@@ -97,13 +91,27 @@ fn execute_gather_context(
 
     // Build description of what was gathered
     let mut parts = Vec::new();
-    if opts.structure { parts.push("structure"); }
-    if opts.file_types { parts.push("file types"); }
-    if opts.project_type { parts.push("project type"); }
-    if opts.framework { parts.push("frameworks"); }
-    if opts.entry_points { parts.push("entry points"); }
-    if opts.test_layout { parts.push("test layout"); }
-    if opts.config_files { parts.push("config files"); }
+    if opts.structure {
+        parts.push("structure");
+    }
+    if opts.file_types {
+        parts.push("file types");
+    }
+    if opts.project_type {
+        parts.push("project type");
+    }
+    if opts.framework {
+        parts.push("frameworks");
+    }
+    if opts.entry_points {
+        parts.push("entry points");
+    }
+    if opts.test_layout {
+        parts.push("test layout");
+    }
+    if opts.config_files {
+        parts.push("config files");
+    }
 
     let description = if parts.is_empty() {
         "Gathered general codebase context".to_string()
@@ -139,13 +147,17 @@ async fn execute_explore_codebase(
     let engine = QueryEngine::new(CacheManager::new(cache.workspace_root()));
 
     // Execute query
-    let response = engine.search_with_metadata(&parsed.pattern, filter)
+    let response = engine
+        .search_with_metadata(&parsed.pattern, filter)
         .with_context(|| format!("Failed to execute exploration query: {}", command))?;
 
     // Format results for LLM consumption
     let output = format_exploration_results(&response, &parsed.pattern);
 
-    log::debug!("Exploration query found {} file groups", response.results.len());
+    log::debug!(
+        "Exploration query found {} file groups",
+        response.results.len()
+    );
 
     Ok(ToolResult {
         description: format!("Explored: {}", description),
@@ -174,10 +186,9 @@ fn execute_analyze_structure(
             let paths = deps_index.get_file_paths(&file_ids)?;
 
             // Convert to (String, usize) format
-            let hotspots: Vec<(String, usize)> = hotspot_ids.iter()
-                .filter_map(|(id, count)| {
-                    paths.get(id).map(|path| (path.clone(), *count))
-                })
+            let hotspots: Vec<(String, usize)> = hotspot_ids
+                .iter()
+                .filter_map(|(id, count)| paths.get(id).map(|path| (path.clone(), *count)))
                 .collect();
 
             format_hotspots(&hotspots)
@@ -188,7 +199,8 @@ fn execute_analyze_structure(
 
             // Convert file IDs to paths
             let paths = deps_index.get_file_paths(&unused_ids)?;
-            let unused: Vec<String> = unused_ids.iter()
+            let unused: Vec<String> = unused_ids
+                .iter()
                 .filter_map(|id| paths.get(id).cloned())
                 .collect();
 
@@ -199,7 +211,8 @@ fn execute_analyze_structure(
             let circular_ids = deps_index.detect_circular_dependencies()?;
 
             // Collect all unique file IDs
-            let all_ids: Vec<i64> = circular_ids.iter()
+            let all_ids: Vec<i64> = circular_ids
+                .iter()
                 .flat_map(|cycle| cycle.iter())
                 .copied()
                 .collect::<std::collections::HashSet<_>>()
@@ -210,9 +223,11 @@ fn execute_analyze_structure(
             let paths = deps_index.get_file_paths(&all_ids)?;
 
             // Convert cycles to path cycles
-            let circular: Vec<Vec<String>> = circular_ids.iter()
+            let circular: Vec<Vec<String>> = circular_ids
+                .iter()
                 .map(|cycle| {
-                    cycle.iter()
+                    cycle
+                        .iter()
                         .filter_map(|id| paths.get(id).cloned())
                         .collect()
                 })
@@ -318,7 +333,10 @@ fn execute_search_documentation(
         )
     };
 
-    log::debug!("Documentation search found {} sections", found_sections.len());
+    log::debug!(
+        "Documentation search found {} sections",
+        found_sections.len()
+    );
 
     Ok(ToolResult {
         description: format!("Searched documentation for: {}", query),
@@ -330,8 +348,14 @@ fn execute_search_documentation(
 /// Search documentation content for query and extract relevant sections
 fn search_documentation_content(content: &str, query: &str, file_name: &str) -> Option<String> {
     // Tokenize query into keywords (filter out common stop words)
-    let stop_words = ["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "should", "could", "may", "might", "can", "what", "how", "where", "when", "why", "which", "who"];
-    let keywords: Vec<String> = query.to_lowercase()
+    let stop_words = [
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+        "from", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do",
+        "does", "did", "will", "would", "should", "could", "may", "might", "can", "what", "how",
+        "where", "when", "why", "which", "who",
+    ];
+    let keywords: Vec<String> = query
+        .to_lowercase()
         .split_whitespace()
         .filter(|word| !stop_words.contains(word) && word.len() > 2)
         .map(|s| s.to_string())
@@ -354,7 +378,8 @@ fn search_documentation_content(content: &str, query: &str, file_name: &str) -> 
         // Check if this is a heading
         if line.starts_with('#') {
             // Save previous section if it was relevant
-            if in_relevant_section && relevance_score >= 2 {  // Need at least 2 keyword matches
+            if in_relevant_section && relevance_score >= 2 {
+                // Need at least 2 keyword matches
                 relevant_sections.push(format!(
                     "## {} ({})\n\n{}",
                     current_section_title,
@@ -402,7 +427,8 @@ fn search_documentation_content(content: &str, query: &str, file_name: &str) -> 
     }
 
     // Save last section if relevant
-    if in_relevant_section && relevance_score >= 2 {  // Need at least 2 keyword matches
+    if in_relevant_section && relevance_score >= 2 {
+        // Need at least 2 keyword matches
         relevant_sections.push(format!(
             "## {} ({})\n\n{}",
             current_section_title,
@@ -415,15 +441,19 @@ fn search_documentation_content(content: &str, query: &str, file_name: &str) -> 
         None
     } else {
         // Sort sections by relevance (most matches first) and limit to top 3
-        Some(relevant_sections.iter().take(3).cloned().collect::<Vec<_>>().join("\n\n"))
+        Some(
+            relevant_sections
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
     }
 }
 
 /// Format exploration query results for LLM
-fn format_exploration_results(
-    response: &crate::models::QueryResponse,
-    pattern: &str,
-) -> String {
+fn format_exploration_results(response: &crate::models::QueryResponse, pattern: &str) -> String {
     if response.results.is_empty() {
         return format!("No results found for pattern: {}", pattern);
     }
@@ -444,7 +474,10 @@ fn format_exploration_results(
         for match_result in file_group.matches.iter().take(3) {
             // Show context before the match
             for (idx, line) in match_result.context_before.iter().enumerate() {
-                let line_num = match_result.span.start_line.saturating_sub(match_result.context_before.len() - idx);
+                let line_num = match_result
+                    .span
+                    .start_line
+                    .saturating_sub(match_result.context_before.len() - idx);
                 output.push(format!("   Line {}: {}", line_num, line.trim()));
             }
 
@@ -463,12 +496,18 @@ fn format_exploration_results(
         }
 
         if file_group.matches.len() > 3 {
-            output.push(format!("   ... and {} more matches", file_group.matches.len() - 3));
+            output.push(format!(
+                "   ... and {} more matches",
+                file_group.matches.len() - 3
+            ));
         }
     }
 
     if response.results.len() > 5 {
-        output.push(format!("\n... and {} more files", response.results.len() - 5));
+        output.push(format!(
+            "\n... and {} more files",
+            response.results.len() - 5
+        ));
     }
 
     output.join("\n")
@@ -481,7 +520,10 @@ fn format_hotspots(hotspots: &[(String, usize)]) -> String {
     }
 
     let mut output = Vec::new();
-    output.push(format!("Top {} most-imported files:\n", hotspots.len().min(10)));
+    output.push(format!(
+        "Top {} most-imported files:\n",
+        hotspots.len().min(10)
+    ));
 
     for (idx, (path, count)) in hotspots.iter().take(10).enumerate() {
         output.push(format!("{}. {} ({} importers)", idx + 1, path, count));
@@ -501,7 +543,10 @@ fn format_unused_files(unused: &[String]) -> String {
     }
 
     let mut output = Vec::new();
-    output.push(format!("Found {} unused files (no importers):\n", unused.len()));
+    output.push(format!(
+        "Found {} unused files (no importers):\n",
+        unused.len()
+    ));
 
     for (idx, path) in unused.iter().take(15).enumerate() {
         output.push(format!("{}. {}", idx + 1, path));
@@ -521,7 +566,10 @@ fn format_circular_deps(circular: &[Vec<String>]) -> String {
     }
 
     let mut output = Vec::new();
-    output.push(format!("Found {} circular dependency chains:\n", circular.len()));
+    output.push(format!(
+        "Found {} circular dependency chains:\n",
+        circular.len()
+    ));
 
     for (idx, cycle) in circular.iter().take(5).enumerate() {
         output.push(format!("\n{}. Cycle ({} files):", idx + 1, cycle.len()));
@@ -529,21 +577,21 @@ fn format_circular_deps(circular: &[Vec<String>]) -> String {
     }
 
     if circular.len() > 5 {
-        output.push(format!("\n... and {} more circular dependencies", circular.len() - 5));
+        output.push(format!(
+            "\n... and {} more circular dependencies",
+            circular.len() - 5
+        ));
     }
 
     output.join("\n")
 }
 
 /// Execute get statistics tool
-fn execute_get_statistics(
-    cache: &CacheManager,
-) -> Result<ToolResult> {
+fn execute_get_statistics(cache: &CacheManager) -> Result<ToolResult> {
     log::info!("Executing get_statistics tool");
 
     // Get index statistics
-    let stats = cache.stats()
-        .context("Failed to get cache statistics")?;
+    let stats = cache.stats().context("Failed to get cache statistics")?;
 
     // Format output
     let output = format_statistics(&stats);
@@ -563,31 +611,39 @@ fn execute_get_dependencies(
     reverse: bool,
     cache: &CacheManager,
 ) -> Result<ToolResult> {
-    log::info!("Executing get_dependencies tool: file={}, reverse={}", file_path, reverse);
+    log::info!(
+        "Executing get_dependencies tool: file={}, reverse={}",
+        file_path,
+        reverse
+    );
 
     // Create dependency index
     let deps_index = DependencyIndex::new(CacheManager::new(cache.workspace_root()));
 
     // Get file ID by path (supports fuzzy matching)
-    let file_id = deps_index.get_file_id_by_path(file_path)
+    let file_id = deps_index
+        .get_file_id_by_path(file_path)
         .context(format!("Failed to find file: {}", file_path))?
         .ok_or_else(|| anyhow::anyhow!("File not found: {}", file_path))?;
 
     let output = if reverse {
         // Get files that depend on this file (reverse dependencies)
-        let dependent_ids = deps_index.get_dependents(file_id)
+        let dependent_ids = deps_index
+            .get_dependents(file_id)
             .context("Failed to get reverse dependencies")?;
 
         // Convert file IDs to paths
         let paths = deps_index.get_file_paths(&dependent_ids)?;
-        let dependents: Vec<String> = dependent_ids.iter()
+        let dependents: Vec<String> = dependent_ids
+            .iter()
             .filter_map(|id| paths.get(id).cloned())
             .collect();
 
         format_reverse_dependencies(file_path, &dependents)
     } else {
         // Get dependencies of this file
-        let deps = deps_index.get_dependencies_info(file_id)
+        let deps = deps_index
+            .get_dependencies_info(file_id)
             .context("Failed to get dependencies")?;
 
         format_dependencies(file_path, &deps)
@@ -609,11 +665,11 @@ fn execute_get_dependencies(
 }
 
 /// Execute get analysis summary tool
-fn execute_get_analysis_summary(
-    min_dependents: usize,
-    cache: &CacheManager,
-) -> Result<ToolResult> {
-    log::info!("Executing get_analysis_summary tool: min_dependents={}", min_dependents);
+fn execute_get_analysis_summary(min_dependents: usize, cache: &CacheManager) -> Result<ToolResult> {
+    log::info!(
+        "Executing get_analysis_summary tool: min_dependents={}",
+        min_dependents
+    );
 
     // Create dependency index
     let deps_index = DependencyIndex::new(CacheManager::new(cache.workspace_root()));
@@ -631,7 +687,8 @@ fn execute_get_analysis_summary(
     let circular_count = circular_ids.len();
 
     // Format summary
-    let output = format_analysis_summary(hotspot_count, unused_count, circular_count, min_dependents);
+    let output =
+        format_analysis_summary(hotspot_count, unused_count, circular_count, min_dependents);
 
     log::debug!("Analysis summary retrieved successfully");
 
@@ -648,7 +705,11 @@ fn execute_find_islands(
     max_size: usize,
     cache: &CacheManager,
 ) -> Result<ToolResult> {
-    log::info!("Executing find_islands tool: min_size={}, max_size={}", min_size, max_size);
+    log::info!(
+        "Executing find_islands tool: min_size={}, max_size={}",
+        min_size,
+        max_size
+    );
 
     // Create dependency index
     let deps_index = DependencyIndex::new(CacheManager::new(cache.workspace_root()));
@@ -657,12 +718,14 @@ fn execute_find_islands(
     let all_islands = deps_index.find_islands()?;
 
     // Filter by size
-    let filtered_islands: Vec<Vec<i64>> = all_islands.into_iter()
+    let filtered_islands: Vec<Vec<i64>> = all_islands
+        .into_iter()
         .filter(|island| island.len() >= min_size && island.len() <= max_size)
         .collect();
 
     // Convert file IDs to paths
-    let all_ids: Vec<i64> = filtered_islands.iter()
+    let all_ids: Vec<i64> = filtered_islands
+        .iter()
         .flat_map(|island| island.iter())
         .copied()
         .collect::<std::collections::HashSet<_>>()
@@ -671,9 +734,11 @@ fn execute_find_islands(
 
     let paths = deps_index.get_file_paths(&all_ids)?;
 
-    let islands_with_paths: Vec<Vec<String>> = filtered_islands.iter()
+    let islands_with_paths: Vec<Vec<String>> = filtered_islands
+        .iter()
         .map(|island| {
-            island.iter()
+            island
+                .iter()
                 .filter_map(|id| paths.get(id).cloned())
                 .collect()
         })
@@ -682,7 +747,10 @@ fn execute_find_islands(
     // Format output
     let output = format_islands(&islands_with_paths, min_size, max_size);
 
-    log::debug!("Islands retrieved successfully: {} islands found", islands_with_paths.len());
+    log::debug!(
+        "Islands retrieved successfully: {} islands found",
+        islands_with_paths.len()
+    );
 
     Ok(ToolResult {
         description: format!("Found {} disconnected components", islands_with_paths.len()),
@@ -697,7 +765,10 @@ fn format_statistics(stats: &crate::models::IndexStats) -> String {
 
     output.push(format!("# Index Statistics\n"));
     output.push(format!("Total files: {}", stats.total_files));
-    output.push(format!("Index size: {:.2} MB\n", stats.index_size_bytes as f64 / 1_048_576.0));
+    output.push(format!(
+        "Index size: {:.2} MB\n",
+        stats.index_size_bytes as f64 / 1_048_576.0
+    ));
 
     // Files by language
     if !stats.files_by_language.is_empty() {
@@ -725,8 +796,27 @@ fn format_statistics(stats: &crate::models::IndexStats) -> String {
 
         for (lang, count) in line_counts.iter().take(10) {
             let percentage = (**count as f64 / total_lines as f64) * 100.0;
-            let formatted_count = count.to_string().as_str().chars().rev().enumerate().map(|(i, c)| if i != 0 && i % 3 == 0 { format!(",{}", c) } else { c.to_string() }).collect::<Vec<_>>().into_iter().rev().collect::<String>();
-            output.push(format!("- {}: {} lines ({:.1}%)", lang, formatted_count, percentage));
+            let formatted_count = count
+                .to_string()
+                .as_str()
+                .chars()
+                .rev()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i != 0 && i % 3 == 0 {
+                        format!(",{}", c)
+                    } else {
+                        c.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<String>();
+            output.push(format!(
+                "- {}: {} lines ({:.1}%)",
+                lang, formatted_count, percentage
+            ));
         }
 
         if line_counts.len() > 10 {
@@ -750,7 +840,10 @@ fn format_dependencies(file_path: &str, deps: &[crate::models::DependencyInfo]) 
     output.push(format!("Found {} dependencies:\n", deps.len()));
 
     for (idx, dep) in deps.iter().take(20).enumerate() {
-        let line_info = dep.line.map(|l| format!(" (line {})", l)).unwrap_or_default();
+        let line_info = dep
+            .line
+            .map(|l| format!(" (line {})", l))
+            .unwrap_or_default();
         output.push(format!("{}. {}{}", idx + 1, dep.path, line_info));
 
         // Show imported symbols if available
@@ -790,20 +883,34 @@ fn format_reverse_dependencies(file_path: &str, dependents: &[String]) -> String
 }
 
 /// Format analysis summary output
-fn format_analysis_summary(hotspot_count: usize, unused_count: usize, circular_count: usize, min_dependents: usize) -> String {
+fn format_analysis_summary(
+    hotspot_count: usize,
+    unused_count: usize,
+    circular_count: usize,
+    min_dependents: usize,
+) -> String {
     let mut output = Vec::new();
 
     output.push("# Dependency Analysis Summary\n".to_string());
-    output.push(format!("Hotspots (files with {}+ importers): {}", min_dependents, hotspot_count));
+    output.push(format!(
+        "Hotspots (files with {}+ importers): {}",
+        min_dependents, hotspot_count
+    ));
     output.push(format!("Unused files (no importers): {}", unused_count));
     output.push(format!("Circular dependency chains: {}", circular_count));
 
     if hotspot_count > 0 {
-        output.push("\n**Hotspots** indicate central/important files that many other files depend on.".to_string());
+        output.push(
+            "\n**Hotspots** indicate central/important files that many other files depend on."
+                .to_string(),
+        );
     }
 
     if unused_count > 0 {
-        output.push("\n**Unused files** may be dead code or entry points (like main.rs, index.ts).".to_string());
+        output.push(
+            "\n**Unused files** may be dead code or entry points (like main.rs, index.ts)."
+                .to_string(),
+        );
     }
 
     if circular_count > 0 {
@@ -816,15 +923,27 @@ fn format_analysis_summary(hotspot_count: usize, unused_count: usize, circular_c
 /// Format islands output
 fn format_islands(islands: &[Vec<String>], min_size: usize, max_size: usize) -> String {
     if islands.is_empty() {
-        return format!("No disconnected components found (size {}-{}).", min_size, max_size);
+        return format!(
+            "No disconnected components found (size {}-{}).",
+            min_size, max_size
+        );
     }
 
     let mut output = Vec::new();
     output.push(format!("# Disconnected Components (Islands)\n"));
-    output.push(format!("Found {} islands (size {}-{}):\n", islands.len(), min_size, max_size));
+    output.push(format!(
+        "Found {} islands (size {}-{}):\n",
+        islands.len(),
+        min_size,
+        max_size
+    ));
 
     for (idx, island) in islands.iter().take(5).enumerate() {
-        output.push(format!("\n{}. Island with {} files:", idx + 1, island.len()));
+        output.push(format!(
+            "\n{}. Island with {} files:",
+            idx + 1,
+            island.len()
+        ));
 
         for (file_idx, file) in island.iter().take(10).enumerate() {
             output.push(format!("   {}. {}", file_idx + 1, file));
@@ -904,10 +1023,7 @@ mod tests {
 
     #[test]
     fn test_format_unused_files() {
-        let unused = vec![
-            "src/old.rs".to_string(),
-            "tests/legacy.rs".to_string(),
-        ];
+        let unused = vec!["src/old.rs".to_string(), "tests/legacy.rs".to_string()];
 
         let output = format_unused_files(&unused);
         assert!(output.contains("unused files"));
@@ -916,9 +1032,11 @@ mod tests {
 
     #[test]
     fn test_format_circular_deps() {
-        let circular = vec![
-            vec!["a.rs".to_string(), "b.rs".to_string(), "a.rs".to_string()],
-        ];
+        let circular = vec![vec![
+            "a.rs".to_string(),
+            "b.rs".to_string(),
+            "a.rs".to_string(),
+        ]];
 
         let output = format_circular_deps(&circular);
         assert!(output.contains("circular dependency"));

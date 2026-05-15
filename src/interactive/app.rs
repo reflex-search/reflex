@@ -1,9 +1,9 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyEvent, MouseEvent};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::cache::CacheManager;
@@ -172,30 +172,32 @@ impl InteractiveApp {
             match cache.stats() {
                 Ok(stats) => {
                     // Check background symbol indexer status
-                    let symbol_status = match crate::background_indexer::BackgroundIndexer::get_status(cache.path()) {
-                        Ok(Some(status)) => match status.state {
-                            crate::background_indexer::IndexerState::Running => {
-                                SymbolIndexingState::Running {
-                                    processed: status.processed_files,
-                                    total: status.total_files,
+                    let symbol_status =
+                        match crate::background_indexer::BackgroundIndexer::get_status(cache.path())
+                        {
+                            Ok(Some(status)) => match status.state {
+                                crate::background_indexer::IndexerState::Running => {
+                                    SymbolIndexingState::Running {
+                                        processed: status.processed_files,
+                                        total: status.total_files,
+                                    }
                                 }
-                            }
-                            crate::background_indexer::IndexerState::Completed => {
-                                SymbolIndexingState::Completed
-                            }
-                            crate::background_indexer::IndexerState::Failed => {
-                                SymbolIndexingState::Failed
-                            }
-                        },
-                        _ => SymbolIndexingState::NotStarted,
-                    };
+                                crate::background_indexer::IndexerState::Completed => {
+                                    SymbolIndexingState::Completed
+                                }
+                                crate::background_indexer::IndexerState::Failed => {
+                                    SymbolIndexingState::Failed
+                                }
+                            },
+                            _ => SymbolIndexingState::NotStarted,
+                        };
 
                     IndexStatusState::Ready {
                         file_count: stats.total_files,
                         last_updated: stats.last_updated,
                         symbol_status,
                     }
-                },
+                }
                 Err(_) => IndexStatusState::Missing,
             }
         } else {
@@ -263,7 +265,11 @@ impl InteractiveApp {
         result
     }
 
-    fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, needs_index: bool) -> Result<()> {
+    fn event_loop(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        needs_index: bool,
+    ) -> Result<()> {
         let mut last_frame = Instant::now();
         let frame_duration = Duration::from_millis(16); // ~60 FPS
         let mut need_editor_open: Option<SearchResult> = None;
@@ -302,7 +308,9 @@ impl InteractiveApp {
                             need_editor_open = Some(result);
                         }
                     }
-                    Event::Mouse(mouse) => self.handle_mouse_event(mouse, (terminal_size.width, terminal_size.height)),
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse_event(mouse, (terminal_size.width, terminal_size.height))
+                    }
                     Event::Resize(_, _) => {
                         // Terminal resized, will redraw on next frame
                     }
@@ -317,7 +325,9 @@ impl InteractiveApp {
                     match result {
                         Ok(response) => {
                             // Flatten grouped results to SearchResult vec for display
-                            let flat_results = response.results.iter()
+                            let flat_results = response
+                                .results
+                                .iter()
                                 .flat_map(|file_group| {
                                     file_group.matches.iter().map(move |m| {
                                         crate::models::SearchResult {
@@ -343,8 +353,8 @@ impl InteractiveApp {
                             // Auto-move to results after search
                             // BUT: don't auto-focus if regex/contains filters are active during typing
                             // to prevent rendering corruption
-                            let should_auto_focus = !self.results.is_empty()
-                                && self.focus_state != FocusState::Input;
+                            let should_auto_focus =
+                                !self.results.is_empty() && self.focus_state != FocusState::Input;
                             if should_auto_focus {
                                 self.focus_state = FocusState::Results;
                             }
@@ -405,9 +415,15 @@ impl InteractiveApp {
                         Ok(stats) => {
                             // Preserve or check symbol status
                             let symbol_status = match &self.index_status {
-                                IndexStatusState::Indexing { symbol_status, .. } => symbol_status.clone(),
-                                IndexStatusState::Ready { symbol_status, .. } => symbol_status.clone(),
-                                IndexStatusState::Stale { symbol_status, .. } => symbol_status.clone(),
+                                IndexStatusState::Indexing { symbol_status, .. } => {
+                                    symbol_status.clone()
+                                }
+                                IndexStatusState::Ready { symbol_status, .. } => {
+                                    symbol_status.clone()
+                                }
+                                IndexStatusState::Stale { symbol_status, .. } => {
+                                    symbol_status.clone()
+                                }
                                 IndexStatusState::Missing => SymbolIndexingState::NotStarted,
                             };
                             self.index_status = IndexStatusState::Ready {
@@ -429,20 +445,35 @@ impl InteractiveApp {
             }
 
             // Poll background symbol indexer status (every few frames to reduce overhead)
-            if self.effects.frame() % 30 == 0 {  // Every ~0.5s at 60fps
-                log::trace!("Polling background symbol indexer status (frame {})", self.effects.frame());
+            if self.effects.frame() % 30 == 0 {
+                // Every ~0.5s at 60fps
+                log::trace!(
+                    "Polling background symbol indexer status (frame {})",
+                    self.effects.frame()
+                );
                 match crate::background_indexer::BackgroundIndexer::get_status(self.cache.path()) {
                     Ok(Some(bg_status)) => {
-                        log::debug!("Background symbol indexer status: {:?} - {}/{} files",
-                            bg_status.state, bg_status.processed_files, bg_status.total_files);
+                        log::debug!(
+                            "Background symbol indexer status: {:?} - {}/{} files",
+                            bg_status.state,
+                            bg_status.processed_files,
+                            bg_status.total_files
+                        );
 
                         let new_symbol_status = match bg_status.state {
                             crate::background_indexer::IndexerState::Running => {
-                                log::debug!("Symbol indexing is RUNNING: {}/{} ({}%)",
-                                    bg_status.processed_files, bg_status.total_files,
+                                log::debug!(
+                                    "Symbol indexing is RUNNING: {}/{} ({}%)",
+                                    bg_status.processed_files,
+                                    bg_status.total_files,
                                     if bg_status.total_files > 0 {
-                                        (bg_status.processed_files as f64 / bg_status.total_files as f64 * 100.0) as u32
-                                    } else { 0 });
+                                        (bg_status.processed_files as f64
+                                            / bg_status.total_files as f64
+                                            * 100.0) as u32
+                                    } else {
+                                        0
+                                    }
+                                );
                                 SymbolIndexingState::Running {
                                     processed: bg_status.processed_files,
                                     total: bg_status.total_files,
@@ -460,27 +491,32 @@ impl InteractiveApp {
 
                         // Update symbol status in current index state
                         self.index_status = match &self.index_status {
-                            IndexStatusState::Ready { file_count, last_updated, .. } => {
-                                IndexStatusState::Ready {
-                                    file_count: *file_count,
-                                    last_updated: last_updated.clone(),
-                                    symbol_status: new_symbol_status,
-                                }
-                            }
+                            IndexStatusState::Ready {
+                                file_count,
+                                last_updated,
+                                ..
+                            } => IndexStatusState::Ready {
+                                file_count: *file_count,
+                                last_updated: last_updated.clone(),
+                                symbol_status: new_symbol_status,
+                            },
                             IndexStatusState::Stale { files_changed, .. } => {
                                 IndexStatusState::Stale {
                                     files_changed: *files_changed,
                                     symbol_status: new_symbol_status,
                                 }
                             }
-                            IndexStatusState::Indexing { current, total, status, .. } => {
-                                IndexStatusState::Indexing {
-                                    current: *current,
-                                    total: *total,
-                                    status: status.clone(),
-                                    symbol_status: new_symbol_status,
-                                }
-                            }
+                            IndexStatusState::Indexing {
+                                current,
+                                total,
+                                status,
+                                ..
+                            } => IndexStatusState::Indexing {
+                                current: *current,
+                                total: *total,
+                                status: status.clone(),
+                                symbol_status: new_symbol_status,
+                            },
                             IndexStatusState::Missing => IndexStatusState::Missing,
                         };
                     }
@@ -520,9 +556,23 @@ impl InteractiveApp {
                     // We need to know which type of selector this is
                     // Let's check by seeing if selection is a valid language or kind
                     let selection_lower = selection.to_lowercase();
-                    let is_language = matches!(selection_lower.as_str(),
-                        "rust" | "python" | "javascript" | "typescript" | "vue" | "svelte" |
-                        "go" | "java" | "php" | "c" | "cpp" | "csharp" | "ruby" | "kotlin" | "zig"
+                    let is_language = matches!(
+                        selection_lower.as_str(),
+                        "rust"
+                            | "python"
+                            | "javascript"
+                            | "typescript"
+                            | "vue"
+                            | "svelte"
+                            | "go"
+                            | "java"
+                            | "php"
+                            | "c"
+                            | "cpp"
+                            | "csharp"
+                            | "ruby"
+                            | "kotlin"
+                            | "zig"
                     );
 
                     if is_language {
@@ -543,7 +593,10 @@ impl InteractiveApp {
 
         // Handle Tab/Shift+Tab for focus cycling
         if key.code == crossterm::event::KeyCode::Tab {
-            if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT)
+            {
                 self.focus_prev();
             } else {
                 self.focus_next();
@@ -679,14 +732,16 @@ impl InteractiveApp {
 
             KeyCommand::PromptGlob => {
                 // For now, set a simple info message. In future, could add text input modal
-                self.info_message = Some("Glob patterns: Use CLI for now (--glob flag)".to_string());
+                self.info_message =
+                    Some("Glob patterns: Use CLI for now (--glob flag)".to_string());
                 self.info_message_time = Some(Instant::now());
                 Ok(None)
             }
 
             KeyCommand::PromptExclude => {
                 // For now, set a simple info message. In future, could add text input modal
-                self.info_message = Some("Exclude patterns: Use CLI for now (--exclude flag)".to_string());
+                self.info_message =
+                    Some("Exclude patterns: Use CLI for now (--exclude flag)".to_string());
                 self.info_message_time = Some(Instant::now());
                 Ok(None)
             }
@@ -832,9 +887,23 @@ impl InteractiveApp {
                 if let Some(selection) = selector.handle_mouse(mouse) {
                     // Selection was made
                     let selection_lower = selection.to_lowercase();
-                    let is_language = matches!(selection_lower.as_str(),
-                        "rust" | "python" | "javascript" | "typescript" | "vue" | "svelte" |
-                        "go" | "java" | "php" | "c" | "cpp" | "csharp" | "ruby" | "kotlin" | "zig"
+                    let is_language = matches!(
+                        selection_lower.as_str(),
+                        "rust"
+                            | "python"
+                            | "javascript"
+                            | "typescript"
+                            | "vue"
+                            | "svelte"
+                            | "go"
+                            | "java"
+                            | "php"
+                            | "c"
+                            | "cpp"
+                            | "csharp"
+                            | "ruby"
+                            | "kotlin"
+                            | "zig"
                     );
 
                     if is_language {
@@ -884,7 +953,13 @@ impl InteractiveApp {
         let result_height = terminal_size.1.saturating_sub(7); // 6 from top + 1 from bottom
         let result_area = ratatui::layout::Rect::new(0, result_y, terminal_size.0, result_height);
 
-        let action = self.mouse.handle_event(mouse, input_area, filters_area, result_area, &self.filter_badge_positions);
+        let action = self.mouse.handle_event(
+            mouse,
+            input_area,
+            filters_area,
+            result_area,
+            &self.filter_badge_positions,
+        );
 
         match action {
             MouseAction::FocusInput(cursor_pos) => {
@@ -959,14 +1034,19 @@ impl InteractiveApp {
         }
     }
 
-
     /// Convert a line index within the results area to a result index
     /// Accounts for variable-height results (symbol line + path line + preview lines)
     fn line_index_to_result_index(&self, line_index: usize) -> usize {
         let mut current_line = 0;
         let scroll_offset = self.results.scroll_offset();
 
-        for (idx, result) in self.results.results().iter().enumerate().skip(scroll_offset) {
+        for (idx, result) in self
+            .results
+            .results()
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+        {
             // Calculate lines for this result
             // Must match the MAX_PREVIEW_LINES limit used in ui.rs
             const MAX_PREVIEW_LINES: usize = 20;
@@ -1030,9 +1110,11 @@ impl InteractiveApp {
         });
 
         // Parse symbol kind filter
-        let kind = self.filters.kind.as_ref().and_then(|kind_str| {
-            kind_str.parse::<crate::models::SymbolKind>().ok()
-        });
+        let kind = self
+            .filters
+            .kind
+            .as_ref()
+            .and_then(|kind_str| kind_str.parse::<crate::models::SymbolKind>().ok());
 
         // Build query filter
         let filter = QueryFilter {
@@ -1053,7 +1135,7 @@ impl InteractiveApp {
             offset: None,
             force: false,
             suppress_output: false,
-            include_dependencies: false,  // Interactive mode doesn't support dependencies yet
+            include_dependencies: false, // Interactive mode doesn't support dependencies yet
             ..Default::default()
         };
 
@@ -1217,9 +1299,7 @@ impl InteractiveApp {
         terminal.show_cursor()?;
 
         // Open editor
-        let status = std::process::Command::new(&editor)
-            .args(&args)
-            .status()?;
+        let status = std::process::Command::new(&editor).args(&args).status()?;
 
         // Resume terminal
         crossterm::terminal::enable_raw_mode()?;
@@ -1231,7 +1311,10 @@ impl InteractiveApp {
         terminal.clear()?;
 
         if !status.success() {
-            self.error_message = Some(format!("Editor exited with error code: {:?}", status.code()));
+            self.error_message = Some(format!(
+                "Editor exited with error code: {:?}",
+                status.code()
+            ));
         }
 
         Ok(())
@@ -1323,7 +1406,8 @@ impl InteractiveApp {
     }
 
     pub fn indexing_elapsed_secs(&self) -> Option<u64> {
-        self.indexing_start_time.map(|start| start.elapsed().as_secs())
+        self.indexing_start_time
+            .map(|start| start.elapsed().as_secs())
     }
 
     pub fn cwd(&self) -> &PathBuf {

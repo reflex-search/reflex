@@ -1,11 +1,10 @@
-use anyhow::Result;
-use std::time::Instant;
-use indicatif::{ProgressBar, ProgressStyle};
-use owo_colors::OwoColorize;
 use crate::cache::CacheManager;
 use crate::models::Language;
 use crate::query::{QueryEngine, QueryFilter};
-
+use anyhow::Result;
+use indicatif::{ProgressBar, ProgressStyle};
+use owo_colors::OwoColorize;
+use std::time::Instant;
 
 /// Smart truncate preview to reduce token usage
 /// Truncates at word boundary if possible, adds ellipsis if truncated
@@ -15,7 +14,8 @@ pub fn truncate_preview(preview: &str, max_length: usize) -> String {
     }
 
     // Find a good break point (prefer word boundary)
-    let truncate_at = preview.char_indices()
+    let truncate_at = preview
+        .char_indices()
         .take(max_length)
         .filter(|(_, c)| c.is_whitespace())
         .last()
@@ -26,7 +26,6 @@ pub fn truncate_preview(preview: &str, max_length: usize) -> String {
     truncated.push('…');
     truncated
 }
-
 
 /// Handle the `query` subcommand
 pub(super) fn handle_query(
@@ -71,7 +70,8 @@ pub(super) fn handle_query(
             Some(l) => Some(l),
             None => anyhow::bail!(
                 "Unknown language: '{}'\n\nSupported languages:\n  {}\n\nExample: rfx query \"pattern\" --lang rust",
-                lang_str, Language::supported_names_help()
+                lang_str,
+                Language::supported_names_help()
             ),
         }
     } else {
@@ -84,10 +84,14 @@ pub(super) fn handle_query(
             let mut chars = s.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+                Some(first) => first
+                    .to_uppercase()
+                    .chain(chars.flat_map(|c| c.to_lowercase()))
+                    .collect(),
             }
         };
-        let parsed = capitalized.parse::<crate::models::SymbolKind>()
+        let parsed = capitalized
+            .parse::<crate::models::SymbolKind>()
             .unwrap_or(crate::models::SymbolKind::Unknown(s.to_string()));
         if let crate::models::SymbolKind::Unknown(_) = &parsed {
             anyhow::bail!(
@@ -120,15 +124,15 @@ pub(super) fn handle_query(
     // 4. If user specified --limit: use that value
     // 5. Otherwise: use default limit of 100
     let final_limit = if count_only {
-        None  // --count always shows total count, no pagination
+        None // --count always shows total count, no pagination
     } else if all {
-        None  // --all means no limit
+        None // --all means no limit
     } else if paths_only && limit.is_none() {
-        None  // --paths without explicit --limit means no limit
+        None // --paths without explicit --limit means no limit
     } else if let Some(user_limit) = limit {
-        Some(user_limit)  // Use user-specified limit
+        Some(user_limit) // Use user-specified limit
     } else {
-        Some(100)  // Default: limit to 100 results for token efficiency
+        Some(100) // Default: limit to 100 results for token efficiency
     };
 
     // Validate AST query requirements
@@ -158,10 +162,24 @@ pub(super) fn handle_query(
 
         // ERROR: Mutually exclusive pattern matching modes
         if use_regex && use_contains {
-            eprintln!("{}", "ERROR: Cannot use --regex and --contains together.".red().bold());
-            eprintln!("  {} --regex for pattern matching (alternation, wildcards, etc.)", "•".dimmed());
-            eprintln!("  {} --contains for substring matching (expansive search)", "•".dimmed());
-            eprintln!("\n  {} Choose one based on your needs:", "Tip:".cyan().bold());
+            eprintln!(
+                "{}",
+                "ERROR: Cannot use --regex and --contains together."
+                    .red()
+                    .bold()
+            );
+            eprintln!(
+                "  {} --regex for pattern matching (alternation, wildcards, etc.)",
+                "•".dimmed()
+            );
+            eprintln!(
+                "  {} --contains for substring matching (expansive search)",
+                "•".dimmed()
+            );
+            eprintln!(
+                "\n  {} Choose one based on your needs:",
+                "Tip:".cyan().bold()
+            );
             eprintln!("    {} for OR logic: --regex", "pattern1|pattern2".yellow());
             eprintln!("    {} for substring: --contains", "partial_text".yellow());
             has_errors = true;
@@ -169,44 +187,88 @@ pub(super) fn handle_query(
 
         // ERROR: Contradictory matching requirements
         if exact && use_contains {
-            eprintln!("{}", "ERROR: Cannot use --exact and --contains together (contradictory).".red().bold());
-            eprintln!("  {} --exact requires exact symbol name match", "•".dimmed());
+            eprintln!(
+                "{}",
+                "ERROR: Cannot use --exact and --contains together (contradictory)."
+                    .red()
+                    .bold()
+            );
+            eprintln!(
+                "  {} --exact requires exact symbol name match",
+                "•".dimmed()
+            );
             eprintln!("  {} --contains allows substring matching", "•".dimmed());
             has_errors = true;
         }
 
         // WARNING: Redundant file filtering
         if file_pattern.is_some() && !glob_patterns.is_empty() {
-            eprintln!("{}", "WARNING: Both --file and --glob specified.".yellow().bold());
-            eprintln!("  {} --file does substring matching on file paths", "•".dimmed());
-            eprintln!("  {} --glob does pattern matching with wildcards", "•".dimmed());
-            eprintln!("  {} Both filters will apply (AND condition)", "Note:".dimmed());
+            eprintln!(
+                "{}",
+                "WARNING: Both --file and --glob specified.".yellow().bold()
+            );
+            eprintln!(
+                "  {} --file does substring matching on file paths",
+                "•".dimmed()
+            );
+            eprintln!(
+                "  {} --glob does pattern matching with wildcards",
+                "•".dimmed()
+            );
+            eprintln!(
+                "  {} Both filters will apply (AND condition)",
+                "Note:".dimmed()
+            );
             eprintln!("\n  {} Usually you only need one:", "Tip:".cyan().bold());
             eprintln!("    {} for simple matching", "--file User.php".yellow());
-            eprintln!("    {} for pattern matching", "--glob src/**/*.php".yellow());
+            eprintln!(
+                "    {} for pattern matching",
+                "--glob src/**/*.php".yellow()
+            );
         }
 
         // INFO: Detect potentially problematic glob patterns
         for pattern in &glob_patterns {
             // Check for literal quotes in pattern
-            if (pattern.starts_with('\'') && pattern.ends_with('\'')) ||
-               (pattern.starts_with('"') && pattern.ends_with('"')) {
-                eprintln!("{}",
-                    format!("WARNING: Glob pattern contains quotes: {}", pattern).yellow().bold()
+            if (pattern.starts_with('\'') && pattern.ends_with('\''))
+                || (pattern.starts_with('"') && pattern.ends_with('"'))
+            {
+                eprintln!(
+                    "{}",
+                    format!("WARNING: Glob pattern contains quotes: {}", pattern)
+                        .yellow()
+                        .bold()
                 );
-                eprintln!("  {} Shell quotes should not be part of the pattern", "Note:".dimmed());
+                eprintln!(
+                    "  {} Shell quotes should not be part of the pattern",
+                    "Note:".dimmed()
+                );
                 eprintln!("  {} --glob src/**/*.rs", "Correct:".green());
                 eprintln!("  {} --glob 'src/**/*.rs'", "Wrong:".red().dimmed());
             }
 
             // Suggest using ** instead of * for recursive matching
             if pattern.contains("*/") && !pattern.contains("**/") {
-                eprintln!("{}",
-                    format!("INFO: Glob '{}' uses * (matches one directory level)", pattern).cyan()
+                eprintln!(
+                    "{}",
+                    format!(
+                        "INFO: Glob '{}' uses * (matches one directory level)",
+                        pattern
+                    )
+                    .cyan()
                 );
-                eprintln!("  {} Use ** for recursive matching across subdirectories", "Tip:".cyan().bold());
-                eprintln!("    {} → matches files in Models/ only", "app/Models/*.php".yellow());
-                eprintln!("    {} → matches files in Models/ and subdirs", "app/Models/**/*.php".green());
+                eprintln!(
+                    "  {} Use ** for recursive matching across subdirectories",
+                    "Tip:".cyan().bold()
+                );
+                eprintln!(
+                    "    {} → matches files in Models/ only",
+                    "app/Models/*.php".yellow()
+                );
+                eprintln!(
+                    "    {} → matches files in Models/ and subdirs",
+                    "app/Models/**/*.php".green()
+                );
             }
         }
 
@@ -217,11 +279,17 @@ pub(super) fn handle_query(
         // REF-58: Warn when --file looks like a concrete path that doesn't exist on disk
         if let Some(ref fp) = file_pattern {
             // Only warn when it looks like a literal path (no glob wildcards, has extension or slash)
-            let looks_like_path = !fp.contains('*') && !fp.contains('?') &&
-                (fp.contains('/') || fp.contains('.'));
+            let looks_like_path =
+                !fp.contains('*') && !fp.contains('?') && (fp.contains('/') || fp.contains('.'));
             if looks_like_path && !std::path::Path::new(fp).exists() {
-                eprintln!("{}", format!("[warn] --file path not found on disk: {}", fp).yellow());
-                eprintln!("  Continuing with substring match — results will be empty if no indexed path contains '{}'.", fp);
+                eprintln!(
+                    "{}",
+                    format!("[warn] --file path not found on disk: {}", fp).yellow()
+                );
+                eprintln!(
+                    "  Continuing with substring match — results will be empty if no indexed path contains '{}'.",
+                    fp
+                );
             }
         }
     }
@@ -246,7 +314,7 @@ pub(super) fn handle_query(
         paths_only,
         offset,
         force,
-        suppress_output: as_json,  // Suppress warnings in JSON mode
+        suppress_output: as_json, // Suppress warnings in JSON mode
         include_dependencies,
         context_lines,
         ..Default::default()
@@ -291,7 +359,9 @@ pub(super) fn handle_query(
                 let has_more = response.pagination.has_more;
 
                 // Flatten grouped results to SearchResult vec for plain text formatting
-                let flat = response.results.iter()
+                let flat = response
+                    .results
+                    .iter()
                     .flat_map(|file_group| {
                         file_group.matches.iter().map(move |m| {
                             crate::models::SearchResult {
@@ -363,9 +433,14 @@ pub(super) fn handle_query(
         } else if paths_only {
             // Paths-only JSON mode: output deduplicated array of path strings (REF-62)
             let mut seen = std::collections::HashSet::new();
-            let unique_paths: Vec<String> = flat_results.iter()
+            let unique_paths: Vec<String> = flat_results
+                .iter()
                 .filter_map(|r| {
-                    if seen.insert(r.path.clone()) { Some(r.path.clone()) } else { None }
+                    if seen.insert(r.path.clone()) {
+                        Some(r.path.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect();
 
@@ -388,7 +463,11 @@ pub(super) fn handle_query(
                     "count": unique_paths.len(),
                     "results": unique_paths,
                 });
-                if pretty_json { serde_json::to_string_pretty(&wrapper)? } else { serde_json::to_string(&wrapper)? }
+                if pretty_json {
+                    serde_json::to_string_pretty(&wrapper)?
+                } else {
+                    serde_json::to_string(&wrapper)?
+                }
             } else {
                 if pretty_json {
                     serde_json::to_string_pretty(&unique_paths)?
@@ -418,7 +497,7 @@ pub(super) fn handle_query(
             } else {
                 // For AST queries, build a response with minimal metadata
                 // Group flat results by file path
-                use crate::models::{PaginationInfo, IndexStatus, FileGroupedResult, MatchResult};
+                use crate::models::{FileGroupedResult, IndexStatus, MatchResult, PaginationInfo};
                 use std::collections::HashMap;
 
                 let mut grouped: HashMap<String, Vec<crate::models::SearchResult>> = HashMap::new();
@@ -453,12 +532,16 @@ pub(super) fn handle_query(
                             .into_iter()
                             .map(|r| {
                                 // Extract context lines (default: 3 lines before and after)
-                                let (context_before, context_after) = if let (Some(reader), Some(fid)) = (&content_reader_opt, file_id_for_context) {
-                                    reader.get_context_by_line(fid as u32, r.span.start_line, 3)
-                                        .unwrap_or_else(|_| (vec![], vec![]))
-                                } else {
-                                    (vec![], vec![])
-                                };
+                                let (context_before, context_after) =
+                                    if let (Some(reader), Some(fid)) =
+                                        (&content_reader_opt, file_id_for_context)
+                                    {
+                                        reader
+                                            .get_context_by_line(fid as u32, r.span.start_line, 3)
+                                            .unwrap_or_else(|_| (vec![], vec![]))
+                                    } else {
+                                        (vec![], vec![])
+                                    };
 
                                 MatchResult {
                                     kind: r.kind,
@@ -483,7 +566,7 @@ pub(super) fn handle_query(
                 file_results.sort_by(|a, b| a.path.cmp(&b.path));
 
                 crate::models::QueryResponse {
-                    ai_instruction: None,  // Will be populated below if ai_mode is true
+                    ai_instruction: None, // Will be populated below if ai_mode is true
                     status: IndexStatus::Fresh,
                     can_trust_results: true,
                     warning: None,
@@ -524,13 +607,23 @@ pub(super) fn handle_query(
             println!("{}", json_output);
 
             let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
-            eprintln!("Found {} result{} in {}", result_count, if result_count == 1 { "" } else { "s" }, timing_str);
+            eprintln!(
+                "Found {} result{} in {}",
+                result_count,
+                if result_count == 1 { "" } else { "s" },
+                timing_str
+            );
         }
     } else {
         // Standard output with formatting
         if count_only {
             let n = flat_results.len();
-            println!("Found {} result{} in {}", n, if n == 1 { "" } else { "s" }, timing_str);
+            println!(
+                "Found {} result{} in {}",
+                n,
+                if n == 1 { "" } else { "s" },
+                timing_str
+            );
             return Ok(());
         }
 
@@ -543,7 +636,12 @@ pub(super) fn handle_query(
                     println!("{}", result.path);
                 }
                 let n = flat_results.len();
-                eprintln!("Found {} unique file{} in {}", n, if n == 1 { "" } else { "s" }, timing_str);
+                eprintln!(
+                    "Found {} unique file{} in {}",
+                    n,
+                    if n == 1 { "" } else { "s" },
+                    timing_str
+                );
             }
         } else {
             // Standard result formatting
@@ -558,14 +656,25 @@ pub(super) fn handle_query(
                 let n = flat_results.len();
                 if total_results > n {
                     // Results were paginated - show detailed count
-                    println!("\nFound {} result{} ({} total) in {}", n, if n == 1 { "" } else { "s" }, total_results, timing_str);
+                    println!(
+                        "\nFound {} result{} ({} total) in {}",
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        total_results,
+                        timing_str
+                    );
                     // Show pagination hint if there are more results available
                     if has_more {
                         println!("Use --limit and --offset to paginate");
                     }
                 } else {
                     // All results shown - simple count
-                    println!("\nFound {} result{} in {}", n, if n == 1 { "" } else { "s" }, timing_str);
+                    println!(
+                        "\nFound {} result{} in {}",
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        timing_str
+                    );
                 }
             }
         }
@@ -573,7 +682,6 @@ pub(super) fn handle_query(
 
     Ok(())
 }
-
 
 /// Handle interactive mode (default when no command is given)
 pub(super) fn handle_interactive() -> Result<()> {

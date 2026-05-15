@@ -108,7 +108,10 @@ impl LineFilter for RustLineFilter {
         if let Some(raw_start) = line.find("r#") {
             if raw_start <= pattern_pos {
                 // Count the number of # symbols
-                let hash_count = line[raw_start + 1..].chars().take_while(|&c| c == '#').count();
+                let hash_count = line[raw_start + 1..]
+                    .chars()
+                    .take_while(|&c| c == '#')
+                    .count();
                 let closing = format!("\"{}#", "#".repeat(hash_count));
 
                 if let Some(raw_end) = line[raw_start..].find(&closing) {
@@ -563,7 +566,6 @@ struct PHPLineFilter;
 impl LineFilter for PHPLineFilter {
     fn is_in_comment(&self, line: &str, pattern_pos: usize) -> bool {
         // PHP comments: //, #, /* */
-
         // Check for // comment
         if let Some(comment_start) = line.find("//") {
             if comment_start <= pattern_pos {

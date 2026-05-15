@@ -12,11 +12,11 @@
 //! - Namespaces
 //! - Enums (PHP 8.1+)
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use std::path::{Path, PathBuf};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse PHP source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -43,7 +43,11 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_attributes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
     symbols.extend(extract_namespaces(source, &root_node, &language.into())?);
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
@@ -68,8 +72,7 @@ fn extract_functions(
             name: (name) @name) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -85,8 +88,7 @@ fn extract_classes(
             name: (name) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -102,8 +104,7 @@ fn extract_interfaces(
             name: (name) @name) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface query")?;
+    let query = Query::new(language, query_str).context("Failed to create interface query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Interface, None)
 }
@@ -119,8 +120,7 @@ fn extract_traits(
             name: (name) @name) @trait
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create trait query")?;
+    let query = Query::new(language, query_str).context("Failed to create trait query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Trait, None)
 }
@@ -156,7 +156,13 @@ fn extract_attributes(
             let capture_name: &str = &def_query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "attribute_class" => {
                     class_node = Some(capture.node);
@@ -195,10 +201,16 @@ fn extract_attributes(
                     (name) @name))) @attr
     "#;
 
-    let use_query = Query::new(language, use_query_str)
-        .context("Failed to create attribute use query")?;
+    let use_query =
+        Query::new(language, use_query_str).context("Failed to create attribute use query")?;
 
-    symbols.extend(extract_symbols(source, root, &use_query, SymbolKind::Attribute, None)?);
+    symbols.extend(extract_symbols(
+        source,
+        root,
+        &use_query,
+        SymbolKind::Attribute,
+        None,
+    )?);
 
     Ok(symbols)
 }
@@ -229,8 +241,7 @@ fn extract_methods(
                     name: (name) @method_name))) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -247,19 +258,43 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "trait_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("trait");
                 }
                 "interface_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("interface");
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent method_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -275,7 +310,8 @@ fn extract_methods(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(method_name), Some(node)) =
-            (scope_name, scope_type, method_name, method_node) {
+            (scope_name, scope_type, method_name, method_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -319,8 +355,7 @@ fn extract_properties(
                             (name) @prop_name))))) @trait
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create property query")?;
+    let query = Query::new(language, query_str).context("Failed to create property query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -337,15 +372,33 @@ fn extract_properties(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "trait_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("trait");
                 }
                 "prop_name" => {
-                    prop_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    prop_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent property_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -361,7 +414,8 @@ fn extract_properties(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(prop_name), Some(node)) =
-            (scope_name, scope_type, prop_name, prop_node) {
+            (scope_name, scope_type, prop_name, prop_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -393,8 +447,7 @@ fn extract_local_variables(
                 (name) @name)) @assignment
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -409,7 +462,13 @@ fn extract_local_variables(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "assignment" => {
                     assignment_node = Some(capture.node);
@@ -431,7 +490,7 @@ fn extract_local_variables(
                 SymbolKind::Variable,
                 Some(name),
                 span,
-                None,  // No scope for local variables or global variables
+                None, // No scope for local variables or global variables
                 preview,
             ));
         }
@@ -452,8 +511,7 @@ fn extract_constants(
                 (name) @name)) @const
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create constant query")?;
+    let query = Query::new(language, query_str).context("Failed to create constant query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
@@ -469,8 +527,7 @@ fn extract_namespaces(
             name: (namespace_name) @name) @namespace
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create namespace query")?;
+    let query = Query::new(language, query_str).context("Failed to create namespace query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Namespace, None)
 }
@@ -486,8 +543,7 @@ fn extract_enums(
             name: (name) @name) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -513,7 +569,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -536,15 +598,20 @@ fn extract_symbols(
                 ));
             }
             (None, Some(node)) => {
-                log::warn!("PHP parser: Failed to extract name from {:?} capture at line {}",
-                          kind,
-                          node.start_position().row + 1);
+                log::warn!(
+                    "PHP parser: Failed to extract name from {:?} capture at line {}",
+                    kind,
+                    node.start_position().row + 1
+                );
             }
             (Some(_), None) => {
                 log::warn!("PHP parser: Failed to extract node for {:?} symbol", kind);
             }
             (None, None) => {
-                log::warn!("PHP parser: Failed to extract both name and node for {:?} symbol", kind);
+                log::warn!(
+                    "PHP parser: Failed to extract both name and node for {:?} symbol",
+                    kind
+                );
             }
         }
     }
@@ -558,7 +625,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -613,7 +680,8 @@ mod tests {
         let symbols = parse("test.php", source).unwrap();
 
         // Should find class
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -641,13 +709,22 @@ mod tests {
         // Should find class + 2 methods
         assert!(symbols.len() >= 3);
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -666,7 +743,8 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let interface_symbols: Vec<_> = symbols.iter()
+        let interface_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Interface))
             .collect();
 
@@ -687,7 +765,8 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let trait_symbols: Vec<_> = symbols.iter()
+        let trait_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Trait))
             .collect();
 
@@ -710,12 +789,16 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let namespace_symbols: Vec<_> = symbols.iter()
+        let namespace_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Namespace))
             .collect();
 
         assert_eq!(namespace_symbols.len(), 1);
-        assert_eq!(namespace_symbols[0].symbol.as_deref(), Some("App\\Controllers"));
+        assert_eq!(
+            namespace_symbols[0].symbol.as_deref(),
+            Some("App\\Controllers")
+        );
     }
 
     #[test]
@@ -728,13 +811,22 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         assert_eq!(const_symbols.len(), 2);
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_NAME")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DEFAULT_NAME"))
+        );
     }
 
     #[test]
@@ -750,14 +842,27 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let prop_symbols: Vec<_> = symbols.iter()
+        let prop_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         assert_eq!(prop_symbols.len(), 3);
-        assert!(prop_symbols.iter().any(|s| s.symbol.as_deref() == Some("debug")));
-        assert!(prop_symbols.iter().any(|s| s.symbol.as_deref() == Some("timeout")));
-        assert!(prop_symbols.iter().any(|s| s.symbol.as_deref() == Some("secret")));
+        assert!(
+            prop_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("debug"))
+        );
+        assert!(
+            prop_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("timeout"))
+        );
+        assert!(
+            prop_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("secret"))
+        );
     }
 
     #[test]
@@ -773,7 +878,8 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let enum_symbols: Vec<_> = symbols.iter()
+        let enum_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Enum))
             .collect();
 
@@ -860,7 +966,8 @@ mod tests {
         let symbols = parse("test.php", source).unwrap();
 
         // Filter to just variables (both global assignment, local vars, and class properties)
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
@@ -868,21 +975,44 @@ mod tests {
         assert_eq!(variables.len(), 5);
 
         // Check that local variables inside functions are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_count")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("local_count"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("temp"))
+        );
 
         // Check that global assignment is captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("global_count")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("global_count"))
+        );
 
         // Check that class property is captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("value")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("value"))
+        );
 
         // Verify that local variables have no scope
-        let local_vars: Vec<_> = variables.iter()
-            .filter(|v| v.symbol.as_deref() == Some("local_count")
-                     || v.symbol.as_deref() == Some("result")
-                     || v.symbol.as_deref() == Some("temp"))
+        let local_vars: Vec<_> = variables
+            .iter()
+            .filter(|v| {
+                v.symbol.as_deref() == Some("local_count")
+                    || v.symbol.as_deref() == Some("result")
+                    || v.symbol.as_deref() == Some("temp")
+            })
             .collect();
 
         for var in local_vars {
@@ -890,7 +1020,8 @@ mod tests {
         }
 
         // Verify that class property has scope
-        let property = variables.iter()
+        let property = variables
+            .iter()
             .find(|v| v.symbol.as_deref() == Some("value"))
             .unwrap();
         // Removed: scope field no longer exists: assert_eq!(property.scope.as_ref().unwrap(), "class Math");
@@ -916,14 +1047,23 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let attribute_symbols: Vec<_> = symbols.iter()
+        let attribute_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
         // Should find Route and Deprecated attribute classes
         assert!(attribute_symbols.len() >= 2);
-        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("Route")));
-        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("Deprecated")));
+        assert!(
+            attribute_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Route"))
+        );
+        assert!(
+            attribute_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Deprecated"))
+        );
     }
 
     #[test]
@@ -963,7 +1103,8 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let attribute_symbols: Vec<_> = symbols.iter()
+        let attribute_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
@@ -973,11 +1114,13 @@ mod tests {
         assert!(attribute_symbols.len() >= 6);
 
         // Count specific attribute uses
-        let route_count = attribute_symbols.iter()
+        let route_count = attribute_symbols
+            .iter()
             .filter(|s| s.symbol.as_deref() == Some("Route"))
             .count();
 
-        let deprecated_count = attribute_symbols.iter()
+        let deprecated_count = attribute_symbols
+            .iter()
             .filter(|s| s.symbol.as_deref() == Some("Deprecated"))
             .count();
 
@@ -1044,7 +1187,8 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -1054,12 +1198,24 @@ mod tests {
         // 3. ComplexClass (extends + implements 2 interfaces + large docblock)
         assert_eq!(class_symbols.len(), 3, "Should find exactly 3 classes");
 
-        assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("SimpleClass")),
-                "Should find SimpleClass");
-        assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("MultiInterfaceClass")),
-                "Should find MultiInterfaceClass implementing multiple interfaces");
-        assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("ComplexClass")),
-                "Should find ComplexClass with large docblock, extends, and implements multiple interfaces");
+        assert!(
+            class_symbols
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("SimpleClass")),
+            "Should find SimpleClass"
+        );
+        assert!(
+            class_symbols
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("MultiInterfaceClass")),
+            "Should find MultiInterfaceClass implementing multiple interfaces"
+        );
+        assert!(
+            class_symbols
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("ComplexClass")),
+            "Should find ComplexClass with large docblock, extends, and implements multiple interfaces"
+        );
     }
 
     #[test]
@@ -1094,8 +1250,10 @@ mod tests {
 
         // All should be Internal (Laravel framework classes)
         for dep in &deps {
-            assert!(matches!(dep.import_type, ImportType::Internal),
-                    "Laravel classes should be classified as Internal");
+            assert!(
+                matches!(dep.import_type, ImportType::Internal),
+                "Laravel classes should be classified as Internal"
+            );
         }
     }
 
@@ -1171,10 +1329,7 @@ impl DependencyExtractor for PhpDependencyExtractor {
 }
 
 /// Extract PHP `use` declarations
-fn extract_php_uses(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_php_uses(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_php::LANGUAGE_PHP;
 
     let query_str = r#"
@@ -1185,8 +1340,8 @@ fn extract_php_uses(
             ])
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create PHP use query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create PHP use query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -1197,7 +1352,11 @@ fn extract_php_uses(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "use_path" {
-                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let path = capture
+                    .node
+                    .utf8_text(source.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
                 let import_type = classify_php_use(&path);
                 let line_number = capture.node.start_position().row + 1;
 
@@ -1215,10 +1374,7 @@ fn extract_php_uses(
 }
 
 /// Extract PHP `require`, `require_once`, `include`, `include_once` statements
-fn extract_php_requires(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_php_requires(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_php::LANGUAGE_PHP;
 
     // Match require/include with both string and expression
@@ -1258,7 +1414,8 @@ fn extract_php_requires(
                 "require_path" => {
                     let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
                     // Remove quotes from path
-                    require_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    require_path =
+                        Some(raw_path.trim_matches(|c| c == '"' || c == '\'').to_string());
                 }
                 "require" => {
                     require_node = Some(capture.node);
@@ -1288,43 +1445,119 @@ fn classify_php_use(use_path: &str) -> ImportType {
     // PHP standard library extensions/classes (built-in PHP namespaces)
     const PHP_STDLIB_NAMESPACES: &[&str] = &[
         // PSR standards (PHP standard interfaces)
-        "Psr\\", "Psr\\Http", "Psr\\Log", "Psr\\Cache", "Psr\\Container",
-
+        "Psr\\",
+        "Psr\\Http",
+        "Psr\\Log",
+        "Psr\\Cache",
+        "Psr\\Container",
         // PHP built-in classes/interfaces
-        "Exception", "Error", "DateTime", "DateTimeImmutable", "DateTimeInterface",
-        "DateInterval", "DatePeriod", "PDO", "PDOStatement", "Closure",
-        "Generator", "ArrayIterator", "IteratorAggregate", "Traversable",
-        "Iterator", "Countable", "Serializable", "JsonSerializable",
-
+        "Exception",
+        "Error",
+        "DateTime",
+        "DateTimeImmutable",
+        "DateTimeInterface",
+        "DateInterval",
+        "DatePeriod",
+        "PDO",
+        "PDOStatement",
+        "Closure",
+        "Generator",
+        "ArrayIterator",
+        "IteratorAggregate",
+        "Traversable",
+        "Iterator",
+        "Countable",
+        "Serializable",
+        "JsonSerializable",
         // SPL (Standard PHP Library)
-        "SplFileInfo", "SplFileObject", "SplDoublyLinkedList", "SplQueue",
-        "SplStack", "SplHeap", "SplMinHeap", "SplMaxHeap", "SplPriorityQueue",
-        "SplFixedArray", "SplObjectStorage",
-
+        "SplFileInfo",
+        "SplFileObject",
+        "SplDoublyLinkedList",
+        "SplQueue",
+        "SplStack",
+        "SplHeap",
+        "SplMinHeap",
+        "SplMaxHeap",
+        "SplPriorityQueue",
+        "SplFixedArray",
+        "SplObjectStorage",
         // PHP XML classes
-        "SimpleXMLElement", "DOMDocument", "DOMElement", "DOMNode",
-        "XMLReader", "XMLWriter",
+        "SimpleXMLElement",
+        "DOMDocument",
+        "DOMElement",
+        "DOMNode",
+        "XMLReader",
+        "XMLWriter",
     ];
 
     // Common vendor packages (third-party dependencies from composer)
     const PHP_VENDOR_NAMESPACES: &[&str] = &[
         // Symfony framework
         "Symfony\\",
-
         // Popular packages
-        "Spatie\\", "Stancl\\", "Doctrine\\", "Monolog\\", "PHPUnit\\",
-        "Carbon\\", "GuzzleHttp\\", "Composer\\", "Predis\\", "League\\",
-        "Ramsey\\", "Webmozart\\", "Brick\\", "Mockery\\", "Faker\\",
-        "PhpParser\\", "PHPStan\\", "Psalm\\", "Pest\\", "Filament\\",
-        "Livewire\\", "Inertia\\", "Socialite\\", "Sanctum\\", "Passport\\",
-        "Horizon\\", "Telescope\\", "Forge\\", "Vapor\\", "Cashier\\",
-        "Nova\\", "Spark\\", "Jetstream\\", "Fortify\\", "Breeze\\",
-        "Vonage\\", "Twilio\\", "Stripe\\", "Pusher\\", "Algolia\\",
-        "Aws\\", "Google\\", "Microsoft\\", "Facebook\\", "Twitter\\",
-        "Sentry\\", "Bugsnag\\", "Rollbar\\", "NewRelic\\", "Datadog\\",
-        "Elasticsearch\\", "Redis\\", "Memcached\\", "MongoDB\\",
-        "PhpOffice\\", "Dompdf\\", "TCPDF\\", "Mpdf\\", "Intervention\\",
-        "Barryvdh\\", "Maatwebsite\\", "Rap2hpoutre\\", "Yajra\\",
+        "Spatie\\",
+        "Stancl\\",
+        "Doctrine\\",
+        "Monolog\\",
+        "PHPUnit\\",
+        "Carbon\\",
+        "GuzzleHttp\\",
+        "Composer\\",
+        "Predis\\",
+        "League\\",
+        "Ramsey\\",
+        "Webmozart\\",
+        "Brick\\",
+        "Mockery\\",
+        "Faker\\",
+        "PhpParser\\",
+        "PHPStan\\",
+        "Psalm\\",
+        "Pest\\",
+        "Filament\\",
+        "Livewire\\",
+        "Inertia\\",
+        "Socialite\\",
+        "Sanctum\\",
+        "Passport\\",
+        "Horizon\\",
+        "Telescope\\",
+        "Forge\\",
+        "Vapor\\",
+        "Cashier\\",
+        "Nova\\",
+        "Spark\\",
+        "Jetstream\\",
+        "Fortify\\",
+        "Breeze\\",
+        "Vonage\\",
+        "Twilio\\",
+        "Stripe\\",
+        "Pusher\\",
+        "Algolia\\",
+        "Aws\\",
+        "Google\\",
+        "Microsoft\\",
+        "Facebook\\",
+        "Twitter\\",
+        "Sentry\\",
+        "Bugsnag\\",
+        "Rollbar\\",
+        "NewRelic\\",
+        "Datadog\\",
+        "Elasticsearch\\",
+        "Redis\\",
+        "Memcached\\",
+        "MongoDB\\",
+        "PhpOffice\\",
+        "Dompdf\\",
+        "TCPDF\\",
+        "Mpdf\\",
+        "Intervention\\",
+        "Barryvdh\\",
+        "Maatwebsite\\",
+        "Rap2hpoutre\\",
+        "Yajra\\",
     ];
 
     // Check if it's a standard library class
@@ -1352,9 +1585,9 @@ fn classify_php_use(use_path: &str) -> ImportType {
 /// PSR-4 autoload mapping (namespace prefix → directory path)
 #[derive(Debug, Clone)]
 pub struct Psr4Mapping {
-    pub namespace_prefix: String,  // e.g., "App\\"
-    pub directory: String,          // e.g., "app/"
-    pub project_root: String,       // e.g., "services/php/rcm-backend/" (relative to index root)
+    pub namespace_prefix: String, // e.g., "App\\"
+    pub directory: String,        // e.g., "app/"
+    pub project_root: String,     // e.g., "services/php/rcm-backend/" (relative to index root)
 }
 
 /// Parse composer.json and extract PSR-4 autoload mappings
@@ -1374,11 +1607,11 @@ pub fn parse_composer_psr4(project_root: &Path) -> Result<Vec<Psr4Mapping>> {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&composer_path)
-        .context("Failed to read composer.json")?;
+    let content =
+        std::fs::read_to_string(&composer_path).context("Failed to read composer.json")?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .context("Failed to parse composer.json")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).context("Failed to parse composer.json")?;
 
     let mut mappings = Vec::new();
 
@@ -1390,11 +1623,10 @@ pub fn parse_composer_psr4(project_root: &Path) -> Result<Vec<Psr4Mapping>> {
                     // path can be a string or array of strings
                     let directories = match path {
                         serde_json::Value::String(s) => vec![s.clone()],
-                        serde_json::Value::Array(arr) => {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect()
-                        }
+                        serde_json::Value::Array(arr) => arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect(),
                         _ => continue,
                     };
 
@@ -1414,7 +1646,10 @@ pub fn parse_composer_psr4(project_root: &Path) -> Result<Vec<Psr4Mapping>> {
     // Example: "App\\Http\\" should match before "App\\"
     mappings.sort_by(|a, b| b.namespace_prefix.len().cmp(&a.namespace_prefix.len()));
 
-    log::debug!("Loaded {} PSR-4 mappings from composer.json", mappings.len());
+    log::debug!(
+        "Loaded {} PSR-4 mappings from composer.json",
+        mappings.len()
+    );
     for mapping in &mappings {
         log::trace!("  {} => {}", mapping.namespace_prefix, mapping.directory);
     }
@@ -1510,8 +1745,11 @@ pub fn parse_all_composer_psr4(index_root: &Path) -> Result<Vec<Psr4Mapping>> {
     // Sort by namespace length (longest first) for correct matching
     all_mappings.sort_by(|a, b| b.namespace_prefix.len().cmp(&a.namespace_prefix.len()));
 
-    log::info!("Loaded {} total PSR-4 mappings from {} projects",
-               all_mappings.len(), composer_count);
+    log::info!(
+        "Loaded {} total PSR-4 mappings from {} projects",
+        all_mappings.len(),
+        composer_count
+    );
 
     Ok(all_mappings)
 }
@@ -1567,7 +1805,10 @@ pub fn resolve_php_namespace_to_path(
                     format!("{}{}.php", mapping.directory, relative_path)
                 } else {
                     // Monorepo mode: project_root + directory + file
-                    format!("{}/{}{}.php", mapping.project_root, mapping.directory, relative_path)
+                    format!(
+                        "{}/{}{}.php",
+                        mapping.project_root, mapping.directory, relative_path
+                    )
                 };
 
                 // Normalize path separators (replace // with /)

@@ -173,13 +173,16 @@ mod tests {
     use crate::models::SearchResult;
 
     fn make_result(file: &str, line: usize) -> SearchResult {
-        use crate::models::{Language, SymbolKind, Span};
+        use crate::models::{Language, Span, SymbolKind};
         SearchResult {
             path: file.to_string(),
             lang: Language::Rust,
             kind: SymbolKind::Function,
             symbol: Some("test".to_string()),
-            span: Span { start_line: line, end_line: line },
+            span: Span {
+                start_line: line,
+                end_line: line,
+            },
             preview: "test".to_string(),
             dependencies: None,
         }

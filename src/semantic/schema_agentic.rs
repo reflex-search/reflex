@@ -437,7 +437,10 @@ mod tests {
 
         let tool: ToolCall = serde_json::from_str(json).unwrap();
         match tool {
-            ToolCall::ExploreCodebase { description, command } => {
+            ToolCall::ExploreCodebase {
+                description,
+                command,
+            } => {
                 assert_eq!(description, "Find validation functions");
                 assert!(command.contains("validate"));
             }

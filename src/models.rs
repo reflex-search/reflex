@@ -4,7 +4,7 @@
 //! that Reflex provides to AI agents and other programmatic consumers.
 
 use serde::{Deserialize, Serialize};
-use strum::{EnumString, Display};
+use strum::{Display, EnumString};
 
 /// Represents a source code location span (line range only)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,7 +153,7 @@ impl Language {
             Language::CSharp => true,
             Language::Ruby => true,
             Language::Kotlin => true,
-            Language::Swift => false,  // Temporarily disabled - parser queries out of date with tree-sitter-swift 0.7.x grammar
+            Language::Swift => false, // Temporarily disabled - parser queries out of date with tree-sitter-swift 0.7.x grammar
             Language::Zig => true,
             Language::Unknown => false,
         }
@@ -339,16 +339,20 @@ impl Default for IndexConfig {
             include_patterns: vec![],
             exclude_patterns: vec![],
             follow_symlinks: false,
-            max_file_size: 10 * 1024 * 1024, // 10 MB
-            parallel_threads: 0, // 0 = auto (80% of available cores)
-            query_timeout_secs: 30, // 30 seconds default timeout
+            max_file_size: 10 * 1024 * 1024,   // 10 MB
+            parallel_threads: 0,               // 0 = auto (80% of available cores)
+            query_timeout_secs: 30,            // 30 seconds default timeout
             max_posting_list_entries: 500_000, // cap at 500k to bound query latency
         }
     }
 }
 
-fn is_zero(v: &usize) -> bool { *v == 0 }
-fn is_zero_u64(v: &u64) -> bool { *v == 0 }
+fn is_zero(v: &usize) -> bool {
+    *v == 0
+}
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
 
 /// Statistics about the index
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -491,7 +495,10 @@ mod tests {
         let sym = SymbolRef {
             name: "my_function".to_string(),
             kind: SymbolKind::Function,
-            span: Span { start_line: 10, end_line: 20 },
+            span: Span {
+                start_line: 10,
+                end_line: 20,
+            },
         };
         let json = serde_json::to_value(&sym).unwrap();
         assert_eq!(json["name"], "my_function");
@@ -506,7 +513,10 @@ mod tests {
         let original = SymbolRef {
             name: "MyStruct".to_string(),
             kind: SymbolKind::Struct,
-            span: Span { start_line: 1, end_line: 5 },
+            span: Span {
+                start_line: 1,
+                end_line: 5,
+            },
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: SymbolRef = serde_json::from_str(&json).unwrap();
@@ -518,7 +528,10 @@ mod tests {
         let sym = SymbolRef {
             name: "Foo".to_string(),
             kind: SymbolKind::Class,
-            span: Span { start_line: 3, end_line: 7 },
+            span: Span {
+                start_line: 3,
+                end_line: 7,
+            },
         };
         let json = serde_json::to_string(&sym).unwrap();
         assert_eq!(

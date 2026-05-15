@@ -1,7 +1,7 @@
 //! Project type and framework detection
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -43,9 +43,7 @@ pub fn detect_project_type_json(_cache: &CacheManager, root: &Path) -> Result<Va
     }
 
     let primary = &indicators[0];
-    let all_details: Vec<String> = indicators.iter()
-        .flat_map(|i| i.details.clone())
-        .collect();
+    let all_details: Vec<String> = indicators.iter().flat_map(|i| i.details.clone()).collect();
 
     Ok(json!({
         "category": primary.category,
@@ -121,7 +119,10 @@ fn detect_project_type_indicators(root: &Path) -> Vec<ProjectIndicator> {
     }
 
     // Check for Python project
-    if root.join("pyproject.toml").exists() || root.join("setup.py").exists() || root.join("requirements.txt").exists() {
+    if root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("requirements.txt").exists()
+    {
         let mut details = Vec::new();
         let category;
 
@@ -240,7 +241,10 @@ pub fn find_entry_points(root: &Path) -> Result<Vec<String>> {
         if let Ok(entries) = fs::read_dir(&bin_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let name = entry.file_name();
-                entry_points.push(format!("- src/bin/{} (Rust binary)", name.to_string_lossy()));
+                entry_points.push(format!(
+                    "- src/bin/{} (Rust binary)",
+                    name.to_string_lossy()
+                ));
             }
         }
     }
@@ -265,7 +269,8 @@ pub fn find_entry_points(root: &Path) -> Result<Vec<String>> {
 pub fn find_entry_points_json(root: &Path) -> Result<Value> {
     let entry_points = find_entry_points(root)?;
 
-    let parsed: Vec<Value> = entry_points.iter()
+    let parsed: Vec<Value> = entry_points
+        .iter()
         .filter_map(|ep| {
             // Parse "- path (description, N lines)" format
             let parts: Vec<&str> = ep.split(" (").collect();
@@ -273,7 +278,8 @@ pub fn find_entry_points_json(root: &Path) -> Result<Value> {
                 let path = parts[0].trim_start_matches("- ");
                 let desc_lines: Vec<&str> = parts[1].trim_end_matches(')').split(", ").collect();
                 let description = desc_lines[0];
-                let lines = desc_lines.get(1)
+                let lines = desc_lines
+                    .get(1)
                     .and_then(|s| s.trim_end_matches(" lines").parse::<usize>().ok());
 
                 Some(json!({
@@ -301,7 +307,10 @@ pub fn get_file_distribution(cache: &CacheManager) -> Result<String> {
     // Add language breakdown
     for lang in &context.languages {
         let label = if lang.percentage > 60.0 {
-            format!("{} files ({:.1}%) - Primary language", lang.file_count, lang.percentage)
+            format!(
+                "{} files ({:.1}%) - Primary language",
+                lang.file_count, lang.percentage
+            )
         } else if lang.percentage > 20.0 {
             format!("{} files ({:.1}%)", lang.file_count, lang.percentage)
         } else {
@@ -312,10 +321,15 @@ pub fn get_file_distribution(cache: &CacheManager) -> Result<String> {
     }
 
     // Add total
-    let total_lines: usize = context.languages.iter()
+    let total_lines: usize = context
+        .languages
+        .iter()
         .map(|l| l.file_count * 50) // Rough estimate
         .sum();
-    output.push(format!("\nTotal: {} files, ~{} lines", context.total_files, total_lines));
+    output.push(format!(
+        "\nTotal: {} files, ~{} lines",
+        context.total_files, total_lines
+    ));
 
     Ok(output.join("\n"))
 }
@@ -326,12 +340,16 @@ pub fn get_file_distribution_json(cache: &CacheManager) -> Result<Value> {
 
     let context = CodebaseContext::extract(cache)?;
 
-    let languages: Vec<Value> = context.languages.iter()
-        .map(|lang| json!({
-            "language": lang.name,
-            "count": lang.file_count,
-            "percentage": lang.percentage,
-        }))
+    let languages: Vec<Value> = context
+        .languages
+        .iter()
+        .map(|lang| {
+            json!({
+                "language": lang.name,
+                "count": lang.file_count,
+                "percentage": lang.percentage,
+            })
+        })
         .collect();
 
     Ok(json!(languages))
@@ -453,7 +471,8 @@ pub fn detect_frameworks(root: &Path) -> Result<String> {
         return Ok("No frameworks detected".to_string());
     }
 
-    let output: Vec<String> = frameworks.iter()
+    let output: Vec<String> = frameworks
+        .iter()
         .map(|(name, category)| format!("- {}: {}", category, name))
         .collect();
 
@@ -464,11 +483,14 @@ pub fn detect_frameworks(root: &Path) -> Result<String> {
 pub fn detect_frameworks_json(root: &Path) -> Result<Value> {
     let frameworks = detect_frameworks_list(root)?;
 
-    let json_frameworks: Vec<Value> = frameworks.iter()
-        .map(|(name, category)| json!({
-            "name": name,
-            "category": category,
-        }))
+    let json_frameworks: Vec<Value> = frameworks
+        .iter()
+        .map(|(name, category)| {
+            json!({
+                "name": name,
+                "category": category,
+            })
+        })
         .collect();
 
     Ok(json!(json_frameworks))
@@ -992,11 +1014,14 @@ pub fn find_config_files(root: &Path) -> Result<String> {
 pub fn find_config_files_json(root: &Path) -> Result<Value> {
     let configs = find_config_files_list(root)?;
 
-    let json_configs: Vec<Value> = configs.iter()
-        .map(|(path, category)| json!({
-            "path": path,
-            "category": category,
-        }))
+    let json_configs: Vec<Value> = configs
+        .iter()
+        .map(|(path, category)| {
+            json!({
+                "path": path,
+                "category": category,
+            })
+        })
         .collect();
 
     Ok(json!(json_configs))

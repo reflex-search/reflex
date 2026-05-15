@@ -212,7 +212,13 @@ pub fn create_pulse_provider() -> Result<Box<dyn LlmProvider>> {
 
     let options = config::get_provider_options(&provider);
 
-    providers::create_provider(&provider, api_key, model, options, semantic_config.timeout_seconds)
+    providers::create_provider(
+        &provider,
+        api_key,
+        model,
+        options,
+        semantic_config.timeout_seconds,
+    )
 }
 
 /// Narrate a structural context block using LLM.
@@ -234,7 +240,10 @@ pub fn narrate_section(
     // Check minimum content length
     let word_count = structural_context.split_whitespace().count();
     if word_count < MIN_CONTENT_WORDS {
-        eprintln!("  Skipping: {} (too brief, {} words)", cache_key_suffix, word_count);
+        eprintln!(
+            "  Skipping: {} (too brief, {} words)",
+            cache_key_suffix, word_count
+        );
         return None;
     }
 
@@ -265,7 +274,9 @@ pub fn narrate_section(
             let response = postprocess_narration(&response);
 
             // Cache the response
-            let context_hash = blake3::hash(structural_context.as_bytes()).to_hex().to_string();
+            let context_hash = blake3::hash(structural_context.as_bytes())
+                .to_hex()
+                .to_string();
             if let Err(e) = cache.put(&cache_key, &context_hash, &response) {
                 log::warn!("Failed to write LLM cache: {}", e);
             }
@@ -315,7 +326,10 @@ pub fn narrate_batch(
     for task in tasks {
         let word_count = task.structural_context.split_whitespace().count();
         if word_count < MIN_CONTENT_WORDS {
-            eprintln!("  Skipping: {} (too brief, {} words)", task.cache_key_suffix, word_count);
+            eprintln!(
+                "  Skipping: {} (too brief, {} words)",
+                task.cache_key_suffix, word_count
+            );
             results.push(NarrationResult {
                 cache_key_suffix: task.cache_key_suffix,
                 response: None,
@@ -352,7 +366,11 @@ pub fn narrate_batch(
     }
 
     let pending_count = pending.len();
-    let effective_concurrency = if concurrency == 0 { pending_count } else { concurrency };
+    let effective_concurrency = if concurrency == 0 {
+        pending_count
+    } else {
+        concurrency
+    };
     eprintln!(
         "  Dispatching {} LLM calls ({} concurrent)...",
         pending_count, effective_concurrency
@@ -397,7 +415,11 @@ pub fn narrate_batch(
                             .to_hex()
                             .to_string();
                         if let Err(e) = task_cache.put(&cache_key, &context_hash, &response) {
-                            log::warn!("Failed to write LLM cache for '{}': {}", task.cache_key_suffix, e);
+                            log::warn!(
+                                "Failed to write LLM cache for '{}': {}",
+                                task.cache_key_suffix,
+                                e
+                            );
                         }
 
                         eprintln!(
@@ -408,7 +430,11 @@ pub fn narrate_batch(
                         Some(response)
                     }
                     Err(e) => {
-                        log::warn!("LLM narration failed for '{}': {}", task.cache_key_suffix, e);
+                        log::warn!(
+                            "LLM narration failed for '{}': {}",
+                            task.cache_key_suffix,
+                            e
+                        );
                         eprintln!(
                             "  Narrating: {} (failed, {:.1}s)",
                             task.cache_key_suffix,
@@ -450,7 +476,11 @@ async fn call_llm_async(provider: &dyn LlmProvider, prompt: &str) -> Result<Stri
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            log::debug!("Retrying LLM narration (attempt {}/{})", attempt + 1, max_retries + 1);
+            log::debug!(
+                "Retrying LLM narration (attempt {}/{})",
+                attempt + 1,
+                max_retries + 1
+            );
             tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 
@@ -504,18 +534,60 @@ pub fn concepts_system_prompt() -> &'static str {
 /// Known compound words / proper nouns that should NOT be split by camelCase regex.
 /// These are common technical terms found in codebases.
 const CAMEL_CASE_BLOCKLIST: &[&str] = &[
-    "TypeScript", "JavaScript", "CoffeeScript", "ActionScript",
-    "PostgreSQL", "MySQL", "MariaDB", "MongoDB", "CouchDB", "GraphQL",
-    "GitHub", "GitLab", "BitBucket", "WordPress", "PostCSS",
-    "IntelliJ", "WebSocket", "WebAssembly", "DevOps", "DevTools",
-    "DataFrame", "NumPy", "PyTorch", "TensorFlow", "FastAPI",
-    "NextJS", "NestJS", "NodeJS", "ExpressJS", "AngularJS",
-    "iPhone", "iPad", "macOS", "iOS", "FreeBSD", "OpenBSD",
-    "CodePen", "CodeSandbox", "JetBrains", "PhpStorm", "AppKit",
-    "SwiftUI", "UIKit", "CoreData", "MapReduce",
-    "CloudFormation", "CloudFront", "CloudWatch",
-    "RedHat", "OpenShift", "OpenStack",
-    "SourceMap", "AutoComplete", "IntelliSense",
+    "TypeScript",
+    "JavaScript",
+    "CoffeeScript",
+    "ActionScript",
+    "PostgreSQL",
+    "MySQL",
+    "MariaDB",
+    "MongoDB",
+    "CouchDB",
+    "GraphQL",
+    "GitHub",
+    "GitLab",
+    "BitBucket",
+    "WordPress",
+    "PostCSS",
+    "IntelliJ",
+    "WebSocket",
+    "WebAssembly",
+    "DevOps",
+    "DevTools",
+    "DataFrame",
+    "NumPy",
+    "PyTorch",
+    "TensorFlow",
+    "FastAPI",
+    "NextJS",
+    "NestJS",
+    "NodeJS",
+    "ExpressJS",
+    "AngularJS",
+    "iPhone",
+    "iPad",
+    "macOS",
+    "iOS",
+    "FreeBSD",
+    "OpenBSD",
+    "CodePen",
+    "CodeSandbox",
+    "JetBrains",
+    "PhpStorm",
+    "AppKit",
+    "SwiftUI",
+    "UIKit",
+    "CoreData",
+    "MapReduce",
+    "CloudFormation",
+    "CloudFront",
+    "CloudWatch",
+    "RedHat",
+    "OpenShift",
+    "OpenStack",
+    "SourceMap",
+    "AutoComplete",
+    "IntelliSense",
 ];
 
 /// Post-process LLM narration output to fix common formatting issues.
@@ -578,7 +650,11 @@ fn call_llm_sync(provider: &dyn LlmProvider, prompt: &str) -> Result<String> {
 
         for attempt in 0..=max_retries {
             if attempt > 0 {
-                log::debug!("Retrying LLM narration (attempt {}/{})", attempt + 1, max_retries + 1);
+                log::debug!(
+                    "Retrying LLM narration (attempt {}/{})",
+                    attempt + 1,
+                    max_retries + 1
+                );
                 tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
             }
 
@@ -604,7 +680,12 @@ mod tests {
         // 15+ words should pass the gate
         let text = "src/parsers/rust.rs has 250 lines and contains extract_symbols fn_name and other important functions used for parsing code";
         let count = text.split_whitespace().count();
-        assert!(count >= MIN_CONTENT_WORDS, "Word count {} should be >= {}", count, MIN_CONTENT_WORDS);
+        assert!(
+            count >= MIN_CONTENT_WORDS,
+            "Word count {} should be >= {}",
+            count,
+            MIN_CONTENT_WORDS
+        );
     }
 
     #[test]
@@ -612,7 +693,12 @@ mod tests {
         // < 15 words should be rejected
         let text = "No data available yet.";
         let count = text.split_whitespace().count();
-        assert!(count < MIN_CONTENT_WORDS, "Word count {} should be < {}", count, MIN_CONTENT_WORDS);
+        assert!(
+            count < MIN_CONTENT_WORDS,
+            "Word count {} should be < {}",
+            count,
+            MIN_CONTENT_WORDS
+        );
     }
 
     #[test]
@@ -626,7 +712,12 @@ mod tests {
         // Typical wiki page with markdown table + file list should pass
         let text = "| Language | Files | Lines |\n| --- | --- | --- |\n| Rust | 45 | 12,500 |\n\n**Files:** src/main.rs src/lib.rs src/query/mod.rs src/parsers/rust.rs";
         let count = text.split_whitespace().count();
-        assert!(count >= MIN_CONTENT_WORDS, "Wiki structural word count {} should be >= {}", count, MIN_CONTENT_WORDS);
+        assert!(
+            count >= MIN_CONTENT_WORDS,
+            "Wiki structural word count {} should be >= {}",
+            count,
+            MIN_CONTENT_WORDS
+        );
     }
 
     #[test]
@@ -634,7 +725,12 @@ mod tests {
         // Typical digest with structural data should pass
         let text = "Branch: feature/pulse Commit: abc1234 Files: 120 Edges: 340 Modules: src tests build.rs config.toml main.rs lib.rs";
         let count = text.split_whitespace().count();
-        assert!(count >= MIN_CONTENT_WORDS, "Digest bootstrap word count {} should be >= {}", count, MIN_CONTENT_WORDS);
+        assert!(
+            count >= MIN_CONTENT_WORDS,
+            "Digest bootstrap word count {} should be >= {}",
+            count,
+            MIN_CONTENT_WORDS
+        );
     }
 
     #[test]
@@ -651,8 +747,16 @@ mod tests {
     fn test_postprocess_preserves_proper_nouns() {
         let input = "The TypeScript module handles JavaScript compilation.";
         let result = postprocess_narration(input);
-        assert!(result.contains("TypeScript"), "Should preserve TypeScript, got: {}", result);
-        assert!(result.contains("JavaScript"), "Should preserve JavaScript, got: {}", result);
+        assert!(
+            result.contains("TypeScript"),
+            "Should preserve TypeScript, got: {}",
+            result
+        );
+        assert!(
+            result.contains("JavaScript"),
+            "Should preserve JavaScript, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -660,28 +764,48 @@ mod tests {
         // "moduledrives" should become "module drives"
         let input = "The parseModule drives the query engine.";
         let result = postprocess_narration(input);
-        assert!(result.contains("parse Module"), "Should split run-on camelCase: {}", result);
+        assert!(
+            result.contains("parse Module"),
+            "Should split run-on camelCase: {}",
+            result
+        );
     }
 
     #[test]
     fn test_postprocess_preserves_backtick_code() {
         let input = "Uses `TypeScript` and `parseModule` for processing.";
         let result = postprocess_narration(input);
-        assert!(result.contains("`TypeScript`"), "Should preserve code: {}", result);
-        assert!(result.contains("`parseModule`"), "Should preserve code: {}", result);
+        assert!(
+            result.contains("`TypeScript`"),
+            "Should preserve code: {}",
+            result
+        );
+        assert!(
+            result.contains("`parseModule`"),
+            "Should preserve code: {}",
+            result
+        );
     }
 
     #[test]
     fn test_postprocess_fixes_missing_sentence_space() {
         let input = "First sentence.Second sentence starts here.";
         let result = postprocess_narration(input);
-        assert!(result.contains(". S"), "Should add space after period: {}", result);
+        assert!(
+            result.contains(". S"),
+            "Should add space after period: {}",
+            result
+        );
     }
 
     #[test]
     fn test_postprocess_fixes_double_spaces() {
         let input = "Too  many  spaces  here.";
         let result = postprocess_narration(input);
-        assert!(!result.contains("  "), "Should remove double spaces: {}", result);
+        assert!(
+            !result.contains("  "),
+            "Should remove double spaces: {}",
+            result
+        );
     }
 }

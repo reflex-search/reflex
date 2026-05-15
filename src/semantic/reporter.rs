@@ -3,11 +3,11 @@
 //! This module provides transparent "show your work" output for the agentic loop,
 //! displaying the LLM's reasoning at each phase similar to Claude Code's thinking blocks.
 
+use indicatif::ProgressBar;
 use owo_colors::OwoColorize;
 use std::sync::{Arc, Mutex};
-use indicatif::ProgressBar;
 
-use super::schema_agentic::{ToolCall, EvaluationReport};
+use super::schema_agentic::{EvaluationReport, ToolCall};
 use super::tools::ToolResult;
 
 /// Trait for reporting agentic loop progress
@@ -60,7 +60,12 @@ pub struct ConsoleReporter {
 
 impl ConsoleReporter {
     /// Create a new console reporter
-    pub fn new(show_reasoning: bool, verbose: bool, debug: bool, spinner: Option<Arc<Mutex<ProgressBar>>>) -> Self {
+    pub fn new(
+        show_reasoning: bool,
+        verbose: bool,
+        debug: bool,
+        spinner: Option<Arc<Mutex<ProgressBar>>>,
+    ) -> Self {
         Self {
             show_reasoning,
             verbose,
@@ -121,13 +126,27 @@ impl ConsoleReporter {
         match tool {
             ToolCall::GatherContext { params } => {
                 let mut parts = Vec::new();
-                if params.structure { parts.push("structure"); }
-                if params.file_types { parts.push("file types"); }
-                if params.project_type { parts.push("project type"); }
-                if params.framework { parts.push("frameworks"); }
-                if params.entry_points { parts.push("entry points"); }
-                if params.test_layout { parts.push("test layout"); }
-                if params.config_files { parts.push("config files"); }
+                if params.structure {
+                    parts.push("structure");
+                }
+                if params.file_types {
+                    parts.push("file types");
+                }
+                if params.project_type {
+                    parts.push("project type");
+                }
+                if params.framework {
+                    parts.push("frameworks");
+                }
+                if params.entry_points {
+                    parts.push("entry points");
+                }
+                if params.test_layout {
+                    parts.push("test layout");
+                }
+                if params.config_files {
+                    parts.push("config files");
+                }
 
                 if parts.is_empty() {
                     "gather_context: General codebase context".to_string()
@@ -135,7 +154,10 @@ impl ConsoleReporter {
                     format!("gather_context: {}", parts.join(", "))
                 }
             }
-            ToolCall::ExploreCodebase { description, command } => {
+            ToolCall::ExploreCodebase {
+                description,
+                command,
+            } => {
                 format!("explore_codebase: {} ({})", description, command)
             }
             ToolCall::AnalyzeStructure { analysis_type } => {
@@ -148,9 +170,7 @@ impl ConsoleReporter {
                     format!("search_documentation: '{}'", query)
                 }
             }
-            ToolCall::GetStatistics => {
-                "get_statistics: Retrieve index statistics".to_string()
-            }
+            ToolCall::GetStatistics => "get_statistics: Retrieve index statistics".to_string(),
             ToolCall::GetDependencies { file_path, reverse } => {
                 if *reverse {
                     format!("get_dependencies: Reverse deps for '{}'", file_path)
@@ -159,10 +179,16 @@ impl ConsoleReporter {
                 }
             }
             ToolCall::GetAnalysisSummary { min_dependents } => {
-                format!("get_analysis_summary: Dependency analysis (min_dependents={})", min_dependents)
+                format!(
+                    "get_analysis_summary: Dependency analysis (min_dependents={})",
+                    min_dependents
+                )
             }
             ToolCall::FindIslands { min_size, max_size } => {
-                format!("find_islands: Disconnected components (size {}-{})", min_size, max_size)
+                format!(
+                    "find_islands: Disconnected components (size {}-{})",
+                    min_size, max_size
+                )
             }
         }
     }
@@ -230,11 +256,19 @@ impl AgenticReporter for ConsoleReporter {
             self.add_lines(1);
 
             if needs_context && !tools.is_empty() {
-                println!("{} {}", "→".bright_green(), "Needs additional context".bold());
+                println!(
+                    "{} {}",
+                    "→".bright_green(),
+                    "Needs additional context".bold()
+                );
                 println!("  {} tool(s) to execute:", tools.len());
                 self.add_lines(2);
                 for (i, tool) in tools.iter().enumerate() {
-                    println!("  {}. {}", (i + 1).to_string().bright_white(), self.describe_tool(tool).dimmed());
+                    println!(
+                        "  {}. {}",
+                        (i + 1).to_string().bright_white(),
+                        self.describe_tool(tool).dimmed()
+                    );
                     self.add_lines(1);
                 }
             } else {
@@ -256,7 +290,11 @@ impl AgenticReporter for ConsoleReporter {
 
         if self.verbose {
             self.with_suspended_spinner(|| {
-                println!("  {} Executing: {}", "⋯".dimmed(), self.describe_tool(tool).dimmed());
+                println!(
+                    "  {} Executing: {}",
+                    "⋯".dimmed(),
+                    self.describe_tool(tool).dimmed()
+                );
                 self.add_lines(1);
             });
         }
@@ -265,7 +303,8 @@ impl AgenticReporter for ConsoleReporter {
     fn report_tool_complete(&self, idx: usize, result: &ToolResult) {
         self.with_suspended_spinner(|| {
             if result.success {
-                println!("  {} {} {}",
+                println!(
+                    "  {} {} {}",
                     "✓".bright_green(),
                     format!("[{}]", idx).dimmed(),
                     result.description
@@ -286,7 +325,8 @@ impl AgenticReporter for ConsoleReporter {
                     }
                 }
             } else {
-                println!("  {} {} {} - {}",
+                println!(
+                    "  {} {} {} - {}",
                     "✗".bright_red(),
                     format!("[{}]", idx).dimmed(),
                     result.description,
@@ -319,7 +359,8 @@ impl AgenticReporter for ConsoleReporter {
 
             let confidence_pct = (confidence * 100.0) as u8;
 
-            print!("{} Generated {} {} (confidence: ",
+            print!(
+                "{} Generated {} {} (confidence: ",
                 "→".bright_green(),
                 query_count,
                 if query_count == 1 { "query" } else { "queries" }
@@ -347,7 +388,8 @@ impl AgenticReporter for ConsoleReporter {
             self.add_lines(1);
 
             if evaluation.success {
-                println!("{} {} (score: {}/1.0)",
+                println!(
+                    "{} {} (score: {}/1.0)",
                     "✓".bright_green(),
                     "Success".bold().bright_green(),
                     format!("{:.2}", evaluation.score).bright_white()
@@ -358,7 +400,8 @@ impl AgenticReporter for ConsoleReporter {
                     println!("\n  Minor issues noted:");
                     self.add_lines(2);
                     for issue in &evaluation.issues {
-                        println!("  - {} (severity: {:.2})",
+                        println!(
+                            "  - {} (severity: {:.2})",
                             issue.description.dimmed(),
                             issue.severity
                         );
@@ -366,7 +409,8 @@ impl AgenticReporter for ConsoleReporter {
                     }
                 }
             } else {
-                println!("{} {} (score: {}/1.0)",
+                println!(
+                    "{} {} (score: {}/1.0)",
                     "⚠".yellow(),
                     "Results need refinement".bold().yellow(),
                     format!("{:.2}", evaluation.score).bright_white()
@@ -377,7 +421,8 @@ impl AgenticReporter for ConsoleReporter {
                     println!("\n  Issues found:");
                     self.add_lines(2);
                     for (idx, issue) in evaluation.issues.iter().enumerate().take(3) {
-                        println!("  {}. {}",
+                        println!(
+                            "  {}. {}",
                             (idx + 1).to_string().dimmed(),
                             issue.description
                         );
@@ -389,7 +434,8 @@ impl AgenticReporter for ConsoleReporter {
                     println!("\n  Suggestions:");
                     self.add_lines(2);
                     for (idx, suggestion) in evaluation.suggestions.iter().enumerate().take(3) {
-                        println!("  {}. {}",
+                        println!(
+                            "  {}. {}",
                             (idx + 1).to_string().dimmed(),
                             suggestion.dimmed()
                         );
@@ -408,7 +454,10 @@ impl AgenticReporter for ConsoleReporter {
 
         self.with_suspended_spinner(|| {
             println!();
-            println!("{} Refining queries based on evaluation feedback...", "→".yellow());
+            println!(
+                "{} Refining queries based on evaluation feedback...",
+                "→".yellow()
+            );
             self.add_lines(2);
         });
     }
@@ -427,7 +476,8 @@ impl AgenticReporter for ConsoleReporter {
                 0
             };
 
-            eprint!("  {} Reindexing cache: [{}/{}] {}% - {}",
+            eprint!(
+                "  {} Reindexing cache: [{}/{}] {}% - {}",
                 "⋯".yellow(),
                 current,
                 total,

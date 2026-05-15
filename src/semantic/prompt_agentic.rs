@@ -16,13 +16,13 @@ const AGENTIC_TEMPLATE: &str = include_str!("prompt_agentic.md");
 ///
 /// This prompt asks the LLM to assess if it has enough context to answer
 /// the user's question, or if it needs to gather more information first.
-pub fn build_assessment_prompt(
-    question: &str,
-    cache: &CacheManager,
-) -> Result<String> {
+pub fn build_assessment_prompt(question: &str, cache: &CacheManager) -> Result<String> {
     // Extract basic codebase context
     let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
-        log::warn!("Failed to extract codebase context: {}. Using empty context.", e);
+        log::warn!(
+            "Failed to extract codebase context: {}. Using empty context.",
+            e
+        );
         CodebaseContext {
             total_files: 0,
             languages: vec![],
@@ -126,7 +126,10 @@ pub fn build_generation_prompt(
 ) -> Result<String> {
     // Extract basic codebase context
     let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
-        log::warn!("Failed to extract codebase context: {}. Using empty context.", e);
+        log::warn!(
+            "Failed to extract codebase context: {}. Using empty context.",
+            e
+        );
         CodebaseContext {
             total_files: 0,
             languages: vec![],
@@ -220,7 +223,10 @@ pub fn build_refinement_prompt(
 ) -> Result<String> {
     // Extract basic codebase context
     let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
-        log::warn!("Failed to extract codebase context: {}. Using empty context.", e);
+        log::warn!(
+            "Failed to extract codebase context: {}. Using empty context.",
+            e
+        );
         CodebaseContext {
             total_files: 0,
             languages: vec![],
@@ -235,7 +241,9 @@ pub fn build_refinement_prompt(
     let context_str = context.to_prompt_string();
 
     // Format previous queries
-    let previous_queries = previous_response.queries.iter()
+    let previous_queries = previous_response
+        .queries
+        .iter()
         .map(|q| format!("- {}", q.command))
         .collect::<Vec<_>>()
         .join("\n");
@@ -367,13 +375,7 @@ mod tests {
             score: 0.3,
         };
 
-        let prompt = build_refinement_prompt(
-            "find todos",
-            "",
-            &previous,
-            &eval,
-            &cache,
-        ).unwrap();
+        let prompt = build_refinement_prompt("find todos", "", &previous, &eval, &cache).unwrap();
 
         assert!(prompt.contains("REFINEMENT"));
         assert!(prompt.contains("previous queries"));

@@ -8,18 +8,18 @@
 //!
 //! All surfaces are thin layers over the same core capability: **snapshot and diff**.
 
-pub mod config;
-pub mod snapshot;
-pub mod diff;
 pub mod changelog;
-pub mod wiki;
-pub mod llm_cache;
-pub mod narrate;
-pub mod map;
-pub mod site;
-pub mod zola;
-pub mod pagefind;
-pub mod onboard;
+pub mod config;
+pub mod diff;
+pub mod explorer;
 pub mod git_intel;
 pub mod glossary;
-pub mod explorer;
+pub mod llm_cache;
+pub mod map;
+pub mod narrate;
+pub mod onboard;
+pub mod pagefind;
+pub mod site;
+pub mod snapshot;
+pub mod wiki;
+pub mod zola;

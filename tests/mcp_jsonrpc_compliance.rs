@@ -144,8 +144,7 @@ fn full_handshake_does_not_emit_id_null() {
 
 #[test]
 fn string_id_is_preserved() {
-    let req =
-        r#"{"jsonrpc":"2.0","id":"req-abc","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
+    let req = r#"{"jsonrpc":"2.0","id":"req-abc","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
     let out = run_exchange(&[req]);
 
     assert_eq!(out.len(), 1);

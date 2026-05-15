@@ -17,8 +17,7 @@ use super::schema::QueryCommand;
 /// Example: `query "TODO" --symbols --lang rust`
 pub fn parse_command(command: &str) -> Result<ParsedCommand> {
     // Parse the command using shell-words to handle quoted strings
-    let parts = shell_words::split(command)
-        .context("Failed to parse command string")?;
+    let parts = shell_words::split(command).context("Failed to parse command string")?;
 
     if parts.is_empty() {
         anyhow::bail!("Empty command string");
@@ -92,8 +91,7 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand> {
                 if i + 1 >= parts.len() {
                     anyhow::bail!("--limit requires a value");
                 }
-                let limit_val: usize = parts[i + 1].parse()
-                    .context("--limit must be a number")?;
+                let limit_val: usize = parts[i + 1].parse().context("--limit must be a number")?;
                 parsed.limit = Some(limit_val);
                 i += 2;
             }
@@ -101,8 +99,8 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand> {
                 if i + 1 >= parts.len() {
                     anyhow::bail!("--offset requires a value");
                 }
-                let offset_val: usize = parts[i + 1].parse()
-                    .context("--offset must be a number")?;
+                let offset_val: usize =
+                    parts[i + 1].parse().context("--offset must be a number")?;
                 parsed.offset = Some(offset_val);
                 i += 2;
             }
@@ -228,13 +226,15 @@ impl ParsedCommand {
                 let mut chars = kind_str.chars();
                 match chars.next() {
                     None => String::new(),
-                    Some(first) => first.to_uppercase()
+                    Some(first) => first
+                        .to_uppercase()
                         .chain(chars.flat_map(|c| c.to_lowercase()))
-                        .collect()
+                        .collect(),
                 }
             };
 
-            let parsed_kind: SymbolKind = capitalized.parse()
+            let parsed_kind: SymbolKind = capitalized
+                .parse()
                 .ok()
                 .or_else(|| {
                     log::debug!("Treating '{}' as unknown symbol kind", kind_str);
@@ -251,11 +251,7 @@ impl ParsedCommand {
         let symbols_mode = self.symbols || self.kind.is_some();
 
         // Handle --all flag (unlimited results)
-        let limit = if self.all {
-            None
-        } else {
-            self.limit
-        };
+        let limit = if self.all { None } else { self.limit };
 
         Ok(QueryFilter {
             language,
@@ -331,7 +327,8 @@ pub async fn execute_queries(
         let filter = parsed.to_query_filter()?;
 
         // Execute query (reusing the same engine)
-        let response = engine.search_with_metadata(&parsed.pattern, filter)
+        let response = engine
+            .search_with_metadata(&parsed.pattern, filter)
             .with_context(|| format!("Failed to execute query: {}", query_cmd.command))?;
 
         // Always accumulate total count from all queries
@@ -351,8 +348,7 @@ pub async fn execute_queries(
                 // Find or create file group in merged results
                 let file_path = file_group.path.clone();
 
-                let existing_group = merged_results.iter_mut()
-                    .find(|g| g.path == file_path);
+                let existing_group = merged_results.iter_mut().find(|g| g.path == file_path);
 
                 if let Some(group) = existing_group {
                     // Add matches to existing group (deduplicate)
@@ -455,7 +451,12 @@ mod tests {
         let cmd = r#"search "pattern""#;
         let result = parse_command(cmd);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must start with 'query'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must start with 'query'")
+        );
     }
 
     #[test]

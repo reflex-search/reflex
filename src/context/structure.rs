@@ -1,7 +1,7 @@
 //! Directory structure generation for context
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
@@ -27,9 +27,7 @@ pub fn generate_tree(root: &Path, max_depth: usize) -> Result<String> {
     let mut output = Vec::new();
 
     // Show root directory name
-    let root_name = root.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(".");
+    let root_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(".");
     output.push(format!("{}/", root_name));
 
     generate_tree_recursive(root, "", max_depth, 0, &mut output)?;
@@ -87,7 +85,10 @@ fn generate_tree_recursive(
         if is_real_dir {
             // Directory: show name with slash and possibly recurse
             let dir_info = get_dir_info(&path);
-            output.push(format!("{}{} {}/ {}", prefix, connector, name_str, dir_info));
+            output.push(format!(
+                "{}{} {}/ {}",
+                prefix, connector, name_str, dir_info
+            ));
 
             // Recurse if not at max depth
             if current_depth + 1 < max_depth {
@@ -97,7 +98,10 @@ fn generate_tree_recursive(
         } else {
             // File or symlink: show name with metadata
             let file_info = get_file_info(&path);
-            output.push(format!("{}{} {} {}", prefix, connector, name_str, file_info));
+            output.push(format!(
+                "{}{} {} {}",
+                prefix, connector, name_str, file_info
+            ));
         }
     }
 
@@ -182,9 +186,7 @@ fn should_exclude(path: &Path) -> bool {
 
 /// Generate JSON tree structure
 pub fn generate_tree_json(root: &Path, max_depth: usize) -> Result<Value> {
-    let root_name = root.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(".");
+    let root_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(".");
 
     Ok(json!({
         "root": root_name,
@@ -275,10 +277,14 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         // Create some files
-        File::create(temp.path().join("file1.txt")).unwrap()
-            .write_all(b"line1\nline2\nline3").unwrap();
-        File::create(temp.path().join("file2.rs")).unwrap()
-            .write_all(b"fn main() {}").unwrap();
+        File::create(temp.path().join("file1.txt"))
+            .unwrap()
+            .write_all(b"line1\nline2\nline3")
+            .unwrap();
+        File::create(temp.path().join("file2.rs"))
+            .unwrap()
+            .write_all(b"fn main() {}")
+            .unwrap();
 
         let result = generate_tree(temp.path(), 3).unwrap();
 
@@ -343,8 +349,10 @@ mod tests {
     fn test_generate_tree_json() {
         let temp = TempDir::new().unwrap();
 
-        File::create(temp.path().join("test.txt")).unwrap()
-            .write_all(b"hello\nworld").unwrap();
+        File::create(temp.path().join("test.txt"))
+            .unwrap()
+            .write_all(b"hello\nworld")
+            .unwrap();
         fs::create_dir(temp.path().join("subdir")).unwrap();
 
         let result = generate_tree_json(temp.path(), 3).unwrap();

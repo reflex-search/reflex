@@ -67,8 +67,7 @@ impl CacheManager {
             return Ok(());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to create meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to create meta.db")?;
 
         // Create files table
         conn.execute(
@@ -83,7 +82,10 @@ impl CacheManager {
             [],
         )?;
 
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)", [])?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
+            [],
+        )?;
 
         // Create statistics table
         conn.execute(
@@ -274,8 +276,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
     /// Check if cache exists and is valid
     pub fn exists(&self) -> bool {
-        self.cache_path.exists()
-            && self.cache_path.join(META_DB).exists()
+        self.cache_path.exists() && self.cache_path.join(META_DB).exists()
     }
 
     /// Validate cache integrity and detect corruption
@@ -291,7 +292,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Check if cache directory exists
         if !self.cache_path.exists() {
-            anyhow::bail!("Cache directory does not exist: {}", self.cache_path.display());
+            anyhow::bail!(
+                "Cache directory does not exist: {}",
+                self.cache_path.display()
+            );
         }
 
         // Check meta.db exists and can be opened
@@ -316,7 +320,15 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         match tables {
             Ok(table_list) => {
                 // Check for required tables
-                let required_tables = vec!["files", "statistics", "config", "file_branches", "branches", "file_dependencies", "file_exports"];
+                let required_tables = vec![
+                    "files",
+                    "statistics",
+                    "config",
+                    "file_branches",
+                    "branches",
+                    "file_dependencies",
+                    "file_exports",
+                ];
                 for table in &required_tables {
                     if !table_list.iter().any(|t| t == table) {
                         anyhow::bail!("Required table '{}' missing from database schema", table);
@@ -330,8 +342,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Run SQLite integrity check (fast quick_check)
         // Use quick_check instead of integrity_check for speed (<10ms vs 100ms+)
-        let integrity_result: String = conn
-            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        let integrity_result: String =
+            conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
 
         if integrity_result != "ok" {
             log::warn!("Database integrity check failed: {}", integrity_result);
@@ -354,8 +366,12 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                         Ok(_) => {
                             // Check magic bytes
                             if &header != b"RFTG" {
-                                log::warn!("trigrams.bin has invalid magic bytes - may be corrupted");
-                                anyhow::bail!("trigrams.bin appears to be corrupted (invalid magic bytes)");
+                                log::warn!(
+                                    "trigrams.bin has invalid magic bytes - may be corrupted"
+                                );
+                                anyhow::bail!(
+                                    "trigrams.bin appears to be corrupted (invalid magic bytes)"
+                                );
                             }
                         }
                         Err(_) => {
@@ -381,8 +397,12 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                         Ok(_) => {
                             // Check magic bytes
                             if &header != b"RFCT" {
-                                log::warn!("content.bin has invalid magic bytes - may be corrupted");
-                                anyhow::bail!("content.bin appears to be corrupted (invalid magic bytes)");
+                                log::warn!(
+                                    "content.bin has invalid magic bytes - may be corrupted"
+                                );
+                                anyhow::bail!(
+                                    "content.bin appears to be corrupted (invalid magic bytes)"
+                                );
                             }
                         }
                         Err(_) => {
@@ -431,13 +451,19 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                 );
             }
         } else {
-            log::debug!("No schema_hash found in cache - this cache was created before automatic invalidation was implemented");
+            log::debug!(
+                "No schema_hash found in cache - this cache was created before automatic invalidation was implemented"
+            );
             // Don't fail for backward compatibility with old caches
             // They will get the hash on next rebuild
         }
 
         let elapsed = start.elapsed();
-        log::debug!("Cache validation passed (schema hash: {}, took {:?})", current_schema_hash, elapsed);
+        log::debug!(
+            "Cache validation passed (schema hash: {}, took {:?})",
+            current_schema_hash,
+            elapsed
+        );
         Ok(())
     }
 
@@ -480,10 +506,15 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                 let parsed: Vec<Language> = langs
                     .iter()
                     .filter_map(|v| v.as_str())
-                    .filter_map(|s| Language::from_name(s).or_else(|| {
-                        log::warn!("Unknown language '{}' in config.toml [index] section — ignoring", s);
-                        None
-                    }))
+                    .filter_map(|s| {
+                        Language::from_name(s).or_else(|| {
+                            log::warn!(
+                                "Unknown language '{}' in config.toml [index] section — ignoring",
+                                s
+                            );
+                            None
+                        })
+                    })
                     .collect();
                 if !parsed.is_empty() {
                     cfg.languages = parsed;
@@ -495,11 +526,25 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             if let Some(follow) = index_tbl.get("follow_symlinks").and_then(|v| v.as_bool()) {
                 cfg.follow_symlinks = follow;
             }
-            if let Some(include) = index_tbl.get("include").and_then(|v| v.get("patterns")).and_then(|v| v.as_array()) {
-                cfg.include_patterns = include.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            if let Some(include) = index_tbl
+                .get("include")
+                .and_then(|v| v.get("patterns"))
+                .and_then(|v| v.as_array())
+            {
+                cfg.include_patterns = include
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
             }
-            if let Some(exclude) = index_tbl.get("exclude").and_then(|v| v.get("patterns")).and_then(|v| v.as_array()) {
-                cfg.exclude_patterns = exclude.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            if let Some(exclude) = index_tbl
+                .get("exclude")
+                .and_then(|v| v.get("patterns"))
+                .and_then(|v| v.as_array())
+            {
+                cfg.exclude_patterns = exclude
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
             }
         }
 
@@ -539,8 +584,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for WAL checkpoint")?;
+        let conn =
+            Connection::open(&db_path).context("Failed to open meta.db for WAL checkpoint")?;
 
         // PRAGMA wal_checkpoint(TRUNCATE) forces a full checkpoint and truncates the WAL
         // This ensures background processes see all committed data
@@ -551,10 +596,13 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             let checkpointed: i64 = row.get(2)?;
             log::debug!(
                 "WAL checkpoint completed: busy={}, log_pages={}, checkpointed_pages={}",
-                busy, log_pages, checkpointed
+                busy,
+                log_pages,
+                checkpointed
             );
             Ok(())
-        }).context("Failed to execute WAL checkpoint")?;
+        })
+        .context("Failed to execute WAL checkpoint")?;
 
         log::debug!("Executed WAL checkpoint (TRUNCATE) on meta.db");
         Ok(())
@@ -571,8 +619,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         // Get all hashes from file_branches, joined with files to get paths
         // If a file appears in multiple branches, we'll get multiple entries
@@ -580,14 +627,16 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         let mut stmt = conn.prepare(
             "SELECT f.path, fb.hash
              FROM file_branches fb
-             JOIN files f ON fb.file_id = f.id"
+             JOIN files f ON fb.file_id = f.id",
         )?;
-        let hashes: HashMap<String, String> = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?
-        .collect::<Result<HashMap<_, _>, _>>()?;
+        let hashes: HashMap<String, String> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
-        log::debug!("Loaded {} file hashes across all branches from SQLite", hashes.len());
+        log::debug!(
+            "Loaded {} file hashes across all branches from SQLite",
+            hashes.len()
+        );
         Ok(hashes)
     }
 
@@ -602,8 +651,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         // Get hashes for specific branch only
         let mut stmt = conn.prepare(
@@ -611,14 +659,17 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
              FROM file_branches fb
              JOIN files f ON fb.file_id = f.id
              JOIN branches b ON fb.branch_id = b.id
-             WHERE b.name = ?"
+             WHERE b.name = ?",
         )?;
-        let hashes: HashMap<String, String> = stmt.query_map([branch], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?
-        .collect::<Result<HashMap<_, _>, _>>()?;
+        let hashes: HashMap<String, String> = stmt
+            .query_map([branch], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
-        log::debug!("Loaded {} file hashes for branch '{}' from SQLite", hashes.len(), branch);
+        log::debug!(
+            "Loaded {} file hashes for branch '{}' from SQLite",
+            hashes.len(),
+            branch
+        );
         Ok(hashes)
     }
 
@@ -638,8 +689,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// via record_branch_file() or batch_record_branch_files().
     pub fn update_file(&self, path: &str, language: &str, line_count: usize) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for file update")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db for file update")?;
 
         let now = chrono::Utc::now().timestamp();
 
@@ -658,8 +708,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// via batch_update_files_and_branch().
     pub fn batch_update_files(&self, files: &[(String, String, usize)]) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let mut conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for batch update")?;
+        let mut conn =
+            Connection::open(&db_path).context("Failed to open meta.db for batch update")?;
 
         let now = chrono::Utc::now().timestamp();
         let now_str = now.to_string();
@@ -671,7 +721,12 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             tx.execute(
                 "INSERT OR REPLACE INTO files (path, last_indexed, language, line_count)
                  VALUES (?, ?, ?, ?)",
-                [path.as_str(), &now_str, language.as_str(), &line_count.to_string()],
+                [
+                    path.as_str(),
+                    &now_str,
+                    language.as_str(),
+                    &line_count.to_string(),
+                ],
             )?;
         }
 
@@ -685,12 +740,16 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// if files are inserted, their branch hashes are guaranteed to be inserted too.
     pub fn batch_update_files_and_branch(
         &self,
-        files: &[(String, String, usize)],      // (path, language, line_count)
-        branch_files: &[(String, String)],       // (path, hash)
+        files: &[(String, String, usize)], // (path, language, line_count)
+        branch_files: &[(String, String)], // (path, hash)
         branch: &str,
         commit_sha: Option<&str>,
     ) -> Result<()> {
-        log::info!("batch_update_files_and_branch: Processing {} files for branch '{}'", files.len(), branch);
+        log::info!(
+            "batch_update_files_and_branch: Processing {} files for branch '{}'",
+            files.len(),
+            branch
+        );
 
         let db_path = self.cache_path.join(META_DB);
         let mut conn = Connection::open(&db_path)
@@ -707,7 +766,12 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             tx.execute(
                 "INSERT OR REPLACE INTO files (path, last_indexed, language, line_count)
                  VALUES (?, ?, ?, ?)",
-                [path.as_str(), &now_str, language.as_str(), &line_count.to_string()],
+                [
+                    path.as_str(),
+                    &now_str,
+                    language.as_str(),
+                    &line_count.to_string(),
+                ],
             )?;
         }
         log::info!("Inserted {} files into files table", files.len());
@@ -720,11 +784,13 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         let mut inserted = 0;
         for (path, hash) in branch_files {
             // Lookup file_id from path (will find it because we just inserted above)
-            let file_id: i64 = tx.query_row(
-                "SELECT id FROM files WHERE path = ?",
-                [path.as_str()],
-                |row| row.get(0)
-            ).context(format!("File not found in index after insert: {}", path))?;
+            let file_id: i64 = tx
+                .query_row(
+                    "SELECT id FROM files WHERE path = ?",
+                    [path.as_str()],
+                    |row| row.get(0),
+                )
+                .context(format!("File not found in index after insert: {}", path))?;
 
             // Insert into file_branches using INTEGER values (not strings!)
             tx.execute(
@@ -742,8 +808,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // DIAGNOSTIC: Verify data was actually persisted after commit
         // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
-        let verify_conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for verification")?;
+        let verify_conn =
+            Connection::open(&db_path).context("Failed to open meta.db for verification")?;
 
         // Count actual files in database
         let actual_file_count: i64 = verify_conn.query_row(
@@ -753,13 +819,15 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         ).unwrap_or(0);
 
         // Count actual file_branches entries for this branch
-        let actual_fb_count: i64 = verify_conn.query_row(
-            "SELECT COUNT(*) FROM file_branches fb
+        let actual_fb_count: i64 = verify_conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_branches fb
              JOIN branches b ON fb.branch_id = b.id
              WHERE b.name = ?",
-            [branch],
-            |row| row.get(0)
-        ).unwrap_or(0);
+                [branch],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
         log::info!(
             "Post-commit verification: {} files in files table (expected {}), {} file_branches entries for '{}' (expected {})",
@@ -795,18 +863,19 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Counts only files indexed for the given branch, not all files across all branches.
     pub fn update_stats(&self, branch: &str) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for stats update")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db for stats update")?;
 
         // Count files for specific branch only (branch-aware statistics)
-        let total_files: usize = conn.query_row(
-            "SELECT COUNT(DISTINCT fb.file_id)
+        let total_files: usize = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT fb.file_id)
              FROM file_branches fb
              JOIN branches b ON fb.branch_id = b.id
              WHERE b.name = ?",
-            [branch],
-            |row| row.get(0),
-        ).unwrap_or(0);
+                [branch],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
         let now = chrono::Utc::now().timestamp();
 
@@ -815,7 +884,11 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             ["total_files", &total_files.to_string(), &now.to_string()],
         )?;
 
-        log::debug!("Updated statistics for branch '{}': {} files", branch, total_files);
+        log::debug!(
+            "Updated statistics for branch '{}': {} files",
+            branch,
+            total_files
+        );
         Ok(())
     }
 
@@ -844,8 +917,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// is marked as compatible with the current binary version.
     pub fn update_schema_hash(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for schema hash update")?;
+        let conn =
+            Connection::open(&db_path).context("Failed to open meta.db for schema hash update")?;
 
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         let now = chrono::Utc::now().timestamp();
@@ -867,27 +940,26 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(Vec::new());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
-        let mut stmt = conn.prepare(
-            "SELECT path, language, last_indexed FROM files ORDER BY path"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT path, language, last_indexed FROM files ORDER BY path")?;
 
-        let files = stmt.query_map([], |row| {
-            let path: String = row.get(0)?;
-            let language: String = row.get(1)?;
-            let last_indexed: i64 = row.get(2)?;
+        let files = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let language: String = row.get(1)?;
+                let last_indexed: i64 = row.get(2)?;
 
-            Ok(IndexedFile {
-                path,
-                language,
-                last_indexed: chrono::DateTime::from_timestamp(last_indexed, 0)
-                    .unwrap_or_else(chrono::Utc::now)
-                    .to_rfc3339(),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+                Ok(IndexedFile {
+                    path,
+                    language,
+                    last_indexed: chrono::DateTime::from_timestamp(last_indexed, 0)
+                        .unwrap_or_else(chrono::Utc::now)
+                        .to_rfc3339(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(files)
     }
@@ -911,8 +983,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             });
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         // Determine current branch for branch-aware statistics
         let workspace_root = self.workspace_root();
@@ -931,46 +1002,57 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             log::debug!("stats(): Counting files for branch '{}'", branch);
 
             // Debug: Check all branches
-            let branches: Vec<(i64, String, i64)> = conn.prepare(
-                "SELECT id, name, file_count FROM branches"
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                    .map(|rows| rows.collect())
-            })
-            .and_then(|result| result)
-            .unwrap_or_default();
+            let branches: Vec<(i64, String, i64)> = conn
+                .prepare("SELECT id, name, file_count FROM branches")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .map(|rows| rows.collect())
+                })
+                .and_then(|result| result)
+                .unwrap_or_default();
 
             for (id, name, count) in &branches {
-                log::debug!("stats(): Branch ID={}, Name='{}', FileCount={}", id, name, count);
+                log::debug!(
+                    "stats(): Branch ID={}, Name='{}', FileCount={}",
+                    id,
+                    name,
+                    count
+                );
             }
 
             // Debug: Count file_branches per branch
-            let fb_counts: Vec<(String, i64)> = conn.prepare(
-                "SELECT b.name, COUNT(*) FROM file_branches fb
+            let fb_counts: Vec<(String, i64)> = conn
+                .prepare(
+                    "SELECT b.name, COUNT(*) FROM file_branches fb
                  JOIN branches b ON fb.branch_id = b.id
-                 GROUP BY b.name"
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map(|rows| rows.collect())
-            })
-            .and_then(|result| result)
-            .unwrap_or_default();
+                 GROUP BY b.name",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                        .map(|rows| rows.collect())
+                })
+                .and_then(|result| result)
+                .unwrap_or_default();
 
             for (name, count) in &fb_counts {
-                log::debug!("stats(): file_branches count for branch '{}': {}", name, count);
+                log::debug!(
+                    "stats(): file_branches count for branch '{}': {}",
+                    name,
+                    count
+                );
             }
 
             // Count files for current branch only
-            let count: usize = conn.query_row(
-                "SELECT COUNT(DISTINCT fb.file_id)
+            let count: usize = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT fb.file_id)
                  FROM file_branches fb
                  JOIN branches b ON fb.branch_id = b.id
                  WHERE b.name = ?",
-                [branch],
-                |row| row.get(0),
-            ).unwrap_or(0);
+                    [branch],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
 
             log::debug!("stats(): Query returned total_files = {}", count);
             count
@@ -981,21 +1063,29 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         };
 
         // Read last updated timestamp
-        let last_updated: String = conn.query_row(
-            "SELECT updated_at FROM statistics WHERE key = 'total_files'",
-            [],
-            |row| {
-                let timestamp: i64 = row.get(0)?;
-                Ok(chrono::DateTime::from_timestamp(timestamp, 0)
-                    .unwrap_or_else(chrono::Utc::now)
-                    .to_rfc3339())
-            },
-        ).unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
+        let last_updated: String = conn
+            .query_row(
+                "SELECT updated_at FROM statistics WHERE key = 'total_files'",
+                [],
+                |row| {
+                    let timestamp: i64 = row.get(0)?;
+                    Ok(chrono::DateTime::from_timestamp(timestamp, 0)
+                        .unwrap_or_else(chrono::Utc::now)
+                        .to_rfc3339())
+                },
+            )
+            .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
 
         // Calculate total cache size (all binary files)
         let mut index_size_bytes: u64 = 0;
 
-        for file_name in [META_DB, TOKENS_BIN, CONFIG_TOML, "content.bin", "trigrams.bin"] {
+        for file_name in [
+            META_DB,
+            TOKENS_BIN,
+            CONFIG_TOML,
+            "content.bin",
+            "trigrams.bin",
+        ] {
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 index_size_bytes += metadata.len();
@@ -1012,7 +1102,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                  JOIN file_branches fb ON f.id = fb.file_id
                  JOIN branches b ON fb.branch_id = b.id
                  WHERE b.name = ?
-                 GROUP BY f.language"
+                 GROUP BY f.language",
             )?;
             let lang_counts = stmt.query_map([branch], |row| {
                 let language: String = row.get(0)?;
@@ -1026,7 +1116,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             }
         } else {
             // Fallback: query all files
-            let mut stmt = conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language")?;
+            let mut stmt =
+                conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language")?;
             let lang_counts = stmt.query_map([], |row| {
                 let language: String = row.get(0)?;
                 let count: i64 = row.get(1)?;
@@ -1049,7 +1140,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                  JOIN file_branches fb ON f.id = fb.file_id
                  JOIN branches b ON fb.branch_id = b.id
                  WHERE b.name = ?
-                 GROUP BY f.language"
+                 GROUP BY f.language",
             )?;
             let line_counts = stmt.query_map([branch], |row| {
                 let language: String = row.get(0)?;
@@ -1063,7 +1154,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             }
         } else {
             // Fallback: query all files
-            let mut stmt = conn.prepare("SELECT language, SUM(line_count) FROM files GROUP BY language")?;
+            let mut stmt =
+                conn.prepare("SELECT language, SUM(line_count) FROM files GROUP BY language")?;
             let line_counts = stmt.query_map([], |row| {
                 let language: String = row.get(0)?;
                 let count: i64 = row.get(1)?;
@@ -1091,7 +1183,12 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Get or create a branch ID by name
     ///
     /// Returns the numeric branch ID, creating a new entry if needed.
-    fn get_or_create_branch_id(&self, conn: &Connection, branch_name: &str, commit_sha: Option<&str>) -> Result<i64> {
+    fn get_or_create_branch_id(
+        &self,
+        conn: &Connection,
+        branch_name: &str,
+        commit_sha: Option<&str>,
+    ) -> Result<i64> {
         // Try to get existing branch
         let existing_id: Option<i64> = conn
             .query_row(
@@ -1110,7 +1207,11 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         conn.execute(
             "INSERT INTO branches (name, commit_sha, last_indexed, file_count, is_dirty)
              VALUES (?, ?, ?, 0, 0)",
-            [branch_name, commit_sha.unwrap_or("unknown"), &now.to_string()],
+            [
+                branch_name,
+                commit_sha.unwrap_or("unknown"),
+                &now.to_string(),
+            ],
         )?;
 
         // Get the ID we just created
@@ -1131,11 +1232,11 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             .context("Failed to open meta.db for branch file recording")?;
 
         // Lookup file_id from path
-        let file_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = ?",
-            [path],
-            |row| row.get(0)
-        ).context(format!("File not found in index: {}", path))?;
+        let file_id: i64 = conn
+            .query_row("SELECT id FROM files WHERE path = ?", [path], |row| {
+                row.get(0)
+            })
+            .context(format!("File not found in index: {}", path))?;
 
         // Get or create branch_id
         let branch_id = self.get_or_create_branch_id(&conn, branch, commit_sha)?;
@@ -1158,11 +1259,15 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// For atomic insertion of both files and branch hashes, use `batch_update_files_and_branch()` instead.
     pub fn batch_record_branch_files(
         &self,
-        files: &[(String, String)],  // (path, hash)
+        files: &[(String, String)], // (path, hash)
         branch: &str,
         commit_sha: Option<&str>,
     ) -> Result<()> {
-        log::info!("batch_record_branch_files: Processing {} files for branch '{}'", files.len(), branch);
+        log::info!(
+            "batch_record_branch_files: Processing {} files for branch '{}'",
+            files.len(),
+            branch
+        );
 
         let db_path = self.cache_path.join(META_DB);
         let mut conn = Connection::open(&db_path)
@@ -1181,11 +1286,13 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         for (path, hash) in files {
             // Lookup file_id from path
             log::trace!("Looking up file_id for path: {}", path);
-            let file_id: i64 = tx.query_row(
-                "SELECT id FROM files WHERE path = ?",
-                [path.as_str()],
-                |row| row.get(0)
-            ).context(format!("File not found in index: {}", path))?;
+            let file_id: i64 = tx
+                .query_row(
+                    "SELECT id FROM files WHERE path = ?",
+                    [path.as_str()],
+                    |row| row.get(0),
+                )
+                .context(format!("File not found in index: {}", path))?;
             log::trace!("Found file_id={} for path: {}", file_id, path);
 
             // Insert using proper INTEGER types (not strings!)
@@ -1213,15 +1320,14 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         let mut stmt = conn.prepare(
             "SELECT f.path, fb.hash
              FROM file_branches fb
              JOIN files f ON fb.file_id = f.id
              JOIN branches b ON fb.branch_id = b.id
-             WHERE b.name = ?"
+             WHERE b.name = ?",
         )?;
         let files: HashMap<String, String> = stmt
             .query_map([branch], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -1245,8 +1351,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         let count: i64 = conn
             .query_row(
@@ -1271,8 +1376,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             anyhow::bail!("Database not initialized");
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         let info = conn.query_row(
             "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE name = ?",
@@ -1359,8 +1463,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(None);
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         let result = conn
             .query_row(
@@ -1388,15 +1491,12 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(None);
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         let result = conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?",
-                [path],
-                |row| row.get(0),
-            )
+            .query_row("SELECT id FROM files WHERE path = ?", [path], |row| {
+                row.get(0)
+            })
             .optional()?;
 
         Ok(result)
@@ -1415,8 +1515,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
         // SQLite has a limit of 999 parameters by default
         // Chunk requests to stay well under that limit
@@ -1426,26 +1525,31 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         for chunk in paths.chunks(BATCH_SIZE) {
             // Build IN clause for this chunk
-            let placeholders = chunk.iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(", ");
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
-            let query = format!("SELECT path, id FROM files WHERE path IN ({})", placeholders);
+            let query = format!(
+                "SELECT path, id FROM files WHERE path IN ({})",
+                placeholders
+            );
 
             let params: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
             let mut stmt = conn.prepare(&query)?;
 
-            let chunk_results = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .collect::<Result<HashMap<_, _>, _>>()?;
+            let chunk_results = stmt
+                .query_map(rusqlite::params_from_iter(params), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .collect::<Result<HashMap<_, _>, _>>()?;
 
             results.extend(chunk_results);
         }
 
-        log::debug!("Batch loaded {} file IDs (out of {} requested, {} chunks)",
-                   results.len(), paths.len(), paths.len().div_ceil(BATCH_SIZE));
+        log::debug!(
+            "Batch loaded {} file IDs (out of {} requested, {} chunks)",
+            results.len(),
+            paths.len(),
+            paths.len().div_ceil(BATCH_SIZE)
+        );
         Ok(results)
     }
 
@@ -1463,8 +1567,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
 
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for compaction check")?;
+        let conn =
+            Connection::open(&db_path).context("Failed to open meta.db for compaction check")?;
 
         // Get last_compaction timestamp (defaults to "0" if not found)
         let last_compaction: i64 = conn
@@ -1536,7 +1640,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Step 1: Identify deleted files (in DB but not on filesystem)
         let deleted_files = self.identify_deleted_files()?;
-        log::info!("Found {} deleted files to remove from cache", deleted_files.len());
+        log::info!(
+            "Found {} deleted files to remove from cache",
+            deleted_files.len()
+        );
 
         if deleted_files.is_empty() {
             log::info!("No deleted files to compact - cache is clean");
@@ -1594,10 +1701,11 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Query all files from database (id, path)
         let mut stmt = conn.prepare("SELECT id, path FROM files")?;
-        let files = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        let files = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         log::debug!("Checking {} files for deletion status", files.len());
 
@@ -1626,8 +1734,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         let db_path = self.cache_path.join(META_DB);
-        let mut conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for file deletion")?;
+        let mut conn =
+            Connection::open(&db_path).context("Failed to open meta.db for file deletion")?;
 
         let tx = conn.transaction()?;
 
@@ -1635,10 +1743,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         const BATCH_SIZE: usize = 900;
 
         for chunk in file_ids.chunks(BATCH_SIZE) {
-            let placeholders = chunk.iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(", ");
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
             let delete_query = format!("DELETE FROM files WHERE id IN ({})", placeholders);
 
@@ -1647,7 +1752,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         tx.commit()?;
-        log::debug!("Deleted {} files from database (CASCADE handled related tables)", file_ids.len());
+        log::debug!(
+            "Deleted {} files from database (CASCADE handled related tables)",
+            file_ids.len()
+        );
         Ok(())
     }
 
@@ -1657,8 +1765,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// This can take several seconds on large databases but significantly reduces disk usage.
     fn vacuum_database(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for VACUUM")?;
+        let conn = Connection::open(&db_path).context("Failed to open meta.db for VACUUM")?;
 
         // VACUUM cannot run inside a transaction
         // It rebuilds the entire database file
@@ -1678,7 +1785,13 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     fn calculate_cache_size(&self) -> Result<u64> {
         let mut total_size: u64 = 0;
 
-        for file_name in [META_DB, TOKENS_BIN, CONFIG_TOML, "content.bin", "trigrams.bin"] {
+        for file_name in [
+            META_DB,
+            TOKENS_BIN,
+            CONFIG_TOML,
+            "content.bin",
+            "trigrams.bin",
+        ] {
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 total_size += metadata.len();
@@ -1864,8 +1977,12 @@ mod tests {
         cache.update_file("src/lib.rs", "rust", 200).unwrap();
 
         // Record files for a test branch
-        cache.record_branch_file("src/main.rs", "_default", "hash1", None).unwrap();
-        cache.record_branch_file("src/lib.rs", "_default", "hash2", None).unwrap();
+        cache
+            .record_branch_file("src/main.rs", "_default", "hash1", None)
+            .unwrap();
+        cache
+            .record_branch_file("src/lib.rs", "_default", "hash2", None)
+            .unwrap();
         cache.update_stats("_default").unwrap();
 
         let stats = cache.stats().unwrap();
@@ -1906,10 +2023,18 @@ mod tests {
         cache.update_file("test.py", "Python", 80).unwrap();
 
         // Record files for a test branch
-        cache.record_branch_file("main.rs", "_default", "hash1", None).unwrap();
-        cache.record_branch_file("lib.rs", "_default", "hash2", None).unwrap();
-        cache.record_branch_file("script.py", "_default", "hash3", None).unwrap();
-        cache.record_branch_file("test.py", "_default", "hash4", None).unwrap();
+        cache
+            .record_branch_file("main.rs", "_default", "hash1", None)
+            .unwrap();
+        cache
+            .record_branch_file("lib.rs", "_default", "hash2", None)
+            .unwrap();
+        cache
+            .record_branch_file("script.py", "_default", "hash3", None)
+            .unwrap();
+        cache
+            .record_branch_file("test.py", "_default", "hash4", None)
+            .unwrap();
         cache.update_stats("_default").unwrap();
 
         let stats = cache.stats().unwrap();
@@ -1969,7 +2094,9 @@ mod tests {
 
         // Add file to index first (required for record_branch_file)
         cache.update_file("src/main.rs", "rust", 100).unwrap();
-        cache.record_branch_file("src/main.rs", "main", "hash1", Some("commit123")).unwrap();
+        cache
+            .record_branch_file("src/main.rs", "main", "hash1", Some("commit123"))
+            .unwrap();
 
         assert!(cache.branch_exists("main").unwrap());
         assert!(!cache.branch_exists("feature-branch").unwrap());
@@ -1983,7 +2110,9 @@ mod tests {
         cache.init().unwrap();
         // Add file to index first (required for record_branch_file)
         cache.update_file("src/main.rs", "rust", 100).unwrap();
-        cache.record_branch_file("src/main.rs", "main", "hash1", Some("commit123")).unwrap();
+        cache
+            .record_branch_file("src/main.rs", "main", "hash1", Some("commit123"))
+            .unwrap();
 
         let files = cache.get_branch_files("main").unwrap();
         assert_eq!(files.len(), 1);
@@ -2021,7 +2150,9 @@ mod tests {
             ("README.md".to_string(), "hash3".to_string()),
         ];
 
-        cache.batch_record_branch_files(&files, "main", Some("commit123")).unwrap();
+        cache
+            .batch_record_branch_files(&files, "main", Some("commit123"))
+            .unwrap();
 
         let branch_files = cache.get_branch_files("main").unwrap();
         assert_eq!(branch_files.len(), 3);
@@ -2036,7 +2167,9 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_branch_metadata("main", Some("commit123"), 10, false).unwrap();
+        cache
+            .update_branch_metadata("main", Some("commit123"), 10, false)
+            .unwrap();
 
         let info = cache.get_branch_info("main").unwrap();
         assert_eq!(info.branch, "main");
@@ -2051,7 +2184,9 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_branch_metadata("feature", Some("commit456"), 5, true).unwrap();
+        cache
+            .update_branch_metadata("feature", Some("commit456"), 5, true)
+            .unwrap();
 
         let info = cache.get_branch_info("feature").unwrap();
         assert_eq!(info.is_dirty, true);
@@ -2065,7 +2200,9 @@ mod tests {
         cache.init().unwrap();
         // Add file to index first (required for record_branch_file)
         cache.update_file("src/main.rs", "rust", 100).unwrap();
-        cache.record_branch_file("src/main.rs", "main", "unique_hash", Some("commit123")).unwrap();
+        cache
+            .record_branch_file("src/main.rs", "main", "unique_hash", Some("commit123"))
+            .unwrap();
 
         let result = cache.find_file_with_hash("unique_hash").unwrap();
         assert!(result.is_some());
@@ -2115,9 +2252,12 @@ mod tests {
 
         // Verify tables exist
         let tables: Vec<String> = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap()
-            .query_map([], |row| row.get(0)).unwrap()
-            .collect::<Result<Vec<_>, _>>().unwrap();
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert!(tables.contains(&"files".to_string()));
         assert!(tables.contains(&"statistics".to_string()));
@@ -2145,11 +2285,7 @@ mod tests {
                 thread::spawn(move || {
                     let cache = CacheManager::new(&path);
                     cache
-                        .update_file(
-                            &format!("file_{}.rs", i),
-                            "rust",
-                            i * 10,
-                        )
+                        .update_file(&format!("file_{}.rs", i), "rust", i * 10)
                         .unwrap();
                 })
             })

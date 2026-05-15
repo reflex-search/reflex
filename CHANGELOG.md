@@ -1,340 +1,620 @@
-# Changelog
+## [1.5.0] - 2026-05-15
 
-All notable changes to Reflex will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/),
-and this project adheres to [Semantic Versioning](https://semver.org/).
+### Fixed
 
-## [Unreleased]
+
+- Correct release.toml format for cargo-release
+
+- Restore git-cliff pre-release hook in correct format
+
+## [1.4.0] - 2026-05-15
+
 
 ### Added
 
-- New `openai-compatible` LLM provider for any endpoint that implements the OpenAI Chat Completions schema, including LMStudio, Ollama, llama.cpp server, vLLM, and litellm proxies. Configure via `rfx llm config` or by setting `[credentials] openai_compatible_base_url` (and optionally `openai_compatible_api_key` / `openai_compatible_model`) in `~/.reflex/config.toml`. The API key is optional for keyless local servers. Closes [#30](https://github.com/reflex-search/reflex/issues/30).
+
+- Add check_index_status MCP tool (REF-107)
+
+- Raise preview truncation to 180 chars and add preview_length param
+
+
+### Documentation
+
+
+- Add MCP tool selection decision tree cheatsheet
+
+- Reframe README to reflect CLI-first, not AI-only
+
+
+### Fixed
+
+
+- Fix JSON output correctness across query, deps, and analyze
+
+- Detect corrupt trigrams.bin via magic-byte check before skipping rebuild
+
+- Correct singular/plural for result count in TUI (REF-66)
+
+## [1.3.5] - 2026-05-14
+
+
+### Fixed
+
+
+- Hardlink issue in pipeline
+
+## [1.3.4] - 2026-05-14
+
+
+### Fixed
+
+
+- Dumb symlink issue
+
+## [1.3.3] - 2026-05-14
+
+
+### Fixed
+
+
+- Release pipeline
+
+## [1.3.2] - 2026-05-14
+
+
+### Fixed
+
+
+- Cargo-dist version issue
+
+## [1.3.1] - 2026-05-14
+
+
+### Fixed
+
+
+- Some cargo-dist dependency issues
+
+## [1.3.0] - 2026-05-14
+
+
+### Added
+
+
+- Introduce SymbolRef for stable JSON symbol output
+
+- Wire dependencies parameter to list_locations, count_occurrences, search_regex, search_ast
+
 
 ### Changed
 
-- LLM model resolution centralized into `config::resolve_model` / `config::resolve_model_for`. **Previously, `~/.reflex/config.toml` `[credentials] {provider}_model` was silently ignored by chat_tui's runtime calls** (compaction, mid-session triage, in-session provider switches) and the provider's hard-coded constructor default was used instead. After this change those user-config values are honored everywhere. **If you set `openrouter_model = "anthropic/claude-opus-4"` (or similar) thinking it had no effect, your interactive sessions will now actually use that model — which may change costs.** Verify your `~/.reflex/config.toml` after upgrading.
-- Four near-duplicate model-resolution implementations across `semantic/mod.rs`, `semantic/agentic.rs`, `semantic/chat_tui.rs`, and `pulse/narrate.rs` collapsed into one helper.
+
+- Decompose query.rs into src/query/ submodules
+
+
+### Documentation
+
+
+- Add rfx serve threat model and language forward-compat note
+
 
 ### Fixed
 
-- chat_tui no longer silently falls back to the provider's hard-coded default model when `~/.reflex/config.toml` has a model set. Previously this only worked on the initial chat session; runtime calls (compaction, triage, mid-session provider switches) used the constructor default. Invisible for openai/anthropic/openrouter (silent wrong-model); a hard error for the new `openai-compatible` provider (no default model available).
-- The `/model` command in interactive chat now accepts `openai-compatible` and no longer panics via `unreachable!()` when switching to a provider without a hard-coded default. It refuses the switch with a friendly status-bar message if no model is configured for the target provider.
-- Triage failures in interactive chat now surface in the status bar as a `PhaseUpdate::Notice` event instead of being written only to the log, so silent fallback to keyword-only search is no longer invisible to the user.
+
+- Update reflex-search npm package to fix CVE vulnerabilities
+
+- Broken csharp tests resolved
+
+- Indexing and git workspace issue
 
 ## [1.1.3] - 2026-04-27
 
-### Fixed
-
-- MCP stdio server now conforms to JSON-RPC 2.0 and is accepted by strict clients (e.g. Claude Code's Zod validators):
-  - Notifications (messages without an `id`, such as `notifications/initialized`) no longer receive a response.
-  - Responses never emit `"id": null`; the `id` field is now omitted when absent rather than serialized as null.
-
-## [0.2.3](https://github.com/reflex-search/reflex/compare/v0.2.2...v0.2.3) - 2025-11-04
-
-### Other
-
-- update Cargo.toml dependencies
-
-## [0.1.3](https://github.com/reflex-search/reflex/compare/v0.1.2...v0.1.3) - 2025-11-03
-
-### Other
-
-- Merge pull request #2 from reflex-search/release-plz-2025-11-03T22-53-50Z
-- *(ci)* add release status logging to workflow
-
-## [0.1.2](https://github.com/reflex-search/reflex/compare/v0.1.1...v0.1.2) - 2025-11-03
 
 ### Fixed
 
-- *(ci)* use default GITHUB_TOKEN and correct repository URL
-- *(ci)* remove rfx symlink to fix release-plz
-- *(ci)* correct release-plz.toml configuration format
-- *(ci)* correct release-plz GitHub Action reference
 
-### Other
+- Json serialization for mcp
 
-- release v0.1.1
-- (feat) initial release
-- Some test fixes
-- Added test file corpus for various languages
-- Renamed folder to .bruno
-- Added MCP support
-- Added a "watch" command for rebuilding index on the fly with debounce
-- Added AST query support
-- Rebuilt query engine to use a builder pipeline instead of conditional cases and fixed symbol searches when using regex
-- Make symbol field optional for regex matches
-- Revert "Fix regex queries to return actual symbol names instead of regex matches"
-- Fix regex queries to return actual symbol names instead of regex matches
-- Removed symbol counts from stats, because they're deprecated
-- Added bruno collection and incremental index rebuild
-- Added HTTP server
-- Updated default index flag to -p and updated docs
-- Renamed binary to "rfx"
-- Fix tests
-- Filled out test suite comprehensively
-- Fixed indexing memory ballooning on massive codebases
-- Flushing memory between indexing batches to save system memory
-- Had an idea that resulted in unbelievably fast lookups - removing the symbol index entirely and doing a 2-stage lookup for symbols
-- More performance enhancements, needs more work to handle the largest codebases like linux and chromium
-- Massive performance boosts on reindexing and query retrieval for huge codebases
-- Fixed Java parser
-- Added many missing language parsers
-- Updated todo and fixed another regex bug
-- Fixed some more regex issues
-- Added some better warning handling for stale indexes to json output
-- Added --json flag for programmatic parsing
-- Update warning messages to use ⚠️ emoji and WARNING prefix
-- Replace blocking validation with non-blocking warnings
-- Fix branch recording performance issue
-- Fixed another bug with regex
-- Refining regex
-- Got regex working
-- Reduced number of indexing CPU threads to 80% of available threads
-- Added lines and symbols output for indexer
-- Added PHP support
-- Updated todo
-- Updated --kind function filter to include class methods
-- Fixed some ts parsing issues with functions
-- Fixed lang parameter to only accept supported languages
-- Added react/vue/svelte support and fixed some warnings
-- Added Unknown fallback type to SymbolKind to ensure 100% indexing coverage consistently
-- Added missing symbol types
-- Added file type breakdown in indexing summary
-- Ignoring unsupported languages entirely
-- Massive performance gains
-- Fixed progress bar issues
-- Added some perf enhancements, a --count flag and progress bar for the indexer
-- Some performance improvements
-- Added retrieval time measurement
-- update todo
-- More filter options and suppressing logs
-- Further refining querying. added "kind" "expand" and "file" filters
-- Refining query capabilities
-- Some fixes
-- Fixed indexing truncation bug
-- Added query and list-files commands
-- Added basic parser functionality
-- Some context engineering instructions
-- Updated some todos
-- Initial commit
+## [1.1.0] - 2026-04-13
 
-## [0.1.1](https://github.com/reflex-search/reflex/compare/v0.1.0...v0.1.1) - 2025-11-03
-
-### Fixed
-
-- *(ci)* remove rfx symlink to fix release-plz
-- *(ci)* correct release-plz.toml configuration format
-- *(ci)* correct release-plz GitHub Action reference
-
-### Other
-
-- (feat) initial release
-- Some test fixes
-- Added test file corpus for various languages
-- Renamed folder to .bruno
-- Added MCP support
-- Added a "watch" command for rebuilding index on the fly with debounce
-- Added AST query support
-- Rebuilt query engine to use a builder pipeline instead of conditional cases and fixed symbol searches when using regex
-- Make symbol field optional for regex matches
-- Revert "Fix regex queries to return actual symbol names instead of regex matches"
-- Fix regex queries to return actual symbol names instead of regex matches
-- Removed symbol counts from stats, because they're deprecated
-- Added bruno collection and incremental index rebuild
-- Added HTTP server
-- Updated default index flag to -p and updated docs
-- Renamed binary to "rfx"
-- Fix tests
-- Filled out test suite comprehensively
-- Fixed indexing memory ballooning on massive codebases
-- Flushing memory between indexing batches to save system memory
-- Had an idea that resulted in unbelievably fast lookups - removing the symbol index entirely and doing a 2-stage lookup for symbols
-- More performance enhancements, needs more work to handle the largest codebases like linux and chromium
-- Massive performance boosts on reindexing and query retrieval for huge codebases
-- Fixed Java parser
-- Added many missing language parsers
-- Updated todo and fixed another regex bug
-- Fixed some more regex issues
-- Added some better warning handling for stale indexes to json output
-- Added --json flag for programmatic parsing
-- Update warning messages to use ⚠️ emoji and WARNING prefix
-- Replace blocking validation with non-blocking warnings
-- Fix branch recording performance issue
-- Fixed another bug with regex
-- Refining regex
-- Got regex working
-- Reduced number of indexing CPU threads to 80% of available threads
-- Added lines and symbols output for indexer
-- Added PHP support
-- Updated todo
-- Updated --kind function filter to include class methods
-- Fixed some ts parsing issues with functions
-- Fixed lang parameter to only accept supported languages
-- Added react/vue/svelte support and fixed some warnings
-- Added Unknown fallback type to SymbolKind to ensure 100% indexing coverage consistently
-- Added missing symbol types
-- Added file type breakdown in indexing summary
-- Ignoring unsupported languages entirely
-- Massive performance gains
-- Fixed progress bar issues
-- Added some perf enhancements, a --count flag and progress bar for the indexer
-- Some performance improvements
-- Added retrieval time measurement
-- update todo
-- More filter options and suppressing logs
-- Further refining querying. added "kind" "expand" and "file" filters
-- Refining query capabilities
-- Some fixes
-- Fixed indexing truncation bug
-- Added query and list-files commands
-- Added basic parser functionality
-- Some context engineering instructions
-- Updated some todos
-- Initial commit
-
-### Added
-- Query timeout support with `--timeout` flag (default: 30 seconds)
-- HTTP API timeout parameter support
-- MCP server with 30-second default timeout for all queries
-
-## [1.0.0] - 2025-11-03
-
-Initial release of Reflex - a local-first, structure-aware code search engine for AI coding workflows.
 
 ### Added
 
-#### Core Features
-- **Trigram-based indexing** for sub-100ms full-text search on large codebases (10k+ files)
-- **Runtime symbol detection** using Tree-sitter parsing on candidate files only
-- **Complete coverage** - finds every occurrence of patterns, not just symbol definitions
-- **Deterministic results** - same query always returns same results (sorted by file:line)
-- **Memory-mapped I/O** for instant cache access (zero-copy)
-- **Incremental indexing** using blake3 content hashing (only reindex changed files)
-- **Regex support** with trigram optimization for fast pattern matching
-- **AST pattern matching** using Tree-sitter S-expression queries
 
-#### Language Support
-- **Rust** - Functions, structs, enums, traits, impls, modules, methods
-- **TypeScript** - Functions, classes, interfaces, types, enums, React components
-- **JavaScript** - Functions, classes, constants, methods, React components
-- **Vue** - Functions, constants, methods from `<script>` blocks (Composition API support)
-- **Svelte** - Functions, variables, reactive declarations (`$:`)
-- **PHP** - Functions, classes, interfaces, traits, methods, namespaces, enums (PHP 8.1+)
+- Add OpenRouter provider support with model fetching and sorting options
 
-#### CLI Commands
-- `rfx index` - Build or update the local search index
-- `rfx query` - Search the codebase with multiple search modes:
-  - Full-text search (default - finds all occurrences)
-  - Symbol-only search (`--symbols` flag)
-  - Regex search (`--regex` flag)
-  - AST pattern matching (`--ast` flag)
-- `rfx stats` - Display index statistics
-- `rfx clear` - Clear the search index
-- `rfx list-files` - List all indexed files
-- `rfx watch` - Auto-reindex on file changes with configurable debouncing
-- `rfx serve` - Start HTTP API server for programmatic access
-- `rfx mcp` - Start MCP (Model Context Protocol) server for AI agents
+- Remove Groq provider and update references to OpenRouter in configuration and documentation
 
-#### Search Features
-- **Symbol filtering** by kind (function, class, struct, enum, etc.)
-- **Language filtering** to search specific languages only
-- **File path filtering** with substring matching
-- **Result limiting** with `--limit` flag
-- **Exact matching** mode with `--exact` flag
-- **Symbol expansion** with `--expand` flag (show full function/class body)
-- **JSON output** for AI agents and automation tools
-- **Count-only mode** with `--count` flag
+- Enhance LLM response handling with validation and JSON extraction improvements
 
-#### HTTP API
-- **GET /query** - Search the codebase
-  - Query params: `q`, `lang`, `kind`, `limit`, `symbols`, `regex`, `exact`, `expand`, `file`
-  - Returns: `QueryResponse` JSON with results and index status
-- **GET /stats** - Get index statistics
-  - Returns: `IndexStats` JSON with file counts, sizes, language breakdowns
-- **POST /index** - Trigger reindexing
-  - Body: `{"force": boolean, "languages": [string]}`
-  - Returns: `IndexStats` JSON after indexing completes
-- **GET /health** - Health check endpoint
-- **CORS enabled** for browser clients
+- Enhance module detection and snapshot analysis with improved descriptions and visibility adjustments
 
-#### MCP Server
-- **search_code** - Full-text or symbol search
-- **search_regex** - Regex pattern matching with trigram optimization
-- **search_ast** - Structure-aware AST pattern matching
-- **index_project** - Trigger reindexing
-- **stdio transport** for seamless integration with Claude Code and other MCP clients
+- Implement static site generator with wiki, digest, and map
 
-#### File Watching
-- **Auto-reindex** on file changes
-- **Configurable debouncing** (5-30 seconds, default: 15s)
-- **Quiet mode** for background operation
-- **Respects .gitignore** patterns automatically
+- Enhance Pulse functionality with LLM narration support for digest and wiki generation
 
-#### Index Features
-- **Git-aware** - tracks current branch and commit SHA
-- **Staleness detection** - warns when index is out of sync with working tree
-- **Branch tracking** - separate indices per branch
-- **Dirty state tracking** - knows when uncommitted changes exist
-- **.gitignore support** - automatically excludes ignored files
-- **Configurable max file size** (default: 10 MB)
-- **Parallel indexing** using rayon (default: 80% of CPU cores)
+- Add dependency diagram to wiki pages
 
-#### Cache Structure
-- `.reflex/meta.db` - SQLite database for file metadata and statistics
-- `.reflex/trigrams.bin` - Memory-mapped inverted index (trigram → file locations)
-- `.reflex/content.bin` - Memory-mapped full file contents for context extraction
-- `.reflex/config.toml` - Index configuration (auto-generated)
 
-#### Performance
-- **Sub-100ms queries** on 10k+ files (trigram indexing)
-- **2-3ms queries** on small codebases (50 files)
-- **124ms full-text search** on Linux kernel (62K files)
-- **224ms symbol search** on Linux kernel (runtime parsing of ~3 candidate files)
-- **Incremental indexing**: <1 second for changed files
+### Fixed
 
-#### Documentation
-- Comprehensive README.md with usage examples and API reference
-- Detailed ARCHITECTURE.md with system design and data formats
-- CLAUDE.md with project overview and development workflow
-- 221 comprehensive tests (unit, integration, performance)
-- Rustdoc comments for all public APIs
 
-#### Quality & Testing
-- **221 comprehensive tests**
-  - 194 unit tests (cache, indexer, query, parsers, core modules)
-  - 17 integration tests (workflows, multi-language, error handling)
-  - 10 performance tests (indexing speed, query latency, scalability)
-- **Zero unsafe code** - all safe Rust
-- **Error handling** - comprehensive error messages with context
-- **Logging support** - configurable with RUST_LOG environment variable
+- Update OpenRouter sort strategy from "speed" to "latency" for API compatibility
 
-### Performance
+## [1.0.4] - 2026-04-07
 
-- **Indexing**: 100 files in <1 second, 1,000 files in <2 seconds
-- **Query latency**: Sub-100ms on large codebases (10k+ files)
-- **Memory usage**: Efficient memory-mapped I/O (zero-copy)
-- **Cache size**: Compressed trigram index + full file contents
 
-### Architecture
+### Changed
 
-- **Trigram-based inverted index** inspired by Zoekt/Google Code Search
-- **Runtime symbol detection** - parse only candidate files at query time
-- **Memory-mapped I/O** for instant cache access
-- **Parallel processing** with rayon for multi-core indexing
-- **Incremental updates** using blake3 content hashing
-- **Zero-copy deserialization** with memory-mapped files
 
-### Technology Stack
+- Streamline language parsing and error handling in CLI and indexer
 
-- **Language**: Rust (Edition 2024)
-- **Parsing**: tree-sitter with language-specific grammars
-- **Storage**: rusqlite (metadata), custom binary format (trigrams + content)
-- **Hashing**: blake3 for fast content hashing
-- **HTTP**: axum web framework with CORS support
-- **CLI**: clap for argument parsing
-- **Async**: tokio runtime for HTTP server
-- **Parallelism**: rayon for multi-threaded indexing
 
-[Unreleased]: https://github.com/reflex-search/reflex/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/reflex-search/reflex/releases/tag/v1.0.0
+### Documentation
+
+
+- Add important setup notes for running commands and gitignore configuration
+
+- Add gitcgr code graph badge
+
+## [1.0.3] - 2025-11-21
+
+
+### Added
+
+
+- Update mcp docs to force auto-reindexing and hopefully fixed auto packaging pipeline
+
+## [1.0.1] - 2025-11-21
+
+
+### Added
+
+
+- Added auto package publishing for new releases
+
+## [1.0.0] - 2025-11-21
+
+
+### Added
+
+
+- Rfx query interactive mode
+
+- Made context full by default and added rfx context to mcp tools
+
+## [0.9.2] - 2025-11-21
+
+
+### Documentation
+
+
+- Update README for clarity and accuracy in feature descriptions
+
+## [0.9.1] - 2025-11-20
+
+
+### Added
+
+
+- Enhance agentic loop to return query confidence alongside responses
+
+- Semantic query building with external LLMs
+
+## [0.9.0] - 2025-11-19
+
+
+### Added
+
+
+- Implement semantic query execution and parsing
+
+- Refactor semantic query generation with project-specific configuration and context extraction
+
+- Massively cleaned up claude.md
+
+- Enhance query execution with count mode and update prompt template for new flags
+
+- Enhance configuration documentation and improve logging levels for cache and semantic query handling
+
+- Update AI provider models and enhance OpenAI request handling for GPT-5 compatibility
+
+- Enhance environment variable handling in tests and update Gemini model defaults
+
+- Add context generation module for AI prompts
+
+- Update default tree depth for --structure option to 1
+
+- Implement agentic semantic query builder with multi-phase workflow
+
+- Enhance agentic mode with additional command options and reporting capabilities
+
+- Enhance regex pattern syntax documentation and clarify flag combinations
+
+- Add support for OpenAI GPT-OSS models with enhanced handling and messaging
+
+- Enhance agentic mode with improved response structure and reporting capabilities
+
+- Add conversational answer generation feature and update CLI handling
+
+- Add context extraction for match results in query handling and answer generation
+
+- Increase token limits to 4000 for Anthropic, Gemini, Groq, and OpenAI providers
+
+- Add termimad for markdown rendering and update provider display with recommendations
+
+- Enhance agentic reporter with spinner support for improved progress visualization
+
+- Implement interactive TUI chat mode for `rfx ask` with message history, input handling, and progress updates
+
+- Enhance Groq API error handling with detailed logging and timeout configuration
+
+- Add bottom padding for message display to improve text wrapping in TUI chat mode
+
+- Add mouse event handling for scrolling in TUI chat mode
+
+- Add text wrapping functionality for message display in TUI chat mode
+
+- Add markdown rendering with consistent prefix for message display in TUI chat mode
+
+- Update wrap_with_prefix to use consistent border colors for message display in TUI chat mode
+
+- Add debug mode to output full LLM prompts and retain terminal history
+
+- Implement API key configuration check and enhance documentation search functionality
+
+- Enhance agentic mode to gather and utilize context for improved answer generation
+
+## [0.8.2] - 2025-11-16
+
+
+### Added
+
+
+- Enhance documentation for dependency tracking and semantic query building
+
+- Implement automatic cache invalidation using schema hash
+
+- Implement comprehensive cache corruption detection and validation tests
+
+- Implement cache compaction functionality and CLI commands for manual compaction
+
+- Add cache compaction commands and update documentation for indexing status
+
+## [0.8.1] - 2025-11-16
+
+
+### Added
+
+
+- Update documentation for dependency analysis commands and enhance Ruby parser for require statements
+
+## [0.8.0] - 2025-11-16
+
+
+### Added
+
+
+- Updated python, go, ts and rust dependency resolution to support monorepos
+
+- Added java, kotlin and ruby monorepo support
+
+- Fixed vue and ts dep resolution
+
+- Add size filtering for island detection
+
+- Refactor dependency analysis API with cleaner command separation
+
+- Enhance dependency analysis commands with pagination and sorting options
+
+- Add analyze_summary tool for quick dependency health overview
+
+- Enhance dependency analysis with file-level grouping and improved output formats
+
+- Refactor search result handling to always use grouped format and improve response structure
+
+- Dependency tracking and analysis
+
+
+### Fixed
+
+
+- Tightening up js/ts path resolution
+
+- Enhanced ts/js path resolution for dependencies
+
+- Some updates to pagination for rfx analyze
+
+## [0.7.1] - 2025-11-12
+
+
+### Added
+
+
+- Added basic functionality for dependency support
+
+- Dependency resolution across more languages
+
+
+### Fixed
+
+
+- Updated some more broken language dependency parsers
+
+- Some more dependency resolution bugfixes
+
+- Refined some regex functionality
+
+## [0.6.0] - 2025-11-11
+
+
+### Added
+
+
+- Implemented more mouse support and fixed some syntax highlighting
+
+- Add missing CLI filter options to interactive mode
+
+- Add mouse click support for new filter options
+
+- More UI refinement
+
+- Interactive mode
+
+
+### Fixed
+
+
+- Various bugfixes with result list
+
+- Fixed remaining known syntax highligting issues in interactive mode
+
+- More bugfixes
+
+- Accurate mouse click detection for all filter badges
+
+- More ui bugfixes
+
+- Fixed filter display bug
+
+- Rendering bugfixes
+
+- Incorrect file counts in interactive mode
+
+- Fixed background indexing issues
+
+## [0.5.2] - 2025-11-10
+
+
+### Added
+
+
+- Added AI suggestions
+
+## [0.5.1] - 2025-11-09
+
+
+### Fixed
+
+
+- Random bugfixes
+
+- Switched symbol indexing to use content cache rather than filesystem reads for performance boost
+
+## [0.5.0] - 2025-11-09
+
+
+### Added
+
+
+- First swipe at interactive mode, work in progress
+
+- Enhancements
+
+- Loading windows
+
+- Added preflight check to prevent runaway and unbounded queries
+
+- Added early globbing
+
+
+### Fixed
+
+
+- Fixed result scrolling
+
+- Removed early filtering performance boost that ended up sacrificing accuracy
+
+- Small optimization to lookups
+
+- Large performance improvement and bugfix with --kind filtering
+
+- Some database refactoring
+
+- Early language filtering
+
+- Speeding up background indexing
+
+## [0.4.2] - 2025-11-07
+
+
+### Added
+
+
+- Added many tests and edge cases to symbol search
+
+
+### Fixed
+
+
+- Reworking some of the symbol search functionality, bugs remain
+
+- Major fixes to symbol search accuracy
+
+## [0.4.0] - 2025-11-07
+
+
+### Added
+
+
+- Lots of json output optimizations to reduce token usage
+
+- Added pagination to prevent breaking context window limits
+
+
+### Fixed
+
+
+- Moved pagination to before symbol enrichment to boost performance
+
+- Pagination total count bug
+
+## [0.3.2] - 2025-11-06
+
+
+### Added
+
+
+- Fixed attribute support with --kind query
+
+## [0.3.0] - 2025-11-06
+
+
+### Added
+
+
+- Added language filter and parallelized --symbol extraction
+
+- Implement word-boundary matching as default search behavior
+
+- Refactored AST query functionality, much simpler now
+
+
+### Fixed
+
+
+- Added thread cap for indexing and querying
+
+- Added some missing symbol grammar and added universal ast support, not just for select languages
+
+## [0.2.13] - 2025-11-05
+
+
+### Fixed
+
+
+- Cache validation was reading entire files causing 18x slowdown
+
+## [0.2.12] - 2025-11-05
+
+
+### Added
+
+
+- Added globbing and build optimizations
+
+## [0.2.10] - 2025-11-04
+
+
+### Fixed
+
+
+- Prevent cargo-dist from uploading archives to release
+
+## [0.2.9] - 2025-11-04
+
+
+### Fixed
+
+
+- Improve release artifacts with friendly names
+
+## [0.2.7] - 2025-11-04
+
+
+### Fixed
+
+
+- Correct release workflow
+
+## [0.2.6] - 2025-11-04
+
+
+### Fixed
+
+
+- Trying more release fixes
+
+## [0.2.5] - 2025-11-04
+
+
+### Fixed
+
+
+- Another release pipeline fix
+
+## [0.2.4] - 2025-11-04
+
+
+### Fixed
+
+
+- Update the release pipeline
+
+## [0.2.3] - 2025-11-04
+
+
+### Fixed
+
+
+- Bump version
+
+## [0.2.2] - 2025-11-04
+
+
+### Fixed
+
+
+- Bumped version v0.2.2
+
+## [0.2.1] - 2025-11-04
+
+
+### Fixed
+
+
+- Lots of general bugfixes
+
+- Removed zip archives from releases v0.2.1
+
+## [0.2.0] - 2025-11-04
+
+
+### Added
+
+
+- Add cross-platform binary distribution with cargo-dist
+
+## [0.1.2] - 2025-11-03
+
+
+### Fixed
+
+
+- Use default GITHUB_TOKEN and correct repository URL
+
+## [0.1.1] - 2025-11-03
+
+
+### Fixed
+
+
+- Correct release-plz GitHub Action reference
+
+- Correct release-plz.toml configuration format
+
+- Remove rfx symlink to fix release-plz
+
+## [0.1.0] - 2025-11-03
+

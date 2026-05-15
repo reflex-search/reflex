@@ -128,7 +128,12 @@ impl ChatSession {
     }
 
     /// Add an assistant message to the conversation (generic)
-    pub fn add_assistant_message(&mut self, content: String, role: MessageRole, metadata: Option<MessageMetadata>) {
+    pub fn add_assistant_message(
+        &mut self,
+        content: String,
+        role: MessageRole,
+        metadata: Option<MessageMetadata>,
+    ) {
         let tokens = Self::estimate_tokens(&content);
         let message = Message {
             role,
@@ -181,7 +186,11 @@ impl ChatSession {
 
     /// Add an execution status message
     pub fn add_execution_message(&mut self, results_count: usize, execution_time_ms: u64) {
-        let content = format!("Found {} result{}", results_count, if results_count == 1 { "" } else { "s" });
+        let content = format!(
+            "Found {} result{}",
+            results_count,
+            if results_count == 1 { "" } else { "s" }
+        );
         let metadata = MessageMetadata {
             queries: Vec::new(),
             tool_calls: Vec::new(),
@@ -350,10 +359,7 @@ impl ChatSession {
         }
 
         // Calculate tokens being removed
-        let removed_tokens: usize = self.messages[..remove_count]
-            .iter()
-            .map(|m| m.tokens)
-            .sum();
+        let removed_tokens: usize = self.messages[..remove_count].iter().map(|m| m.tokens).sum();
 
         // Remove old messages
         self.messages.drain(..remove_count);

@@ -37,21 +37,22 @@ pub struct ExplorerData {
 /// Generate treemap data from the index
 pub fn generate_explorer(cache: &CacheManager) -> Result<ExplorerData> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)
-        .context("Failed to open meta.db")?;
+    let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
 
     // Query all files with line counts and languages
-    let mut stmt = conn.prepare(
-        "SELECT path, line_count, COALESCE(language, 'other') FROM files ORDER BY path"
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT path, line_count, COALESCE(language, 'other') FROM files ORDER BY path")?;
 
-    let files: Vec<(String, usize, String)> = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, usize>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?.filter_map(|r| r.ok()).collect();
+    let files: Vec<(String, usize, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, usize>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     let total_files = files.len();
     let total_lines: usize = files.iter().map(|(_, lines, _)| lines).sum();
@@ -86,7 +87,9 @@ pub fn generate_explorer(cache: &CacheManager) -> Result<ExplorerData> {
 
 /// Insert a file into the tree hierarchy
 fn insert_into_tree(node: &mut TreemapNode, parts: &[&str], lines: usize, language: &str) {
-    if parts.is_empty() { return; }
+    if parts.is_empty() {
+        return;
+    }
 
     if parts.len() == 1 {
         // Leaf node (file)
@@ -102,7 +105,10 @@ fn insert_into_tree(node: &mut TreemapNode, parts: &[&str], lines: usize, langua
 
     // Find or create directory node
     let dir_name = parts[0];
-    let child = node.children.iter_mut().find(|c| c.name == dir_name && c.value.is_none());
+    let child = node
+        .children
+        .iter_mut()
+        .find(|c| c.name == dir_name && c.value.is_none());
 
     if let Some(child) = child {
         insert_into_tree(child, &parts[1..], lines, language);
@@ -157,7 +163,8 @@ fn build_language_colors(files: &[(String, usize, String)]) -> HashMap<String, S
     let mut sorted: Vec<(String, usize)> = lang_counts.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
-    sorted.into_iter()
+    sorted
+        .into_iter()
         .enumerate()
         .map(|(i, (lang, _))| (lang, palette[i % palette.len()].to_string()))
         .collect()
@@ -165,8 +172,7 @@ fn build_language_colors(files: &[(String, usize, String)]) -> HashMap<String, S
 
 /// Generate treemap JSON for the D3.js visualization
 pub fn treemap_json(data: &ExplorerData) -> Result<String> {
-    serde_json::to_string(&data.root)
-        .context("Failed to serialize treemap data")
+    serde_json::to_string(&data.root).context("Failed to serialize treemap data")
 }
 
 /// Render explorer page markdown with embedded D3.js treemap

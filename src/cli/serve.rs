@@ -1,10 +1,9 @@
-use anyhow::Result;
-use serde_json::json;
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language};
 use crate::query::{QueryEngine, QueryFilter};
-
+use anyhow::Result;
+use serde_json::json;
 
 /// Handle the `serve` subcommand
 pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
@@ -13,7 +12,9 @@ pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("Starting Reflex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true");
+    println!(
+        "  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true"
+    );
     println!("  GET  /stats");
     println!("  GET  /health");
     println!("  POST /index");
@@ -21,23 +22,20 @@ pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
 
     // Start the server using tokio runtime
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        run_server(port, host).await
-    })
+    runtime.block_on(async { run_server(port, host).await })
 }
-
 
 /// Run the HTTP server
 async fn run_server(port: u16, host: String) -> Result<()> {
     use axum::{
+        Router,
         extract::{Query as AxumQuery, State},
         http::StatusCode,
         response::{IntoResponse, Json},
         routing::{get, post},
-        Router,
     };
-    use tower_http::cors::{CorsLayer, Any};
     use std::sync::Arc;
+    use tower_http::cors::{Any, CorsLayer};
 
     // Server state shared across requests
     #[derive(Clone)]
@@ -108,7 +106,9 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         if params.q.trim().is_empty() {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": { "kind": "QuerySyntaxError", "message": "Query parameter 'q' cannot be empty" } })),
+                Json(
+                    json!({ "error": { "kind": "QuerySyntaxError", "message": "Query parameter 'q' cannot be empty" } }),
+                ),
             ));
         }
 
@@ -119,10 +119,14 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         let language = if let Some(lang_str) = params.lang.as_deref() {
             match Language::from_name(lang_str) {
                 Some(l) => Some(l),
-                None => return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": { "kind": "QuerySyntaxError", "message": format!("Unknown language '{}'. Supported: {}", lang_str, Language::supported_names_help()) } })),
-                )),
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            json!({ "error": { "kind": "QuerySyntaxError", "message": format!("Unknown language '{}'. Supported: {}", lang_str, Language::supported_names_help()) } }),
+                        ),
+                    ));
+                }
             }
         } else {
             None
@@ -134,11 +138,15 @@ async fn run_server(port: u16, host: String) -> Result<()> {
                 let mut chars = s.chars();
                 match chars.next() {
                     None => String::new(),
-                    Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+                    Some(first) => first
+                        .to_uppercase()
+                        .chain(chars.flat_map(|c| c.to_lowercase()))
+                        .collect(),
                 }
             };
 
-            capitalized.parse::<crate::models::SymbolKind>()
+            capitalized
+                .parse::<crate::models::SymbolKind>()
                 .ok()
                 .or_else(|| {
                     log::debug!("Treating '{}' as unknown symbol kind for filtering", s);
@@ -151,11 +159,11 @@ async fn run_server(port: u16, host: String) -> Result<()> {
 
         // Smart limit handling (same as CLI and MCP)
         let final_limit = if params.paths && params.limit.is_none() {
-            None  // --paths without explicit limit means no limit
+            None // --paths without explicit limit means no limit
         } else if let Some(user_limit) = params.limit {
-            Some(user_limit)  // Use user-specified limit
+            Some(user_limit) // Use user-specified limit
         } else {
-            Some(100)  // Default: limit to 100 results for token efficiency
+            Some(100) // Default: limit to 100 results for token efficiency
         };
 
         let filter = QueryFilter {
@@ -175,7 +183,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             paths_only: params.paths,
             offset: params.offset,
             force: params.force,
-            suppress_output: true,  // HTTP API always returns JSON, suppress warnings
+            suppress_output: true, // HTTP API always returns JSON, suppress warnings
             include_dependencies: params.dependencies,
             ..Default::default()
         };
@@ -185,7 +193,10 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             Err(e) => {
                 log::error!("Query error: {}", e);
                 let (status, kind, msg) = classify_error(&e);
-                Err((status, Json(json!({ "error": { "kind": kind, "message": msg } }))))
+                Err((
+                    status,
+                    Json(json!({ "error": { "kind": kind, "message": msg } })),
+                ))
             }
         }
     }
@@ -199,7 +210,12 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         let cache = CacheManager::new(&state.cache_path);
 
         if !cache.exists() {
-            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": { "kind": "IndexNotFound", "message": "No index found. Run 'rfx index' first." } }))));
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(
+                    json!({ "error": { "kind": "IndexNotFound", "message": "No index found. Run 'rfx index' first." } }),
+                ),
+            ));
         }
 
         match cache.stats() {
@@ -207,7 +223,10 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             Err(e) => {
                 log::error!("Stats error: {}", e);
                 let (status, kind, msg) = classify_error(&e);
-                Err((status, Json(json!({ "error": { "kind": kind, "message": msg } }))))
+                Err((
+                    status,
+                    Json(json!({ "error": { "kind": kind, "message": msg } })),
+                ))
             }
         }
     }
@@ -227,10 +246,14 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         } else {
             let body_bytes = axum::body::to_bytes(request.into_body(), 1 << 20)
                 .await
-                .map_err(|e| (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": { "kind": "IoError", "message": format!("{}", e) } })),
-                ))?;
+                .map_err(|e| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            json!({ "error": { "kind": "IoError", "message": format!("{}", e) } }),
+                        ),
+                    )
+                })?;
             if body_bytes.is_empty() {
                 IndexRequest::default()
             } else {
@@ -241,19 +264,29 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             }
         };
 
-        log::info!("Index request: force={}, languages={:?}", req.force, req.languages);
+        log::info!(
+            "Index request: force={}, languages={:?}",
+            req.force,
+            req.languages
+        );
 
         let cache = CacheManager::new(&state.cache_path);
 
         if req.force {
             log::info!("Force rebuild requested, clearing existing cache");
             if let Err(e) = cache.clear() {
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "kind": "IoError", "message": format!("Failed to clear cache: {}", e) } }))));
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(
+                        json!({ "error": { "kind": "IoError", "message": format!("Failed to clear cache: {}", e) } }),
+                    ),
+                ));
             }
         }
 
         // Parse language filters
-        let lang_filters: Vec<Language> = req.languages
+        let lang_filters: Vec<Language> = req
+            .languages
             .iter()
             .filter_map(|s| match s.to_lowercase().as_str() {
                 "rust" | "rs" => Some(Language::Rust),
@@ -287,29 +320,40 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             Err(e) => {
                 log::error!("Index error: {}", e);
                 let (status, kind, msg) = classify_error(&e);
-                Err((status, Json(json!({ "error": { "kind": kind, "message": msg } }))))
+                Err((
+                    status,
+                    Json(json!({ "error": { "kind": kind, "message": msg } })),
+                ))
             }
         }
     }
-
 
     /// Classify an anyhow error into (StatusCode, kind, message) for structured JSON responses
     fn classify_error(e: &anyhow::Error) -> (axum::http::StatusCode, &'static str, String) {
         if let Some(re) = e.downcast_ref::<crate::errors::ReflexError>() {
             let status = match re {
                 crate::errors::ReflexError::IndexNotFound => axum::http::StatusCode::NOT_FOUND,
-                crate::errors::ReflexError::QuerySyntaxError(_) => axum::http::StatusCode::BAD_REQUEST,
+                crate::errors::ReflexError::QuerySyntaxError(_) => {
+                    axum::http::StatusCode::BAD_REQUEST
+                }
                 _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, re.kind(), re.to_string())
         } else {
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "IoError", e.to_string())
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "IoError",
+                e.to_string(),
+            )
         }
     }
 
     // Health check endpoint — REF-70: returns JSON for consistency with other endpoints
     async fn handle_health() -> impl IntoResponse {
-        (StatusCode::OK, Json(json!({ "status": "ok", "service": "reflex" })))
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "ok", "service": "reflex" })),
+        )
     }
 
     // 404 fallback — REF-71: unknown routes return JSON error body
@@ -337,20 +381,24 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         .route("/stats", get(handle_stats_endpoint))
         .route("/index", post(handle_index_endpoint))
         .route("/health", get(handle_health))
-        .fallback(handle_not_found)  // REF-71: JSON 404 for unknown routes
+        .fallback(handle_not_found) // REF-71: JSON 404 for unknown routes
         .layer(cors)
         .with_state(state);
 
     // Bind to the specified address
     let addr = format!("{}:{}", host, port);
-    let listener = tokio::net::TcpListener::bind(&addr).await
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
 
     // REF-64: warn conspicuously when bound to a non-loopback address (no auth)
     let is_loopback = host == "127.0.0.1" || host == "::1" || host.to_lowercase() == "localhost";
     if !is_loopback {
         eprintln!();
-        eprintln!("WARNING: Reflex server exposed on {} — NO authentication.", addr);
+        eprintln!(
+            "WARNING: Reflex server exposed on {} — NO authentication.",
+            addr
+        );
         eprintln!("WARNING: Any client on this network can read your codebase index.");
         eprintln!("WARNING: Do not expose this on shared or internet-facing machines.");
         eprintln!();

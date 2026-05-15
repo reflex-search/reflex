@@ -27,7 +27,7 @@ fn test_rust_function_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Function),
         file_pattern: Some("rust/functions.rs".to_string()),
-        use_contains: true,  // "function" is substring of "public_function", "async_function", etc.
+        use_contains: true, // "function" is substring of "public_function", "async_function", etc.
         ..Default::default()
     };
 
@@ -48,7 +48,7 @@ fn test_rust_struct_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Struct),
         file_pattern: Some("rust/structs.rs".to_string()),
-        use_contains: true,  // "oin" is substring of "Point"
+        use_contains: true, // "oin" is substring of "Point"
         ..Default::default()
     };
 
@@ -68,7 +68,7 @@ fn test_rust_enum_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Enum),
         file_pattern: Some("rust/enums.rs".to_string()),
-        use_contains: true,  // "tat" is substring of "Status"
+        use_contains: true, // "tat" is substring of "Status"
         ..Default::default()
     };
 
@@ -88,7 +88,7 @@ fn test_rust_trait_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Trait),
         file_pattern: Some("rust/traits.rs".to_string()),
-        use_contains: true,  // "able" is substring of "Drawable", "Serializable"
+        use_contains: true, // "able" is substring of "Drawable", "Serializable"
         ..Default::default()
     };
 
@@ -127,7 +127,7 @@ fn test_rust_module_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Module),
         file_pattern: Some("rust/modules.rs".to_string()),
-        use_contains: true,  // "mod" is substring of "public_module", "private_module", etc.
+        use_contains: true, // "mod" is substring of "public_module", "private_module", etc.
         ..Default::default()
     };
 
@@ -147,7 +147,7 @@ fn test_typescript_class_detection() {
         kind: Some(SymbolKind::Class),
         language: Some(Language::TypeScript),
         file_pattern: Some("typescript/classes.ts".to_string()),
-        use_contains: true,  // "erson" is substring of "Person"
+        use_contains: true, // "erson" is substring of "Person"
         ..Default::default()
     };
 
@@ -166,7 +166,7 @@ fn test_typescript_interface_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Interface),
         file_pattern: Some("typescript/interfaces.ts".to_string()),
-        use_contains: true,  // "ser" is substring of "UserSettings", "PersonData", etc.
+        use_contains: true, // "ser" is substring of "UserSettings", "PersonData", etc.
         ..Default::default()
     };
 
@@ -185,7 +185,7 @@ fn test_typescript_type_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Type),
         file_pattern: Some("typescript/types.ts".to_string()),
-        use_contains: true,  // "oint" is substring of "Point", "Point3D"
+        use_contains: true, // "oint" is substring of "Point", "Point3D"
         ..Default::default()
     };
 
@@ -204,7 +204,7 @@ fn test_typescript_enum_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Enum),
         file_pattern: Some("typescript/enums.ts".to_string()),
-        use_contains: true,  // "olor" is substring of "Color"
+        use_contains: true, // "olor" is substring of "Color"
         ..Default::default()
     };
 
@@ -224,7 +224,7 @@ fn test_javascript_function_detection() {
         kind: Some(SymbolKind::Function),
         language: Some(Language::JavaScript),
         file_pattern: Some("javascript/functions.js".to_string()),
-        use_contains: true,  // "function" may be substring of "arrowFunction", etc.
+        use_contains: true, // "function" may be substring of "arrowFunction", etc.
         ..Default::default()
     };
 
@@ -242,7 +242,7 @@ fn test_javascript_class_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Class),
         file_pattern: Some("javascript/classes.js".to_string()),
-        use_contains: true,  // "erson" is substring of "Person"
+        use_contains: true, // "erson" is substring of "Person"
         ..Default::default()
     };
 
@@ -262,7 +262,7 @@ fn test_php_class_detection() {
         kind: Some(SymbolKind::Class),
         language: Some(Language::PHP),
         file_pattern: Some("php/classes.php".to_string()),
-        use_contains: true,  // "erson" is substring of "Person"
+        use_contains: true, // "erson" is substring of "Person"
         ..Default::default()
     };
 
@@ -281,7 +281,7 @@ fn test_php_function_detection() {
         symbols_mode: true,
         kind: Some(SymbolKind::Function),
         file_pattern: Some("php/functions.php".to_string()),
-        use_contains: true,  // "Function" is substring of "simpleFunction", "variadicFunction"
+        use_contains: true, // "Function" is substring of "simpleFunction", "variadicFunction"
         ..Default::default()
     };
 
@@ -313,7 +313,7 @@ fn test_fulltext_unicode_search() {
     setup_corpus();
 
     let filter = QueryFilter {
-        force: true,  // Unicode pattern is short, bypass broad query detection
+        force: true, // Unicode pattern is short, bypass broad query detection
         ..Default::default()
     };
     let results = query_corpus("你好", filter);
@@ -327,7 +327,7 @@ fn test_fulltext_emoji_search() {
     setup_corpus();
 
     let filter = QueryFilter {
-        force: true,  // Emoji pattern is short, bypass broad query detection
+        force: true, // Emoji pattern is short, bypass broad query detection
         ..Default::default()
     };
     let results = query_corpus("🚀", filter);
@@ -446,7 +446,7 @@ fn test_filter_language_and_kind() {
         symbols_mode: true,
         language: Some(Language::Rust),
         kind: Some(SymbolKind::Function),
-        use_contains: true,  // "async" in "async_function" is not at word boundary (underscore is word char)
+        use_contains: true, // "async" in "async_function" is not at word boundary (underscore is word char)
         ..Default::default()
     };
 
@@ -466,7 +466,7 @@ fn test_filter_language_kind_and_file() {
         language: Some(Language::TypeScript),
         kind: Some(SymbolKind::Class),
         file_pattern: Some("typescript/classes.ts".to_string()),
-        use_contains: true,  // "erson" is substring of "Person"
+        use_contains: true, // "erson" is substring of "Person"
         ..Default::default()
     };
 
@@ -516,7 +516,7 @@ fn test_filter_symbols_mode_vs_fulltext() {
 
     // Full-text search
     let fulltext_filter = QueryFilter {
-        use_contains: true,  // Use substring matching for consistent comparison
+        use_contains: true, // Use substring matching for consistent comparison
         ..Default::default()
     };
     let fulltext_results = query_corpus("calculate", fulltext_filter);
@@ -524,7 +524,7 @@ fn test_filter_symbols_mode_vs_fulltext() {
     // Symbol search
     let symbol_filter = QueryFilter {
         symbols_mode: true,
-        use_contains: true,  // Use substring matching for consistent comparison
+        use_contains: true, // Use substring matching for consistent comparison
         ..Default::default()
     };
     let symbol_results = query_corpus("calculate", symbol_filter);
@@ -605,7 +605,7 @@ fn test_raw_identifiers() {
     let filter = QueryFilter {
         symbols_mode: true,
         file_pattern: Some("rust/raw_identifiers.rs".to_string()),
-        use_contains: true,  // Parser extracts "r#type" as symbol name, need substring match
+        use_contains: true, // Parser extracts "r#type" as symbol name, need substring match
         ..Default::default()
     };
 
@@ -639,7 +639,7 @@ fn test_many_symbols_performance() {
     let filter = QueryFilter {
         symbols_mode: true,
         file_pattern: Some("rust/many_symbols.rs".to_string()),
-        use_contains: true,  // "func" is substring of "func_001", "func_002", etc.
+        use_contains: true, // "func" is substring of "func_001", "func_002", etc.
         ..Default::default()
     };
 
@@ -698,7 +698,7 @@ fn test_find_async_functions() {
     let filter = QueryFilter {
         symbols_mode: true,
         kind: Some(SymbolKind::Function),
-        use_contains: true,  // "async" in "async_function" is not at word boundary (underscore is word char)
+        use_contains: true, // "async" in "async_function" is not at word boundary (underscore is word char)
         ..Default::default()
     };
 
@@ -713,7 +713,7 @@ fn test_find_error_handling() {
 
     let filter = QueryFilter {
         file_pattern: Some("rust/error_handling.rs".to_string()),
-        use_contains: true,  // "unwrap" in "unwrap_or", "unwrap_or_else" is not at word boundary
+        use_contains: true, // "unwrap" in "unwrap_or", "unwrap_or_else" is not at word boundary
         ..Default::default()
     };
 
@@ -728,7 +728,7 @@ fn test_find_generic_functions() {
 
     let filter = QueryFilter {
         file_pattern: Some("rust/generics_complex.rs".to_string()),
-        use_contains: true,  // "<T>" often followed by special chars, no word boundary after ">"
+        use_contains: true, // "<T>" often followed by special chars, no word boundary after ">"
         ..Default::default()
     };
 
@@ -772,7 +772,11 @@ fn test_glob_filter_source_files_only() {
     assert_result_count_at_least(&results, 3);
     assert!(results.iter().all(|r| r.path.contains("filtered/src/")));
     assert!(!results.iter().any(|r| r.path.contains("filtered/tests/")));
-    assert!(!results.iter().any(|r| r.path.contains("filtered/examples/")));
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.path.contains("filtered/examples/"))
+    );
     assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
 }
 
@@ -793,7 +797,11 @@ fn test_glob_filter_multiple_directories() {
     // Should find results in src/ and examples/ but not tests/ or build/
     assert_result_count_at_least(&results, 4);
     assert!(results.iter().any(|r| r.path.contains("filtered/src/")));
-    assert!(results.iter().any(|r| r.path.contains("filtered/examples/")));
+    assert!(
+        results
+            .iter()
+            .any(|r| r.path.contains("filtered/examples/"))
+    );
     assert!(!results.iter().any(|r| r.path.contains("filtered/tests/")));
     assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
 }
@@ -804,7 +812,7 @@ fn test_glob_filter_specific_extension() {
 
     let filter = QueryFilter {
         glob_patterns: vec!["**/filtered/**/*.rs".to_string()],
-        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
+        use_contains: true, // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
 
@@ -876,7 +884,7 @@ fn test_exclude_multiple_directories() {
             "**/filtered/build/**".to_string(),
             "**/filtered/tests/**".to_string(),
         ],
-        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
+        use_contains: true, // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
 

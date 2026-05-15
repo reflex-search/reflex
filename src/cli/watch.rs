@@ -1,9 +1,8 @@
-use anyhow::Result;
-use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
 use crate::models::IndexConfig;
-
+use anyhow::Result;
+use std::path::PathBuf;
 
 /// Handle the `watch` subcommand
 pub(super) fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
@@ -46,10 +45,7 @@ pub(super) fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Resu
     let indexer = Indexer::new(cache, config);
 
     // Start watcher
-    let watch_config = crate::watcher::WatchConfig {
-        debounce_ms,
-        quiet,
-    };
+    let watch_config = crate::watcher::WatchConfig { debounce_ms, quiet };
 
     crate::watcher::watch(&path, indexer, watch_config)?;
 

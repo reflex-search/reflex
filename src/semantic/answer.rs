@@ -3,9 +3,9 @@
 //! This module provides functionality to synthesize conversational answers
 //! from code search results using LLM providers.
 
-use anyhow::Result;
-use crate::models::FileGroupedResult;
 use super::providers::LlmProvider;
+use crate::models::FileGroupedResult;
+use anyhow::Result;
 
 /// Maximum number of matches to include in the prompt (to avoid token limits)
 const MAX_MATCHES_IN_PROMPT: usize = 50;
@@ -46,7 +46,10 @@ pub async fn generate_answer(
             if !context.is_empty() {
                 // Generate answer from documentation/context alone
                 let prompt = build_context_only_prompt(question, context);
-                log::debug!("Generating answer from gathered context ({} chars)", prompt.len());
+                log::debug!(
+                    "Generating answer from gathered context ({} chars)",
+                    prompt.len()
+                );
                 let answer = provider.complete(&prompt, false).await?;
                 let cleaned = strip_markdown_fences(&answer);
                 return Ok(cleaned.to_string());
@@ -58,7 +61,10 @@ pub async fn generate_answer(
             if !context.is_empty() {
                 // Generate answer from codebase metadata alone
                 let prompt = build_codebase_context_prompt(question, context);
-                log::debug!("Generating answer from codebase context ({} chars)", prompt.len());
+                log::debug!(
+                    "Generating answer from codebase context ({} chars)",
+                    prompt.len()
+                );
                 let answer = provider.complete(&prompt, false).await?;
                 let cleaned = strip_markdown_fences(&answer);
                 return Ok(cleaned.to_string());
@@ -101,14 +107,20 @@ fn build_answer_prompt(
     if let Some(context) = gathered_context {
         if !context.is_empty() {
             prompt.push_str("Additional Context (from documentation and codebase analysis):\n");
-            prompt.push_str("====================================================================\n\n");
+            prompt.push_str(
+                "====================================================================\n\n",
+            );
             prompt.push_str(context);
             prompt.push_str("\n\n");
         }
     }
 
     // Add search result summary
-    prompt.push_str(&format!("Found {} total matches across {} files.\n\n", total_count, results.len()));
+    prompt.push_str(&format!(
+        "Found {} total matches across {} files.\n\n",
+        total_count,
+        results.len()
+    ));
 
     prompt.push_str("Code Search Results:\n");
     prompt.push_str("====================\n\n");
@@ -117,7 +129,10 @@ fn build_answer_prompt(
     let mut match_count = 0;
     for file_group in results {
         if match_count >= MAX_MATCHES_IN_PROMPT {
-            prompt.push_str(&format!("\n... and {} more matches not shown\n", total_count - match_count));
+            prompt.push_str(&format!(
+                "\n... and {} more matches not shown\n",
+                total_count - match_count
+            ));
             break;
         }
 
@@ -128,13 +143,20 @@ fn build_answer_prompt(
                 break;
             }
 
-            log::debug!("Formatting match at {}:{} - context_before: {}, context_after: {}",
-                file_group.path, match_result.span.start_line,
-                match_result.context_before.len(), match_result.context_after.len());
+            log::debug!(
+                "Formatting match at {}:{} - context_before: {}, context_after: {}",
+                file_group.path,
+                match_result.span.start_line,
+                match_result.context_before.len(),
+                match_result.context_after.len()
+            );
 
             // Show context before the match
             for (idx, line) in match_result.context_before.iter().enumerate() {
-                let line_num = match_result.span.start_line.saturating_sub(match_result.context_before.len() - idx);
+                let line_num = match_result
+                    .span
+                    .start_line
+                    .saturating_sub(match_result.context_before.len() - idx);
                 // Truncate long lines
                 let truncated = if line.len() > MAX_PREVIEW_LENGTH {
                     format!("{}...", &line[..MAX_PREVIEW_LENGTH])
@@ -180,7 +202,8 @@ fn build_answer_prompt(
     prompt.push_str("\nProvide a conversational answer that:\n");
     prompt.push_str("1. Directly answers the question based on the search results\n");
     prompt.push_str("2. References specific files and line numbers where relevant\n");
-    prompt.push_str("3. Summarizes patterns or common approaches if multiple results are similar\n");
+    prompt
+        .push_str("3. Summarizes patterns or common approaches if multiple results are similar\n");
     prompt.push_str("4. Is concise but informative (typically 2-4 sentences)\n");
     prompt.push_str("5. Only mentions information that appears in the search results above\n\n");
 
@@ -193,7 +216,9 @@ fn build_answer_prompt(
 fn build_context_only_prompt(question: &str, gathered_context: &str) -> String {
     let mut prompt = String::new();
 
-    prompt.push_str("You are answering a developer's question using documentation and codebase context.\n\n");
+    prompt.push_str(
+        "You are answering a developer's question using documentation and codebase context.\n\n",
+    );
     prompt.push_str("IMPORTANT: Provide ONLY the answer text, without any markdown formatting, code fences, or explanatory prefixes.\n\n");
 
     prompt.push_str(&format!("Question: {}\n\n", question));
@@ -259,8 +284,7 @@ fn strip_markdown_fences(text: &str) -> &str {
         };
 
         // Remove closing fence
-        let without_end = without_start.strip_suffix("```")
-            .unwrap_or(without_start);
+        let without_end = without_start.strip_suffix("```").unwrap_or(without_start);
 
         without_end.trim()
     } else {

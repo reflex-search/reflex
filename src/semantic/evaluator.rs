@@ -3,8 +3,8 @@
 //! This module evaluates query results to determine if they match user intent
 //! and provides feedback for query refinement if needed.
 
+use super::schema_agentic::{EvaluationIssue, EvaluationReport, IssueType};
 use crate::models::FileGroupedResult;
-use super::schema_agentic::{EvaluationReport, EvaluationIssue, IssueType};
 
 /// Configuration for result evaluation
 #[derive(Debug, Clone)]
@@ -74,8 +74,9 @@ pub fn evaluate_results(
                 // Lower confidence direct answer - still probably okay
                 issues.push(EvaluationIssue {
                     issue_type: IssueType::EmptyResults,
-                    description: "No queries generated. Answer provided from available context.".to_string(),
-                    severity: 0.2,  // Very low severity - likely intentional
+                    description: "No queries generated. Answer provided from available context."
+                        .to_string(),
+                    severity: 0.2, // Very low severity - likely intentional
                 });
                 score -= 0.2;
             }
@@ -86,7 +87,9 @@ pub fn evaluate_results(
             let severity = if gathered_context.is_some() { 0.6 } else { 0.8 };
             issues.push(EvaluationIssue {
                 issue_type: IssueType::EmptyResults,
-                description: "No results found. Query may be too specific or pattern may be incorrect.".to_string(),
+                description:
+                    "No results found. Query may be too specific or pattern may be incorrect."
+                        .to_string(),
                 severity,
             });
             score -= severity;
@@ -187,7 +190,9 @@ fn check_file_type_consistency(
     for (lang, expected_exts) in language_hints {
         if question_lower.contains(lang) {
             // Check if any results match expected extensions
-            let has_matching = expected_exts.iter().any(|ext| extensions.contains_key(*ext));
+            let has_matching = expected_exts
+                .iter()
+                .any(|ext| extensions.contains_key(*ext));
 
             if !has_matching && !results.is_empty() {
                 issues.push(EvaluationIssue {
@@ -196,7 +201,8 @@ fn check_file_type_consistency(
                         "Question mentions '{}' but results don't contain {} files. Found: {}",
                         lang,
                         expected_exts.join("/"),
-                        extensions.keys()
+                        extensions
+                            .keys()
                             .take(5)
                             .map(|s| s.as_str())
                             .collect::<Vec<_>>()
@@ -266,8 +272,11 @@ fn generate_suggestions(
     for issue in issues {
         match issue.issue_type {
             IssueType::EmptyResults => {
-                suggestions.push("Try a broader search pattern (remove --exact, use --contains)".to_string());
-                suggestions.push("Remove language or file filters to expand search scope".to_string());
+                suggestions.push(
+                    "Try a broader search pattern (remove --exact, use --contains)".to_string(),
+                );
+                suggestions
+                    .push("Remove language or file filters to expand search scope".to_string());
                 suggestions.push("Check if the pattern spelling is correct".to_string());
             }
             IssueType::TooManyResults => {
@@ -277,18 +286,25 @@ fn generate_suggestions(
                 suggestions.push("Use more specific search pattern".to_string());
             }
             IssueType::WrongFileTypes => {
-                suggestions.push("Add --lang filter to search only relevant language files".to_string());
-                suggestions.push("Verify the language mentioned in question matches codebase".to_string());
+                suggestions
+                    .push("Add --lang filter to search only relevant language files".to_string());
+                suggestions
+                    .push("Verify the language mentioned in question matches codebase".to_string());
             }
             IssueType::WrongLocations => {
-                suggestions.push("Add --file or --glob filter to focus on specific directories".to_string());
+                suggestions.push(
+                    "Add --file or --glob filter to focus on specific directories".to_string(),
+                );
             }
             IssueType::WrongSymbolType => {
                 suggestions.push("Adjust --kind filter to match expected symbol type".to_string());
-                suggestions.push("Remove --symbols flag to find usages instead of definitions".to_string());
+                suggestions.push(
+                    "Remove --symbols flag to find usages instead of definitions".to_string(),
+                );
             }
             IssueType::WrongLanguage => {
-                suggestions.push("Review --lang filter and ensure it matches the codebase".to_string());
+                suggestions
+                    .push("Review --lang filter and ensure it matches the codebase".to_string());
             }
         }
     }
@@ -376,7 +392,12 @@ mod tests {
         let report = evaluate_results(&results, 2000, "find all", &config, None, 1, Some(0.9));
 
         assert!(!report.success);
-        assert!(report.issues.iter().any(|i| i.issue_type == IssueType::TooManyResults));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.issue_type == IssueType::TooManyResults)
+        );
     }
 
     #[test]
@@ -418,13 +439,11 @@ mod tests {
 
     #[test]
     fn test_generate_suggestions() {
-        let issues = vec![
-            EvaluationIssue {
-                issue_type: IssueType::EmptyResults,
-                description: "No results".to_string(),
-                severity: 0.9,
-            },
-        ];
+        let issues = vec![EvaluationIssue {
+            issue_type: IssueType::EmptyResults,
+            description: "No results".to_string(),
+            severity: 0.9,
+        }];
 
         let suggestions = generate_suggestions(&issues, &[], "test");
         assert!(!suggestions.is_empty());
@@ -436,9 +455,9 @@ mod tests {
         let config = EvaluationConfig::default();
         let report = evaluate_results(&[], 0, "How many files?", &config, None, 0, Some(0.95));
 
-        assert!(report.success);  // Should pass!
-        assert_eq!(report.score, 1.0);  // Perfect score
-        assert!(report.issues.is_empty());  // No issues
+        assert!(report.success); // Should pass!
+        assert_eq!(report.score, 1.0); // Perfect score
+        assert!(report.issues.is_empty()); // No issues
     }
 
     #[test]
@@ -446,9 +465,9 @@ mod tests {
         let config = EvaluationConfig::default();
         let report = evaluate_results(&[], 0, "How many files?", &config, None, 0, Some(0.75));
 
-        assert!(report.success);  // Should still pass
-        assert!(report.score >= 0.7);  // Decent score
-        assert_eq!(report.issues.len(), 1);  // One low-severity issue
-        assert!(report.issues[0].severity < 0.3);  // Low severity
+        assert!(report.success); // Should still pass
+        assert!(report.score >= 0.7); // Decent score
+        assert_eq!(report.issues.len(), 1); // One low-severity issue
+        assert!(report.issues[0].severity < 0.3); // Low severity
     }
 }

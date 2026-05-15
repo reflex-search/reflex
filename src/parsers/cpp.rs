@@ -14,10 +14,10 @@
 //! - Using declarations
 //! - Type aliases
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse C++ source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -43,7 +43,11 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_namespaces(source, &root_node, &language.into())?);
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
     symbols.extend(extract_type_aliases(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
@@ -77,8 +81,7 @@ fn extract_functions(
                     declarator: (identifier) @name))) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -98,8 +101,7 @@ fn extract_classes(
                 name: (type_identifier) @name)) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -119,8 +121,7 @@ fn extract_structs(
                 name: (type_identifier) @name)) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create struct query")?;
+    let query = Query::new(language, query_str).context("Failed to create struct query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Struct, None)
 }
@@ -136,8 +137,7 @@ fn extract_namespaces(
             name: (_) @name) @namespace
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create namespace query")?;
+    let query = Query::new(language, query_str).context("Failed to create namespace query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Namespace, None)
 }
@@ -153,8 +153,7 @@ fn extract_enums(
             name: (type_identifier) @name) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -195,8 +194,7 @@ fn extract_methods(
                         declarator: (destructor_name) @method_name)))) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -213,15 +211,33 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "struct_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("struct");
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent function_definition node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -237,7 +253,8 @@ fn extract_methods(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(method_name), Some(node)) =
-            (scope_name, scope_type, method_name, method_node) {
+            (scope_name, scope_type, method_name, method_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -269,8 +286,7 @@ fn extract_local_variables(
                 declarator: (identifier) @name)) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -285,7 +301,13 @@ fn extract_local_variables(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "var" => {
                     var_node = Some(capture.node);
@@ -317,7 +339,7 @@ fn extract_local_variables(
                     SymbolKind::Variable,
                     Some(name),
                     span,
-                    None,  // No scope for local variables
+                    None, // No scope for local variables
                     preview,
                 ));
             }
@@ -341,8 +363,7 @@ fn extract_type_aliases(
             name: (type_identifier) @name) @using
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create type alias query")?;
+    let query = Query::new(language, query_str).context("Failed to create type alias query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -370,7 +391,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
                 name_node = Some(capture.node);
             } else {
                 // Assume any other capture is the full node
@@ -411,7 +438,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -462,7 +489,8 @@ public:
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -484,12 +512,17 @@ namespace Nested::Namespace {
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let namespace_symbols: Vec<_> = symbols.iter()
+        let namespace_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Namespace))
             .collect();
 
         assert!(namespace_symbols.len() >= 1);
-        assert!(namespace_symbols.iter().any(|s| s.symbol.as_deref() == Some("MyNamespace")));
+        assert!(
+            namespace_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MyNamespace"))
+        );
     }
 
     #[test]
@@ -524,13 +557,22 @@ enum class Status {
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let enum_symbols: Vec<_> = symbols.iter()
+        let enum_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Enum))
             .collect();
 
         assert_eq!(enum_symbols.len(), 2);
-        assert!(enum_symbols.iter().any(|s| s.symbol.as_deref() == Some("Color")));
-        assert!(enum_symbols.iter().any(|s| s.symbol.as_deref() == Some("Status")));
+        assert!(
+            enum_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Color"))
+        );
+        assert!(
+            enum_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Status"))
+        );
     }
 
     #[test]
@@ -549,7 +591,8 @@ public:
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -589,13 +632,22 @@ public:
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -612,12 +664,17 @@ using IntPtr = int*;
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let type_symbols: Vec<_> = symbols.iter()
+        let type_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .collect();
 
         assert!(type_symbols.len() >= 1);
-        assert!(type_symbols.iter().any(|s| s.symbol.as_deref() == Some("StringVector")));
+        assert!(
+            type_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("StringVector"))
+        );
     }
 
     #[test]
@@ -631,7 +688,8 @@ typedef struct {
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let type_symbols: Vec<_> = symbols.iter()
+        let type_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .collect();
 
@@ -691,13 +749,22 @@ namespace Outer {
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let namespace_symbols: Vec<_> = symbols.iter()
+        let namespace_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Namespace))
             .collect();
 
         assert_eq!(namespace_symbols.len(), 2);
-        assert!(namespace_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
-        assert!(namespace_symbols.iter().any(|s| s.symbol.as_deref() == Some("Inner")));
+        assert!(
+            namespace_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Outer"))
+        );
+        assert!(
+            namespace_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Inner"))
+        );
     }
 
     #[test]
@@ -719,15 +786,25 @@ public:
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
         assert_eq!(class_symbols.len(), 2);
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Base")));
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Derived")));
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Base"))
+        );
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Derived"))
+        );
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
@@ -750,7 +827,8 @@ public:
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -780,15 +858,32 @@ public:
         let symbols = parse("test.cpp", source).unwrap();
 
         // Filter to just variables
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that local variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("temp"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("final"))
+        );
 
         // Verify that local variables have no scope
         for var in variables {
@@ -816,7 +911,8 @@ public:
 
         let symbols = parse("test.cpp", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -824,12 +920,16 @@ public:
         assert_eq!(class_symbols[0].symbol.as_deref(), Some("Resource"));
 
         // Check if destructor is extracted
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         // Should have both constructor and destructor
-        assert!(method_symbols.len() >= 1, "Expected at least constructor or destructor to be extracted");
+        assert!(
+            method_symbols.len() >= 1,
+            "Expected at least constructor or destructor to be extracted"
+        );
 
         // Print what methods we found for debugging
         for method in &method_symbols {
@@ -838,7 +938,8 @@ public:
 
         // Check if destructor is present (might be ~Resource or just Resource)
         let has_destructor = method_symbols.iter().any(|s| {
-            s.symbol.as_deref()
+            s.symbol
+                .as_deref()
                 .map(|name| name.contains("~") || name == "Resource")
                 .unwrap_or(false)
         });
@@ -885,10 +986,7 @@ impl DependencyExtractor for CppDependencyExtractor {
 }
 
 /// Extract C++ #include directives
-fn extract_cpp_includes(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_cpp_includes(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_cpp::LANGUAGE;
 
     let query_str = r#"
@@ -899,8 +997,8 @@ fn extract_cpp_includes(
             path: (system_lib_string) @include_path) @include
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create C++ include query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create C++ include query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -917,7 +1015,11 @@ fn extract_cpp_includes(
                 "include_path" => {
                     // Remove quotes or angle brackets from path
                     let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
-                    include_path = Some(raw_path.trim_matches(|c| c == '"' || c == '<' || c == '>').to_string());
+                    include_path = Some(
+                        raw_path
+                            .trim_matches(|c| c == '"' || c == '<' || c == '>')
+                            .to_string(),
+                    );
                 }
                 "include" => {
                     include_node = Some(capture.node);
@@ -960,34 +1062,134 @@ fn classify_cpp_include(include_path: &str, source: &str, node: &tree_sitter::No
     // C++ standard library headers (angle brackets)
     const CPP_STDLIB_HEADERS: &[&str] = &[
         // C standard library (inherited)
-        "stdio.h", "stdlib.h", "string.h", "math.h", "time.h",
-        "ctype.h", "assert.h", "errno.h", "limits.h", "float.h",
-        "stddef.h", "stdint.h", "stdbool.h", "stdarg.h", "setjmp.h",
-        "signal.h", "locale.h", "wchar.h", "wctype.h", "complex.h",
-        "fenv.h", "inttypes.h", "iso646.h", "tgmath.h", "threads.h",
-
+        "stdio.h",
+        "stdlib.h",
+        "string.h",
+        "math.h",
+        "time.h",
+        "ctype.h",
+        "assert.h",
+        "errno.h",
+        "limits.h",
+        "float.h",
+        "stddef.h",
+        "stdint.h",
+        "stdbool.h",
+        "stdarg.h",
+        "setjmp.h",
+        "signal.h",
+        "locale.h",
+        "wchar.h",
+        "wctype.h",
+        "complex.h",
+        "fenv.h",
+        "inttypes.h",
+        "iso646.h",
+        "tgmath.h",
+        "threads.h",
         // C++ standard library headers (no .h extension)
-        "algorithm", "any", "array", "atomic", "barrier", "bit",
-        "bitset", "charconv", "chrono", "codecvt", "compare", "complex",
-        "concepts", "condition_variable", "coroutine", "deque", "exception",
-        "execution", "expected", "filesystem", "format", "forward_list",
-        "fstream", "functional", "future", "initializer_list", "iomanip",
-        "ios", "iosfwd", "iostream", "istream", "iterator", "latch",
-        "limits", "list", "locale", "map", "mdspan", "memory",
-        "memory_resource", "mutex", "new", "numbers", "numeric", "optional",
-        "ostream", "queue", "random", "ranges", "ratio", "regex",
-        "scoped_allocator", "semaphore", "set", "shared_mutex", "source_location",
-        "span", "sstream", "stack", "stacktrace", "stdexcept", "stop_token",
-        "streambuf", "string", "string_view", "strstream", "syncstream",
-        "system_error", "thread", "tuple", "type_traits", "typeindex",
-        "typeinfo", "unordered_map", "unordered_set", "utility", "valarray",
-        "variant", "vector", "version",
-
+        "algorithm",
+        "any",
+        "array",
+        "atomic",
+        "barrier",
+        "bit",
+        "bitset",
+        "charconv",
+        "chrono",
+        "codecvt",
+        "compare",
+        "complex",
+        "concepts",
+        "condition_variable",
+        "coroutine",
+        "deque",
+        "exception",
+        "execution",
+        "expected",
+        "filesystem",
+        "format",
+        "forward_list",
+        "fstream",
+        "functional",
+        "future",
+        "initializer_list",
+        "iomanip",
+        "ios",
+        "iosfwd",
+        "iostream",
+        "istream",
+        "iterator",
+        "latch",
+        "limits",
+        "list",
+        "locale",
+        "map",
+        "mdspan",
+        "memory",
+        "memory_resource",
+        "mutex",
+        "new",
+        "numbers",
+        "numeric",
+        "optional",
+        "ostream",
+        "queue",
+        "random",
+        "ranges",
+        "ratio",
+        "regex",
+        "scoped_allocator",
+        "semaphore",
+        "set",
+        "shared_mutex",
+        "source_location",
+        "span",
+        "sstream",
+        "stack",
+        "stacktrace",
+        "stdexcept",
+        "stop_token",
+        "streambuf",
+        "string",
+        "string_view",
+        "strstream",
+        "syncstream",
+        "system_error",
+        "thread",
+        "tuple",
+        "type_traits",
+        "typeindex",
+        "typeinfo",
+        "unordered_map",
+        "unordered_set",
+        "utility",
+        "valarray",
+        "variant",
+        "vector",
+        "version",
         // C++ C-compatibility headers (c-prefixed)
-        "cassert", "cctype", "cerrno", "cfenv", "cfloat", "cinttypes",
-        "climits", "clocale", "cmath", "csetjmp", "csignal", "cstdarg",
-        "cstddef", "cstdint", "cstdio", "cstdlib", "cstring", "ctime",
-        "cuchar", "cwchar", "cwctype",
+        "cassert",
+        "cctype",
+        "cerrno",
+        "cfenv",
+        "cfloat",
+        "cinttypes",
+        "climits",
+        "clocale",
+        "cmath",
+        "csetjmp",
+        "csignal",
+        "cstdarg",
+        "cstddef",
+        "cstdint",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "ctime",
+        "cuchar",
+        "cwchar",
+        "cwctype",
     ];
 
     if CPP_STDLIB_HEADERS.contains(&include_path) {
@@ -1046,10 +1248,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_cpp_include_same_directory() {
-        let result = resolve_cpp_include_to_path(
-            "helper.hpp",
-            Some("/project/src/main.cpp"),
-        );
+        let result = resolve_cpp_include_to_path("helper.hpp", Some("/project/src/main.cpp"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -1058,10 +1257,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_cpp_include_subdirectory() {
-        let result = resolve_cpp_include_to_path(
-            "utils/helper.hpp",
-            Some("/project/src/main.cpp"),
-        );
+        let result = resolve_cpp_include_to_path("utils/helper.hpp", Some("/project/src/main.cpp"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -1070,10 +1266,8 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_cpp_include_parent_directory() {
-        let result = resolve_cpp_include_to_path(
-            "../include/common.hpp",
-            Some("/project/src/main.cpp"),
-        );
+        let result =
+            resolve_cpp_include_to_path("../include/common.hpp", Some("/project/src/main.cpp"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -1082,10 +1276,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_cpp_include_h_extension() {
-        let result = resolve_cpp_include_to_path(
-            "legacy.h",
-            Some("/project/src/main.cpp"),
-        );
+        let result = resolve_cpp_include_to_path("legacy.h", Some("/project/src/main.cpp"));
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -1094,10 +1285,7 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_cpp_include_no_current_file() {
-        let result = resolve_cpp_include_to_path(
-            "helper.hpp",
-            None,
-        );
+        let result = resolve_cpp_include_to_path("helper.hpp", None);
 
         assert!(result.is_none());
     }

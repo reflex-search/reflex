@@ -2,7 +2,9 @@
 //!
 //! This module provides utilities for testing Reflex against the test corpus.
 
-use reflex::{CacheManager, IndexConfig, Indexer, QueryEngine, QueryFilter, SearchResult, SymbolKind};
+use reflex::{
+    CacheManager, IndexConfig, Indexer, QueryEngine, QueryFilter, SearchResult, SymbolKind,
+};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -11,16 +13,20 @@ static CORPUS_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Initialize and index the test corpus once
 /// Returns the path to the indexed corpus
 pub fn setup_corpus() -> &'static Path {
-    CORPUS_PATH.get_or_init(|| {
-        let corpus = PathBuf::from("tests/corpus");
+    CORPUS_PATH
+        .get_or_init(|| {
+            let corpus = PathBuf::from("tests/corpus");
 
-        // Index the corpus
-        let cache = CacheManager::new(&corpus);
-        let indexer = Indexer::new(cache, IndexConfig::default());
-        indexer.index(&corpus, false).expect("Failed to index corpus");
+            // Index the corpus
+            let cache = CacheManager::new(&corpus);
+            let indexer = Indexer::new(cache, IndexConfig::default());
+            indexer
+                .index(&corpus, false)
+                .expect("Failed to index corpus");
 
-        corpus
-    }).as_path()
+            corpus
+        })
+        .as_path()
 }
 
 /// Create a query engine for the corpus
@@ -40,9 +46,9 @@ pub fn query_corpus(pattern: &str, filter: QueryFilter) -> Vec<SearchResult> {
 /// Assert that a symbol with the given name and kind was found
 pub fn assert_symbol_found(results: &[SearchResult], name: &str, kind: SymbolKind) {
     assert!(
-        results.iter().any(|r| {
-            r.symbol.as_deref() == Some(name) && r.kind == kind
-        }),
+        results
+            .iter()
+            .any(|r| { r.symbol.as_deref() == Some(name) && r.kind == kind }),
         "Expected to find symbol '{}' of kind {:?}, but it was not in results",
         name,
         kind
@@ -118,9 +124,10 @@ pub fn assert_sorted(results: &[SearchResult]) {
         let next = &results[i + 1];
 
         assert!(
-            curr.path < next.path ||
-            (curr.path == next.path && curr.span.start_line <= next.span.start_line),
-            "Results are not sorted correctly at index {}", i
+            curr.path < next.path
+                || (curr.path == next.path && curr.span.start_line <= next.span.start_line),
+            "Results are not sorted correctly at index {}",
+            i
         );
     }
 }

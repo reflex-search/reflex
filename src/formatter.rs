@@ -4,14 +4,14 @@
 //! It supports both static output (print and exit) and prepares for future interactive mode.
 
 use anyhow::Result;
-use crossterm::tty::IsTty;
 use crossterm::terminal;
+use crossterm::tty::IsTty;
 use std::collections::HashMap;
 use std::io;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
 
 use crate::models::{DependencyInfo, Language, SearchResult, SymbolKind};
 
@@ -41,7 +41,7 @@ impl SyntaxHighlighter {
             Language::Rust => ("rs", None),
             Language::Python => ("py", None),
             Language::JavaScript => ("js", None),
-            Language::TypeScript => ("ts", Some("js")),  // Fallback to JavaScript
+            Language::TypeScript => ("ts", Some("js")), // Fallback to JavaScript
             Language::Go => ("go", None),
             Language::Java => ("java", None),
             Language::C => ("c", None),
@@ -52,7 +52,7 @@ impl SyntaxHighlighter {
             Language::Kotlin => ("kt", None),
             Language::Swift => ("swift", None),
             Language::Zig => ("zig", None),
-            Language::Vue => ("vue", Some("html")),      // Fallback to HTML
+            Language::Vue => ("vue", Some("html")), // Fallback to HTML
             Language::Svelte => ("svelte", Some("html")), // Fallback to HTML
             Language::Unknown => return None,
         };
@@ -130,14 +130,14 @@ impl OutputFormatter {
     }
 
     /// Group results by file path
-    fn group_by_file<'a>(&self, results: &'a [SearchResult]) -> Vec<(String, Vec<&'a SearchResult>)> {
+    fn group_by_file<'a>(
+        &self,
+        results: &'a [SearchResult],
+    ) -> Vec<(String, Vec<&'a SearchResult>)> {
         let mut grouped: HashMap<String, Vec<&'a SearchResult>> = HashMap::new();
 
         for result in results {
-            grouped
-                .entry(result.path.clone())
-                .or_default()
-                .push(result);
+            grouped.entry(result.path.clone()).or_default().push(result);
         }
 
         // Convert to sorted vec (by file path)
@@ -181,8 +181,12 @@ impl OutputFormatter {
                 "  {} {} {}",
                 "📁".bright_blue(),
                 file_path.bright_cyan().bold(),
-                format!("({} {})", count, if count == 1 { "match" } else { "matches" })
-                    .dimmed()
+                format!(
+                    "({} {})",
+                    count,
+                    if count == 1 { "match" } else { "matches" }
+                )
+                .dimmed()
             );
         } else {
             // Plain text header
@@ -208,11 +212,7 @@ impl OutputFormatter {
         // Print the line with result
         if self.use_colors {
             // Line number and symbol badge
-            println!(
-                "    {} {}",
-                line_no.yellow(),
-                symbol_badge
-            );
+            println!("    {} {}", line_no.yellow(), symbol_badge);
 
             // Print code preview with syntax highlighting (indented)
             let highlighted = self.highlight_code(&result.preview, &result.lang, pattern);
@@ -259,12 +259,12 @@ impl OutputFormatter {
     /// Format dependencies for display
     /// Returns None if no dependencies exist
     /// Note: Database only contains internal dependencies (external/stdlib filtered during indexing)
-    fn format_internal_dependencies(&self, dependencies: &Option<Vec<DependencyInfo>>) -> Option<Vec<String>> {
+    fn format_internal_dependencies(
+        &self,
+        dependencies: &Option<Vec<DependencyInfo>>,
+    ) -> Option<Vec<String>> {
         dependencies.as_ref().and_then(|deps| {
-            let dep_paths: Vec<String> = deps
-                .iter()
-                .map(|dep| dep.path.clone())
-                .collect();
+            let dep_paths: Vec<String> = deps.iter().map(|dep| dep.path.clone()).collect();
 
             if dep_paths.is_empty() {
                 None
@@ -333,7 +333,10 @@ impl OutputFormatter {
         };
 
         // Get theme - try Monokai Extended, fall back to base16-ocean.dark or first available
-        let theme = highlighter.theme_set.themes.get("Monokai Extended")
+        let theme = highlighter
+            .theme_set
+            .themes
+            .get("Monokai Extended")
             .or_else(|| highlighter.theme_set.themes.get("base16-ocean.dark"))
             .or_else(|| highlighter.theme_set.themes.values().next())
             .expect("No themes available in syntect");
@@ -342,7 +345,9 @@ impl OutputFormatter {
         let mut h = HighlightLines::new(syntax, theme);
 
         for line in LinesWithEndings::from(code) {
-            let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &highlighter.syntax_set).unwrap_or_default();
+            let ranges: Vec<(SyntectStyle, &str)> = h
+                .highlight_line(line, &highlighter.syntax_set)
+                .unwrap_or_default();
             let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
             output.push_str(&escaped);
         }
@@ -365,12 +370,7 @@ impl OutputFormatter {
             let matched = &code[pos..pos + pattern.len()];
             let after = &code[pos + pattern.len()..];
 
-            format!(
-                "{}{}{}",
-                before,
-                matched.black().on_yellow().bold(),
-                after
-            )
+            format!("{}{}{}", before, matched.black().on_yellow().bold(), after)
         } else {
             code.to_string()
         }

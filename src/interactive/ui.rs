@@ -1,9 +1,12 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
-    Frame,
+    widgets::{
+        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Wrap,
+    },
 };
 
 use super::app::{AppMode, FocusState, IndexStatusState, InteractiveApp};
@@ -57,9 +60,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         IndexStatusState::Ready { file_count, .. } => {
             format!("✓ {} files", file_count)
         }
-        IndexStatusState::Missing => {
-            "⚠ No index".to_string()
-        }
+        IndexStatusState::Missing => "⚠ No index".to_string(),
         IndexStatusState::Stale { files_changed, .. } => {
             format!("⚠ {} changed", files_changed)
         }
@@ -89,9 +90,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             super::app::SymbolIndexingState::Completed => {
                 " │ ✓ symbols [Shift+I: clear]".to_string()
             }
-            super::app::SymbolIndexingState::Failed => {
-                " │ ⚠ symbols [Shift+I: clear]".to_string()
-            }
+            super::app::SymbolIndexingState::Failed => " │ ⚠ symbols [Shift+I: clear]".to_string(),
             super::app::SymbolIndexingState::NotStarted => {
                 " │ ⏳ symbols... [Shift+I: clear]".to_string()
             }
@@ -112,10 +111,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let title_spans = vec![
         Span::raw(title_left),
         Span::raw(spacing),
-        Span::styled(
-            status_indicator,
-            Style::default().fg(palette.muted)
-        ),
+        Span::styled(status_indicator, Style::default().fg(palette.muted)),
     ];
 
     let input_block = Block::default()
@@ -135,9 +131,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             .fg(palette.foreground)
             .bg(Color::Rgb(40, 40, 40)) // Subtle background highlight when focused
     } else {
-        Style::default()
-            .fg(palette.foreground)
-            .bg(Color::Black) // Explicit background to prevent rendering artifacts
+        Style::default().fg(palette.foreground).bg(Color::Black) // Explicit background to prevent rendering artifacts
     };
 
     let input_paragraph = Paragraph::new(input_text)
@@ -301,9 +295,7 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
     let paragraph = Paragraph::new(Line::from(filter_spans))
         .block(block)
-        .style(Style::default()
-            .fg(palette.foreground)
-            .bg(Color::Black)) // Explicit background to prevent content bleeding through
+        .style(Style::default().fg(palette.foreground).bg(Color::Black)) // Explicit background to prevent content bleeding through
         .wrap(Wrap { trim: false }); // Ensure badges don't overflow the widget bounds
 
     f.render_widget(paragraph, area);
@@ -332,7 +324,7 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Results ")
-                    .border_style(Style::default().fg(palette.muted))
+                    .border_style(Style::default().fg(palette.muted)),
             )
             .style(Style::default().bg(Color::Black));
         f.render_widget(background_paragraph, area);
@@ -352,7 +344,12 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
         // Get progress info from index status
         let (current, total, percent, status_msg) = match app.index_status() {
-            crate::interactive::app::IndexStatusState::Indexing { current, total, status, .. } => {
+            crate::interactive::app::IndexStatusState::Indexing {
+                current,
+                total,
+                status,
+                ..
+            } => {
                 let pct = if *total > 0 {
                     (*current as f64 / *total as f64 * 100.0) as u32
                 } else {
@@ -390,7 +387,10 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
         // Create status line
         let status_line = if total > 0 {
-            format!("{}/{} files ({}%) • {}", current, total, percent, elapsed_text)
+            format!(
+                "{}/{} files ({}%) • {}",
+                current, total, percent, elapsed_text
+            )
         } else {
             format!("Indexing... • {}", elapsed_text)
         };
@@ -403,37 +403,32 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                     spinner.to_string(),
                     Style::default()
                         .fg(Color::Rgb(255, 150, 0))
-                        .add_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "Building index",
-                    Style::default()
-                        .fg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                "Building index",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(progress_bar, Style::default().fg(palette.info)),
-            ]),
+            Line::from(vec![Span::styled(
+                progress_bar,
+                Style::default().fg(palette.info),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    status_line,
-                    Style::default().fg(palette.muted),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                status_line,
+                Style::default().fg(palette.muted),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    status_msg,
-                    Style::default().fg(Color::Rgb(150, 150, 150)),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                status_msg,
+                Style::default().fg(Color::Rgb(150, 150, 150)),
+            )]),
         ];
 
         // Render modal with animated border
@@ -481,7 +476,7 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Results ")
-                    .border_style(Style::default().fg(palette.muted))
+                    .border_style(Style::default().fg(palette.muted)),
             )
             .style(Style::default().bg(Color::Black));
         f.render_widget(background_paragraph, area);
@@ -499,30 +494,27 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                     spinner.to_string(),
                     Style::default()
                         .fg(Color::Rgb(0, 200, 255))
-                        .add_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "Searching codebase",
-                    Style::default()
-                        .fg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                "Searching codebase",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("━━━━━━━━━━━━━━━━", Style::default().fg(palette.info)),
-            ]),
+            Line::from(vec![Span::styled(
+                "━━━━━━━━━━━━━━━━",
+                Style::default().fg(palette.info),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "Hang tight...",
-                    Style::default().fg(palette.muted),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                "Hang tight...",
+                Style::default().fg(palette.muted),
+            )]),
         ];
 
         // Render modal with animated border
@@ -665,20 +657,15 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
             // Add symbol line if present (before file path)
             if has_symbol {
-                let symbol_text = format!("[{}] {}",
-                    result.kind,
-                    result.symbol.as_ref().unwrap()
-                );
+                let symbol_text = format!("[{}] {}", result.kind, result.symbol.as_ref().unwrap());
 
                 if is_selected {
                     lines.push(Line::from(symbol_text));
                 } else {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            symbol_text,
-                            Style::default().fg(Color::Rgb(200, 150, 255)) // Purple/magenta
-                        )
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        symbol_text,
+                        Style::default().fg(Color::Rgb(200, 150, 255)), // Purple/magenta
+                    )]));
                 }
             }
 
@@ -687,17 +674,16 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             if is_selected {
                 lines.push(Line::from(file_line_text));
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        file_line_text,
-                        Style::default().fg(palette.info) // Cyan for file path
-                    )
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    file_line_text,
+                    Style::default().fg(palette.info), // Cyan for file path
+                )]));
             }
 
             // Split preview into lines and apply syntax highlighting
             // Limit to MAX_PREVIEW_LINES to prevent expand mode from breaking scroll window
-            let preview_lines_vec: Vec<String> = result.preview
+            let preview_lines_vec: Vec<String> = result
+                .preview
                 .lines()
                 .take(MAX_PREVIEW_LINES)
                 .map(|s| s.to_string())
@@ -710,11 +696,8 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                 }
             } else {
                 // Apply syntax highlighting to preview lines
-                let highlighted = super::syntax::highlight_code_lines(
-                    &preview_lines_vec,
-                    result.lang,
-                    &theme
-                );
+                let highlighted =
+                    super::syntax::highlight_code_lines(&preview_lines_vec, result.lang, &theme);
 
                 for highlighted_line in highlighted {
                     // Add indentation and prepend to highlighted spans
@@ -751,8 +734,8 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
     // Render scrollbar if there are more results than visible
     if result_count > visible_results_count {
-        let mut scrollbar_state = ScrollbarState::new(result_count)
-            .position(results.selected_index());
+        let mut scrollbar_state =
+            ScrollbarState::new(result_count).position(results.selected_index());
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
@@ -763,7 +746,10 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
         f.render_stateful_widget(
             scrollbar,
-            area.inner(ratatui::layout::Margin { horizontal: 0, vertical: 1 }),
+            area.inner(ratatui::layout::Margin {
+                horizontal: 0,
+                vertical: 1,
+            }),
             &mut scrollbar_state,
         );
     }
@@ -852,7 +838,8 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         // This ensures syntect maintains proper state (for multi-line strings, comments, etc.)
         // We'll only render the visible portion, but we need to process all lines up to that point
         let lines_to_highlight: Vec<String> = content_lines[..end].to_vec();
-        let all_highlighted = super::syntax::highlight_code_lines(&lines_to_highlight, lang, &theme);
+        let all_highlighted =
+            super::syntax::highlight_code_lines(&lines_to_highlight, lang, &theme);
 
         // Extract only the visible portion
         let highlighted_lines: Vec<_> = all_highlighted.into_iter().skip(start).collect();
@@ -865,12 +852,10 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                 let is_center = line_number == center;
 
                 // Build the complete line with line number prefix
-                let mut spans = vec![
-                    Span::styled(
-                        format!("{:4} │ ", line_number),
-                        Style::default().fg(palette.muted)
-                    )
-                ];
+                let mut spans = vec![Span::styled(
+                    format!("{:4} │ ", line_number),
+                    Style::default().fg(palette.muted),
+                )];
 
                 // Add highlighted code spans
                 spans.extend(highlighted_line.spans);
@@ -882,7 +867,7 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                     ListItem::new(line_content).style(
                         Style::default()
                             .bg(palette.highlight)
-                            .add_modifier(Modifier::BOLD)
+                            .add_modifier(Modifier::BOLD),
                     )
                 } else {
                     ListItem::new(line_content)
@@ -891,7 +876,8 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             .collect();
 
         // Make path relative to project root
-        let relative_path = preview.path()
+        let relative_path = preview
+            .path()
             .strip_prefix(app.cwd().to_str().unwrap_or(""))
             .unwrap_or(preview.path())
             .trim_start_matches('/');
@@ -901,13 +887,12 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             format!("./{}", relative_path)
         };
         let title = format!(" {} (line {}) ", relative_display, center);
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(palette.accent)),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(palette.accent)),
+        );
 
         f.render_widget(list, area);
     }
@@ -920,7 +905,12 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let footer_spans = match app.mode() {
         AppMode::Help => vec![
             Span::styled("Press ", Style::default().fg(palette.muted)),
-            Span::styled("?", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "?",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" to close help", Style::default().fg(palette.muted)),
         ],
         AppMode::FilterSelector => vec![
@@ -930,11 +920,26 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                     .fg(palette.info)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("↑↓/j/k", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "↑↓/j/k",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" navigate  ", Style::default().fg(palette.muted)),
-            Span::styled("Enter", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" select  ", Style::default().fg(palette.muted)),
-            Span::styled("Esc", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" cancel", Style::default().fg(palette.muted)),
         ],
         AppMode::FilePreview => vec![
@@ -945,9 +950,19 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("j/k scroll  ", Style::default().fg(palette.muted)),
-            Span::styled("Esc", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" close  ", Style::default().fg(palette.muted)),
-            Span::styled("o", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "o",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" open in editor", Style::default().fg(palette.muted)),
         ],
         AppMode::Indexing | AppMode::Normal => {
@@ -985,19 +1000,14 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             let hint = app.capabilities().open_hint();
             spans.push(Span::styled(hint, Style::default().fg(palette.muted)));
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                "? help",
-                Style::default().fg(palette.muted),
-            ));
+            spans.push(Span::styled("? help", Style::default().fg(palette.muted)));
 
             spans
         }
     };
 
     let footer = Paragraph::new(Line::from(footer_spans))
-        .style(Style::default()
-            .fg(palette.foreground)
-            .bg(Color::Black)); // Explicit background to prevent rendering artifacts
+        .style(Style::default().fg(palette.foreground).bg(Color::Black)); // Explicit background to prevent rendering artifacts
 
     f.render_widget(footer, area);
 }

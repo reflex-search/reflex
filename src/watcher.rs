@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 use crate::indexer::Indexer;
@@ -69,8 +69,8 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
     let (tx, rx) = channel();
 
     // Create watcher with default config
-    let mut watcher = RecommendedWatcher::new(tx, Config::default())
-        .context("Failed to create file watcher")?;
+    let mut watcher =
+        RecommendedWatcher::new(tx, Config::default()).context("Failed to create file watcher")?;
 
     // Start watching the directory recursively
     watcher
@@ -78,7 +78,10 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
         .context("Failed to start watching directory")?;
 
     if !config.quiet {
-        println!("Watching for changes (debounce: {}s)...", config.debounce_ms / 1000);
+        println!(
+            "Watching for changes (debounce: {}s)...",
+            config.debounce_ms / 1000
+        );
     }
 
     // Track pending file changes
@@ -102,10 +105,12 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                         // but we must still reindex so the deleted entry is removed.
                         // Accept any path whose extension suggests a code file OR has no
                         // extension at all (e.g. a deleted directory triggers a broad Remove).
-                        let ext = changed_path.extension()
+                        let ext = changed_path
+                            .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("");
-                        let is_code = ext.is_empty() || crate::models::Language::from_extension(ext).is_supported();
+                        let is_code = ext.is_empty()
+                            || crate::models::Language::from_extension(ext).is_supported();
                         if is_code {
                             log::debug!("Detected removal: {:?}", changed_path);
                             pending_deletions.insert(changed_path);

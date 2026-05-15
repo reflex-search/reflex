@@ -33,7 +33,7 @@
 //! - Russ Cox - Regular Expression Matching with a Trigram Index
 //!   https://swtch.com/~rsc/regexp/regexp4.html
 
-use crate::trigram::{extract_trigrams, Trigram};
+use crate::trigram::{Trigram, extract_trigrams};
 
 /// Extract guaranteed trigrams from a regex pattern
 ///
@@ -69,11 +69,18 @@ pub fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
     let literals = extract_literal_sequences(pattern);
 
     if literals.is_empty() {
-        log::debug!("No literals found in regex pattern '{}', will fall back to full scan", pattern);
+        log::debug!(
+            "No literals found in regex pattern '{}', will fall back to full scan",
+            pattern
+        );
         return vec![];
     }
 
-    log::debug!("Extracted {} literal sequences from regex: {:?}", literals.len(), literals);
+    log::debug!(
+        "Extracted {} literal sequences from regex: {:?}",
+        literals.len(),
+        literals
+    );
 
     // Extract trigrams from all literal sequences
     let mut all_trigrams = Vec::new();
@@ -86,7 +93,10 @@ pub fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
     all_trigrams.sort_unstable();
     all_trigrams.dedup();
 
-    log::debug!("Extracted {} unique trigrams from regex pattern", all_trigrams.len());
+    log::debug!(
+        "Extracted {} unique trigrams from regex pattern",
+        all_trigrams.len()
+    );
     all_trigrams
 }
 

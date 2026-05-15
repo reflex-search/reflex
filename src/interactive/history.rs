@@ -105,7 +105,8 @@ impl QueryHistory {
         };
 
         // Remove duplicate if it exists
-        self.queries.retain(|q| q.pattern != query.pattern || q.filters != query.filters);
+        self.queries
+            .retain(|q| q.pattern != query.pattern || q.filters != query.filters);
 
         // Add to front
         self.queries.push_front(query);

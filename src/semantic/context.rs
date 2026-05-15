@@ -47,21 +47,20 @@ impl CodebaseContext {
     /// Extract comprehensive context from cache
     pub fn extract(cache: &CacheManager) -> Result<Self> {
         let db_path = cache.path().join("meta.db");
-        let conn = Connection::open(&db_path)
-            .context("Failed to open database for context extraction")?;
+        let conn =
+            Connection::open(&db_path).context("Failed to open database for context extraction")?;
 
         // Get total file count
-        let total_files: usize = conn.query_row(
-            "SELECT COUNT(*) FROM files",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let total_files: usize = conn
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
+            .unwrap_or(0);
 
         // Extract language distribution
         let languages = extract_language_distribution(&conn, total_files)?;
 
         // Find dominant language (>60% of files)
-        let dominant_language = languages.iter()
+        let dominant_language = languages
+            .iter()
             .find(|lang| lang.percentage > 60.0)
             .cloned();
 
@@ -92,10 +91,14 @@ impl CodebaseContext {
 
         // Language distribution (Tier 1)
         if !self.languages.is_empty() {
-            let lang_summary: Vec<String> = self.languages.iter()
+            let lang_summary: Vec<String> = self
+                .languages
+                .iter()
                 .map(|lang| {
-                    format!("{} ({} files, {:.0}%)",
-                            lang.name, lang.file_count, lang.percentage)
+                    format!(
+                        "{} ({} files, {:.0}%)",
+                        lang.name, lang.file_count, lang.percentage
+                    )
                 })
                 .collect();
             parts.push(format!("**Languages:** {}", lang_summary.join(", ")));
@@ -109,23 +112,32 @@ impl CodebaseContext {
         } else {
             "large codebase - use specific filters for best results"
         };
-        parts.push(format!("**Total files:** {} ({})", self.total_files, scale_hint));
+        parts.push(format!(
+            "**Total files:** {} ({})",
+            self.total_files, scale_hint
+        ));
 
         // Top-level directories (Tier 1)
         if !self.top_level_dirs.is_empty() {
-            parts.push(format!("**Top-level directories:** {}",
-                             self.top_level_dirs.join(", ")));
+            parts.push(format!(
+                "**Top-level directories:** {}",
+                self.top_level_dirs.join(", ")
+            ));
         }
 
         // Dominant language (Tier 2)
         if let Some(ref dominant) = self.dominant_language {
-            parts.push(format!("**Primary language:** {} ({:.0}% of codebase)",
-                             dominant.name, dominant.percentage));
+            parts.push(format!(
+                "**Primary language:** {} ({:.0}% of codebase)",
+                dominant.name, dominant.percentage
+            ));
         }
 
         // Common paths (Tier 2)
         if !self.common_paths.is_empty() {
-            let paths_str = self.common_paths.iter()
+            let paths_str = self
+                .common_paths
+                .iter()
                 .take(8) // Limit to 8 most common
                 .map(|p| p.as_str())
                 .collect::<Vec<_>>()
@@ -138,7 +150,8 @@ impl CodebaseContext {
             if let Some(count) = self.project_count {
                 parts.push(format!("**Monorepo:** Yes ({} projects detected - use --file to target specific projects)", count));
             } else {
-                parts.push("**Monorepo:** Yes (use --file to target specific projects)".to_string());
+                parts
+                    .push("**Monorepo:** Yes (use --file to target specific projects)".to_string());
             }
         }
 
@@ -147,31 +160,35 @@ impl CodebaseContext {
 }
 
 /// Extract language distribution with counts and percentages
-fn extract_language_distribution(conn: &Connection, total_files: usize) -> Result<Vec<LanguageInfo>> {
+fn extract_language_distribution(
+    conn: &Connection,
+    total_files: usize,
+) -> Result<Vec<LanguageInfo>> {
     let mut stmt = conn.prepare(
         "SELECT language, COUNT(*) as count
          FROM files
          WHERE language IS NOT NULL
          GROUP BY language
-         ORDER BY count DESC"
+         ORDER BY count DESC",
     )?;
 
-    let languages = stmt.query_map([], |row| {
-        let name: String = row.get(0)?;
-        let file_count: usize = row.get(1)?;
-        let percentage = if total_files > 0 {
-            (file_count as f64 / total_files as f64) * 100.0
-        } else {
-            0.0
-        };
+    let languages = stmt
+        .query_map([], |row| {
+            let name: String = row.get(0)?;
+            let file_count: usize = row.get(1)?;
+            let percentage = if total_files > 0 {
+                (file_count as f64 / total_files as f64) * 100.0
+            } else {
+                0.0
+            };
 
-        Ok(LanguageInfo {
-            name,
-            file_count,
-            percentage,
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+            Ok(LanguageInfo {
+                name,
+                file_count,
+                percentage,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(languages)
 }
@@ -179,7 +196,8 @@ fn extract_language_distribution(conn: &Connection, total_files: usize) -> Resul
 /// Extract all file paths from database
 fn extract_file_paths(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT path FROM files")?;
-    let paths = stmt.query_map([], |row| row.get(0))?
+    let paths = stmt
+        .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(paths)
 }
@@ -223,10 +241,11 @@ fn extract_common_paths(paths: &[String], min_depth: usize, max_results: usize) 
                     continue;
                 }
                 // Skip hidden directories and common noise
-                if partial_path.contains("/.") ||
-                   partial_path.contains("/node_modules") ||
-                   partial_path.contains("/vendor") ||
-                   partial_path.contains("/target") {
+                if partial_path.contains("/.")
+                    || partial_path.contains("/node_modules")
+                    || partial_path.contains("/vendor")
+                    || partial_path.contains("/target")
+                {
                     continue;
                 }
                 *path_counts.entry(partial_path).or_insert(0) += 1;
@@ -245,7 +264,8 @@ fn extract_common_paths(paths: &[String], min_depth: usize, max_results: usize) 
     common_paths.sort_by(|a, b| b.1.cmp(&a.1));
 
     // Return top paths with trailing slash
-    common_paths.into_iter()
+    common_paths
+        .into_iter()
         .take(max_results)
         .map(|(path, _)| format!("{}/", path))
         .collect()
@@ -280,7 +300,11 @@ fn detect_monorepo(paths: &[String]) -> (bool, Option<usize>) {
     }
 
     let is_monorepo = project_count >= 2;
-    let project_count_opt = if is_monorepo { Some(project_count) } else { None };
+    let project_count_opt = if is_monorepo {
+        Some(project_count)
+    } else {
+        None
+    };
 
     (is_monorepo, project_count_opt)
 }
@@ -337,10 +361,7 @@ mod tests {
         assert!(is_monorepo);
         assert_eq!(count, Some(3));
 
-        let single_project = vec![
-            "package.json".to_string(),
-            "src/main.ts".to_string(),
-        ];
+        let single_project = vec!["package.json".to_string(), "src/main.ts".to_string()];
 
         let (is_mono, _) = detect_monorepo(&single_project);
         assert!(!is_mono);

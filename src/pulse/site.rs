@@ -10,8 +10,6 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::cache::CacheManager;
-use crate::semantic::providers::LlmProvider;
 use super::changelog;
 use super::diff;
 use super::explorer;
@@ -20,10 +18,12 @@ use super::glossary;
 use super::map::{self, MapFormat, MapZoom};
 use super::narrate;
 use super::onboard;
+use super::pagefind;
 use super::snapshot;
 use super::wiki;
 use super::zola;
-use super::pagefind;
+use crate::cache::CacheManager;
+use crate::semantic::providers::LlmProvider;
 
 /// Truncate a string to at most `max_chars` Unicode characters, appending "..." if truncated.
 fn truncate_str(s: &str, max_chars: usize) -> String {
@@ -71,7 +71,15 @@ impl Default for SiteConfig {
             output_dir: PathBuf::from("pulse-site"),
             base_url: "/".to_string(),
             title: "Documentation".to_string(),
-            surfaces: vec![Surface::Wiki, Surface::Changelog, Surface::Map, Surface::Onboard, Surface::Timeline, Surface::Glossary, Surface::Explorer],
+            surfaces: vec![
+                Surface::Wiki,
+                Surface::Changelog,
+                Surface::Map,
+                Surface::Onboard,
+                Surface::Timeline,
+                Surface::Glossary,
+                Surface::Explorer,
+            ],
             no_llm: true,
             clean: false,
             force_renarrate: false,
@@ -111,7 +119,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let ensure_result = snapshot::ensure_snapshot(cache, &pulse_config.retention)?;
     match &ensure_result {
         snapshot::EnsureSnapshotResult::Created(info) => {
-            eprintln!("Auto-snapshot created: {} ({} files)", info.id, info.file_count);
+            eprintln!(
+                "Auto-snapshot created: {} ({} files)",
+                info.id, info.file_count
+            );
         }
         snapshot::EnsureSnapshotResult::Reused(info) => {
             eprintln!("Using snapshot: {} (index unchanged)", info.id);
@@ -120,15 +131,19 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
 
     // Clean output dir if requested
     if config.clean && config.output_dir.exists() {
-        std::fs::remove_dir_all(&config.output_dir)
-            .context("Failed to clean output directory")?;
+        std::fs::remove_dir_all(&config.output_dir).context("Failed to clean output directory")?;
     }
 
     // Create Zola project structure
     create_directory_structure(&config.output_dir)?;
 
     // Write Zola config
-    write_zola_config(&config.output_dir, &config.base_url, &config.title, &config.surfaces)?;
+    write_zola_config(
+        &config.output_dir,
+        &config.base_url,
+        &config.title,
+        &config.surfaces,
+    )?;
 
     // Write templates
     write_templates(&config.output_dir)?;
@@ -173,7 +188,9 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         None
     };
 
-    let llm_cache = provider.as_ref().map(|_| super::llm_cache::LlmCache::new(cache.path()));
+    let llm_cache = provider
+        .as_ref()
+        .map(|_| super::llm_cache::LlmCache::new(cache.path()));
 
     let mut pages_generated = 0;
     let mut changelog_generated = false;
@@ -184,7 +201,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let mut explorer_generated = false;
     let mut has_narration = false;
 
-    let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
+    let snapshot_id = snapshots
+        .first()
+        .map(|s| s.id.as_str())
+        .unwrap_or("unknown");
 
     // ══════════════════════════════════════════════════════════════
     // Phase 1: Parallel Structural (rayon for wiki, sequential for rest)
@@ -201,18 +221,14 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let mut wiki_pages_with_context: Vec<wiki::WikiPageWithContext> = Vec::new();
     if config.surfaces.contains(&Surface::Wiki) {
         eprintln!("Building wiki structural data (parallel)...");
-        wiki_pages_with_context = wiki::generate_all_pages_structural(
-            cache,
-            snapshot_diff.as_ref(),
-            &discovery_config,
-        )?;
+        wiki_pages_with_context =
+            wiki::generate_all_pages_structural(cache, snapshot_diff.as_ref(), &discovery_config)?;
     }
 
     // Build wiki_page_index from structural data (needed for architecture/overview contexts)
     let modules = wiki::detect_modules(cache, &discovery_config)?;
-    let module_map: std::collections::HashMap<&str, &wiki::ModuleDefinition> = modules.iter()
-        .map(|m| (m.path.as_str(), m))
-        .collect();
+    let module_map: std::collections::HashMap<&str, &wiki::ModuleDefinition> =
+        modules.iter().map(|m| (m.path.as_str(), m)).collect();
 
     let mut wiki_page_index: Vec<WikiPageMeta> = Vec::new();
     for pwc in &wiki_pages_with_context {
@@ -258,7 +274,11 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let mut layered_content: Option<String> = None;
     let mut arch_context: Option<String> = None;
     if config.surfaces.contains(&Surface::Map) {
-        map_content = Some(map::generate_map(cache, &MapZoom::Repo, MapFormat::Mermaid)?);
+        map_content = Some(map::generate_map(
+            cache,
+            &MapZoom::Repo,
+            MapFormat::Mermaid,
+        )?);
         layered_content = map::generate_layered_map(cache, MapFormat::Mermaid).ok();
         arch_context = Some(build_architecture_context(cache, &wiki_page_index));
     }
@@ -270,7 +290,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         let module_count = wiki_page_index.len();
         onboard_data = match onboard::generate_onboard_structural(cache, module_count) {
             Ok(data) => Some(data),
-            Err(e) => { eprintln!("  Warning: onboard generation failed: {e}"); None }
+            Err(e) => {
+                eprintln!("  Warning: onboard generation failed: {e}");
+                None
+            }
         };
     }
 
@@ -281,7 +304,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         let workspace_root = cache.path().parent().unwrap_or(std::path::Path::new("."));
         timeline_data = match git_intel::extract_git_intel(workspace_root) {
             Ok(data) => Some(data),
-            Err(e) => { eprintln!("  Warning: timeline generation failed: {e}"); None }
+            Err(e) => {
+                eprintln!("  Warning: timeline generation failed: {e}");
+                None
+            }
         };
     }
 
@@ -307,14 +333,20 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         eprintln!("Building explorer treemap...");
         explorer_data = match explorer::generate_explorer(cache) {
             Ok(data) => Some(data),
-            Err(e) => { eprintln!("  Warning: explorer generation failed: {e}"); None }
+            Err(e) => {
+                eprintln!("  Warning: explorer generation failed: {e}");
+                None
+            }
         };
     }
 
     // 1h. Project overview context
     let overview_context = build_project_overview_context(cache, &wiki_page_index);
 
-    eprintln!("  Structural phase: {:.1}s", structural_start.elapsed().as_secs_f64());
+    eprintln!(
+        "  Structural phase: {:.1}s",
+        structural_start.elapsed().as_secs_f64()
+    );
 
     // These will be filled by Phase 2 narration (if enabled)
     let mut architecture_narrative: Option<String> = None;
@@ -428,7 +460,8 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         );
 
         // Distribute results back to their sources
-        let result_map: std::collections::HashMap<String, Option<String>> = results.into_iter()
+        let result_map: std::collections::HashMap<String, Option<String>> = results
+            .into_iter()
             .map(|r| (r.cache_key_suffix, r.response))
             .collect();
 
@@ -528,12 +561,7 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
 
         for (i, pwc) in wiki_pages_with_context.iter().enumerate() {
             let module = module_map.get(pwc.page.module_path.as_str());
-            write_wiki_page(
-                &config.output_dir,
-                &pwc.page,
-                module,
-                i + 1,
-            )?;
+            write_wiki_page(&config.output_dir, &pwc.page, module, i + 1)?;
             pages_generated += 1;
         }
     }
@@ -631,7 +659,10 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         copy_pagefind_to_static(&config.output_dir);
     }
 
-    eprintln!("  Total generation: {:.1}s", overall_start.elapsed().as_secs_f64());
+    eprintln!(
+        "  Total generation: {:.1}s",
+        overall_start.elapsed().as_secs_f64()
+    );
 
     Ok(SiteReport {
         output_dir: config.output_dir.display().to_string(),
@@ -676,9 +707,14 @@ fn create_directory_structure(output_dir: &Path) -> Result<()> {
 
 // ── Zola config ──────────────────────────────────────────────
 
-fn write_zola_config(output_dir: &Path, base_url: &str, title: &str, surfaces: &[Surface]) -> Result<()> {
+fn write_zola_config(
+    output_dir: &Path,
+    base_url: &str,
+    title: &str,
+    surfaces: &[Surface],
+) -> Result<()> {
     let config = format!(
-r#"# Zola configuration — generated by rfx pulse generate
+        r#"# Zola configuration — generated by rfx pulse generate
 base_url = "{base_url}"
 title = "{title}"
 description = "Auto-generated codebase documentation"
@@ -706,13 +742,13 @@ has_timeline = {timeline}
 has_map = {map}
 has_explorer = {explorer}
 "#,
-    onboard = surfaces.contains(&Surface::Onboard),
-    glossary = surfaces.contains(&Surface::Glossary),
-    changelog = surfaces.contains(&Surface::Changelog),
-    timeline = surfaces.contains(&Surface::Timeline),
-    map = surfaces.contains(&Surface::Map),
-    explorer = surfaces.contains(&Surface::Explorer),
-);
+        onboard = surfaces.contains(&Surface::Onboard),
+        glossary = surfaces.contains(&Surface::Glossary),
+        changelog = surfaces.contains(&Surface::Changelog),
+        timeline = surfaces.contains(&Surface::Timeline),
+        map = surfaces.contains(&Surface::Map),
+        explorer = surfaces.contains(&Surface::Explorer),
+    );
 
     std::fs::write(output_dir.join("config.toml"), config)
         .context("Failed to write Zola config.toml")
@@ -981,7 +1017,10 @@ fn write_templates(output_dir: &Path) -> Result<()> {
     std::fs::write(output_dir.join("templates/index.html"), index_html)?;
     std::fs::write(output_dir.join("templates/section.html"), section_html)?;
     std::fs::write(output_dir.join("templates/page.html"), page_html)?;
-    std::fs::write(output_dir.join("templates/shortcodes/mermaid.html"), mermaid_shortcode)?;
+    std::fs::write(
+        output_dir.join("templates/shortcodes/mermaid.html"),
+        mermaid_shortcode,
+    )?;
 
     Ok(())
 }
@@ -1758,8 +1797,7 @@ pagefind-modal {
 }
 "#;
 
-    std::fs::write(output_dir.join("static/style.css"), css)
-        .context("Failed to write style.css")
+    std::fs::write(output_dir.join("static/style.css"), css).context("Failed to write style.css")
 }
 
 // ── Content generation ───────────────────────────────────────
@@ -1795,7 +1833,11 @@ fn write_home_page(
         // Full URL: extract path after host
         let after_scheme = &base_url[base_url.find("://").unwrap() + 3..];
         let path = after_scheme.find('/').map_or("/", |i| &after_scheme[i..]);
-        if path.ends_with('/') { path.to_string() } else { format!("{path}/") }
+        if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        }
     } else if base_url.ends_with('/') {
         base_url.to_string()
     } else {
@@ -1889,12 +1931,18 @@ fn write_home_page(
             if let Some(week) = tl.weekly_summaries.first() {
                 content.push_str(&format!(
                     "Week of {}: **{}** commits across **{}** files by **{}** contributors.\n\n",
-                    week.week_start, week.commit_count, week.files_changed, week.contributors.len()
+                    week.week_start,
+                    week.commit_count,
+                    week.files_changed,
+                    week.contributors.len()
                 ));
             }
             if !tl.churn.is_empty() {
                 content.push_str("Most active files: ");
-                let top: Vec<String> = tl.churn.iter().take(5)
+                let top: Vec<String> = tl
+                    .churn
+                    .iter()
+                    .take(5)
                     .map(|f| format!("`{}`", f.path))
                     .collect();
                 content.push_str(&top.join(", "));
@@ -1922,7 +1970,8 @@ fn write_home_page(
 
             // Nest Tier 2 children under their Tier 1 parent
             let parent_name = page.title.trim_end_matches('/');
-            let children: Vec<&&WikiPageMeta> = tier2.iter()
+            let children: Vec<&&WikiPageMeta> = tier2
+                .iter()
                 .filter(|t2| t2.parent_path.as_deref() == Some(parent_name))
                 .collect();
             if !children.is_empty() {
@@ -1942,10 +1991,13 @@ fn write_home_page(
     }
 
     // Remaining Tier 2 modules that don't have a Tier 1 parent shown above
-    let orphan_tier2: Vec<&&WikiPageMeta> = tier2.iter()
+    let orphan_tier2: Vec<&&WikiPageMeta> = tier2
+        .iter()
         .filter(|t2| {
             let parent = t2.parent_path.as_deref().unwrap_or("");
-            !tier1.iter().any(|t1| t1.title.trim_end_matches('/') == parent)
+            !tier1
+                .iter()
+                .any(|t1| t1.title.trim_end_matches('/') == parent)
         })
         .collect();
     if !orphan_tier2.is_empty() {
@@ -2093,8 +2145,11 @@ fn write_changelog_page(
     index_content.push_str("+++\n\n");
     index_content.push_str(changelog_md);
 
-    std::fs::write(output_dir.join("content/changelog/_index.md"), index_content)
-        .context("Failed to write changelog page")
+    std::fs::write(
+        output_dir.join("content/changelog/_index.md"),
+        index_content,
+    )
+    .context("Failed to write changelog page")
 }
 
 fn write_map_page(
@@ -2116,7 +2171,9 @@ fn write_map_page(
         content.push_str(narrative);
         content.push_str("\n\n");
     } else {
-        content.push_str("Module-level dependency graph showing how code modules relate to each other.\n\n");
+        content.push_str(
+            "Module-level dependency graph showing how code modules relate to each other.\n\n",
+        );
     }
 
     // Diagram with view toggle (flat vs layered)
@@ -2156,8 +2213,12 @@ fn write_map_page(
 
     // Legend
     content.push_str("## Legend\n\n");
-    content.push_str("- **Thick arrows** indicate many file-level dependency edges between modules.\n");
-    content.push_str("- **Red-highlighted nodes** are dependency hotspots (imported by many modules).\n");
+    content.push_str(
+        "- **Thick arrows** indicate many file-level dependency edges between modules.\n",
+    );
+    content.push_str(
+        "- **Red-highlighted nodes** are dependency hotspots (imported by many modules).\n",
+    );
     content.push_str("- **Arrow labels** show the number of file-level import edges.\n");
     content.push_str("- **Direction** follows the import: A → B means A depends on B.\n");
     content.push_str("- **Click** any module node to navigate to its wiki page.\n");
@@ -2208,10 +2269,7 @@ fn write_timeline_page(
         .context("Failed to write timeline page")
 }
 
-fn write_glossary_page(
-    output_dir: &Path,
-    glossary_md: &str,
-) -> Result<()> {
+fn write_glossary_page(output_dir: &Path, glossary_md: &str) -> Result<()> {
     let mut content = String::new();
     content.push_str("+++\n");
     content.push_str("title = \"Glossary\"\n");
@@ -2223,10 +2281,7 @@ fn write_glossary_page(
         .context("Failed to write glossary page")
 }
 
-fn write_explorer_page(
-    output_dir: &Path,
-    explorer_md: &str,
-) -> Result<()> {
+fn write_explorer_page(output_dir: &Path, explorer_md: &str) -> Result<()> {
     let mut content = String::new();
     content.push_str("+++\n");
     content.push_str("title = \"Explorer\"\n");
@@ -2251,11 +2306,23 @@ fn build_project_overview_context(cache: &CacheManager, wiki_pages: &[WikiPageMe
     // Query database directly for true totals (wiki_pages would double-count nested modules)
     let db_path = cache.path().join("meta.db");
     if let Ok(conn) = Connection::open(&db_path) {
-        let total_files: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap_or(0);
-        let total_lines: usize = conn.query_row("SELECT COALESCE(SUM(line_count), 0) FROM files", [], |r| r.get(0)).unwrap_or(0);
+        let total_files: usize = conn
+            .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+            .unwrap_or(0);
+        let total_lines: usize = conn
+            .query_row("SELECT COALESCE(SUM(line_count), 0) FROM files", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0);
 
-        ctx.push_str(&format!("Total files: {}\nTotal lines: {}\n", total_files, total_lines));
-        ctx.push_str(&format!("Tier 1 modules: {}\nTier 2 modules: {}\n\n", tier1_count, tier2_count));
+        ctx.push_str(&format!(
+            "Total files: {}\nTotal lines: {}\n",
+            total_files, total_lines
+        ));
+        ctx.push_str(&format!(
+            "Tier 1 modules: {}\nTier 2 modules: {}\n\n",
+            tier1_count, tier2_count
+        ));
 
         // Language distribution
         if let Ok(mut stmt) = conn.prepare(
@@ -2291,7 +2358,10 @@ fn build_project_overview_context(cache: &CacheManager, wiki_pages: &[WikiPageMe
             [],
             |row| row.get(0),
         ) {
-            ctx.push_str(&format!("Dependency hotspots (5+ dependents): {}\n", hotspot_count));
+            ctx.push_str(&format!(
+                "Dependency hotspots (5+ dependents): {}\n",
+                hotspot_count
+            ));
         }
 
         // Cycle count (mutual deps)
@@ -2306,7 +2376,10 @@ fn build_project_overview_context(cache: &CacheManager, wiki_pages: &[WikiPageMe
             [],
             |row| row.get(0),
         ) {
-            ctx.push_str(&format!("Files in circular dependencies: {}\n", cycle_count));
+            ctx.push_str(&format!(
+                "Files in circular dependencies: {}\n",
+                cycle_count
+            ));
         }
     }
 
@@ -2316,8 +2389,10 @@ fn build_project_overview_context(cache: &CacheManager, wiki_pages: &[WikiPageMe
     ctx.push_str("Core modules:\n");
     for page in wiki_pages.iter().filter(|p| p.tier == 1) {
         let desc = truncate_str(&page.description, 120);
-        ctx.push_str(&format!("- {} ({} files, {} lines): {}\n",
-            page.title, page.file_count, page.total_lines, desc));
+        ctx.push_str(&format!(
+            "- {} ({} files, {} lines): {}\n",
+            page.title, page.file_count, page.total_lines, desc
+        ));
     }
 
     ctx
@@ -2344,7 +2419,7 @@ fn build_architecture_context(cache: &CacheManager, wiki_pages: &[WikiPageMeta])
              FROM file_dependencies fd
              JOIN files f1 ON fd.file_id = f1.id
              JOIN files f2 ON fd.resolved_file_id = f2.id
-             WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1"
+             WHERE f1.path LIKE ?1 AND f2.path NOT LIKE ?1",
         ) {
             if let Ok(dep_files) = stmt.query_map([&pattern], |row| row.get::<_, String>(0)) {
                 let dep_files: Vec<String> = dep_files.flatten().collect();
@@ -2354,12 +2429,17 @@ fn build_architecture_context(cache: &CacheManager, wiki_pages: &[WikiPageMeta])
                     for target in &modules {
                         let target_path = target.title.trim_end_matches('/');
                         if dep_file.starts_with(&format!("{}/", target_path)) {
-                            *target_modules.entry(target_path.to_string()).or_insert(0usize) += 1;
+                            *target_modules
+                                .entry(target_path.to_string())
+                                .or_insert(0usize) += 1;
                         }
                     }
                 }
                 for (target, count) in &target_modules {
-                    ctx.push_str(&format!("- {} → {} ({} file edges)\n", source_path, target, count));
+                    ctx.push_str(&format!(
+                        "- {} → {} ({} file edges)\n",
+                        source_path, target, count
+                    ));
                 }
             }
         }
@@ -2375,7 +2455,7 @@ fn build_architecture_context(cache: &CacheManager, wiki_pages: &[WikiPageMeta])
          JOIN files f ON fd.resolved_file_id = f.id
          GROUP BY fd.resolved_file_id
          ORDER BY dep_count DESC
-         LIMIT 10"
+         LIMIT 10",
     ) {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
@@ -2400,7 +2480,10 @@ fn build_architecture_context(cache: &CacheManager, wiki_pages: &[WikiPageMeta])
         [],
         |row| row.get(0),
     ) {
-        ctx.push_str(&format!("Files involved in circular dependencies: {}\n", cycle_count));
+        ctx.push_str(&format!(
+            "Files involved in circular dependencies: {}\n",
+            cycle_count
+        ));
     }
 
     ctx
@@ -2427,13 +2510,20 @@ fn try_zola_build(output_dir: &Path) -> bool {
                 Ok(output) if output.status.success() => {
                     // Count HTML files in public/
                     let html_count = count_html_files(&public_dir);
-                    eprintln!("Site built at {}/ ({} pages)", public_dir.display(), html_count);
+                    eprintln!(
+                        "Site built at {}/ ({} pages)",
+                        public_dir.display(),
+                        html_count
+                    );
                     true
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     eprintln!("Zola build failed:\n{}", stderr);
-                    eprintln!("The Zola project was generated at {}/ — you can build manually with:", output_dir.display());
+                    eprintln!(
+                        "The Zola project was generated at {}/ — you can build manually with:",
+                        output_dir.display()
+                    );
                     eprintln!("  cd {} && zola build", output_dir.display());
                     false
                 }
@@ -2445,9 +2535,14 @@ fn try_zola_build(output_dir: &Path) -> bool {
         }
         Err(e) => {
             eprintln!("Could not download Zola: {}", e);
-            eprintln!("The Zola project was generated at {}/ — install Zola and run:", output_dir.display());
+            eprintln!(
+                "The Zola project was generated at {}/ — install Zola and run:",
+                output_dir.display()
+            );
             eprintln!("  cd {} && zola build", output_dir.display());
-            eprintln!("Install Zola: https://www.getzola.org/documentation/getting-started/installation/");
+            eprintln!(
+                "Install Zola: https://www.getzola.org/documentation/getting-started/installation/"
+            );
             false
         }
     }
@@ -2486,7 +2581,10 @@ fn try_pagefind_build(output_dir: &Path) -> bool {
             }
         }
         Err(e) => {
-            eprintln!("Could not download Pagefind: {} (search will be unavailable)", e);
+            eprintln!(
+                "Could not download Pagefind: {} (search will be unavailable)",
+                e
+            );
             false
         }
     }
@@ -2528,7 +2626,12 @@ fn count_html_files(dir: &Path) -> usize {
     walkdir::WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "html").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "html")
+                .unwrap_or(false)
+        })
         .count()
 }
 
@@ -2549,10 +2652,21 @@ mod tests {
     #[test]
     fn snapshot_zola_config_all_surfaces() {
         let tmp = TempDir::new().unwrap();
-        write_zola_config(tmp.path(), "/", "Test Codebase", &[
-            Surface::Wiki, Surface::Changelog, Surface::Map,
-            Surface::Onboard, Surface::Timeline, Surface::Glossary, Surface::Explorer,
-        ]).unwrap();
+        write_zola_config(
+            tmp.path(),
+            "/",
+            "Test Codebase",
+            &[
+                Surface::Wiki,
+                Surface::Changelog,
+                Surface::Map,
+                Surface::Onboard,
+                Surface::Timeline,
+                Surface::Glossary,
+                Surface::Explorer,
+            ],
+        )
+        .unwrap();
         let content = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
         test_settings().bind(|| {
             insta::assert_snapshot!("pulse_site__zola_config_all_surfaces", content);
@@ -2576,12 +2690,16 @@ mod tests {
         create_directory_structure(tmp.path()).unwrap();
         write_templates(tmp.path()).unwrap();
         let base_html = std::fs::read_to_string(tmp.path().join("templates/base.html")).unwrap();
-        let pagefind_section = base_html.lines()
+        let pagefind_section = base_html
+            .lines()
             .filter(|l| l.contains("pagefind"))
             .collect::<Vec<_>>()
             .join("\n");
         test_settings().bind(|| {
-            insta::assert_snapshot!("pulse_site__base_html_pagefind_integration", pagefind_section);
+            insta::assert_snapshot!(
+                "pulse_site__base_html_pagefind_integration",
+                pagefind_section
+            );
         });
     }
 
@@ -2589,8 +2707,22 @@ mod tests {
     fn snapshot_home_page_navigation_links() {
         let tmp = TempDir::new().unwrap();
         create_directory_structure(tmp.path()).unwrap();
-        write_home_page(tmp.path(), "My Project", "/", &[],
-            true, true, true, true, true, true, None, None, None).unwrap();
+        write_home_page(
+            tmp.path(),
+            "My Project",
+            "/",
+            &[],
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(tmp.path().join("content/_index.md")).unwrap();
         test_settings().bind(|| {
             insta::assert_snapshot!("pulse_site__home_page_navigation_links", content);

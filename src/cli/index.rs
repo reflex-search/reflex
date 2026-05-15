@@ -1,9 +1,8 @@
-use anyhow::{Context, Result};
-use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
 use crate::models::Language;
-
+use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 /// Handle the `index status` subcommand
 pub(super) fn handle_index_status() -> Result<()> {
@@ -13,51 +12,52 @@ pub(super) fn handle_index_status() -> Result<()> {
     let cache_path = cache.path().to_path_buf();
 
     match crate::background_indexer::BackgroundIndexer::get_status(&cache_path) {
-            Ok(Some(status)) => {
-                println!("Background Symbol Indexing Status");
-                println!("==================================");
-                println!("State:           {:?}", status.state);
-                println!("Total files:     {}", status.total_files);
-                println!("Processed:       {}", status.processed_files);
-                println!("Cached:          {}", status.cached_files);
-                println!("Parsed:          {}", status.parsed_files);
-                println!("Failed:          {}", status.failed_files);
-                println!("Started:         {}", status.started_at);
-                println!("Last updated:    {}", status.updated_at);
+        Ok(Some(status)) => {
+            println!("Background Symbol Indexing Status");
+            println!("==================================");
+            println!("State:           {:?}", status.state);
+            println!("Total files:     {}", status.total_files);
+            println!("Processed:       {}", status.processed_files);
+            println!("Cached:          {}", status.cached_files);
+            println!("Parsed:          {}", status.parsed_files);
+            println!("Failed:          {}", status.failed_files);
+            println!("Started:         {}", status.started_at);
+            println!("Last updated:    {}", status.updated_at);
 
-                if let Some(completed_at) = &status.completed_at {
-                    println!("Completed:       {}", completed_at);
-                }
-
-                if let Some(error) = &status.error {
-                    println!("Error:           {}", error);
-                }
-
-                // Show progress percentage if running
-                if status.state == crate::background_indexer::IndexerState::Running && status.total_files > 0 {
-                    let progress = (status.processed_files as f64 / status.total_files as f64) * 100.0;
-                    println!("\nProgress:        {:.1}%", progress);
-                }
-
-                Ok(())
+            if let Some(completed_at) = &status.completed_at {
+                println!("Completed:       {}", completed_at);
             }
-            Ok(None) => {
-                if !cache.exists() {
-                    println!("No index cache found in current directory.");
-                    println!("\nRun 'rfx index' to build the code search index first.");
-                } else {
-                    println!("No background symbol indexing in progress.");
-                    println!("\nBackground symbol indexing is idle.");
-                    println!("Run 'rfx index' to trigger a fresh index build.");
-                }
-                Ok(())
+
+            if let Some(error) = &status.error {
+                println!("Error:           {}", error);
             }
-            Err(e) => {
-                anyhow::bail!("Failed to get indexing status: {}", e);
+
+            // Show progress percentage if running
+            if status.state == crate::background_indexer::IndexerState::Running
+                && status.total_files > 0
+            {
+                let progress = (status.processed_files as f64 / status.total_files as f64) * 100.0;
+                println!("\nProgress:        {:.1}%", progress);
             }
+
+            Ok(())
+        }
+        Ok(None) => {
+            if !cache.exists() {
+                println!("No index cache found in current directory.");
+                println!("\nRun 'rfx index' to build the code search index first.");
+            } else {
+                println!("No background symbol indexing in progress.");
+                println!("\nBackground symbol indexing is idle.");
+                println!("Run 'rfx index' to trigger a fresh index build.");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            anyhow::bail!("Failed to get indexing status: {}", e);
         }
     }
-
+}
 
 /// Handle the `index compact` subcommand
 pub(super) fn handle_index_compact(json: &bool, pretty: &bool) -> Result<()> {
@@ -90,8 +90,12 @@ pub(super) fn handle_index_compact(json: &bool, pretty: &bool) -> Result<()> {
     Ok(())
 }
 
-
-pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[String], quiet: &bool) -> Result<()> {
+pub(super) fn handle_index_build(
+    path: &PathBuf,
+    force: &bool,
+    languages: &[String],
+    quiet: &bool,
+) -> Result<()> {
     log::info!("Starting index build");
 
     let cache = CacheManager::new(path);
@@ -106,7 +110,8 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
     }
 
     // Load base config from .reflex/config.toml (or defaults if file absent)
-    let mut config = cache.load_index_config()
+    let mut config = cache
+        .load_index_config()
         .context("Failed to load .reflex/config.toml")?;
 
     // CLI --languages overrides the config-file value when explicitly provided (REF-98: error on unknown)
@@ -132,21 +137,29 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
     if !quiet {
         println!("Indexing complete!");
         println!("  Files indexed: {}", stats.total_files);
-        println!("  Cache size: {}", super::format_bytes(stats.index_size_bytes));
+        println!(
+            "  Cache size: {}",
+            super::format_bytes(stats.index_size_bytes)
+        );
         println!("  Last updated: {}", stats.last_updated);
 
         // Show incremental breakdown if available (REF-100)
-        let has_breakdown = stats.new_files > 0 || stats.modified_files > 0 || stats.unchanged_files > 0;
+        let has_breakdown =
+            stats.new_files > 0 || stats.modified_files > 0 || stats.unchanged_files > 0;
         if has_breakdown {
-            println!("  Breakdown:     {} new, {} modified, {} unchanged",
-                stats.new_files, stats.modified_files, stats.unchanged_files);
+            println!(
+                "  Breakdown:     {} new, {} modified, {} unchanged",
+                stats.new_files, stats.modified_files, stats.unchanged_files
+            );
         }
 
         // Warn about skipped large files (REF-99)
         if stats.skipped_too_large > 0 {
-            eprintln!("[warn] {} file(s) skipped: exceeded max_file_size ({} total)",
+            eprintln!(
+                "[warn] {} file(s) skipped: exceeded max_file_size ({} total)",
                 stats.skipped_too_large,
-                super::format_bytes(stats.skipped_bytes_too_large));
+                super::format_bytes(stats.skipped_bytes_too_large)
+            );
         }
 
         // Display language breakdown if we have indexed files
@@ -158,7 +171,11 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
             lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
 
             // Calculate column widths
-            let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
+            let max_lang_len = lang_vec
+                .iter()
+                .map(|(lang, _)| lang.len())
+                .max()
+                .unwrap_or(8);
             let lang_width = max_lang_len.max(8); // At least "Language" header width
 
             // Print table header
@@ -168,9 +185,13 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
             // Print rows
             for (language, file_count) in lang_vec {
                 let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
-                println!("  {:<width$}  {:5}  {:7}",
-                    language, file_count, line_count,
-                    width = lang_width);
+                println!(
+                    "  {:<width$}  {:5}  {:7}",
+                    language,
+                    file_count,
+                    line_count,
+                    width = lang_width
+                );
             }
         }
     }
@@ -185,8 +206,8 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
 
         // Spawn detached background process for symbol indexing
         // Pass the workspace root, not the .reflex directory
-        let current_exe = std::env::current_exe()
-            .context("Failed to get current executable path")?;
+        let current_exe =
+            std::env::current_exe().context("Failed to get current executable path")?;
 
         #[cfg(unix)]
         {
@@ -224,7 +245,6 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
 
     Ok(())
 }
-
 
 /// Handle the internal `index-symbols-internal` command
 pub(super) fn handle_index_symbols_internal(cache_dir: PathBuf) -> Result<()> {

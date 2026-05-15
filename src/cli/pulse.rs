@@ -1,8 +1,7 @@
-use anyhow::{Context, Result};
-use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::pulse;
-
+use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 pub(super) fn handle_pulse_changelog(
     count: usize,
@@ -25,13 +24,17 @@ pub(super) fn handle_pulse_changelog(
                 let llm_cache = pulse::llm_cache::LlmCache::new(cache.path());
 
                 let pulse_config = pulse::config::load_pulse_config(cache.path())?;
-                let ensure_result = pulse::snapshot::ensure_snapshot(&cache, &pulse_config.retention)?;
+                let ensure_result =
+                    pulse::snapshot::ensure_snapshot(&cache, &pulse_config.retention)?;
                 let snapshot_id = match &ensure_result {
                     pulse::snapshot::EnsureSnapshotResult::Created(info) => info.id.clone(),
                     pulse::snapshot::EnsureSnapshotResult::Reused(info) => info.id.clone(),
                 };
 
-                let ctx = pulse::changelog::build_changelog_context(&changelog.raw_commits, &changelog.branch);
+                let ctx = pulse::changelog::build_changelog_context(
+                    &changelog.raw_commits,
+                    &changelog.branch,
+                );
                 let response = pulse::narrate::narrate_section(
                     provider.as_ref(),
                     pulse::narrate::changelog_system_prompt(),
@@ -42,7 +45,8 @@ pub(super) fn handle_pulse_changelog(
                 );
 
                 if let Some(text) = response {
-                    changelog.entries = pulse::changelog::parse_changelog_response(&text, &changelog.raw_commits);
+                    changelog.entries =
+                        pulse::changelog::parse_changelog_response(&text, &changelog.raw_commits);
                     changelog.narrated = true;
                 }
             }
@@ -66,7 +70,6 @@ pub(super) fn handle_pulse_changelog(
     Ok(())
 }
 
-
 pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
     if !cache.path().exists() {
@@ -79,7 +82,10 @@ pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: boo
     let ensure_result = pulse::snapshot::ensure_snapshot(&cache, &pulse_config.retention)?;
     match &ensure_result {
         pulse::snapshot::EnsureSnapshotResult::Created(info) => {
-            eprintln!("Auto-snapshot created: {} ({} files)", info.id, info.file_count);
+            eprintln!(
+                "Auto-snapshot created: {} ({} files)",
+                info.id, info.file_count
+            );
         }
         pulse::snapshot::EnsureSnapshotResult::Reused(info) => {
             eprintln!("Using snapshot: {} (index unchanged)", info.id);
@@ -89,7 +95,12 @@ pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: boo
     let snapshots = pulse::snapshot::list_snapshots(&cache)?;
 
     let snapshot_diff = if snapshots.len() >= 2 {
-        pulse::diff::compute_diff(&snapshots[1].path, &snapshots[0].path, &pulse_config.thresholds).ok()
+        pulse::diff::compute_diff(
+            &snapshots[1].path,
+            &snapshots[0].path,
+            &pulse_config.thresholds,
+        )
+        .ok()
     } else {
         None
     };
@@ -111,7 +122,10 @@ pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: boo
         (None, None)
     };
 
-    let snapshot_id = snapshots.first().map(|s| s.id.as_str()).unwrap_or("unknown");
+    let snapshot_id = snapshots
+        .first()
+        .map(|s| s.id.as_str())
+        .unwrap_or("unknown");
     let pages = pulse::wiki::generate_all_pages(
         &cache,
         snapshot_diff.as_ref(),
@@ -130,7 +144,11 @@ pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: boo
         for (filename, content) in &rendered {
             std::fs::write(out_dir.join(filename), content)?;
         }
-        eprintln!("Wrote {} wiki pages to {}", rendered.len(), out_dir.display());
+        eprintln!(
+            "Wrote {} wiki pages to {}",
+            rendered.len(),
+            out_dir.display()
+        );
     } else {
         let rendered = pulse::wiki::render_wiki_markdown(&pages);
         for (filename, content) in &rendered {
@@ -141,8 +159,11 @@ pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: boo
     Ok(())
 }
 
-
-pub(super) fn handle_pulse_map(format: String, output: Option<PathBuf>, zoom: Option<String>) -> Result<()> {
+pub(super) fn handle_pulse_map(
+    format: String,
+    output: Option<PathBuf>,
+    zoom: Option<String>,
+) -> Result<()> {
     let cache = CacheManager::new(".");
     if !cache.path().exists() {
         anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
@@ -165,7 +186,6 @@ pub(super) fn handle_pulse_map(format: String, output: Option<PathBuf>, zoom: Op
 
     Ok(())
 }
-
 
 pub(super) fn handle_pulse_generate(
     output: PathBuf,
@@ -238,22 +258,59 @@ pub(super) fn handle_pulse_generate(
 
     eprintln!("Zola project generated in {}/", report.output_dir);
     eprintln!("  Wiki pages: {}", report.pages_generated);
-    eprintln!("  Changelog: {}", if report.changelog_generated { "yes" } else { "no" });
+    eprintln!(
+        "  Changelog: {}",
+        if report.changelog_generated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
     eprintln!("  Map: {}", if report.map_generated { "yes" } else { "no" });
-    eprintln!("  Onboard: {}", if report.onboard_generated { "yes" } else { "no" });
-    eprintln!("  Timeline: {}", if report.timeline_generated { "yes" } else { "no" });
-    eprintln!("  Glossary: {}", if report.glossary_generated { "yes" } else { "no" });
-    eprintln!("  Explorer: {}", if report.explorer_generated { "yes" } else { "no" });
+    eprintln!(
+        "  Onboard: {}",
+        if report.onboard_generated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    eprintln!(
+        "  Timeline: {}",
+        if report.timeline_generated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    eprintln!(
+        "  Glossary: {}",
+        if report.glossary_generated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    eprintln!(
+        "  Explorer: {}",
+        if report.explorer_generated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
     eprintln!("  Narration: {}", report.narration_mode);
     if report.build_success {
         eprintln!("  Build: success (HTML in {}/public/)", report.output_dir);
     } else {
-        eprintln!("  Build: skipped (run `cd {} && zola build` manually)", report.output_dir);
+        eprintln!(
+            "  Build: skipped (run `cd {} && zola build` manually)",
+            report.output_dir
+        );
     }
 
     Ok(())
 }
-
 
 pub(super) fn handle_pulse_serve(output: PathBuf, port: u16, open: bool) -> Result<()> {
     // Verify the output dir has a config.toml (i.e., was generated)
@@ -291,7 +348,6 @@ pub(super) fn handle_pulse_serve(output: PathBuf, port: u16, open: bool) -> Resu
     Ok(())
 }
 
-
 fn open_browser(url: &str) {
     let result = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).spawn()
@@ -308,14 +364,16 @@ fn open_browser(url: &str) {
     }
 }
 
-
 pub(super) fn handle_pulse_onboard(no_llm: bool, json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
     if !cache.path().exists() {
         anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
     }
 
-    let modules = crate::pulse::wiki::detect_modules(&cache, &crate::pulse::wiki::ModuleDiscoveryConfig::default())?;
+    let modules = crate::pulse::wiki::detect_modules(
+        &cache,
+        &crate::pulse::wiki::ModuleDiscoveryConfig::default(),
+    )?;
     let mut data = crate::pulse::onboard::generate_onboard_structural(&cache, modules.len())?;
 
     if !no_llm {
@@ -336,15 +394,18 @@ pub(super) fn handle_pulse_onboard(no_llm: bool, json: bool) -> Result<()> {
 
     if json {
         let ctx = crate::pulse::onboard::build_onboard_context(&data);
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "entry_points": data.entry_points.iter().map(|ep| serde_json::json!({
-                "path": ep.path,
-                "kind": format!("{}", ep.kind),
-                "key_symbols": ep.key_symbols,
-            })).collect::<Vec<_>>(),
-            "reading_order_layers": data.reading_order.layers.len(),
-            "context": ctx,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "entry_points": data.entry_points.iter().map(|ep| serde_json::json!({
+                    "path": ep.path,
+                    "kind": format!("{}", ep.kind),
+                    "key_symbols": ep.key_symbols,
+                })).collect::<Vec<_>>(),
+                "reading_order_layers": data.reading_order.layers.len(),
+                "context": ctx,
+            }))?
+        );
     } else {
         let md = crate::pulse::onboard::render_onboard_markdown(&data);
         println!("{}", md);
@@ -353,21 +414,23 @@ pub(super) fn handle_pulse_onboard(no_llm: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-
 pub(super) fn handle_pulse_timeline(json: bool) -> Result<()> {
     let data = crate::pulse::git_intel::extract_git_intel(".")?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "commits": data.commits.len(),
-            "contributors": data.contributors.iter().map(|c| serde_json::json!({
-                "name": c.name,
-                "email": c.email,
-                "commit_count": c.commit_count,
-            })).collect::<Vec<_>>(),
-            "churn_files": data.churn.len(),
-            "weekly_summaries": data.weekly_summaries.len(),
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "commits": data.commits.len(),
+                "contributors": data.contributors.iter().map(|c| serde_json::json!({
+                    "name": c.name,
+                    "email": c.email,
+                    "commit_count": c.commit_count,
+                })).collect::<Vec<_>>(),
+                "churn_files": data.churn.len(),
+                "weekly_summaries": data.weekly_summaries.len(),
+            }))?
+        );
     } else {
         let md = crate::pulse::git_intel::render_timeline_markdown(&data);
         println!("{}", md);
@@ -375,7 +438,6 @@ pub(super) fn handle_pulse_timeline(json: bool) -> Result<()> {
 
     Ok(())
 }
-
 
 pub(super) fn handle_pulse_glossary(json: bool) -> Result<()> {
     use crate::pulse::glossary;

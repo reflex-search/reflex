@@ -11,10 +11,10 @@
 //! - Annotations
 //! - Local variables (inside method bodies)
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse Java source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -39,10 +39,18 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
     symbols.extend(extract_annotations(source, &root_node, &language.into())?);
     symbols.extend(extract_class_methods(source, &root_node, &language.into())?);
-    symbols.extend(extract_interface_methods(source, &root_node, &language.into())?);
+    symbols.extend(extract_interface_methods(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
     symbols.extend(extract_fields(source, &root_node, &language.into())?);
     symbols.extend(extract_constructors(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -64,8 +72,7 @@ fn extract_classes(
             name: (identifier) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -81,8 +88,7 @@ fn extract_interfaces(
             name: (identifier) @name) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface query")?;
+    let query = Query::new(language, query_str).context("Failed to create interface query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Interface, None)
 }
@@ -98,8 +104,7 @@ fn extract_enums(
             name: (identifier) @name) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -123,7 +128,13 @@ fn extract_annotations(
     let def_query = Query::new(language, def_query_str)
         .context("Failed to create annotation definition query")?;
 
-    symbols.extend(extract_symbols(source, root, &def_query, SymbolKind::Attribute, None)?);
+    symbols.extend(extract_symbols(
+        source,
+        root,
+        &def_query,
+        SymbolKind::Attribute,
+        None,
+    )?);
 
     // Part 2: Extract annotation USES (@Test, @Override, etc.)
     let use_query_str = r#"
@@ -134,10 +145,16 @@ fn extract_annotations(
             name: (identifier) @name) @annotation
     "#;
 
-    let use_query = Query::new(language, use_query_str)
-        .context("Failed to create annotation use query")?;
+    let use_query =
+        Query::new(language, use_query_str).context("Failed to create annotation use query")?;
 
-    symbols.extend(extract_symbols(source, root, &use_query, SymbolKind::Attribute, None)?);
+    symbols.extend(extract_symbols(
+        source,
+        root,
+        &use_query,
+        SymbolKind::Attribute,
+        None,
+    )?);
 
     Ok(symbols)
 }
@@ -163,8 +180,7 @@ fn extract_class_methods(
                         name: (identifier) @method_name)))) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -181,15 +197,33 @@ fn extract_class_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "enum_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("enum");
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent method_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -205,7 +239,8 @@ fn extract_class_methods(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(method_name), Some(node)) =
-            (scope_name, scope_type, method_name, method_node) {
+            (scope_name, scope_type, method_name, method_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -248,8 +283,7 @@ fn extract_fields(
                             name: (identifier) @field_name))))) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create field query")?;
+    let query = Query::new(language, query_str).context("Failed to create field query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -266,15 +300,33 @@ fn extract_fields(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "enum_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("enum");
                 }
                 "field_name" => {
-                    field_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    field_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent field_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -290,7 +342,8 @@ fn extract_fields(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(field_name), Some(node)) =
-            (scope_name, scope_type, field_name, field_node) {
+            (scope_name, scope_type, field_name, field_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -324,8 +377,7 @@ fn extract_constructors(
                     name: (identifier) @constructor_name))) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create constructor query")?;
+    let query = Query::new(language, query_str).context("Failed to create constructor query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -341,10 +393,22 @@ fn extract_constructors(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    class_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    class_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "constructor_name" => {
-                    constructor_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    constructor_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent constructor_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -360,7 +424,8 @@ fn extract_constructors(
         }
 
         if let (Some(class_name), Some(constructor_name), Some(node)) =
-            (class_name, constructor_name, constructor_node) {
+            (class_name, constructor_name, constructor_node)
+        {
             let scope = format!("class {}", class_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -394,8 +459,8 @@ fn extract_interface_methods(
                     name: (identifier) @method_name))) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface method query")?;
+    let query =
+        Query::new(language, query_str).context("Failed to create interface method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -411,10 +476,22 @@ fn extract_interface_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "interface_name" => {
-                    interface_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    interface_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent method_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -430,7 +507,8 @@ fn extract_interface_methods(
         }
 
         if let (Some(interface_name), Some(method_name), Some(node)) =
-            (interface_name, method_name, method_node) {
+            (interface_name, method_name, method_node)
+        {
             let scope = format!("interface {}", interface_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -462,8 +540,7 @@ fn extract_local_variables(
                 name: (identifier) @name)) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
@@ -489,7 +566,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -521,7 +604,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -554,7 +637,8 @@ public class User {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -578,13 +662,22 @@ public class Calculator {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -603,7 +696,8 @@ public interface Drawable {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let interface_symbols: Vec<_> = symbols.iter()
+        let interface_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Interface))
             .collect();
 
@@ -623,7 +717,8 @@ public enum Status {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let enum_symbols: Vec<_> = symbols.iter()
+        let enum_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Enum))
             .collect();
 
@@ -643,14 +738,27 @@ public class Config {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let field_symbols: Vec<_> = symbols.iter()
+        let field_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         assert_eq!(field_symbols.len(), 3);
-        assert!(field_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(field_symbols.iter().any(|s| s.symbol.as_deref() == Some("hostname")));
-        assert!(field_symbols.iter().any(|s| s.symbol.as_deref() == Some("port")));
+        assert!(
+            field_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            field_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("hostname"))
+        );
+        assert!(
+            field_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("port"))
+        );
     }
 
     #[test]
@@ -671,7 +779,8 @@ public class User {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let constructor_symbols: Vec<_> = symbols.iter()
+        let constructor_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method) && s.symbol.as_deref() == Some("User"))
             .collect();
 
@@ -694,20 +803,30 @@ public abstract class Animal {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
         assert_eq!(class_symbols[0].symbol.as_deref(), Some("Animal"));
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("makeSound")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("sleep")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("makeSound"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("sleep"))
+        );
     }
 
     #[test]
@@ -732,13 +851,22 @@ public class Outer {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
         assert_eq!(class_symbols.len(), 2);
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Nested")));
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Outer"))
+        );
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Nested"))
+        );
     }
 
     #[test]
@@ -754,21 +882,39 @@ public interface Repository<T> {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let interface_symbols: Vec<_> = symbols.iter()
+        let interface_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Interface))
             .collect();
 
         assert_eq!(interface_symbols.len(), 1);
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 4);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("findById")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("findAll")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("save")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("delete")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("findById"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("findAll"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("save"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("delete"))
+        );
     }
 
     #[test]
@@ -785,13 +931,15 @@ public enum Day {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let enum_symbols: Vec<_> = symbols.iter()
+        let enum_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Enum))
             .collect();
 
         assert_eq!(enum_symbols.len(), 1);
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
@@ -862,14 +1010,16 @@ public class Container<T> {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
         assert_eq!(class_symbols[0].symbol.as_deref(), Some("Container"));
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
@@ -892,21 +1042,40 @@ public class Calculator {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let var_symbols: Vec<_> = symbols.iter()
+        let var_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Should find both field (globalCount) and local variables (localVar, anotherLocal)
         assert_eq!(var_symbols.len(), 3);
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalCount")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("anotherLocal")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("globalCount"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("anotherLocal"))
+        );
 
         // Check scopes: field should have scope, local vars should not
-        let global_count = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("globalCount")).unwrap();
+        let global_count = var_symbols
+            .iter()
+            .find(|s| s.symbol.as_deref() == Some("globalCount"))
+            .unwrap();
         // Removed: scope field no longer exists: assert_eq!(global_count.scope.as_ref().unwrap(), "class Calculator");
 
-        let local_var = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("localVar")).unwrap();
+        let local_var = var_symbols
+            .iter()
+            .find(|s| s.symbol.as_deref() == Some("localVar"))
+            .unwrap();
         // Removed: scope field no longer exists: assert_eq!(local_var.scope, None);
     }
 
@@ -928,14 +1097,27 @@ public @interface Test {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let annotation_symbols: Vec<_> = symbols.iter()
+        let annotation_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
         // Should find annotation definitions
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Test")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Author")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Retention")));
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Test"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Author"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Retention"))
+        );
     }
 
     #[test]
@@ -965,20 +1147,48 @@ public class MyClass {
 
         let symbols = parse("test.java", source).unwrap();
 
-        let annotation_symbols: Vec<_> = symbols.iter()
+        let annotation_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
         // Should find annotation uses
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Test")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Override")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Deprecated")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("SuppressWarnings")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Autowired")));
-        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("DisplayName")));
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Test"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Override"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Deprecated"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("SuppressWarnings"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Autowired"))
+        );
+        assert!(
+            annotation_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DisplayName"))
+        );
 
         // Should find Test twice (2 uses)
-        let test_count = annotation_symbols.iter().filter(|s| s.symbol.as_deref() == Some("Test")).count();
+        let test_count = annotation_symbols
+            .iter()
+            .filter(|s| s.symbol.as_deref() == Some("Test"))
+            .count();
         assert_eq!(test_count, 2);
     }
 
@@ -1006,19 +1216,38 @@ public class MyClass {
 
         assert_eq!(deps.len(), 4, "Should extract 4 import statements");
         assert!(deps.iter().any(|d| d.imported_path == "java.util.List"));
-        assert!(deps.iter().any(|d| d.imported_path == "java.util.ArrayList"));
-        assert!(deps.iter().any(|d| d.imported_path == "java.io.IOException"));
-        assert!(deps.iter().any(|d| d.imported_path == "org.springframework.stereotype.Service"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "java.util.ArrayList")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "java.io.IOException")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "org.springframework.stereotype.Service")
+        );
 
         // Check stdlib classification
-        let java_util_list = deps.iter().find(|d| d.imported_path == "java.util.List").unwrap();
-        assert!(matches!(java_util_list.import_type, ImportType::Stdlib),
-                "java.util imports should be classified as Stdlib");
+        let java_util_list = deps
+            .iter()
+            .find(|d| d.imported_path == "java.util.List")
+            .unwrap();
+        assert!(
+            matches!(java_util_list.import_type, ImportType::Stdlib),
+            "java.util imports should be classified as Stdlib"
+        );
 
         // Check external classification
-        let spring_service = deps.iter().find(|d| d.imported_path == "org.springframework.stereotype.Service").unwrap();
-        assert!(matches!(spring_service.import_type, ImportType::External),
-                "org.springframework imports should be classified as External");
+        let spring_service = deps
+            .iter()
+            .find(|d| d.imported_path == "org.springframework.stereotype.Service")
+            .unwrap();
+        assert!(
+            matches!(spring_service.import_type, ImportType::External),
+            "org.springframework imports should be classified as External"
+        );
     }
 }
 
@@ -1057,10 +1286,7 @@ impl DependencyExtractor for JavaDependencyExtractor {
 }
 
 /// Extract Java import statements
-fn extract_java_imports(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_java_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_java::LANGUAGE;
 
     let query_str = r#"
@@ -1071,8 +1297,8 @@ fn extract_java_imports(
             ])
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create Java import query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create Java import query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -1083,7 +1309,11 @@ fn extract_java_imports(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "import_path" {
-                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let path = capture
+                    .node
+                    .utf8_text(source.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
                 let import_type = classify_java_import(&path);
                 let line_number = capture.node.start_position().row + 1;
 
@@ -1206,7 +1436,8 @@ fn find_package_from_sources(root: &std::path::Path) -> Option<String> {
             } else if path.extension().and_then(|s| s.to_str()) == Some("java") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     // Extract package declaration
-                    for line in content.lines().take(20) { // Check first 20 lines
+                    for line in content.lines().take(20) {
+                        // Check first 20 lines
                         let trimmed = line.trim();
                         if trimmed.starts_with("package ") && trimmed.ends_with(';') {
                             let package = &trimmed[8..trimmed.len() - 1].trim();
@@ -1228,7 +1459,8 @@ fn find_package_from_sources(root: &std::path::Path) -> Option<String> {
     walk_dir(root, &mut package_counts, 0);
 
     // Find the most common package prefix
-    package_counts.into_iter()
+    package_counts
+        .into_iter()
         .max_by_key(|(_, count)| *count)
         .map(|(package, _)| package)
 }
@@ -1249,11 +1481,27 @@ fn classify_java_import_impl(import_path: &str, package_prefix: Option<&str>) ->
 
     // Java standard library packages (common ones)
     const STDLIB_PACKAGES: &[&str] = &[
-        "java.lang", "java.util", "java.io", "java.nio", "java.net",
-        "java.text", "java.math", "java.time", "java.sql", "java.security",
-        "java.awt", "java.swing", "javax.swing", "javax.sql", "javax.crypto",
-        "javax.net", "javax.xml", "javax.annotation", "javax.servlet",
-        "org.w3c.dom", "org.xml.sax",
+        "java.lang",
+        "java.util",
+        "java.io",
+        "java.nio",
+        "java.net",
+        "java.text",
+        "java.math",
+        "java.time",
+        "java.sql",
+        "java.security",
+        "java.awt",
+        "java.swing",
+        "javax.swing",
+        "javax.sql",
+        "javax.crypto",
+        "javax.net",
+        "javax.xml",
+        "javax.annotation",
+        "javax.servlet",
+        "org.w3c.dom",
+        "org.xml.sax",
     ];
 
     // Check if it starts with any stdlib package
@@ -1300,16 +1548,18 @@ pub fn find_all_maven_gradle_projects(root: &std::path::Path) -> Result<Vec<std:
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             // Match pom.xml (Maven) or build.gradle/build.gradle.kts (Gradle)
-            if filename == "pom.xml"
-                || filename == "build.gradle"
-                || filename == "build.gradle.kts" {
+            if filename == "pom.xml" || filename == "build.gradle" || filename == "build.gradle.kts"
+            {
                 config_files.push(path.to_path_buf());
                 log::trace!("Found Java/Kotlin config: {}", path.display());
             }
         }
     }
 
-    log::debug!("Found {} Java/Kotlin project config files", config_files.len());
+    log::debug!(
+        "Found {} Java/Kotlin project config files",
+        config_files.len()
+    );
     Ok(config_files)
 }
 
@@ -1319,7 +1569,8 @@ pub fn parse_all_java_projects(root: &std::path::Path) -> Result<Vec<JavaProject
     let config_files = find_all_maven_gradle_projects(root)?;
     let mut projects = Vec::new();
 
-    let root_abs = root.canonicalize()
+    let root_abs = root
+        .canonicalize()
         .with_context(|| format!("Failed to canonicalize root path: {}", root.display()))?;
 
     for config_path in &config_files {
@@ -1327,10 +1578,15 @@ pub fn parse_all_java_projects(root: &std::path::Path) -> Result<Vec<JavaProject
         if let Some(project_dir) = config_path.parent() {
             // Parse the config file to get package name
             if let Some(package_name) = extract_package_from_config(config_path) {
-                let project_abs = project_dir.canonicalize()
-                    .with_context(|| format!("Failed to canonicalize project path: {}", project_dir.display()))?;
+                let project_abs = project_dir.canonicalize().with_context(|| {
+                    format!(
+                        "Failed to canonicalize project path: {}",
+                        project_dir.display()
+                    )
+                })?;
 
-                let project_rel = project_abs.strip_prefix(&root_abs)
+                let project_rel = project_abs
+                    .strip_prefix(&root_abs)
                     .unwrap_or(project_dir)
                     .to_string_lossy()
                     .to_string();
@@ -1341,7 +1597,11 @@ pub fn parse_all_java_projects(root: &std::path::Path) -> Result<Vec<JavaProject
                     abs_project_root: project_abs.to_string_lossy().to_string(),
                 });
 
-                log::trace!("Parsed Java/Kotlin project: {} at {}", package_name, project_dir.display());
+                log::trace!(
+                    "Parsed Java/Kotlin project: {} at {}",
+                    package_name,
+                    project_dir.display()
+                );
             }
         }
     }
@@ -1462,8 +1722,8 @@ pub fn resolve_kotlin_import_to_path(
 #[cfg(test)]
 mod monorepo_tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_resolve_java_import_maven_structure() {
@@ -1473,11 +1733,7 @@ mod monorepo_tests {
             abs_project_root: "/abs/project1".to_string(),
         }];
 
-        let resolved = resolve_java_import_to_path(
-            "com.example.UserService",
-            &projects,
-            None,
-        );
+        let resolved = resolve_java_import_to_path("com.example.UserService", &projects, None);
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1493,11 +1749,7 @@ mod monorepo_tests {
             abs_project_root: "/abs/kotlin-project".to_string(),
         }];
 
-        let resolved = resolve_kotlin_import_to_path(
-            "org.acme.Repository",
-            &projects,
-            None,
-        );
+        let resolved = resolve_kotlin_import_to_path("org.acme.Repository", &projects, None);
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1513,11 +1765,7 @@ mod monorepo_tests {
         }];
 
         // Different package
-        let resolved = resolve_java_import_to_path(
-            "org.other.Service",
-            &projects,
-            None,
-        );
+        let resolved = resolve_java_import_to_path("org.other.Service", &projects, None);
 
         assert!(resolved.is_none());
     }
@@ -1538,20 +1786,14 @@ mod monorepo_tests {
         ];
 
         // Should resolve to service1
-        let resolved1 = resolve_java_import_to_path(
-            "com.example.service1.UserController",
-            &projects,
-            None,
-        );
+        let resolved1 =
+            resolve_java_import_to_path("com.example.service1.UserController", &projects, None);
         assert!(resolved1.is_some());
         assert!(resolved1.unwrap().contains("services/service1"));
 
         // Should resolve to service2
-        let resolved2 = resolve_java_import_to_path(
-            "com.example.service2.ProductController",
-            &projects,
-            None,
-        );
+        let resolved2 =
+            resolve_java_import_to_path("com.example.service2.ProductController", &projects, None);
         assert!(resolved2.is_some());
         assert!(resolved2.unwrap().contains("services/service2"));
     }
@@ -1561,13 +1803,17 @@ mod monorepo_tests {
         let temp = TempDir::new().unwrap();
         let pom_path = temp.path().join("pom.xml");
 
-        fs::write(&pom_path, r#"
+        fs::write(
+            &pom_path,
+            r#"
 <?xml version="1.0" encoding="UTF-8"?>
 <project>
     <groupId>com.example.myapp</groupId>
     <artifactId>my-application</artifactId>
 </project>
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let package = extract_package_from_config(&pom_path);
         assert_eq!(package, Some("com.example.myapp".to_string()));
@@ -1578,10 +1824,14 @@ mod monorepo_tests {
         let temp = TempDir::new().unwrap();
         let gradle_path = temp.path().join("build.gradle");
 
-        fs::write(&gradle_path, r#"
+        fs::write(
+            &gradle_path,
+            r#"
 group = 'org.example.myproject'
 version = '1.0.0'
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let package = extract_package_from_config(&gradle_path);
         assert_eq!(package, Some("org.example.myproject".to_string()));
@@ -1592,10 +1842,14 @@ version = '1.0.0'
         let temp = TempDir::new().unwrap();
         let gradle_path = temp.path().join("build.gradle.kts");
 
-        fs::write(&gradle_path, r#"
+        fs::write(
+            &gradle_path,
+            r#"
 group = "com.acme.tools"
 version = "2.0.0"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let package = extract_package_from_config(&gradle_path);
         assert_eq!(package, Some("com.acme.tools".to_string()));

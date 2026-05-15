@@ -57,7 +57,10 @@ impl LlmProvider for AnthropicProvider {
         // Check for HTTP errors
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             anyhow::bail!("Anthropic API error ({}): {}", status, error_text);
         }
 
@@ -160,8 +163,9 @@ mod tests {
         let provider = AnthropicProvider::new(
             "test-key".to_string(),
             Some("claude-3-5-sonnet-20241022".to_string()),
-            300
-        ).unwrap();
+            300,
+        )
+        .unwrap();
         assert_eq!(provider.model, "claude-3-5-sonnet-20241022");
     }
 

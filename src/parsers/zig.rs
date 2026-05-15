@@ -10,12 +10,12 @@
 //! - Test declarations
 //! - Error sets
 
+use crate::ImportType;
+use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::parsers::{DependencyExtractor, ImportInfo};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
-use crate::parsers::{DependencyExtractor, ImportInfo};
-use crate::ImportType;
 
 /// Parse Zig source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -62,8 +62,7 @@ fn extract_functions(
             (identifier) @name) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -80,8 +79,7 @@ fn extract_structs(
             (struct_declaration)) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create struct query")?;
+    let query = Query::new(language, query_str).context("Failed to create struct query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Struct, None)
 }
@@ -98,8 +96,7 @@ fn extract_enums(
             (enum_declaration)) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -116,8 +113,7 @@ fn extract_constants(
             (identifier) @name) @const
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create constant query")?;
+    let query = Query::new(language, query_str).context("Failed to create constant query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
@@ -134,8 +130,7 @@ fn extract_variables(
             (identifier) @name) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create variable query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
@@ -151,8 +146,7 @@ fn extract_tests(
             (string) @name) @test
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create test query")?;
+    let query = Query::new(language, query_str).context("Failed to create test query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -178,7 +172,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -210,7 +210,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -342,7 +342,8 @@ pub fn add(a: i32, b: i32) i32 {
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let func_symbols: Vec<_> = symbols.iter()
+        let func_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Function))
             .collect();
 
@@ -361,7 +362,8 @@ const Point = struct {
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let struct_symbols: Vec<_> = symbols.iter()
+        let struct_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Struct))
             .collect();
 
@@ -381,7 +383,8 @@ const Status = enum {
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let enum_symbols: Vec<_> = symbols.iter()
+        let enum_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Enum))
             .collect();
 
@@ -398,13 +401,22 @@ const DEFAULT_TIMEOUT: u32 = 30;
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         assert_eq!(const_symbols.len(), 2);
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT"))
+        );
     }
 
     #[test]
@@ -418,7 +430,8 @@ test "basic addition" {
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let test_symbols: Vec<_> = symbols.iter()
+        let test_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Function))
             .filter(|s| s.symbol.as_deref().unwrap_or("").contains("basic addition"))
             .collect();
@@ -441,13 +454,22 @@ fn divide(a: i32, b: i32) i32 {
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let func_symbols: Vec<_> = symbols.iter()
+        let func_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Function))
             .collect();
 
         assert_eq!(func_symbols.len(), 2);
-        assert!(func_symbols.iter().any(|s| s.symbol.as_deref() == Some("multiply")));
-        assert!(func_symbols.iter().any(|s| s.symbol.as_deref() == Some("divide")));
+        assert!(
+            func_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("multiply"))
+        );
+        assert!(
+            func_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("divide"))
+        );
     }
 
     #[test]
@@ -468,7 +490,8 @@ const Calculator = struct {
 
         let symbols = parse("test.zig", source).unwrap();
 
-        let struct_symbols: Vec<_> = symbols.iter()
+        let struct_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Struct))
             .collect();
 
@@ -489,11 +512,16 @@ const FileError = error{
         let symbols = parse("test.zig", source).unwrap();
 
         // Error sets are stored as constants
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("FileError")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("FileError"))
+        );
     }
 
     #[test]
@@ -554,23 +582,49 @@ test "variable types" {
         let symbols = parse("test.zig", source).unwrap();
 
         // Filter to constants and variables
-        let constants: Vec<_> = symbols.iter()
+        let constants: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that const declarations are captured (global and local)
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("GLOBAL_CONST")));
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("localConst")));
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("testConst")));
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("GLOBAL_CONST"))
+        );
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("localConst"))
+        );
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("testConst"))
+        );
 
         // Check that var declarations are captured (global and local)
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("globalVar")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("testVar")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("globalVar"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("testVar"))
+        );
 
         // Verify that both global and local variables have no scope
         // (Zig doesn't have class-based scoping, all variables are treated equally)
@@ -600,18 +654,36 @@ pub fn main() !void {
 
         let deps = ZigDependencyExtractor::extract_dependencies(source).unwrap();
 
-        assert!(deps.len() >= 4, "Should extract at least 4 imports, got {}", deps.len());
+        assert!(
+            deps.len() >= 4,
+            "Should extract at least 4 imports, got {}",
+            deps.len()
+        );
 
         // Stdlib imports
-        assert!(deps.iter().any(|d| d.imported_path == "std" && matches!(d.import_type, ImportType::Stdlib)));
-        assert!(deps.iter().any(|d| d.imported_path == "builtin" && matches!(d.import_type, ImportType::Stdlib)));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "std" && matches!(d.import_type, ImportType::Stdlib))
+        );
+        assert!(
+            deps.iter().any(
+                |d| d.imported_path == "builtin" && matches!(d.import_type, ImportType::Stdlib)
+            )
+        );
 
         // Internal imports (relative paths)
-        assert!(deps.iter().any(|d| d.imported_path == "./utils.zig" && matches!(d.import_type, ImportType::Internal)));
-        assert!(deps.iter().any(|d| d.imported_path == "../helpers.zig" && matches!(d.import_type, ImportType::Internal)));
+        assert!(
+            deps.iter().any(|d| d.imported_path == "./utils.zig"
+                && matches!(d.import_type, ImportType::Internal))
+        );
+        assert!(deps.iter().any(|d| d.imported_path == "../helpers.zig"
+            && matches!(d.import_type, ImportType::Internal)));
 
         // External package import
-        assert!(deps.iter().any(|d| d.imported_path == "zap" && matches!(d.import_type, ImportType::External)));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "zap" && matches!(d.import_type, ImportType::External))
+        );
     }
 
     // Zig import path resolution tests
@@ -629,15 +701,19 @@ pub fn main() !void {
 
         #[test]
         fn test_resolve_zig_import_subdirectory() {
-            let result = resolve_zig_import_to_path("./utils/helpers.zig", Some("/project/src/main.zig"));
+            let result =
+                resolve_zig_import_to_path("./utils/helpers.zig", Some("/project/src/main.zig"));
             assert!(result.is_some());
             let path = result.unwrap();
-            assert!(path.contains("src") && path.contains("utils") && path.ends_with("helpers.zig"));
+            assert!(
+                path.contains("src") && path.contains("utils") && path.ends_with("helpers.zig")
+            );
         }
 
         #[test]
         fn test_resolve_zig_import_parent_directory() {
-            let result = resolve_zig_import_to_path("../common.zig", Some("/project/src/utils/main.zig"));
+            let result =
+                resolve_zig_import_to_path("../common.zig", Some("/project/src/utils/main.zig"));
             assert!(result.is_some());
             let path = result.unwrap();
             assert!(path.contains("src") && path.ends_with("common.zig"));

@@ -4,14 +4,14 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
 };
 use std::collections::HashMap;
 use std::io::{self, Stdout};
@@ -34,11 +34,8 @@ const OPENAI_FALLBACK_MODELS: &[&str] = &[
     "gpt-4o",
     "gpt-4o-mini",
 ];
-const ANTHROPIC_FALLBACK_MODELS: &[&str] = &[
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
-    "claude-sonnet-4",
-];
+const ANTHROPIC_FALLBACK_MODELS: &[&str] =
+    &["claude-sonnet-4-5", "claude-haiku-4-5", "claude-sonnet-4"];
 use crate::semantic::providers::openrouter::OpenRouterModel;
 
 /// Sort strategies for OpenRouter provider routing
@@ -186,8 +183,7 @@ impl ConfigWizard {
                     if filter.is_empty() {
                         return true;
                     }
-                    m.id.to_lowercase().contains(&filter)
-                        || m.name.to_lowercase().contains(&filter)
+                    m.id.to_lowercase().contains(&filter) || m.name.to_lowercase().contains(&filter)
                 })
                 .map(|m| m.id.clone())
                 .collect(),
@@ -227,8 +223,7 @@ impl ConfigWizard {
                 if filter.is_empty() {
                     return true;
                 }
-                m.id.to_lowercase().contains(&filter)
-                    || m.name.to_lowercase().contains(&filter)
+                m.id.to_lowercase().contains(&filter) || m.name.to_lowercase().contains(&filter)
             })
             .nth(idx)
     }
@@ -472,7 +467,9 @@ impl ConfigWizard {
                     self.selected_model_idx += 1;
                 }
             }
-            KeyCode::Char(c) if supports_filter && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c)
+                if supports_filter && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 self.model_filter.push(c);
                 self.selected_model_idx = 0;
             }
@@ -610,7 +607,11 @@ impl ConfigWizard {
 
         // Title
         let title = Paragraph::new("Reflex AI Configuration Wizard")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -629,21 +630,25 @@ impl ConfigWizard {
             .collect();
 
         let list = List::new(providers)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Select AI Provider (↑/↓ to navigate, Enter to select, Esc/q/Ctrl+C to quit)"),
+            .block(Block::default().borders(Borders::ALL).title(
+                "Select AI Provider (↑/↓ to navigate, Enter to select, Esc/q/Ctrl+C to quit)",
+            ))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )
-            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
             .highlight_symbol("> ");
 
         let mut list_state = ListState::default().with_selected(Some(self.selected_provider_idx));
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
         // Help text
-        let help = Paragraph::new("Use arrow keys or j/k to navigate, Enter to select, Esc/q/Ctrl+C to quit")
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center);
+        let help = Paragraph::new(
+            "Use arrow keys or j/k to navigate, Enter to select, Esc/q/Ctrl+C to quit",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
         frame.render_widget(help, chunks[2]);
     }
 
@@ -661,19 +666,24 @@ impl ConfigWizard {
             .split(frame.area());
 
         // Title
-        let title = Paragraph::new(format!(
-            "Configure {} API Key",
-            self.selected_provider()
-        ))
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
+        let title = Paragraph::new(format!("Configure {} API Key", self.selected_provider()))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
 
         // API key input (masked)
         let masked_key = "*".repeat(self.api_key.len());
         let input_text = if self.api_key_cursor < masked_key.len() {
-            format!("{}█{}", &masked_key[..self.api_key_cursor], &masked_key[self.api_key_cursor..])
+            format!(
+                "{}█{}",
+                &masked_key[..self.api_key_cursor],
+                &masked_key[self.api_key_cursor..]
+            )
         } else {
             format!("{}█", masked_key)
         };
@@ -726,16 +736,16 @@ impl ConfigWizard {
 
         let constraints = if is_openrouter {
             vec![
-                Constraint::Length(3),  // Title
-                Constraint::Length(3),  // Filter input
-                Constraint::Min(0),     // Model list
-                Constraint::Length(3),  // Help text
+                Constraint::Length(3), // Title
+                Constraint::Length(3), // Filter input
+                Constraint::Min(0),    // Model list
+                Constraint::Length(3), // Help text
             ]
         } else {
             vec![
-                Constraint::Length(3),  // Title
-                Constraint::Min(0),     // Model list
-                Constraint::Length(3),  // Help text
+                Constraint::Length(3), // Title
+                Constraint::Min(0),    // Model list
+                Constraint::Length(3), // Help text
             ]
         };
 
@@ -747,12 +757,20 @@ impl ConfigWizard {
 
         // Title
         let title_text = if is_openrouter {
-            format!("Select Model for {} ({} models)", self.selected_provider(), model_count)
+            format!(
+                "Select Model for {} ({} models)",
+                self.selected_provider(),
+                model_count
+            )
         } else {
             format!("Select Model for {}", self.selected_provider())
         };
         let title = Paragraph::new(title_text)
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -787,8 +805,10 @@ impl ConfigWizard {
                 .map(|(idx, model_id)| {
                     let model_display = if is_openrouter {
                         if let Some(m) = self.filtered_openrouter_model(idx) {
-                            format!("{}  ${:.2} / ${:.2} per 1M tokens",
-                                model_id, m.prompt_price, m.completion_price)
+                            format!(
+                                "{}  ${:.2} / ${:.2} per 1M tokens",
+                                model_id, m.prompt_price, m.completion_price
+                            )
                         } else {
                             model_id.to_string()
                         }
@@ -808,12 +828,12 @@ impl ConfigWizard {
                 "Select Model (↑/↓ to navigate, Enter to select, Esc to go back, Ctrl+C to quit)"
             };
             let list = List::new(model_items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(list_title),
+                .block(Block::default().borders(Borders::ALL).title(list_title))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )
-                .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
                 .highlight_symbol("> ");
 
             let mut list_state = ListState::default().with_selected(Some(self.selected_model_idx));
@@ -846,7 +866,11 @@ impl ConfigWizard {
             .split(frame.area());
 
         let title = Paragraph::new("Configure OpenAI-Compatible Endpoint")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -916,7 +940,11 @@ impl ConfigWizard {
             .split(frame.area());
 
         let title = Paragraph::new("Specify Model Name")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -975,15 +1003,16 @@ impl ConfigWizard {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(2)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(frame.area());
 
         // Title
         let title = Paragraph::new("Fetching Available Models...")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -995,7 +1024,10 @@ impl ConfigWizard {
             "anthropic" => "Anthropic",
             other => other,
         };
-        let body = format!("Loading models from {}...\n\nPlease wait...", provider_label);
+        let body = format!(
+            "Loading models from {}...\n\nPlease wait...",
+            provider_label
+        );
         let message = Paragraph::new(body)
             .style(Style::default().fg(Color::Yellow))
             .alignment(Alignment::Center)
@@ -1017,7 +1049,11 @@ impl ConfigWizard {
 
         // Title
         let title = Paragraph::new("Select Provider Sort Strategy (OpenRouter)")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -1037,22 +1073,27 @@ impl ConfigWizard {
             })
             .collect();
 
-        let list = List::new(strategy_items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Select Sort Strategy (↑/↓ to navigate, Enter to select, Esc to go back)"),
-            )
-            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-            .highlight_symbol("> ");
+        let list =
+            List::new(strategy_items)
+                .block(Block::default().borders(Borders::ALL).title(
+                    "Select Sort Strategy (↑/↓ to navigate, Enter to select, Esc to go back)",
+                ))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("> ");
 
         let mut list_state = ListState::default().with_selected(Some(self.selected_sort_idx));
         frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
         // Help text
-        let help = Paragraph::new("Controls how OpenRouter selects the upstream provider for your chosen model")
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center);
+        let help = Paragraph::new(
+            "Controls how OpenRouter selects the upstream provider for your chosen model",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
         frame.render_widget(help, chunks[2]);
     }
 
@@ -1061,15 +1102,16 @@ impl ConfigWizard {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(2)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(frame.area());
 
         // Title
         let title = Paragraph::new("Testing Connection...")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Center)
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
@@ -1099,13 +1141,18 @@ impl ConfigWizard {
 
         // Title
         let title = if success {
-            Paragraph::new("Configuration Successful!")
-                .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            Paragraph::new("Configuration Successful!").style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             Paragraph::new("Configuration Failed")
                 .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
         };
-        let title = title.alignment(Alignment::Center).block(Block::default().borders(Borders::ALL));
+        let title = title
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
         frame.render_widget(title, chunks[0]);
 
         // Message
@@ -1219,8 +1266,10 @@ fn run_wizard_loop(
                     }
                     Err(e) => {
                         log::warn!("OpenAI /v1/models fetch failed, using fallback list: {}", e);
-                        wizard.fetched_dynamic_models =
-                            OPENAI_FALLBACK_MODELS.iter().map(|s| s.to_string()).collect();
+                        wizard.fetched_dynamic_models = OPENAI_FALLBACK_MODELS
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
                         wizard.selected_model_idx = 0;
                         wizard.model_filter.clear();
                         wizard.error_message = Some(
@@ -1240,7 +1289,10 @@ fn run_wizard_loop(
                         wizard.screen = WizardScreen::ModelSelection;
                     }
                     Err(e) => {
-                        log::warn!("Anthropic /v1/models fetch failed, using fallback list: {}", e);
+                        log::warn!(
+                            "Anthropic /v1/models fetch failed, using fallback list: {}",
+                            e
+                        );
                         wizard.fetched_dynamic_models = ANTHROPIC_FALLBACK_MODELS
                             .iter()
                             .map(|s| s.to_string())
@@ -1360,8 +1412,7 @@ fn test_connectivity(
     options: Option<HashMap<String, String>>,
 ) -> Result<()> {
     // Create a tokio runtime for async operations
-    let runtime = tokio::runtime::Runtime::new()
-        .context("Failed to create async runtime")?;
+    let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
     runtime.block_on(async {
         // openai-compatible needs the model passed through; other providers
@@ -1397,29 +1448,20 @@ fn test_connectivity(
 
 /// Fetch models from OpenRouter API (blocking wrapper)
 fn fetch_openrouter_models(api_key: &str) -> Result<Vec<OpenRouterModel>> {
-    let runtime = tokio::runtime::Runtime::new()
-        .context("Failed to create async runtime")?;
-    runtime.block_on(async {
-        crate::semantic::providers::openrouter::fetch_models(api_key).await
-    })
+    let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    runtime.block_on(async { crate::semantic::providers::openrouter::fetch_models(api_key).await })
 }
 
 /// Fetch chat models from OpenAI's /v1/models (blocking wrapper)
 fn fetch_openai_models_blocking(api_key: &str) -> Result<Vec<String>> {
-    let runtime = tokio::runtime::Runtime::new()
-        .context("Failed to create async runtime")?;
-    runtime.block_on(async {
-        crate::semantic::providers::openai::fetch_models(api_key).await
-    })
+    let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    runtime.block_on(async { crate::semantic::providers::openai::fetch_models(api_key).await })
 }
 
 /// Fetch chat models from Anthropic's /v1/models (blocking wrapper)
 fn fetch_anthropic_models_blocking(api_key: &str) -> Result<Vec<String>> {
-    let runtime = tokio::runtime::Runtime::new()
-        .context("Failed to create async runtime")?;
-    runtime.block_on(async {
-        crate::semantic::providers::anthropic::fetch_models(api_key).await
-    })
+    let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    runtime.block_on(async { crate::semantic::providers::anthropic::fetch_models(api_key).await })
 }
 
 /// Save user configuration to ~/.reflex/config.toml
@@ -1454,24 +1496,22 @@ fn save_user_config(
         }
     }
 
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
 
     let config_dir = home.join(".reflex");
-    fs::create_dir_all(&config_dir)
-        .context("Failed to create ~/.reflex directory")?;
+    fs::create_dir_all(&config_dir).context("Failed to create ~/.reflex directory")?;
 
     let config_path = config_dir.join("config.toml");
 
     // Load existing config if it exists
     let mut config = if config_path.exists() {
-        let config_str = fs::read_to_string(&config_path)
-            .context("Failed to read existing config file")?;
-        toml::from_str::<UserConfig>(&config_str)
-            .unwrap_or_else(|_| UserConfig {
-                semantic: SemanticSection::default(),
-                credentials: HashMap::new(),
-            })
+        let config_str =
+            fs::read_to_string(&config_path).context("Failed to read existing config file")?;
+        toml::from_str::<UserConfig>(&config_str).unwrap_or_else(|_| UserConfig {
+            semantic: SemanticSection::default(),
+            credentials: HashMap::new(),
+        })
     } else {
         UserConfig {
             semantic: SemanticSection::default(),
@@ -1493,7 +1533,9 @@ fn save_user_config(
 
     // Save sort strategy for OpenRouter
     if let Some(sort_value) = sort {
-        config.credentials.insert("openrouter_sort".to_string(), sort_value.to_string());
+        config
+            .credentials
+            .insert("openrouter_sort".to_string(), sort_value.to_string());
     }
 
     // Save base URL for openai-compatible
@@ -1504,8 +1546,8 @@ fn save_user_config(
     }
 
     // Serialize to TOML
-    let toml_content = toml::to_string_pretty(&config)
-        .context("Failed to serialize config to TOML")?;
+    let toml_content =
+        toml::to_string_pretty(&config).context("Failed to serialize config to TOML")?;
 
     // Prepend comment header
     let final_content = format!(
@@ -1517,8 +1559,7 @@ fn save_user_config(
         toml_content
     );
 
-    fs::write(&config_path, final_content)
-        .context("Failed to write configuration file")?;
+    fs::write(&config_path, final_content).context("Failed to write configuration file")?;
 
     log::info!("Configuration saved to {:?}", config_path);
 

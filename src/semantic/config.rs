@@ -109,7 +109,10 @@ impl Default for SemanticConfig {
 fn apply_env_overrides(mut config: SemanticConfig) -> SemanticConfig {
     if let Ok(provider) = env::var("REFLEX_PROVIDER") {
         if !provider.is_empty() {
-            log::debug!("Overriding provider from REFLEX_PROVIDER env var: {}", provider);
+            log::debug!(
+                "Overriding provider from REFLEX_PROVIDER env var: {}",
+                provider
+            );
             config.provider = provider;
         }
     }
@@ -124,10 +127,16 @@ fn apply_env_overrides(mut config: SemanticConfig) -> SemanticConfig {
     if let Ok(val) = env::var("REFLEX_LLM_TIMEOUT_SECONDS") {
         match val.trim().parse::<u64>() {
             Ok(secs) if secs > 0 => {
-                log::debug!("Overriding LLM timeout from REFLEX_LLM_TIMEOUT_SECONDS: {}s", secs);
+                log::debug!(
+                    "Overriding LLM timeout from REFLEX_LLM_TIMEOUT_SECONDS: {}s",
+                    secs
+                );
                 config.timeout_seconds = secs;
             }
-            _ => log::warn!("REFLEX_LLM_TIMEOUT_SECONDS is invalid (must be a positive integer): {}", val),
+            _ => log::warn!(
+                "REFLEX_LLM_TIMEOUT_SECONDS is invalid (must be a positive integer): {}",
+                val
+            ),
         }
     }
 
@@ -158,39 +167,48 @@ pub fn load_config(_cache_dir: &Path) -> Result<SemanticConfig> {
         return Ok(apply_env_overrides(SemanticConfig::default()));
     }
 
-    let config_str = std::fs::read_to_string(&config_path)
-        .context("Failed to read ~/.reflex/config.toml")?;
+    let config_str =
+        std::fs::read_to_string(&config_path).context("Failed to read ~/.reflex/config.toml")?;
 
-    let toml_value: toml::Value = toml::from_str(&config_str)
-        .context("Failed to parse ~/.reflex/config.toml")?;
+    let toml_value: toml::Value =
+        toml::from_str(&config_str).context("Failed to parse ~/.reflex/config.toml")?;
 
     // REF-90: Warn about unknown top-level sections
     let known_sections = ["semantic", "credentials", "index", "search", "performance"];
     if let Some(table) = toml_value.as_table() {
         for key in table.keys() {
             if !known_sections.contains(&key.as_str()) {
-                eprintln!("[warn] ~/.reflex/config.toml: unknown section '[{}]' — ignored", key);
+                eprintln!(
+                    "[warn] ~/.reflex/config.toml: unknown section '[{}]' — ignored",
+                    key
+                );
             }
         }
     }
 
     // REF-90: Warn about unknown keys within the [semantic] section
-    let known_semantic_keys = [
-        "provider", "model", "auto_execute",
-    ];
+    let known_semantic_keys = ["provider", "model", "auto_execute"];
     if let Some(toml::Value::Table(sem_table)) = toml_value.get("semantic") {
         for key in sem_table.keys() {
             if !known_semantic_keys.contains(&key.as_str()) {
-                eprintln!("[warn] ~/.reflex/config.toml: unknown key '[semantic].{}' — ignored", key);
+                eprintln!(
+                    "[warn] ~/.reflex/config.toml: unknown key '[semantic].{}' — ignored",
+                    key
+                );
             }
         }
     }
 
     // Extract [semantic] section
     if let Some(semantic_table) = toml_value.get("semantic") {
-        let config: SemanticConfig = semantic_table.clone().try_into()
+        let config: SemanticConfig = semantic_table
+            .clone()
+            .try_into()
             .context("Failed to parse [semantic] section in ~/.reflex/config.toml")?;
-        log::debug!("Loaded semantic config from ~/.reflex/config.toml: provider={}", config.provider);
+        log::debug!(
+            "Loaded semantic config from ~/.reflex/config.toml: provider={}",
+            config.provider
+        );
         Ok(apply_env_overrides(config))
     } else {
         log::debug!("No [semantic] section in ~/.reflex/config.toml, using defaults");
@@ -246,11 +264,11 @@ fn load_user_config() -> Result<Option<UserConfig>> {
         return Ok(None);
     }
 
-    let config_str = std::fs::read_to_string(&config_path)
-        .context("Failed to read ~/.reflex/config.toml")?;
+    let config_str =
+        std::fs::read_to_string(&config_path).context("Failed to read ~/.reflex/config.toml")?;
 
-    let config: UserConfig = toml::from_str(&config_str)
-        .context("Failed to parse ~/.reflex/config.toml")?;
+    let config: UserConfig =
+        toml::from_str(&config_str).context("Failed to parse ~/.reflex/config.toml")?;
 
     Ok(Some(config))
 }
@@ -291,7 +309,10 @@ pub fn get_api_key(provider: &str) -> Result<String> {
     // Check generic REFLEX_AI_API_KEY env var (provider-agnostic, useful for CI)
     if let Ok(key) = env::var("REFLEX_AI_API_KEY") {
         if !key.is_empty() {
-            log::debug!("Using API key from REFLEX_AI_API_KEY env var for provider '{}'", provider);
+            log::debug!(
+                "Using API key from REFLEX_AI_API_KEY env var for provider '{}'",
+                provider
+            );
             return Ok(key);
         }
     }
@@ -313,7 +334,9 @@ pub fn get_api_key(provider: &str) -> Result<String> {
     // string instead of erroring. Caller is responsible for ensuring base_url
     // is configured separately.
     if is_openai_compatible {
-        log::debug!("No API key configured for openai-compatible; sending requests without auth header");
+        log::debug!(
+            "No API key configured for openai-compatible; sending requests without auth header"
+        );
         return Ok(String::new());
     }
 
@@ -326,7 +349,8 @@ pub fn get_api_key(provider: &str) -> Result<String> {
          3. Set the {} environment variable\n\
          \n\
          Example: export REFLEX_AI_API_KEY=sk-...",
-        provider, env_var
+        provider,
+        env_var
     ))
 }
 
@@ -403,7 +427,11 @@ pub fn get_user_model(provider: &str) -> Option<String> {
             };
 
             if let Some(model_name) = model {
-                log::debug!("Using {} model from ~/.reflex/config.toml: {}", provider, model_name);
+                log::debug!(
+                    "Using {} model from ~/.reflex/config.toml: {}",
+                    provider,
+                    model_name
+                );
                 return Some(model_name.clone());
             }
         }
@@ -414,7 +442,10 @@ pub fn get_user_model(provider: &str) -> Option<String> {
     if provider_lc == "openai-compatible" || provider_lc == "openai_compatible" {
         if let Ok(model) = env::var("OPENAI_COMPATIBLE_MODEL") {
             if !model.is_empty() {
-                log::debug!("Using openai-compatible model from OPENAI_COMPATIBLE_MODEL env var: {}", model);
+                log::debug!(
+                    "Using openai-compatible model from OPENAI_COMPATIBLE_MODEL env var: {}",
+                    model
+                );
                 return Some(model);
             }
         }
@@ -436,10 +467,7 @@ pub fn get_user_model(provider: &str) -> Option<String> {
 /// (e.g. OpenAI → `gpt-4o-mini`). The openai-compatible provider has no
 /// default and will error if `None` is returned, which is the correct
 /// behavior for self-hosted endpoints — the fix is to configure a model.
-pub fn resolve_model(
-    config: &SemanticConfig,
-    override_model: Option<&str>,
-) -> Option<String> {
+pub fn resolve_model(config: &SemanticConfig, override_model: Option<&str>) -> Option<String> {
     resolve_model_for(&config.provider, config.model.as_deref(), override_model)
 }
 
@@ -469,15 +497,13 @@ pub fn save_user_provider(provider: &str, model: Option<&str>) -> Result<()> {
     let config_path = config_dir.join("config.toml");
 
     // Create directory if needed
-    std::fs::create_dir_all(&config_dir)
-        .context("Failed to create ~/.reflex directory")?;
+    std::fs::create_dir_all(&config_dir).context("Failed to create ~/.reflex directory")?;
 
     // Read existing config or create empty
     let mut config: toml::Value = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
             .context("Failed to read ~/.reflex/config.toml")?;
-        toml::from_str(&content)
-            .context("Failed to parse ~/.reflex/config.toml")?
+        toml::from_str(&content).context("Failed to parse ~/.reflex/config.toml")?
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
@@ -499,10 +525,8 @@ pub fn save_user_provider(provider: &str, model: Option<&str>) -> Result<()> {
     }
 
     // Write back to file
-    let toml_str = toml::to_string_pretty(&config)
-        .context("Failed to serialize config to TOML")?;
-    std::fs::write(&config_path, toml_str)
-        .context("Failed to write ~/.reflex/config.toml")?;
+    let toml_str = toml::to_string_pretty(&config).context("Failed to serialize config to TOML")?;
+    std::fs::write(&config_path, toml_str).context("Failed to write ~/.reflex/config.toml")?;
 
     Ok(())
 }
@@ -696,7 +720,12 @@ languages = []
 
         let result = get_api_key("openrouter");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("OPENROUTER_API_KEY"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("OPENROUTER_API_KEY")
+        );
 
         unsafe {
             env::remove_var("HOME");

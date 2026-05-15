@@ -15,10 +15,10 @@
 //! - Namespaces
 //! - Constructors
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse C# source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -50,7 +50,11 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
     symbols.extend(extract_events(source, &root_node, &language.into())?);
     symbols.extend(extract_indexers(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -75,8 +79,7 @@ fn extract_namespaces(
             name: (_) @name) @namespace
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create namespace query")?;
+    let query = Query::new(language, query_str).context("Failed to create namespace query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Namespace, None)
 }
@@ -92,8 +95,7 @@ fn extract_classes(
             name: (identifier) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -109,8 +111,7 @@ fn extract_interfaces(
             name: (identifier) @name) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface query")?;
+    let query = Query::new(language, query_str).context("Failed to create interface query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Interface, None)
 }
@@ -126,8 +127,7 @@ fn extract_structs(
             name: (identifier) @name) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create struct query")?;
+    let query = Query::new(language, query_str).context("Failed to create struct query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Struct, None)
 }
@@ -143,8 +143,7 @@ fn extract_enums(
             name: (identifier) @name) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -160,8 +159,7 @@ fn extract_records(
             name: (identifier) @name) @record
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create record query")?;
+    let query = Query::new(language, query_str).context("Failed to create record query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -177,8 +175,7 @@ fn extract_delegates(
             name: (identifier) @name) @delegate
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create delegate query")?;
+    let query = Query::new(language, query_str).context("Failed to create delegate query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -213,7 +210,13 @@ fn extract_attributes(
             let capture_name: &str = &def_query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "class" => {
                     full_node = Some(capture.node);
@@ -267,10 +270,16 @@ fn extract_attributes(
                 name: (_) @name)) @attr
     "#;
 
-    let use_query = Query::new(language, use_query_str)
-        .context("Failed to create attribute use query")?;
+    let use_query =
+        Query::new(language, use_query_str).context("Failed to create attribute use query")?;
 
-    symbols.extend(extract_symbols(source, root, &use_query, SymbolKind::Attribute, None)?);
+    symbols.extend(extract_symbols(
+        source,
+        root,
+        &use_query,
+        SymbolKind::Attribute,
+        None,
+    )?);
 
     Ok(symbols)
 }
@@ -307,8 +316,7 @@ fn extract_methods(
                     name: (identifier) @method_name))) @record
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -325,23 +333,53 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "struct_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("struct");
                 }
                 "interface_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("interface");
                 }
                 "record_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("record");
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent method_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -357,7 +395,8 @@ fn extract_methods(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(method_name), Some(node)) =
-            (scope_name, scope_type, method_name, method_node) {
+            (scope_name, scope_type, method_name, method_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -409,8 +448,7 @@ fn extract_properties(
                     name: (identifier) @property_name))) @record
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create property query")?;
+    let query = Query::new(language, query_str).context("Failed to create property query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -427,23 +465,53 @@ fn extract_properties(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "struct_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("struct");
                 }
                 "interface_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("interface");
                 }
                 "record_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("record");
                 }
                 "property_name" => {
-                    property_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    property_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent property_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -459,7 +527,8 @@ fn extract_properties(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(property_name), Some(node)) =
-            (scope_name, scope_type, property_name, property_node) {
+            (scope_name, scope_type, property_name, property_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -511,8 +580,7 @@ fn extract_events(
                             (identifier) @event_name))))) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create event query")?;
+    let query = Query::new(language, query_str).context("Failed to create event query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -529,19 +597,43 @@ fn extract_events(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "struct_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("struct");
                 }
                 "interface_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("interface");
                 }
                 "event_name" => {
-                    event_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    event_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent event_field_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -557,7 +649,8 @@ fn extract_events(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(event_name), Some(node)) =
-            (scope_name, scope_type, event_name, event_node) {
+            (scope_name, scope_type, event_name, event_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -595,8 +688,7 @@ fn extract_indexers(
                 (indexer_declaration) @indexer_name)) @struct
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create indexer query")?;
+    let query = Query::new(language, query_str).context("Failed to create indexer query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -612,11 +704,23 @@ fn extract_indexers(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "struct_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("struct");
                 }
                 "indexer_name" => {
@@ -627,7 +731,8 @@ fn extract_indexers(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(node)) =
-            (scope_name, scope_type, indexer_node) {
+            (scope_name, scope_type, indexer_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -661,8 +766,7 @@ fn extract_local_variables(
                     (identifier) @name))) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
@@ -688,7 +792,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -720,7 +830,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -754,7 +864,8 @@ public class User
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -773,7 +884,8 @@ namespace MyApp.Models
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let namespace_symbols: Vec<_> = symbols.iter()
+        let namespace_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Namespace))
             .collect();
 
@@ -790,7 +902,8 @@ public class User { }
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let namespace_symbols: Vec<_> = symbols.iter()
+        let namespace_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Namespace))
             .collect();
 
@@ -809,7 +922,8 @@ public interface IRepository
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let interface_symbols: Vec<_> = symbols.iter()
+        let interface_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Interface))
             .collect();
 
@@ -829,7 +943,8 @@ public struct Point
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let struct_symbols: Vec<_> = symbols.iter()
+        let struct_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Struct))
             .collect();
 
@@ -850,7 +965,8 @@ public enum Status
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let enum_symbols: Vec<_> = symbols.iter()
+        let enum_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Enum))
             .collect();
 
@@ -866,7 +982,8 @@ public record Person(string FirstName, string LastName);
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let record_symbols: Vec<_> = symbols.iter()
+        let record_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .filter(|s| s.symbol.as_deref() == Some("Person"))
             .collect();
@@ -893,13 +1010,22 @@ public class Calculator
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -920,14 +1046,27 @@ public class User
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let property_symbols: Vec<_> = symbols.iter()
+        let property_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         assert_eq!(property_symbols.len(), 3);
-        assert!(property_symbols.iter().any(|s| s.symbol.as_deref() == Some("Name")));
-        assert!(property_symbols.iter().any(|s| s.symbol.as_deref() == Some("Age")));
-        assert!(property_symbols.iter().any(|s| s.symbol.as_deref() == Some("Email")));
+        assert!(
+            property_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Name"))
+        );
+        assert!(
+            property_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Age"))
+        );
+        assert!(
+            property_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Email"))
+        );
     }
 
     #[test]
@@ -938,7 +1077,8 @@ public delegate void EventHandler(object sender, EventArgs e);
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let delegate_symbols: Vec<_> = symbols.iter()
+        let delegate_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .filter(|s| s.symbol.as_deref() == Some("EventHandler"))
             .collect();
@@ -1013,25 +1153,49 @@ public class Helper
         let symbols = parse("test.cs", source).unwrap();
 
         // Filter to just variables
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that local variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("message")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("count")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("message"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("count"))
+        );
 
         // Check that class property is also captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("Multiplier")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("Multiplier"))
+        );
 
         // Verify that local variables have no scope
-        let local_vars: Vec<_> = variables.iter()
-            .filter(|v| v.symbol.as_deref() == Some("localVar")
-                     || v.symbol.as_deref() == Some("result")
-                     || v.symbol.as_deref() == Some("message")
-                     || v.symbol.as_deref() == Some("count"))
+        let local_vars: Vec<_> = variables
+            .iter()
+            .filter(|v| {
+                v.symbol.as_deref() == Some("localVar")
+                    || v.symbol.as_deref() == Some("result")
+                    || v.symbol.as_deref() == Some("message")
+                    || v.symbol.as_deref() == Some("count")
+            })
             .collect();
 
         for var in local_vars {
@@ -1039,7 +1203,8 @@ public class Helper
         }
 
         // Verify that class property has scope
-        let property = variables.iter()
+        let property = variables
+            .iter()
             .find(|v| v.symbol.as_deref() == Some("Multiplier"))
             .unwrap();
         // Removed: scope field no longer exists: assert_eq!(property.scope.as_ref().unwrap(), "class Calculator");
@@ -1062,22 +1227,37 @@ public interface INotifier
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let event_symbols: Vec<_> = symbols.iter()
+        let event_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Event))
             .collect();
 
         assert_eq!(event_symbols.len(), 3);
-        assert!(event_symbols.iter().any(|s| s.symbol.as_deref() == Some("Click")));
-        assert!(event_symbols.iter().any(|s| s.symbol.as_deref() == Some("Hover")));
-        assert!(event_symbols.iter().any(|s| s.symbol.as_deref() == Some("Notify")));
+        assert!(
+            event_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Click"))
+        );
+        assert!(
+            event_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Hover"))
+        );
+        assert!(
+            event_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Notify"))
+        );
 
         // Check scope
-        let click_event = event_symbols.iter()
+        let click_event = event_symbols
+            .iter()
             .find(|s| s.symbol.as_deref() == Some("Click"))
             .unwrap();
         // Removed: scope field no longer exists: assert_eq!(click_event.scope.as_ref().unwrap(), "class Button");
 
-        let notify_event = event_symbols.iter()
+        let notify_event = event_symbols
+            .iter()
             .find(|s| s.symbol.as_deref() == Some("Notify"))
             .unwrap();
         // Removed: scope field no longer exists: assert_eq!(notify_event.scope.as_ref().unwrap(), "interface INotifier");
@@ -1109,7 +1289,8 @@ public struct Matrix
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let indexer_symbols: Vec<_> = symbols.iter()
+        let indexer_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Property))
             .filter(|s| s.symbol.as_deref() == Some("this[]"))
             .collect();
@@ -1153,18 +1334,35 @@ public class CustomAttribute
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let attribute_symbols: Vec<_> = symbols.iter()
+        let attribute_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
         // Should find TestAttribute, Obsolete, and CustomAttribute
         assert_eq!(attribute_symbols.len(), 3);
-        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("TestAttribute")));
-        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("Obsolete")));
-        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("CustomAttribute")));
+        assert!(
+            attribute_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("TestAttribute"))
+        );
+        assert!(
+            attribute_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Obsolete"))
+        );
+        assert!(
+            attribute_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("CustomAttribute"))
+        );
 
         // Should NOT find RegularClass
-        assert!(!attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("RegularClass")));
+        assert!(
+            !attribute_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("RegularClass"))
+        );
     }
 
     #[test]
@@ -1205,7 +1403,8 @@ public class LegacyClass
 
         let symbols = parse("test.cs", source).unwrap();
 
-        let attribute_symbols: Vec<_> = symbols.iter()
+        let attribute_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
@@ -1215,14 +1414,16 @@ public class LegacyClass
         assert!(attribute_symbols.len() >= 6);
 
         // Count specific attribute uses
-        let test_count = attribute_symbols.iter()
+        let test_count = attribute_symbols
+            .iter()
             .filter(|s| {
                 let symbol = s.symbol.as_deref().unwrap_or("");
                 symbol == "Test" || symbol == "TestAttribute"
             })
             .count();
 
-        let obsolete_count = attribute_symbols.iter()
+        let obsolete_count = attribute_symbols
+            .iter()
             .filter(|s| {
                 let symbol = s.symbol.as_deref().unwrap_or("");
                 symbol == "Obsolete" || symbol == "ObsoleteAttribute"
@@ -1262,13 +1463,21 @@ public class LegacyClass
 
         assert_eq!(deps.len(), 4, "Should extract 4 using directives");
         assert!(deps.iter().any(|d| d.imported_path == "System"));
-        assert!(deps.iter().any(|d| d.imported_path == "System.Collections.Generic"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "System.Collections.Generic")
+        );
         assert!(deps.iter().any(|d| d.imported_path == "System.Linq"));
-        assert!(deps.iter().any(|d| d.imported_path == "Microsoft.AspNetCore.Mvc"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "Microsoft.AspNetCore.Mvc")
+        );
 
         for dep in &deps {
-            assert!(matches!(dep.import_type, ImportType::Stdlib),
-                    "System and Microsoft namespaces should be classified as Stdlib");
+            assert!(
+                matches!(dep.import_type, ImportType::Stdlib),
+                "System and Microsoft namespaces should be classified as Stdlib"
+            );
         }
     }
 }
@@ -1308,10 +1517,7 @@ impl DependencyExtractor for CSharpDependencyExtractor {
 }
 
 /// Extract C# using directives
-fn extract_csharp_usings(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_csharp_usings(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_c_sharp::LANGUAGE;
 
     let query_str = r#"
@@ -1322,8 +1528,8 @@ fn extract_csharp_usings(
             ])
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create C# using query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create C# using query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -1334,7 +1540,11 @@ fn extract_csharp_usings(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "using_path" {
-                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let path = capture
+                    .node
+                    .utf8_text(source.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
                 let import_type = classify_csharp_using(&path);
                 let line_number = capture.node.start_position().row + 1;
 
@@ -1356,43 +1566,86 @@ fn classify_csharp_using(using_path: &str) -> ImportType {
     // C# standard library namespaces (Microsoft-provided)
     const CSHARP_STDLIB_NAMESPACES: &[&str] = &[
         // Core system namespaces
-        "System", "System.Collections", "System.Collections.Generic", "System.Collections.Concurrent",
-        "System.Collections.Immutable", "System.Collections.ObjectModel", "System.Collections.Specialized",
-        "System.ComponentModel", "System.ComponentModel.DataAnnotations",
-        "System.Configuration", "System.Data", "System.Data.Common", "System.Data.SqlClient",
-        "System.Diagnostics", "System.Diagnostics.CodeAnalysis", "System.Diagnostics.Contracts",
-        "System.Drawing", "System.Globalization", "System.IO", "System.IO.Compression",
-        "System.IO.Pipes", "System.Linq", "System.Linq.Expressions", "System.Net",
-        "System.Net.Http", "System.Net.Mail", "System.Net.Sockets", "System.Numerics",
-        "System.Reflection", "System.Reflection.Emit", "System.Resources", "System.Runtime",
-        "System.Runtime.CompilerServices", "System.Runtime.InteropServices", "System.Runtime.Serialization",
-        "System.Security", "System.Security.Cryptography", "System.Security.Principal",
-        "System.Text", "System.Text.Json", "System.Text.RegularExpressions", "System.Threading",
-        "System.Threading.Tasks", "System.Timers", "System.Xml", "System.Xml.Linq",
+        "System",
+        "System.Collections",
+        "System.Collections.Generic",
+        "System.Collections.Concurrent",
+        "System.Collections.Immutable",
+        "System.Collections.ObjectModel",
+        "System.Collections.Specialized",
+        "System.ComponentModel",
+        "System.ComponentModel.DataAnnotations",
+        "System.Configuration",
+        "System.Data",
+        "System.Data.Common",
+        "System.Data.SqlClient",
+        "System.Diagnostics",
+        "System.Diagnostics.CodeAnalysis",
+        "System.Diagnostics.Contracts",
+        "System.Drawing",
+        "System.Globalization",
+        "System.IO",
+        "System.IO.Compression",
+        "System.IO.Pipes",
+        "System.Linq",
+        "System.Linq.Expressions",
+        "System.Net",
+        "System.Net.Http",
+        "System.Net.Mail",
+        "System.Net.Sockets",
+        "System.Numerics",
+        "System.Reflection",
+        "System.Reflection.Emit",
+        "System.Resources",
+        "System.Runtime",
+        "System.Runtime.CompilerServices",
+        "System.Runtime.InteropServices",
+        "System.Runtime.Serialization",
+        "System.Security",
+        "System.Security.Cryptography",
+        "System.Security.Principal",
+        "System.Text",
+        "System.Text.Json",
+        "System.Text.RegularExpressions",
+        "System.Threading",
+        "System.Threading.Tasks",
+        "System.Timers",
+        "System.Xml",
+        "System.Xml.Linq",
         "System.Xml.Serialization",
-
         // ASP.NET namespaces
-        "Microsoft.AspNetCore", "Microsoft.AspNetCore.Builder", "Microsoft.AspNetCore.Hosting",
-        "Microsoft.AspNetCore.Http", "Microsoft.AspNetCore.Mvc", "Microsoft.AspNetCore.Routing",
-        "Microsoft.AspNetCore.Authentication", "Microsoft.AspNetCore.Authorization",
-
+        "Microsoft.AspNetCore",
+        "Microsoft.AspNetCore.Builder",
+        "Microsoft.AspNetCore.Hosting",
+        "Microsoft.AspNetCore.Http",
+        "Microsoft.AspNetCore.Mvc",
+        "Microsoft.AspNetCore.Routing",
+        "Microsoft.AspNetCore.Authentication",
+        "Microsoft.AspNetCore.Authorization",
         // Entity Framework
-        "Microsoft.EntityFrameworkCore", "Microsoft.EntityFrameworkCore.Design",
+        "Microsoft.EntityFrameworkCore",
+        "Microsoft.EntityFrameworkCore.Design",
         "Microsoft.EntityFrameworkCore.Migrations",
-
         // Extensions
-        "Microsoft.Extensions.Configuration", "Microsoft.Extensions.DependencyInjection",
-        "Microsoft.Extensions.Hosting", "Microsoft.Extensions.Logging", "Microsoft.Extensions.Options",
-
+        "Microsoft.Extensions.Configuration",
+        "Microsoft.Extensions.DependencyInjection",
+        "Microsoft.Extensions.Hosting",
+        "Microsoft.Extensions.Logging",
+        "Microsoft.Extensions.Options",
         // Windows-specific
-        "Microsoft.Win32", "System.Windows", "System.Windows.Forms", "System.Windows.Controls",
-        "System.Windows.Data", "System.Windows.Input", "System.Windows.Media",
-
+        "Microsoft.Win32",
+        "System.Windows",
+        "System.Windows.Forms",
+        "System.Windows.Controls",
+        "System.Windows.Data",
+        "System.Windows.Input",
+        "System.Windows.Media",
         // WPF
         "System.Xaml",
-
         // Older frameworks
-        "System.Web", "System.Web.Mvc", "System.Web.Http",
+        "System.Web",
+        "System.Web.Mvc",
+        "System.Web.Http",
     ];
 
     // Check if it's a standard library namespace or starts with one
@@ -1456,40 +1709,28 @@ mod resolution_tests {
 
     #[test]
     fn test_resolve_csharp_using_simple_namespace() {
-        let result = resolve_csharp_using_to_path(
-            "MyApp.Models.User",
-            None,
-        );
+        let result = resolve_csharp_using_to_path("MyApp.Models.User", None);
 
         assert_eq!(result, Some("MyApp/Models/User.cs".to_string()));
     }
 
     #[test]
     fn test_resolve_csharp_using_services() {
-        let result = resolve_csharp_using_to_path(
-            "MyApp.Services.UserService",
-            None,
-        );
+        let result = resolve_csharp_using_to_path("MyApp.Services.UserService", None);
 
         assert_eq!(result, Some("MyApp/Services/UserService.cs".to_string()));
     }
 
     #[test]
     fn test_resolve_csharp_using_single_level() {
-        let result = resolve_csharp_using_to_path(
-            "MyApp",
-            None,
-        );
+        let result = resolve_csharp_using_to_path("MyApp", None);
 
         assert_eq!(result, Some("MyApp.cs".to_string()));
     }
 
     #[test]
     fn test_resolve_csharp_using_deep_namespace() {
-        let result = resolve_csharp_using_to_path(
-            "MyApp.Core.Domain.Models.User",
-            None,
-        );
+        let result = resolve_csharp_using_to_path("MyApp.Core.Domain.Models.User", None);
 
         assert_eq!(result, Some("MyApp/Core/Domain/Models/User.cs".to_string()));
     }

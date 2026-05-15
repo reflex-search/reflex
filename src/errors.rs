@@ -56,7 +56,10 @@ mod tests {
     #[test]
     fn test_kind_strings() {
         assert_eq!(ReflexError::IndexNotFound.kind(), "IndexNotFound");
-        assert_eq!(ReflexError::QuerySyntaxError("x".into()).kind(), "QuerySyntaxError");
+        assert_eq!(
+            ReflexError::QuerySyntaxError("x".into()).kind(),
+            "QuerySyntaxError"
+        );
         assert_eq!(ReflexError::IoError("x".into()).kind(), "IoError");
         assert_eq!(ReflexError::ParseError("x".into()).kind(), "ParseError");
         assert_eq!(ReflexError::LlmError("x".into()).kind(), "LlmError");
@@ -81,7 +84,12 @@ mod tests {
         let body = serde_json::json!({ "error": { "kind": kind, "message": msg } });
 
         assert_eq!(body["error"]["kind"], "QuerySyntaxError");
-        assert!(body["error"]["message"].as_str().unwrap().contains("invalid pattern"));
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid pattern")
+        );
     }
 
     #[test]
@@ -100,6 +108,9 @@ mod tests {
         } else {
             1
         };
-        assert_eq!(exit_code, 1, "Non-ReflexError should fall back to exit code 1");
+        assert_eq!(
+            exit_code, 1,
+            "Non-ReflexError should fall back to exit code 1"
+        );
     }
 }

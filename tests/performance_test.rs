@@ -41,7 +41,11 @@ fn test_index_small_codebase_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Indexed {} files in {}ms", stats.total_files, duration.as_millis());
+    println!(
+        "✓ Indexed {} files in {}ms",
+        stats.total_files,
+        duration.as_millis()
+    );
 }
 
 #[test]
@@ -76,7 +80,11 @@ fn test_index_medium_codebase_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Indexed {} files in {}ms", stats.total_files, duration.as_millis());
+    println!(
+        "✓ Indexed {} files in {}ms",
+        stats.total_files,
+        duration.as_millis()
+    );
 }
 
 #[test]
@@ -88,8 +96,9 @@ fn test_incremental_reindex_performance() {
     for i in 0..100 {
         fs::write(
             project.join(format!("file_{}.rs", i)),
-            format!("fn test_{}() {{}}", i)
-        ).unwrap();
+            format!("fn test_{}() {{}}", i),
+        )
+        .unwrap();
     }
 
     // Initial index
@@ -101,8 +110,9 @@ fn test_incremental_reindex_performance() {
     for i in 0..10 {
         fs::write(
             project.join(format!("file_{}.rs", i)),
-            format!("fn modified_{}() {{}}", i)
-        ).unwrap();
+            format!("fn modified_{}() {{}}", i),
+        )
+        .unwrap();
     }
 
     // Measure incremental reindex time
@@ -121,7 +131,10 @@ fn test_incremental_reindex_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Incremental reindex (10/100 files changed) took {}ms", duration.as_millis());
+    println!(
+        "✓ Incremental reindex (10/100 files changed) took {}ms",
+        duration.as_millis()
+    );
 }
 
 // ==================== Query Performance Tests ====================
@@ -146,7 +159,7 @@ fn test_fulltext_query_performance() {
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
-        limit: None,  // No limit for performance test
+        limit: None, // No limit for performance test
         ..Default::default()
     };
 
@@ -164,7 +177,11 @@ fn test_fulltext_query_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Full-text query found {} results in {}ms", results.len(), duration.as_millis());
+    println!(
+        "✓ Full-text query found {} results in {}ms",
+        results.len(),
+        duration.as_millis()
+    );
 }
 
 #[test]
@@ -191,7 +208,7 @@ fn test_symbol_query_performance() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
-        use_contains: true,  // "gre" is substring of "greet", not at word boundary
+        use_contains: true, // "gre" is substring of "greet", not at word boundary
         ..Default::default()
     };
 
@@ -213,7 +230,11 @@ fn test_symbol_query_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Symbol query found {} results in {}ms (runtime tree-sitter parsing)", results.len(), duration.as_millis());
+    println!(
+        "✓ Symbol query found {} results in {}ms (runtime tree-sitter parsing)",
+        results.len(),
+        duration.as_millis()
+    );
 }
 
 #[test]
@@ -237,7 +258,7 @@ fn test_regex_query_performance() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         use_regex: true,
-        limit: None,  // No limit for performance test
+        limit: None, // No limit for performance test
         ..Default::default()
     };
 
@@ -254,7 +275,11 @@ fn test_regex_query_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Regex query found {} results in {}ms", results.len(), duration.as_millis());
+    println!(
+        "✓ Regex query found {} results in {}ms",
+        results.len(),
+        duration.as_millis()
+    );
 }
 
 #[test]
@@ -295,7 +320,11 @@ fn test_filtered_query_performance() {
         duration.as_millis()
     );
 
-    println!("✓ Filtered query found {} Rust files in {}ms", results.len(), duration.as_millis());
+    println!(
+        "✓ Filtered query found {} Rust files in {}ms",
+        results.len(),
+        duration.as_millis()
+    );
 }
 
 // ==================== Memory-mapped I/O Performance Tests ====================

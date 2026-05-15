@@ -13,10 +13,10 @@
 //! This parser handles both TypeScript (.ts, .tsx) and JavaScript (.js, .jsx)
 //! files using the tree-sitter-typescript grammar.
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse TypeScript/JavaScript source code and extract symbols
 pub fn parse(path: &str, source: &str, language: Language) -> Result<Vec<SearchResult>> {
@@ -78,8 +78,7 @@ fn extract_functions(
             name: (identifier) @name) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -102,8 +101,7 @@ fn extract_arrow_functions(
                 value: (arrow_function))) @arrow_fn
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create arrow function query")?;
+    let query = Query::new(language, query_str).context("Failed to create arrow function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -122,8 +120,7 @@ fn extract_classes(
             name: (type_identifier) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -139,8 +136,7 @@ fn extract_interfaces(
             name: (type_identifier) @name) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface query")?;
+    let query = Query::new(language, query_str).context("Failed to create interface query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Interface, None)
 }
@@ -156,8 +152,7 @@ fn extract_type_aliases(
             name: (type_identifier) @name) @type
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create type alias query")?;
+    let query = Query::new(language, query_str).context("Failed to create type alias query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -173,8 +168,7 @@ fn extract_enums(
             name: (identifier) @name) @enum
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(language, query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -197,8 +191,7 @@ fn extract_variables(
                 name: (identifier) @name)) @decl
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -212,7 +205,13 @@ fn extract_variables(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
                 // Get the variable_declarator node
                 if let Some(parent) = capture.node.parent() {
                     if parent.kind() == "variable_declarator" {
@@ -285,8 +284,7 @@ fn extract_methods(
                     name: (_) @method_name))) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -302,10 +300,22 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    class_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    class_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent method_definition node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -320,7 +330,9 @@ fn extract_methods(
             }
         }
 
-        if let (Some(class_name), Some(method_name), Some(node)) = (class_name, method_name, method_node) {
+        if let (Some(class_name), Some(method_name), Some(node)) =
+            (class_name, method_name, method_node)
+        {
             let scope = format!("class {}", class_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -361,7 +373,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -393,7 +411,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -474,7 +492,8 @@ mod tests {
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
 
         // Should find class
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -501,13 +520,22 @@ mod tests {
         // Should find class + 2 methods
         assert!(symbols.len() >= 3);
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -541,13 +569,22 @@ mod tests {
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 2);
 
-        let type_symbols: Vec<_> = symbols.iter()
+        let type_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Type))
             .collect();
 
         assert_eq!(type_symbols.len(), 2);
-        assert!(type_symbols.iter().any(|s| s.symbol.as_deref() == Some("UserId")));
-        assert!(type_symbols.iter().any(|s| s.symbol.as_deref() == Some("UserRole")));
+        assert!(
+            type_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("UserId"))
+        );
+        assert!(
+            type_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("UserRole"))
+        );
     }
 
     #[test]
@@ -579,13 +616,22 @@ mod tests {
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 2);
 
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         assert_eq!(const_symbols.len(), 2);
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_USER")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DEFAULT_USER"))
+        );
     }
 
     #[test]
@@ -617,9 +663,21 @@ mod tests {
         let symbols = parse("Button.tsx", source, Language::TypeScript).unwrap();
 
         // Should find interface, Button component (arrow fn), useCounter hook (function)
-        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("ButtonProps") && matches!(s.kind, SymbolKind::Interface)));
-        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("Button") && matches!(s.kind, SymbolKind::Function)));
-        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("useCounter") && matches!(s.kind, SymbolKind::Function)));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("ButtonProps")
+                    && matches!(s.kind, SymbolKind::Interface))
+        );
+        assert!(symbols.iter().any(
+            |s| s.symbol.as_deref() == Some("Button") && matches!(s.kind, SymbolKind::Function)
+        ));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("useCounter")
+                    && matches!(s.kind, SymbolKind::Function))
+        );
     }
 
     #[test]
@@ -689,31 +747,64 @@ mod tests {
         // Debug: Print all symbols
         println!("\nAll symbols found:");
         for symbol in &symbols {
-            println!("  {:?} - {}", symbol.kind, symbol.symbol.as_deref().unwrap_or(""));
+            println!(
+                "  {:?} - {}",
+                symbol.kind,
+                symbol.symbol.as_deref().unwrap_or("")
+            );
         }
 
         // Should find: class + 3 methods (2 async, 1 regular)
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol.as_deref(), Some("CentralUsersModule"));
+        assert_eq!(
+            class_symbols[0].symbol.as_deref(),
+            Some("CentralUsersModule")
+        );
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         // All three should be detected as methods, not variables
-        assert_eq!(method_symbols.len(), 3, "Expected 3 methods, found {}", method_symbols.len());
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("getAllUsers")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("getUser")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("deleteUser")));
+        assert_eq!(
+            method_symbols.len(),
+            3,
+            "Expected 3 methods, found {}",
+            method_symbols.len()
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("getAllUsers"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("getUser"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("deleteUser"))
+        );
 
         // Verify no async methods are misclassified as variables
-        let variable_symbols: Vec<_> = symbols.iter()
-            .filter(|s| matches!(s.kind, SymbolKind::Constant) || matches!(s.kind, SymbolKind::Variable))
+        let variable_symbols: Vec<_> = symbols
+            .iter()
+            .filter(|s| {
+                matches!(s.kind, SymbolKind::Constant) || matches!(s.kind, SymbolKind::Variable)
+            })
             .collect();
-        assert_eq!(variable_symbols.len(), 0, "Async methods should not be classified as variables");
+        assert_eq!(
+            variable_symbols.len(),
+            0,
+            "Async methods should not be classified as variables"
+        );
 
         // Check scope
         for method in method_symbols {
@@ -753,15 +844,24 @@ export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
         // Debug: Print all symbols
         println!("\nAll symbols found in user code:");
         for symbol in &symbols {
-            println!("  {:?} - {}", symbol.kind, symbol.symbol.as_deref().unwrap_or(""));
+            println!(
+                "  {:?} - {}",
+                symbol.kind,
+                symbol.symbol.as_deref().unwrap_or("")
+            );
         }
 
         // Verify getAllUsers is a Method, not a Variable
-        let get_all_users_symbols: Vec<_> = symbols.iter()
+        let get_all_users_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| s.symbol.as_deref() == Some("getAllUsers"))
             .collect();
 
-        assert_eq!(get_all_users_symbols.len(), 1, "Should find exactly one getAllUsers");
+        assert_eq!(
+            get_all_users_symbols.len(),
+            1,
+            "Should find exactly one getAllUsers"
+        );
         assert!(
             matches!(get_all_users_symbols[0].kind, SymbolKind::Method),
             "getAllUsers should be a Method, not {:?}",
@@ -786,28 +886,61 @@ export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
 
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
 
-        let var_symbols: Vec<_> = symbols.iter()
-            .filter(|s| matches!(s.kind, SymbolKind::Variable) || matches!(s.kind, SymbolKind::Constant))
+        let var_symbols: Vec<_> = symbols
+            .iter()
+            .filter(|s| {
+                matches!(s.kind, SymbolKind::Variable) || matches!(s.kind, SymbolKind::Constant)
+            })
             .collect();
 
         // Should find all: 3 global + 3 local = 6 variables
         assert_eq!(var_symbols.len(), 6);
 
         // Check globals
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("GLOBAL_CONSTANT")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalLet")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalVar")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("GLOBAL_CONSTANT"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("globalLet"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("globalVar"))
+        );
 
         // Check locals
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localConst")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localLet")));
-        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("localConst"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("localLet"))
+        );
+        assert!(
+            var_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("localVar"))
+        );
 
         // Verify const vs variable classification
-        let global_const = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("GLOBAL_CONSTANT")).unwrap();
+        let global_const = var_symbols
+            .iter()
+            .find(|s| s.symbol.as_deref() == Some("GLOBAL_CONSTANT"))
+            .unwrap();
         assert!(matches!(global_const.kind, SymbolKind::Constant));
 
-        let global_let = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("globalLet")).unwrap();
+        let global_let = var_symbols
+            .iter()
+            .find(|s| s.symbol.as_deref() == Some("globalLet"))
+            .unwrap();
         assert!(matches!(global_let.kind, SymbolKind::Variable));
     }
 }
@@ -894,7 +1027,11 @@ fn extract_import_declarations(
                 "import_path" => {
                     // Remove quotes from string literal
                     let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
-                    import_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                    import_path = Some(
+                        raw_path
+                            .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                            .to_string(),
+                    );
                 }
                 "import" => {
                     import_node = Some(capture.node);
@@ -936,8 +1073,8 @@ fn extract_require_statements(
             arguments: (arguments (string) @require_path)) @require_call
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create require query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create require query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -958,7 +1095,11 @@ fn extract_require_statements(
                 "require_path" => {
                     // Remove quotes from string literal
                     let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
-                    require_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                    require_path = Some(
+                        raw_path
+                            .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                            .to_string(),
+                    );
                 }
                 "require_call" => {
                     require_node = Some(capture.node);
@@ -987,7 +1128,10 @@ fn extract_require_statements(
 }
 
 /// Extract the list of imported symbols from an import statement
-fn extract_imported_symbols_js(source: &str, import_node: &tree_sitter::Node) -> Option<Vec<String>> {
+fn extract_imported_symbols_js(
+    source: &str,
+    import_node: &tree_sitter::Node,
+) -> Option<Vec<String>> {
     let mut symbols = Vec::new();
 
     // Walk children to find import_clause nodes
@@ -1040,53 +1184,115 @@ fn extract_imported_symbols_js(source: &str, import_node: &tree_sitter::Node) ->
 ///
 /// Path alias imports (like `@packages/*` from tsconfig.json) are classified as Internal
 /// when they match a configured alias pattern.
-fn classify_js_import(import_path: &str, alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>) -> ImportType {
+fn classify_js_import(
+    import_path: &str,
+    alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+) -> ImportType {
     // Relative imports (./ or ../)
     if import_path.starts_with("./") || import_path.starts_with("../") {
-        log::trace!("classify_js_import: '{}' => Internal (relative)", import_path);
+        log::trace!(
+            "classify_js_import: '{}' => Internal (relative)",
+            import_path
+        );
         return ImportType::Internal;
     }
 
     // Absolute imports starting with /
     if import_path.starts_with("/") {
-        log::trace!("classify_js_import: '{}' => Internal (absolute)", import_path);
+        log::trace!(
+            "classify_js_import: '{}' => Internal (absolute)",
+            import_path
+        );
         return ImportType::Internal;
     }
 
     // Check if import matches a configured path alias (e.g., @packages/*, ~/*)
     if let Some(map) = alias_map {
-        log::trace!("classify_js_import: checking '{}' against {} aliases", import_path, map.aliases.len());
+        log::trace!(
+            "classify_js_import: checking '{}' against {} aliases",
+            import_path,
+            map.aliases.len()
+        );
         for alias_pattern in map.aliases.keys() {
             // Check for wildcard patterns like "@packages/*"
             if alias_pattern.ends_with("/*") {
                 let alias_prefix = alias_pattern.trim_end_matches("/*");
                 if import_path.starts_with(alias_prefix) {
-                    log::info!("classify_js_import: '{}' => Internal (matches alias pattern '{}')", import_path, alias_pattern);
+                    log::info!(
+                        "classify_js_import: '{}' => Internal (matches alias pattern '{}')",
+                        import_path,
+                        alias_pattern
+                    );
                     return ImportType::Internal;
                 }
             } else {
                 // Exact match
                 if import_path == alias_pattern {
-                    log::info!("classify_js_import: '{}' => Internal (exact match alias '{}')", import_path, alias_pattern);
+                    log::info!(
+                        "classify_js_import: '{}' => Internal (exact match alias '{}')",
+                        import_path,
+                        alias_pattern
+                    );
                     return ImportType::Internal;
                 }
             }
         }
-        log::trace!("classify_js_import: '{}' did not match any of {} alias patterns", import_path, map.aliases.len());
+        log::trace!(
+            "classify_js_import: '{}' did not match any of {} alias patterns",
+            import_path,
+            map.aliases.len()
+        );
     } else {
-        log::trace!("classify_js_import: no alias map provided for '{}'", import_path);
+        log::trace!(
+            "classify_js_import: no alias map provided for '{}'",
+            import_path
+        );
     }
 
     // Node.js built-in modules (stdlib)
     const STDLIB_MODULES: &[&str] = &[
-        "fs", "path", "os", "crypto", "util", "events", "stream", "buffer",
-        "http", "https", "net", "tls", "url", "querystring", "dns",
-        "child_process", "cluster", "worker_threads", "readline",
-        "zlib", "assert", "console", "module", "process", "timers",
-        "vm", "string_decoder", "dgram", "v8", "perf_hooks",
+        "fs",
+        "path",
+        "os",
+        "crypto",
+        "util",
+        "events",
+        "stream",
+        "buffer",
+        "http",
+        "https",
+        "net",
+        "tls",
+        "url",
+        "querystring",
+        "dns",
+        "child_process",
+        "cluster",
+        "worker_threads",
+        "readline",
+        "zlib",
+        "assert",
+        "console",
+        "module",
+        "process",
+        "timers",
+        "vm",
+        "string_decoder",
+        "dgram",
+        "v8",
+        "perf_hooks",
         // Node.js prefixed imports (node:fs, etc.)
-        "node:fs", "node:path", "node:os", "node:crypto", "node:util", "node:events",
-        "node:stream", "node:buffer", "node:http", "node:https", "node:net",
+        "node:fs",
+        "node:path",
+        "node:os",
+        "node:crypto",
+        "node:util",
+        "node:events",
+        "node:stream",
+        "node:buffer",
+        "node:http",
+        "node:https",
+        "node:net",
     ];
 
     // Check if it's a stdlib module
@@ -1096,7 +1302,10 @@ fn classify_js_import(import_path: &str, alias_map: Option<&crate::parsers::tsco
     }
 
     // Everything else is external (third-party packages from npm)
-    log::info!("classify_js_import: '{}' => External (not alias, relative, absolute, or stdlib)", import_path);
+    log::info!(
+        "classify_js_import: '{}' => External (not alias, relative, absolute, or stdlib)",
+        import_path
+    );
     ImportType::External
 }
 
@@ -1179,7 +1388,11 @@ fn extract_export_from_statements(
                 "source_path" => {
                     // Remove quotes from string literal
                     let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
-                    source_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                    source_path = Some(
+                        raw_path
+                            .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                            .to_string(),
+                    );
                 }
                 "export" => {
                     export_node = Some(capture.node);
@@ -1266,13 +1479,21 @@ pub fn resolve_ts_import_to_path(
     current_file_path: Option<&str>,
     alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
 ) -> Option<String> {
-    log::debug!("resolve_ts_import_to_path: import_path={}, current_file={:?}, has_alias_map={}",
-               import_path, current_file_path, alias_map.is_some());
+    log::debug!(
+        "resolve_ts_import_to_path: import_path={}, current_file={:?}, has_alias_map={}",
+        import_path,
+        current_file_path,
+        alias_map.is_some()
+    );
 
     // Try path alias resolution first (if alias map is provided)
     if let Some(map) = alias_map {
-        log::debug!("  Trying alias resolution with {} aliases (config_dir: {:?}, base_url: {:?})",
-                   map.aliases.len(), map.config_dir, map.base_url);
+        log::debug!(
+            "  Trying alias resolution with {} aliases (config_dir: {:?}, base_url: {:?})",
+            map.aliases.len(),
+            map.config_dir,
+            map.base_url
+        );
         if let Some(resolved_alias) = map.resolve_alias(import_path) {
             log::debug!("  Alias matched! {} => {}", import_path, resolved_alias);
             // Alias matched! Now resolve relative to the tsconfig directory
@@ -1297,8 +1518,16 @@ pub fn resolve_ts_import_to_path(
 
             // No extension - generate candidates
             let extensions = vec![
-                ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs",
-                "/index.tsx", "/index.ts", "/index.jsx", "/index.js",
+                ".tsx",
+                ".ts",
+                ".jsx",
+                ".js",
+                ".mjs",
+                ".cjs",
+                "/index.tsx",
+                "/index.ts",
+                "/index.jsx",
+                "/index.js",
             ];
 
             let candidates: Vec<String> = extensions
@@ -1306,8 +1535,12 @@ pub fn resolve_ts_import_to_path(
                 .map(|ext| format!("{}{}", path_str, ext))
                 .collect();
 
-            log::trace!("Resolved alias {} => {} (candidates: {})",
-                       import_path, path_str, candidates.join(" | "));
+            log::trace!(
+                "Resolved alias {} => {} (candidates: {})",
+                import_path,
+                path_str,
+                candidates.join(" | ")
+            );
             return Some(candidates.join("|"));
         }
     }
@@ -1328,9 +1561,9 @@ pub fn resolve_ts_import_to_path(
 
     // Normalize the path (resolve .. and . components)
     // Use components() to properly handle . and .. without requiring filesystem access
-    let normalized_path = std::path::Path::new(&resolved)
-        .components()
-        .fold(std::path::PathBuf::new(), |mut acc, component| {
+    let normalized_path = std::path::Path::new(&resolved).components().fold(
+        std::path::PathBuf::new(),
+        |mut acc, component| {
             match component {
                 std::path::Component::CurDir => acc, // Skip .
                 std::path::Component::ParentDir => {
@@ -1342,7 +1575,8 @@ pub fn resolve_ts_import_to_path(
                     acc
                 }
             }
-        });
+        },
+    );
 
     let normalized = normalized_path.to_string_lossy().to_string();
 
@@ -1371,8 +1605,16 @@ pub fn resolve_ts_import_to_path(
     // NOTE: We return a list of candidates separated by "|" delimiter
     // The indexer will try each one in order until it finds a match in the database
     let extensions = vec![
-        ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs",
-        "/index.tsx", "/index.ts", "/index.jsx", "/index.js",
+        ".tsx",
+        ".ts",
+        ".jsx",
+        ".js",
+        ".mjs",
+        ".cjs",
+        "/index.tsx",
+        "/index.ts",
+        "/index.jsx",
+        "/index.js",
     ];
 
     let candidates: Vec<String> = extensions
@@ -1380,7 +1622,10 @@ pub fn resolve_ts_import_to_path(
         .map(|ext| format!("{}{}", normalized, ext))
         .collect();
 
-    log::trace!("TS/JS import candidates (no extension): {}", candidates.join(" | "));
+    log::trace!(
+        "TS/JS import candidates (no extension): {}",
+        candidates.join(" | ")
+    );
 
     // Return all candidates as a pipe-delimited string
     // Format: "path.tsx|path.ts|path.jsx|path.js|..."
@@ -1394,11 +1639,7 @@ mod path_resolution_tests {
     #[test]
     fn test_resolve_relative_import_same_directory() {
         // import { Button } from './Button'
-        let result = resolve_ts_import_to_path(
-            "./Button",
-            Some("src/components/App.tsx"),
-            None,
-        );
+        let result = resolve_ts_import_to_path("./Button", Some("src/components/App.tsx"), None);
 
         assert!(result.is_some());
         let candidates = result.unwrap();
@@ -1406,17 +1647,17 @@ mod path_resolution_tests {
         assert!(candidates.contains("Button.tsx"));
         assert!(candidates.contains("Button.ts"));
         // First candidate should be .tsx
-        assert!(candidates.starts_with("src/components/Button.tsx") || candidates.contains("/Button.tsx|"));
+        assert!(
+            candidates.starts_with("src/components/Button.tsx")
+                || candidates.contains("/Button.tsx|")
+        );
     }
 
     #[test]
     fn test_resolve_relative_import_parent_directory() {
         // import { helper} from '../utils/helper'
-        let result = resolve_ts_import_to_path(
-            "../utils/helper",
-            Some("src/components/Button.tsx"),
-            None,
-        );
+        let result =
+            resolve_ts_import_to_path("../utils/helper", Some("src/components/Button.tsx"), None);
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -1440,11 +1681,7 @@ mod path_resolution_tests {
     #[test]
     fn test_resolve_index_file() {
         // import { components } from './components' (should try ./components/index.tsx)
-        let result = resolve_ts_import_to_path(
-            "./components",
-            Some("src/App.tsx"),
-            None,
-        );
+        let result = resolve_ts_import_to_path("./components", Some("src/App.tsx"), None);
 
         assert!(result.is_some());
         // The function returns the first candidate, which is .tsx
@@ -1455,11 +1692,7 @@ mod path_resolution_tests {
     #[test]
     fn test_absolute_import_not_supported_without_alias_map() {
         // import { Button } from '@components/Button' (requires tsconfig.json)
-        let result = resolve_ts_import_to_path(
-            "@components/Button",
-            Some("src/App.tsx"),
-            None,
-        );
+        let result = resolve_ts_import_to_path("@components/Button", Some("src/App.tsx"), None);
 
         // Should return None for absolute imports when no alias map provided
         assert!(result.is_none());
@@ -1468,11 +1701,7 @@ mod path_resolution_tests {
     #[test]
     fn test_node_modules_import_not_supported() {
         // import { React } from 'react'
-        let result = resolve_ts_import_to_path(
-            "react",
-            Some("src/App.tsx"),
-            None,
-        );
+        let result = resolve_ts_import_to_path("react", Some("src/App.tsx"), None);
 
         // Should return None for node_modules imports
         assert!(result.is_none());
@@ -1480,11 +1709,7 @@ mod path_resolution_tests {
 
     #[test]
     fn test_resolve_without_current_file() {
-        let result = resolve_ts_import_to_path(
-            "./Button",
-            None,
-            None,
-        );
+        let result = resolve_ts_import_to_path("./Button", None, None);
 
         // Should return None if no current file provided
         assert!(result.is_none());
@@ -1493,11 +1718,7 @@ mod path_resolution_tests {
     #[test]
     fn test_resolve_nested_directory_structure() {
         // import { api } from './api/client'
-        let result = resolve_ts_import_to_path(
-            "./api/client",
-            Some("src/services/http.ts"),
-            None,
-        );
+        let result = resolve_ts_import_to_path("./api/client", Some("src/services/http.ts"), None);
 
         assert!(result.is_some());
         let path = result.unwrap();
@@ -1522,7 +1743,10 @@ mod dependency_extraction_tests {
         let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
 
         assert_eq!(deps.len(), 4, "Should extract 4 import statements");
-        assert!(deps.iter().any(|d| d.imported_path == "./components/Button"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "./components/Button")
+        );
         assert!(deps.iter().any(|d| d.imported_path == "react"));
         assert!(deps.iter().any(|d| d.imported_path == "fs"));
         assert!(deps.iter().any(|d| d.imported_path == "../styles.css"));
@@ -1549,7 +1773,10 @@ mod dependency_extraction_tests {
         // Variable and template literal imports are filtered (not (string) nodes)
         assert_eq!(deps.len(), 3, "Should extract 3 static imports only");
 
-        assert!(deps.iter().any(|d| d.imported_path == "./components/Button"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "./components/Button")
+        );
         assert!(deps.iter().any(|d| d.imported_path == "react"));
         assert!(deps.iter().any(|d| d.imported_path == "fs"));
 

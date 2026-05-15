@@ -9,9 +9,7 @@ pub struct EffectManager {
 
 impl EffectManager {
     pub fn new() -> Self {
-        Self {
-            frame_count: 0,
-        }
+        Self { frame_count: 0 }
     }
 
     /// Update frame counter for animations

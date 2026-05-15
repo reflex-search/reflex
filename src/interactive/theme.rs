@@ -90,18 +90,18 @@ impl ThemeManager {
         } else {
             // Fallback to base16 themes if our preferred themes aren't available
             match self.background {
-                BackgroundType::Dark => {
-                    theme_set.themes.get("base16-ocean.dark")
-                        .or_else(|| theme_set.themes.values().next())
-                        .cloned()
-                        .expect("No themes available")
-                }
-                BackgroundType::Light => {
-                    theme_set.themes.get("base16-ocean.light")
-                        .or_else(|| theme_set.themes.values().next())
-                        .cloned()
-                        .expect("No themes available")
-                }
+                BackgroundType::Dark => theme_set
+                    .themes
+                    .get("base16-ocean.dark")
+                    .or_else(|| theme_set.themes.values().next())
+                    .cloned()
+                    .expect("No themes available"),
+                BackgroundType::Light => theme_set
+                    .themes
+                    .get("base16-ocean.light")
+                    .or_else(|| theme_set.themes.values().next())
+                    .cloned()
+                    .expect("No themes available"),
             }
         }
     }

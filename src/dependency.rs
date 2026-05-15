@@ -48,21 +48,29 @@ impl DependencyIndex {
     /// Create a new dependency index for the given cache
     pub fn new(cache: CacheManager) -> Self {
         let db_path = cache.path().join("meta.db");
-        Self { cache: Some(cache), db_path }
+        Self {
+            cache: Some(cache),
+            db_path,
+        }
     }
 
     /// Create a dependency index pointing directly at a database file.
     ///
     /// Used by Pulse to run analysis against snapshot databases.
     pub fn from_db_path(db_path: impl Into<PathBuf>) -> Self {
-        Self { cache: None, db_path: db_path.into() }
+        Self {
+            cache: None,
+            db_path: db_path.into(),
+        }
     }
 
     /// Get a reference to the cache manager.
     ///
     /// Panics if this index was created via `from_db_path()`.
     pub fn get_cache(&self) -> &CacheManager {
-        self.cache.as_ref().expect("DependencyIndex created with from_db_path has no CacheManager")
+        self.cache
+            .as_ref()
+            .expect("DependencyIndex created with from_db_path has no CacheManager")
     }
 
     /// Open a database connection to the backing store.
@@ -221,9 +229,8 @@ impl DependencyIndex {
                 };
 
                 let symbols_json: Option<String> = row.get(5)?;
-                let imported_symbols = symbols_json.and_then(|json| {
-                    serde_json::from_str(&json).ok()
-                });
+                let imported_symbols =
+                    symbols_json.and_then(|json| serde_json::from_str(&json).ok());
 
                 Ok(Dependency {
                     file_id: row.get(0)?,
@@ -251,7 +258,7 @@ impl DependencyIndex {
             "SELECT DISTINCT file_id
              FROM file_dependencies
              WHERE resolved_file_id = ?
-             ORDER BY file_id"
+             ORDER BY file_id",
         )?;
 
         let dependents: Vec<i64> = stmt
@@ -304,7 +311,11 @@ impl DependencyIndex {
     /// # Returns
     ///
     /// HashMap mapping file_id to depth (distance from start file)
-    pub fn get_transitive_deps(&self, file_id: i64, max_depth: usize) -> Result<HashMap<i64, usize>> {
+    pub fn get_transitive_deps(
+        &self,
+        file_id: i64,
+        max_depth: usize,
+    ) -> Result<HashMap<i64, usize>> {
         let mut visited = HashMap::new();
         let mut queue = VecDeque::new();
 
@@ -354,18 +365,19 @@ impl DependencyIndex {
             "SELECT file_id, resolved_file_id
              FROM file_dependencies
              WHERE resolved_file_id IS NOT NULL
-               AND import_type != 'mod_decl'"
+               AND import_type != 'mod_decl'",
         )?;
 
         let dependencies: Vec<(i64, i64)> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })?
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
 
         // Build adjacency list directly from resolved IDs
         for (file_id, target_id) in dependencies {
-            graph.entry(file_id).or_insert_with(Vec::new).push(target_id);
+            graph
+                .entry(file_id)
+                .or_insert_with(Vec::new)
+                .push(target_id);
         }
 
         // Get all file IDs for traversal
@@ -436,11 +448,11 @@ impl DependencyIndex {
         let mut paths = HashMap::new();
 
         for &file_id in file_ids {
-            if let Ok(path) = conn.query_row(
-                "SELECT path FROM files WHERE id = ?",
-                [file_id],
-                |row| row.get::<_, String>(0),
-            ) {
+            if let Ok(path) =
+                conn.query_row("SELECT path FROM files WHERE id = ?", [file_id], |row| {
+                    row.get::<_, String>(0)
+                })
+            {
                 paths.insert(file_id, path);
             }
         }
@@ -452,11 +464,9 @@ impl DependencyIndex {
     fn get_file_path(&self, file_id: i64) -> Result<String> {
         let conn = self.open_conn()?;
 
-        let path = conn.query_row(
-            "SELECT path FROM files WHERE id = ?",
-            [file_id],
-            |row| row.get::<_, String>(0),
-        )?;
+        let path = conn.query_row("SELECT path FROM files WHERE id = ?", [file_id], |row| {
+            row.get::<_, String>(0)
+        })?;
 
         Ok(path)
     }
@@ -483,7 +493,11 @@ impl DependencyIndex {
     ///
     /// * `limit` - Maximum number of hotspots to return (None = all)
     /// * `min_dependents` - Minimum number of imports required to be a hotspot (default: 2)
-    pub fn find_hotspots(&self, limit: Option<usize>, min_dependents: usize) -> Result<Vec<(i64, usize)>> {
+    pub fn find_hotspots(
+        &self,
+        limit: Option<usize>,
+        min_dependents: usize,
+    ) -> Result<Vec<(i64, usize)>> {
         let conn = self.open_conn()?;
 
         // Pure SQL aggregation on resolved_file_id (instant)
@@ -492,7 +506,7 @@ impl DependencyIndex {
              FROM file_dependencies
              WHERE resolved_file_id IS NOT NULL
              GROUP BY resolved_file_id
-             ORDER BY count DESC"
+             ORDER BY count DESC",
         )?;
 
         // Get all hotspots and filter by minimum dependent count
@@ -533,7 +547,7 @@ impl DependencyIndex {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT resolved_file_id
              FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL"
+             WHERE resolved_file_id IS NOT NULL",
         )?;
 
         let direct_imports: Vec<i64> = stmt
@@ -606,7 +620,7 @@ impl DependencyIndex {
             let mut stmt = conn.prepare(
                 "SELECT resolved_source_id
                  FROM file_exports
-                 WHERE file_id = ? AND resolved_source_id IS NOT NULL"
+                 WHERE file_id = ? AND resolved_source_id IS NOT NULL",
             )?;
 
             let exported_files: Vec<i64> = stmt
@@ -647,20 +661,24 @@ impl DependencyIndex {
         let mut stmt = conn.prepare(
             "SELECT file_id, resolved_file_id
              FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL"
+             WHERE resolved_file_id IS NOT NULL",
         )?;
 
         let dependencies: Vec<(i64, i64)> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })?
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
 
         // Build adjacency list (undirected) directly from resolved IDs
         for (file_id, target_id) in dependencies {
             // Add edge in both directions for undirected graph
-            graph.entry(file_id).or_insert_with(Vec::new).push(target_id);
-            graph.entry(target_id).or_insert_with(Vec::new).push(file_id);
+            graph
+                .entry(file_id)
+                .or_insert_with(Vec::new)
+                .push(target_id);
+            graph
+                .entry(target_id)
+                .or_insert_with(Vec::new)
+                .push(file_id);
         }
 
         // Get all file IDs (including isolated files with no dependencies)
@@ -738,16 +756,17 @@ impl DependencyIndex {
         let conn = self.open_conn()?;
 
         // Get all unique imported_path values (single query)
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT imported_path FROM file_dependencies"
-        )?;
+        let mut stmt = conn.prepare("SELECT DISTINCT imported_path FROM file_dependencies")?;
 
         let imported_paths: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
 
         let total_paths = imported_paths.len();
-        log::info!("Building resolution cache for {} unique imported paths", total_paths);
+        log::info!(
+            "Building resolution cache for {} unique imported paths",
+            total_paths
+        );
 
         // Resolve each imported_path once
         let mut cache = HashMap::new();
@@ -771,10 +790,7 @@ impl DependencyIndex {
     pub fn clear_dependencies(&self, file_id: i64) -> Result<()> {
         let conn = self.open_conn()?;
 
-        conn.execute(
-            "DELETE FROM file_dependencies WHERE file_id = ?",
-            [file_id],
-        )?;
+        conn.execute("DELETE FROM file_dependencies WHERE file_id = ?", [file_id])?;
 
         Ok(())
     }
@@ -802,7 +818,12 @@ impl DependencyIndex {
 
         for variant in &path_variants {
             if let Ok(Some(file_id)) = self.get_file_id_by_path(variant) {
-                log::trace!("Resolved '{}' → '{}' (file_id: {})", imported_path, variant, file_id);
+                log::trace!(
+                    "Resolved '{}' → '{}' (file_id: {})",
+                    imported_path,
+                    variant,
+                    file_id
+                );
                 return Ok(Some(file_id));
             }
         }
@@ -840,14 +861,10 @@ impl DependencyIndex {
         }
 
         // Try suffix match: find all files whose path ends with the normalized_path
-        let mut stmt = conn.prepare(
-            "SELECT id, path FROM files WHERE path LIKE '%' || ?"
-        )?;
+        let mut stmt = conn.prepare("SELECT id, path FROM files WHERE path LIKE '%' || ?")?;
 
         let matches: Vec<(i64, String)> = stmt
-            .query_map([&normalized_path], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_map([&normalized_path], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
 
         match matches.len() {
@@ -980,10 +997,7 @@ impl DependencyIndex {
         let mut counts = Vec::new();
 
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)? as usize,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
         })?;
 
         for row in rows {
@@ -1003,7 +1017,10 @@ fn is_entry_point(path: &str) -> bool {
     let p = p.as_str();
 
     // Exact well-known Rust/generic entry points
-    if matches!(p, "src/lib.rs" | "src/main.rs" | "build.rs" | "lib.rs" | "main.rs") {
+    if matches!(
+        p,
+        "src/lib.rs" | "src/main.rs" | "build.rs" | "lib.rs" | "main.rs"
+    ) {
         return true;
     }
 
@@ -1219,8 +1236,10 @@ pub fn resolve_rust_import(
 /// Handles Rust's module system rules:
 /// - `foo` → check foo.rs or foo/mod.rs
 /// - `foo::bar` → check foo/bar.rs or foo/bar/mod.rs
-fn resolve_module_path(start_dir: &std::path::Path, components: &[&str]) -> Option<std::path::PathBuf> {
-
+fn resolve_module_path(
+    start_dir: &std::path::Path,
+    components: &[&str],
+) -> Option<std::path::PathBuf> {
     if components.is_empty() {
         return None;
     }
@@ -1319,9 +1338,18 @@ pub fn resolve_php_import(
 ) -> Option<String> {
     // External vendor namespaces (Laravel, Symfony, etc.) - don't resolve
     const VENDOR_NAMESPACES: &[&str] = &[
-        "Illuminate\\", "Symfony\\", "Laravel\\", "Psr\\",
-        "Doctrine\\", "Monolog\\", "PHPUnit\\", "Carbon\\",
-        "GuzzleHttp\\", "Composer\\", "Predis\\", "League\\"
+        "Illuminate\\",
+        "Symfony\\",
+        "Laravel\\",
+        "Psr\\",
+        "Doctrine\\",
+        "Monolog\\",
+        "PHPUnit\\",
+        "Carbon\\",
+        "GuzzleHttp\\",
+        "Composer\\",
+        "Predis\\",
+        "League\\",
     ];
 
     // Check if this is a vendor namespace
@@ -1570,11 +1598,7 @@ mod tests {
         fs::write(project_root.join("src/models.rs"), "").unwrap();
 
         // Test crate:: resolution
-        let resolved = resolve_rust_import(
-            "crate::models",
-            "src/query.rs",
-            project_root,
-        );
+        let resolved = resolve_rust_import("crate::models", "src/query.rs", project_root);
 
         assert_eq!(resolved, Some("src/models.rs".to_string()));
     }
@@ -1612,20 +1636,13 @@ mod tests {
         let project_root = temp.path();
 
         // External crates should return None
-        let resolved = resolve_rust_import(
-            "serde::Serialize",
-            "src/models.rs",
-            project_root,
-        );
+        let resolved = resolve_rust_import("serde::Serialize", "src/models.rs", project_root);
 
         assert_eq!(resolved, None);
 
         // Stdlib should return None
-        let resolved = resolve_rust_import(
-            "std::collections::HashMap",
-            "src/models.rs",
-            project_root,
-        );
+        let resolved =
+            resolve_rust_import("std::collections::HashMap", "src/models.rs", project_root);
 
         assert_eq!(resolved, None);
     }
@@ -1668,11 +1685,7 @@ mod tests {
         fs::write(project_root.join("src/models/language.rs"), "").unwrap();
 
         // Test nested module resolution
-        let resolved = resolve_rust_import(
-            "crate::models::language",
-            "src/query.rs",
-            project_root,
-        );
+        let resolved = resolve_rust_import("crate::models::language", "src/query.rs", project_root);
 
         assert_eq!(resolved, Some("src/models/language.rs".to_string()));
     }

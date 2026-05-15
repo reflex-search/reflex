@@ -6,25 +6,25 @@
 //! Each language has its own submodule with a `parse` function that takes
 //! source code and returns a vector of symbols.
 
-pub mod rust;
-pub mod typescript;
-pub mod tsconfig;
-pub mod vue;
-pub mod svelte;
-pub mod php;
-pub mod python;
-pub mod go;
-pub mod java;
 pub mod c;
 pub mod cpp;
 pub mod csharp;
-pub mod ruby;
+pub mod go;
+pub mod java;
 pub mod kotlin;
+pub mod php;
+pub mod python;
+pub mod ruby;
+pub mod rust;
+pub mod svelte;
+pub mod tsconfig;
+pub mod typescript;
+pub mod vue;
 // pub mod swift;  // Temporarily disabled - tree-sitter-swift 0.7.2 grammar node types diverged from this parser's queries
 pub mod zig;
 
-use anyhow::{anyhow, Result};
 use crate::models::{Language, SearchResult};
+use anyhow::{Result, anyhow};
 
 /// Parser factory that selects the appropriate parser based on language
 pub struct ParserFactory;
@@ -120,15 +120,42 @@ impl ParserFactory {
     /// Returns an empty slice for languages without common keywords or unsupported languages.
     pub fn get_keywords(language: Language) -> &'static [&'static str] {
         match language {
-            Language::Rust => &["fn", "struct", "enum", "trait", "impl", "mod", "const", "static", "type", "macro"],
+            Language::Rust => &[
+                "fn", "struct", "enum", "trait", "impl", "mod", "const", "static", "type", "macro",
+            ],
             Language::PHP => &["class", "function", "trait", "interface", "enum"],
             Language::Python => &["class", "def", "async"],
-            Language::TypeScript | Language::JavaScript => &["class", "function", "interface", "type", "enum", "const", "let", "var"],
+            Language::TypeScript | Language::JavaScript => &[
+                "class",
+                "function",
+                "interface",
+                "type",
+                "enum",
+                "const",
+                "let",
+                "var",
+            ],
             Language::Go => &["func", "struct", "interface", "type", "const", "var"],
             Language::Java => &["class", "interface", "enum", "@interface"],
             Language::C => &["struct", "enum", "union", "typedef"],
-            Language::Cpp => &["class", "struct", "enum", "union", "typedef", "namespace", "template"],
-            Language::CSharp => &["class", "struct", "interface", "enum", "delegate", "record", "namespace"],
+            Language::Cpp => &[
+                "class",
+                "struct",
+                "enum",
+                "union",
+                "typedef",
+                "namespace",
+                "template",
+            ],
+            Language::CSharp => &[
+                "class",
+                "struct",
+                "interface",
+                "enum",
+                "delegate",
+                "record",
+                "namespace",
+            ],
             Language::Ruby => &["class", "module", "def"],
             Language::Kotlin => &["class", "fun", "interface", "object", "enum", "annotation"],
             Language::Zig => &["fn", "struct", "enum", "const", "var", "type"],
@@ -148,27 +175,44 @@ impl ParserFactory {
     pub fn get_all_keywords() -> &'static [&'static str] {
         &[
             // Functions
-            "fn", "function", "def", "func",
+            "fn",
+            "function",
+            "def",
+            "func",
             // Classes and types
-            "class", "struct", "enum", "interface", "trait", "type", "record",
+            "class",
+            "struct",
+            "enum",
+            "interface",
+            "trait",
+            "type",
+            "record",
             // Modules and namespaces
-            "mod", "module", "namespace",
+            "mod",
+            "module",
+            "namespace",
             // Variables and constants
-            "const", "static", "let", "var",
+            "const",
+            "static",
+            "let",
+            "var",
             // Other constructs
-            "impl", "async", "object", "annotation", "protocol",
-            "union", "typedef", "delegate", "template",
+            "impl",
+            "async",
+            "object",
+            "annotation",
+            "protocol",
+            "union",
+            "typedef",
+            "delegate",
+            "template",
             // Java annotations
             "@interface",
         ]
     }
 
     /// Parse a file and extract symbols based on its language
-    pub fn parse(
-        path: &str,
-        source: &str,
-        language: Language,
-    ) -> Result<Vec<SearchResult>> {
+    pub fn parse(path: &str, source: &str, language: Language) -> Result<Vec<SearchResult>> {
         match language {
             Language::Rust => rust::parse(path, source),
             Language::TypeScript => typescript::parse(path, source, language),
@@ -185,7 +229,10 @@ impl ParserFactory {
             Language::Ruby => ruby::parse(path, source),
             Language::Kotlin => kotlin::parse(path, source),
             Language::Swift => {
-                log::warn!("Swift support temporarily disabled (parser queries out of date with tree-sitter-swift 0.7.x grammar): {}", path);
+                log::warn!(
+                    "Swift support temporarily disabled (parser queries out of date with tree-sitter-swift 0.7.x grammar): {}",
+                    path
+                );
                 Ok(vec![])
             }
             Language::Zig => zig::parse(path, source),

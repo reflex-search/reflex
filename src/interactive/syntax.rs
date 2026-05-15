@@ -40,7 +40,7 @@ impl SyntaxHighlighter {
             Language::Rust => ("rs", None),
             Language::Python => ("py", None),
             Language::JavaScript => ("js", None),
-            Language::TypeScript => ("ts", Some("js")),  // Fallback to JavaScript
+            Language::TypeScript => ("ts", Some("js")), // Fallback to JavaScript
             Language::Go => ("go", None),
             Language::Java => ("java", None),
             Language::C => ("c", None),
@@ -51,7 +51,7 @@ impl SyntaxHighlighter {
             Language::Kotlin => ("kt", None),
             Language::Swift => ("swift", None),
             Language::Zig => ("zig", None),
-            Language::Vue => ("vue", Some("html")),      // Fallback to HTML
+            Language::Vue => ("vue", Some("html")), // Fallback to HTML
             Language::Svelte => ("svelte", Some("html")), // Fallback to HTML
             Language::Unknown => return None,
         };
@@ -92,14 +92,13 @@ fn syntect_color_to_ratatui(color: SyntectColor) -> Color {
 /// constructs like strings, comments, and code blocks.
 ///
 /// If the language is not supported or highlighting fails, returns plain text lines.
-pub fn highlight_code_lines<'a>(
-    lines: &[String],
-    lang: Language,
-    theme: &Theme,
-) -> Vec<Line<'a>> {
+pub fn highlight_code_lines<'a>(lines: &[String], lang: Language, theme: &Theme) -> Vec<Line<'a>> {
     // Early return for unknown languages
     if !lang.is_supported() {
-        return lines.iter().map(|line| Line::from(line.to_string())).collect();
+        return lines
+            .iter()
+            .map(|line| Line::from(line.to_string()))
+            .collect();
     }
 
     let highlighter = get_syntax_highlighter();
@@ -107,7 +106,12 @@ pub fn highlight_code_lines<'a>(
     // Get syntax for the language
     let syntax = match highlighter.get_syntax(&lang) {
         Some(s) => s,
-        None => return lines.iter().map(|line| Line::from(line.to_string())).collect(),
+        None => {
+            return lines
+                .iter()
+                .map(|line| Line::from(line.to_string()))
+                .collect();
+        }
     };
 
     // Create highlighter instance that maintains state across lines
@@ -116,14 +120,15 @@ pub fn highlight_code_lines<'a>(
 
     for line in lines {
         // Highlight the line (state is maintained in h)
-        let ranges: Vec<(SyntectStyle, &str)> = match h.highlight_line(line, &highlighter.syntax_set) {
-            Ok(ranges) => ranges,
-            Err(_) => {
-                // On error, fall back to plain text for this line
-                result.push(Line::from(line.to_string()));
-                continue;
-            }
-        };
+        let ranges: Vec<(SyntectStyle, &str)> =
+            match h.highlight_line(line, &highlighter.syntax_set) {
+                Ok(ranges) => ranges,
+                Err(_) => {
+                    // On error, fall back to plain text for this line
+                    result.push(Line::from(line.to_string()));
+                    continue;
+                }
+            };
 
         // Convert syntect ranges to ratatui Spans
         let spans: Vec<Span<'a>> = ranges
@@ -140,7 +145,6 @@ pub fn highlight_code_lines<'a>(
 
     result
 }
-
 
 /// Get the default theme based on terminal background
 ///
@@ -186,9 +190,18 @@ mod tests {
         assert!(highlighter.get_syntax(&Language::JavaScript).is_some());
 
         // Languages with fallbacks
-        assert!(highlighter.get_syntax(&Language::TypeScript).is_some(), "TypeScript should fallback to JavaScript");
-        assert!(highlighter.get_syntax(&Language::Vue).is_some(), "Vue should fallback to HTML");
-        assert!(highlighter.get_syntax(&Language::Svelte).is_some(), "Svelte should fallback to HTML");
+        assert!(
+            highlighter.get_syntax(&Language::TypeScript).is_some(),
+            "TypeScript should fallback to JavaScript"
+        );
+        assert!(
+            highlighter.get_syntax(&Language::Vue).is_some(),
+            "Vue should fallback to HTML"
+        );
+        assert!(
+            highlighter.get_syntax(&Language::Svelte).is_some(),
+            "Svelte should fallback to HTML"
+        );
 
         // Unknown should return None
         assert!(highlighter.get_syntax(&Language::Unknown).is_none());
@@ -215,10 +228,7 @@ mod tests {
 
     #[test]
     fn test_highlight_lines_unknown_language() {
-        let lines = vec![
-            "some code".to_string(),
-            "more code".to_string(),
-        ];
+        let lines = vec!["some code".to_string(), "more code".to_string()];
         let theme = get_default_theme(true);
         let highlighted = highlight_code_lines(&lines, Language::Unknown, &theme);
 
@@ -251,7 +261,12 @@ mod tests {
 
     #[test]
     fn test_color_conversion() {
-        let syntect_color = SyntectColor { r: 255, g: 128, b: 64, a: 255 };
+        let syntect_color = SyntectColor {
+            r: 255,
+            g: 128,
+            b: 64,
+            a: 255,
+        };
         let ratatui_color = syntect_color_to_ratatui(syntect_color);
 
         match ratatui_color {
@@ -303,7 +318,11 @@ mod tests {
 
             // Should return highlighted content (not plain text fallback)
             assert_eq!(highlighted.len(), 1, "Failed for {:?}", lang);
-            assert!(!highlighted[0].spans.is_empty(), "{:?} has no syntax highlighting", lang);
+            assert!(
+                !highlighted[0].spans.is_empty(),
+                "{:?} has no syntax highlighting",
+                lang
+            );
         }
     }
 }

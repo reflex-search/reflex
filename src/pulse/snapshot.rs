@@ -76,14 +76,13 @@ pub fn compute_index_fingerprint(cache: &CacheManager) -> Result<String> {
         anyhow::bail!("No index found. Run `rfx index` first.");
     }
 
-    let conn = Connection::open(&meta_db_path)
-        .context("Failed to open meta.db for fingerprint")?;
+    let conn = Connection::open(&meta_db_path).context("Failed to open meta.db for fingerprint")?;
 
     let mut stmt = conn.prepare(
         "SELECT f.path, fb.hash
          FROM files f
          JOIN file_branches fb ON f.id = fb.file_id
-         ORDER BY f.path"
+         ORDER BY f.path",
     )?;
 
     let mut hasher = blake3::Hasher::new();
@@ -131,8 +130,7 @@ pub fn ensure_snapshot(
 /// Returns info about the created snapshot.
 pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
     let snapshots_dir = get_snapshots_dir(cache);
-    std::fs::create_dir_all(&snapshots_dir)
-        .context("Failed to create snapshots directory")?;
+    std::fs::create_dir_all(&snapshots_dir).context("Failed to create snapshots directory")?;
 
     let now = Local::now();
     let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
@@ -145,8 +143,7 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
     }
 
     // Create snapshot database
-    let conn = Connection::open(&snapshot_path)
-        .context("Failed to create snapshot database")?;
+    let conn = Connection::open(&snapshot_path).context("Failed to create snapshot database")?;
 
     // Enable WAL mode for better concurrent access
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -195,7 +192,7 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
 
         CREATE INDEX idx_dep_edges_source ON dependency_edges(source_file_id);
         CREATE INDEX idx_dep_edges_target ON dependency_edges(target_file_id);
-        CREATE INDEX idx_files_path ON files(path);"
+        CREATE INDEX idx_files_path ON files(path);",
     )?;
 
     // Attach meta.db and copy data
@@ -239,8 +236,7 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
     conn.execute("DETACH DATABASE source", [])?;
 
     // Write metadata
-    let git_state = git::get_git_state_optional(".")
-        .unwrap_or(None);
+    let git_state = git::get_git_state_optional(".").unwrap_or(None);
 
     let metadata = vec![
         ("timestamp", now.to_rfc3339()),
@@ -274,15 +270,15 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
     )?;
 
     // Gather stats for the returned info
-    let file_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM files", [], |row| row.get(0)
-    )?;
+    let file_count: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
     let total_lines: usize = conn.query_row(
-        "SELECT COALESCE(SUM(line_count), 0) FROM files", [], |row| row.get(0)
+        "SELECT COALESCE(SUM(line_count), 0) FROM files",
+        [],
+        |row| row.get(0),
     )?;
-    let edge_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM dependency_edges", [], |row| row.get(0)
-    )?;
+    let edge_count: usize = conn.query_row("SELECT COUNT(*) FROM dependency_edges", [], |row| {
+        row.get(0)
+    })?;
 
     // Close connection before getting file size
     drop(conn);
@@ -348,8 +344,7 @@ pub fn get_snapshot(cache: &CacheManager, id: &str) -> Result<SnapshotInfo> {
 pub fn delete_snapshot(cache: &CacheManager, id: &str) -> Result<()> {
     let snapshot_path = get_snapshots_dir(cache).join(format!("{}.db", id));
     if snapshot_path.exists() {
-        std::fs::remove_file(&snapshot_path)
-            .context("Failed to delete snapshot")?;
+        std::fs::remove_file(&snapshot_path).context("Failed to delete snapshot")?;
     }
     Ok(())
 }
@@ -357,9 +352,7 @@ pub fn delete_snapshot(cache: &CacheManager, id: &str) -> Result<()> {
 /// Validate a snapshot database integrity
 pub fn validate_snapshot(path: &Path) -> Result<bool> {
     let conn = Connection::open(path)?;
-    let result: String = conn.query_row(
-        "PRAGMA integrity_check", [], |row| row.get(0)
-    )?;
+    let result: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     Ok(result == "ok")
 }
 
@@ -369,10 +362,7 @@ pub fn validate_snapshot(path: &Path) -> Result<bool> {
 /// - `daily`: Keep N most recent daily snapshots
 /// - `weekly`: Keep N most recent weekly snapshots (one per week)
 /// - `monthly`: Keep N most recent monthly snapshots (one per month)
-pub fn run_gc(
-    cache: &CacheManager,
-    config: &super::config::RetentionConfig,
-) -> Result<GcReport> {
+pub fn run_gc(cache: &CacheManager, config: &super::config::RetentionConfig) -> Result<GcReport> {
     let snapshots = list_snapshots(cache)?;
     let snapshots_before = snapshots.len();
     let mut to_keep: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -392,7 +382,8 @@ pub fn run_gc(
     }
 
     // Collect valid snapshots with parsed timestamps
-    let valid_snapshots: Vec<&SnapshotInfo> = snapshots.iter()
+    let valid_snapshots: Vec<&SnapshotInfo> = snapshots
+        .iter()
         .filter(|s| validate_snapshot(&s.path).unwrap_or(false))
         .collect();
 
@@ -406,7 +397,9 @@ pub fn run_gc(
     let mut weeks_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut weekly_kept = 0;
     for snapshot in &valid_snapshots {
-        if weekly_kept >= config.weekly { break; }
+        if weekly_kept >= config.weekly {
+            break;
+        }
         let week_key = snapshot_to_week_key(&snapshot.id);
         if weeks_seen.insert(week_key) {
             to_keep.insert(snapshot.id.clone());
@@ -418,7 +411,9 @@ pub fn run_gc(
     let mut months_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut monthly_kept = 0;
     for snapshot in &valid_snapshots {
-        if monthly_kept >= config.monthly { break; }
+        if monthly_kept >= config.monthly {
+            break;
+        }
         let month_key = snapshot_to_month_key(&snapshot.id);
         if months_seen.insert(month_key) {
             to_keep.insert(snapshot.id.clone());
@@ -449,21 +444,20 @@ pub fn run_gc(
 
 /// Read snapshot info from a database file
 fn read_snapshot_info(path: &Path) -> Result<SnapshotInfo> {
-    let conn = Connection::open(path)
-        .context("Failed to open snapshot database")?;
+    let conn = Connection::open(path).context("Failed to open snapshot database")?;
 
-    let id = path.file_stem()
+    let id = path
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
 
     // Read metadata
     let get_meta = |key: &str| -> Option<String> {
-        conn.query_row(
-            "SELECT value FROM metadata WHERE key = ?1",
-            [key],
-            |row| row.get(0),
-        ).ok()
+        conn.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .ok()
     };
 
     let timestamp = get_meta("timestamp").unwrap_or_else(|| id.clone());
@@ -473,19 +467,23 @@ fn read_snapshot_info(path: &Path) -> Result<SnapshotInfo> {
     let content_fingerprint = get_meta("content_fingerprint");
 
     // Gather stats
-    let file_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM files", [], |row| row.get(0)
-    ).unwrap_or(0);
-    let total_lines: usize = conn.query_row(
-        "SELECT COALESCE(SUM(line_count), 0) FROM files", [], |row| row.get(0)
-    ).unwrap_or(0);
-    let edge_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM dependency_edges", [], |row| row.get(0)
-    ).unwrap_or(0);
-
-    let size_bytes = std::fs::metadata(path)
-        .map(|m| m.len())
+    let file_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
         .unwrap_or(0);
+    let total_lines: usize = conn
+        .query_row(
+            "SELECT COALESCE(SUM(line_count), 0) FROM files",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let edge_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM dependency_edges", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
     Ok(SnapshotInfo {
         id,

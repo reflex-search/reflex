@@ -11,10 +11,10 @@
 //! - Constants (module-level uppercase variables)
 //! - Imports/Exports
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse Python source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -38,8 +38,16 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_classes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
-    symbols.extend(extract_global_variables(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_global_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
     symbols.extend(extract_lambdas(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
@@ -62,8 +70,7 @@ fn extract_functions(
             name: (identifier) @name) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -79,8 +86,7 @@ fn extract_classes(
             name: (identifier) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -106,8 +112,7 @@ fn extract_methods(
                         name: (identifier) @method_name)))) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -123,10 +128,22 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    class_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    class_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent function_definition node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -141,7 +158,9 @@ fn extract_methods(
             }
         }
 
-        if let (Some(class_name), Some(method_name), Some(node)) = (class_name, method_name, method_node) {
+        if let (Some(class_name), Some(method_name), Some(node)) =
+            (class_name, method_name, method_node)
+        {
             let scope = format!("class {}", class_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -174,8 +193,7 @@ fn extract_constants(
                     left: (identifier) @name))) @const
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create constant query")?;
+    let query = Query::new(language, query_str).context("Failed to create constant query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -191,7 +209,10 @@ fn extract_constants(
             if capture_name == "name" {
                 let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
                 // Only include if it's all uppercase (Python constant convention)
-                if name_text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                if name_text
+                    .chars()
+                    .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+                {
                     name = Some(name_text.to_string());
                     // Get the assignment node
                     let mut current = capture.node;
@@ -238,8 +259,8 @@ fn extract_global_variables(
                     left: (identifier) @name))) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create global variable query")?;
+    let query =
+        Query::new(language, query_str).context("Failed to create global variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -255,7 +276,10 @@ fn extract_global_variables(
             if capture_name == "name" {
                 let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
                 // Only include if it's NOT all uppercase (constants are handled separately)
-                if !name_text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                if !name_text
+                    .chars()
+                    .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+                {
                     name = Some(name_text.to_string());
                     // Get the assignment node
                     let mut current = capture.node;
@@ -300,8 +324,7 @@ fn extract_local_variables(
             left: (identifier) @name) @assignment
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -318,7 +341,10 @@ fn extract_local_variables(
                 "name" => {
                     let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
                     // Skip uppercase constants (handled by extract_constants)
-                    if !name_text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                    if !name_text
+                        .chars()
+                        .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+                    {
                         name = Some(name_text.to_string());
                     }
                 }
@@ -356,7 +382,7 @@ fn extract_local_variables(
                     SymbolKind::Variable,
                     Some(name),
                     span,
-                    None,  // No scope for local variables
+                    None, // No scope for local variables
                     preview,
                 ));
             }
@@ -378,8 +404,7 @@ fn extract_lambdas(
             right: (lambda)) @lambda
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create lambda query")?;
+    let query = Query::new(language, query_str).context("Failed to create lambda query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -405,7 +430,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -437,7 +468,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -493,10 +524,7 @@ impl DependencyExtractor for PythonDependencyExtractor {
 }
 
 /// Extract regular import statements: import os, import sys
-fn extract_import_statements(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_import_statements(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_python::LANGUAGE;
 
     let query_str = r#"
@@ -520,7 +548,13 @@ fn extract_import_statements(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "import_path" => {
-                    import_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    import_path = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "import" => {
                     import_node = Some(capture.node);
@@ -546,10 +580,7 @@ fn extract_import_statements(
 }
 
 /// Extract from-import statements: from os import path, from . import module
-fn extract_from_imports(
-    source: &str,
-    root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_from_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_python::LANGUAGE;
 
     let query_str = r#"
@@ -560,8 +591,8 @@ fn extract_from_imports(
             module_name: (relative_import) @module_path) @import
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create from-import query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create from-import query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -576,7 +607,13 @@ fn extract_from_imports(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "module_path" => {
-                    module_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    module_path = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "import" => {
                     import_node = Some(capture.node);
@@ -774,10 +811,7 @@ fn find_setup_cfg_package(root: &std::path::Path) -> Option<String> {
 
 /// Reclassify a Python import using the project's package name
 /// Similar to reclassify_go_import() and reclassify_java_import()
-pub fn reclassify_python_import(
-    import_path: &str,
-    package_prefix: Option<&str>,
-) -> ImportType {
+pub fn reclassify_python_import(import_path: &str, package_prefix: Option<&str>) -> ImportType {
     // First check if this is an internal import (matches project package)
     if let Some(prefix) = package_prefix {
         // Extract first component: "django.conf.settings" → "django"
@@ -805,15 +839,63 @@ pub fn reclassify_python_import(
 /// Check if a Python import path is from the standard library
 fn is_python_stdlib(path: &str) -> bool {
     const STDLIB_MODULES: &[&str] = &[
-        "os", "sys", "io", "re", "json", "csv", "xml", "html", "http", "urllib",
-        "collections", "itertools", "functools", "operator", "pathlib", "glob",
-        "tempfile", "shutil", "pickle", "shelve", "sqlite3", "zlib", "gzip",
-        "time", "datetime", "calendar", "logging", "argparse", "configparser",
-        "typing", "dataclasses", "enum", "abc", "contextlib", "weakref",
-        "threading", "multiprocessing", "subprocess", "queue", "asyncio",
-        "socket", "email", "base64", "hashlib", "hmac", "secrets", "uuid",
-        "math", "random", "statistics", "decimal", "fractions",
-        "unittest", "doctest", "pdb", "trace", "timeit",
+        "os",
+        "sys",
+        "io",
+        "re",
+        "json",
+        "csv",
+        "xml",
+        "html",
+        "http",
+        "urllib",
+        "collections",
+        "itertools",
+        "functools",
+        "operator",
+        "pathlib",
+        "glob",
+        "tempfile",
+        "shutil",
+        "pickle",
+        "shelve",
+        "sqlite3",
+        "zlib",
+        "gzip",
+        "time",
+        "datetime",
+        "calendar",
+        "logging",
+        "argparse",
+        "configparser",
+        "typing",
+        "dataclasses",
+        "enum",
+        "abc",
+        "contextlib",
+        "weakref",
+        "threading",
+        "multiprocessing",
+        "subprocess",
+        "queue",
+        "asyncio",
+        "socket",
+        "email",
+        "base64",
+        "hashlib",
+        "hmac",
+        "secrets",
+        "uuid",
+        "math",
+        "random",
+        "statistics",
+        "decimal",
+        "fractions",
+        "unittest",
+        "doctest",
+        "pdb",
+        "trace",
+        "timeit",
     ];
 
     // Extract first component of the path
@@ -831,15 +913,63 @@ fn classify_python_import(import_path: &str) -> ImportType {
 
     // Python standard library (common modules)
     const STDLIB_MODULES: &[&str] = &[
-        "os", "sys", "io", "re", "json", "csv", "xml", "html", "http", "urllib",
-        "collections", "itertools", "functools", "operator", "pathlib", "glob",
-        "tempfile", "shutil", "pickle", "shelve", "sqlite3", "zlib", "gzip",
-        "time", "datetime", "calendar", "logging", "argparse", "configparser",
-        "typing", "dataclasses", "enum", "abc", "contextlib", "weakref",
-        "threading", "multiprocessing", "subprocess", "queue", "asyncio",
-        "socket", "email", "base64", "hashlib", "hmac", "secrets", "uuid",
-        "math", "random", "statistics", "decimal", "fractions",
-        "unittest", "doctest", "pdb", "trace", "timeit",
+        "os",
+        "sys",
+        "io",
+        "re",
+        "json",
+        "csv",
+        "xml",
+        "html",
+        "http",
+        "urllib",
+        "collections",
+        "itertools",
+        "functools",
+        "operator",
+        "pathlib",
+        "glob",
+        "tempfile",
+        "shutil",
+        "pickle",
+        "shelve",
+        "sqlite3",
+        "zlib",
+        "gzip",
+        "time",
+        "datetime",
+        "calendar",
+        "logging",
+        "argparse",
+        "configparser",
+        "typing",
+        "dataclasses",
+        "enum",
+        "abc",
+        "contextlib",
+        "weakref",
+        "threading",
+        "multiprocessing",
+        "subprocess",
+        "queue",
+        "asyncio",
+        "socket",
+        "email",
+        "base64",
+        "hashlib",
+        "hmac",
+        "secrets",
+        "uuid",
+        "math",
+        "random",
+        "statistics",
+        "decimal",
+        "fractions",
+        "unittest",
+        "doctest",
+        "pdb",
+        "trace",
+        "timeit",
     ];
 
     // Extract first component of the path
@@ -888,9 +1018,7 @@ pub fn find_all_python_configs(index_root: &std::path::Path) -> Result<Vec<std::
             continue;
         }
 
-        let filename = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         // Look for Python config files
         if filename == "pyproject.toml" || filename == "setup.py" || filename == "setup.cfg" {
@@ -901,8 +1029,12 @@ pub fn find_all_python_configs(index_root: &std::path::Path) -> Result<Vec<std::
                 || path_str.contains("/site-packages/")
                 || path_str.contains("/dist/")
                 || path_str.contains("/build/")
-                || path_str.contains("/__pycache__/") {
-                log::trace!("Skipping Python config in vendor/build directory: {:?}", path);
+                || path_str.contains("/__pycache__/")
+            {
+                log::trace!(
+                    "Skipping Python config in vendor/build directory: {:?}",
+                    path
+                );
                 continue;
             }
 
@@ -1097,7 +1229,8 @@ class User:
 
         let symbols = parse("test.py", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -1122,14 +1255,27 @@ class Calculator:
 
         let symbols = parse("test.py", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("multiply")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("multiply"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -1150,13 +1296,22 @@ class DataFetcher:
 
         let symbols = parse("test.py", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_user")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_all_users")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("get_user"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("get_all_users"))
+        );
     }
 
     #[test]
@@ -1169,14 +1324,27 @@ API_URL = "https://api.example.com"
 
         let symbols = parse("test.py", source).unwrap();
 
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         assert_eq!(const_symbols.len(), 3);
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("API_URL")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("API_URL"))
+        );
     }
 
     #[test]
@@ -1188,13 +1356,22 @@ add = lambda a, b: a + b
 
         let symbols = parse("test.py", source).unwrap();
 
-        let lambda_symbols: Vec<_> = symbols.iter()
+        let lambda_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Function))
             .collect();
 
         assert!(lambda_symbols.len() >= 2);
-        assert!(lambda_symbols.iter().any(|s| s.symbol.as_deref() == Some("square")));
-        assert!(lambda_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
+        assert!(
+            lambda_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("square"))
+        );
+        assert!(
+            lambda_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
     }
 
     #[test]
@@ -1216,14 +1393,27 @@ class WebService:
 
         let symbols = parse("test.py", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("url")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("from_config")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("validate_url")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("url"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("from_config"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("validate_url"))
+        );
     }
 
     #[test]
@@ -1275,14 +1465,23 @@ class Outer:
 
         let symbols = parse("test.py", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
         // Should find both Outer and Inner classes
         assert_eq!(class_symbols.len(), 2);
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Inner")));
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Outer"))
+        );
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Inner"))
+        );
     }
 
     #[test]
@@ -1303,15 +1502,32 @@ class Calculator:
         let symbols = parse("test.py", source).unwrap();
 
         // Filter to just variables
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that local variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("local_var"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("temp"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("final"))
+        );
 
         // Verify that local variables have no scope
         for var in variables {
@@ -1338,22 +1554,44 @@ def get_config():
         let symbols = parse("test.py", source).unwrap();
 
         // Filter to constants and variables
-        let constants: Vec<_> = symbols.iter()
+        let constants: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that constants are captured (uppercase)
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("DEFAULT_TIMEOUT")));
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("DEFAULT_TIMEOUT"))
+        );
 
         // Check that global variables are captured (non-uppercase)
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("database_url")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("config")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("current_user")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("database_url"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("config"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("current_user"))
+        );
 
         // Verify no scope for both
         for constant in constants {
@@ -1366,8 +1604,8 @@ def get_config():
 
     #[test]
     fn test_find_all_python_configs() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -1375,7 +1613,11 @@ def get_config():
         // Create multiple Python projects
         let project1 = root.join("backend");
         fs::create_dir_all(&project1).unwrap();
-        fs::write(project1.join("pyproject.toml"), "[project]\nname = \"backend\"").unwrap();
+        fs::write(
+            project1.join("pyproject.toml"),
+            "[project]\nname = \"backend\"",
+        )
+        .unwrap();
 
         let project2 = root.join("frontend/api");
         fs::create_dir_all(&project2).unwrap();
@@ -1390,14 +1632,18 @@ def get_config():
 
         // Should find 2 configs (skipping venv)
         assert_eq!(configs.len(), 2);
-        assert!(configs.iter().any(|p| p.ends_with("backend/pyproject.toml")));
+        assert!(
+            configs
+                .iter()
+                .any(|p| p.ends_with("backend/pyproject.toml"))
+        );
         assert!(configs.iter().any(|p| p.ends_with("frontend/api/setup.py")));
     }
 
     #[test]
     fn test_parse_all_python_packages() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -1407,15 +1653,13 @@ def get_config():
         fs::create_dir_all(&project1).unwrap();
         fs::write(
             project1.join("pyproject.toml"),
-            "[project]\nname = \"auth-service\"\n"
-        ).unwrap();
+            "[project]\nname = \"auth-service\"\n",
+        )
+        .unwrap();
 
         let project2 = root.join("services/api");
         fs::create_dir_all(&project2).unwrap();
-        fs::write(
-            project2.join("setup.py"),
-            "setup(name=\"api-service\")"
-        ).unwrap();
+        fs::write(project2.join("setup.py"), "setup(name=\"api-service\")").unwrap();
 
         let packages = parse_all_python_packages(root).unwrap();
 
@@ -1436,8 +1680,8 @@ def get_config():
 
     #[test]
     fn test_resolve_python_import_absolute() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -1447,23 +1691,22 @@ def get_config():
         fs::create_dir_all(myapp.join("models")).unwrap();
         fs::write(
             myapp.join("pyproject.toml"),
-            "[project]\nname = \"myapp\"\n"
-        ).unwrap();
+            "[project]\nname = \"myapp\"\n",
+        )
+        .unwrap();
 
         let packages = parse_all_python_packages(root).unwrap();
         assert_eq!(packages.len(), 1);
 
         // Test absolute import resolution
         // "myapp.models.user" → "myapp/models/user.py"
-        let resolved = resolve_python_import_to_path(
-            "myapp.models.user",
-            &packages,
-            None
-        );
+        let resolved = resolve_python_import_to_path("myapp.models.user", &packages, None);
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
-        assert!(path.contains("myapp/models/user.py") || path.contains("myapp/models/user/__init__.py"));
+        assert!(
+            path.contains("myapp/models/user.py") || path.contains("myapp/models/user/__init__.py")
+        );
     }
 
     #[test]
@@ -1474,7 +1717,7 @@ def get_config():
         // Test single dot (current package)
         let resolved = resolve_python_import_to_path(
             ".models",
-            &[],  // Empty packages array - relative imports don't need it
+            &[], // Empty packages array - relative imports don't need it
             Some(current_file),
         );
 
@@ -1484,11 +1727,7 @@ def get_config():
         assert!(path.contains("myapp/views/models"));
 
         // Test double dot (parent package)
-        let resolved = resolve_python_import_to_path(
-            "..utils",
-            &[],
-            Some(current_file),
-        );
+        let resolved = resolve_python_import_to_path("..utils", &[], Some(current_file));
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1501,11 +1740,7 @@ def get_config():
         // Test relative imports with module path: from ..models.user import User
         let current_file = "myapp/views/dashboard/index.py";
 
-        let resolved = resolve_python_import_to_path(
-            "..models.user",
-            &[],
-            Some(current_file),
-        );
+        let resolved = resolve_python_import_to_path("..models.user", &[], Some(current_file));
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1515,8 +1750,8 @@ def get_config():
 
     #[test]
     fn test_resolve_python_import_not_found() {
-        use tempfile::TempDir;
         use std::fs;
+        use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
         let root = temp.path();
@@ -1525,17 +1760,14 @@ def get_config():
         fs::create_dir_all(&myapp).unwrap();
         fs::write(
             myapp.join("pyproject.toml"),
-            "[project]\nname = \"myapp\"\n"
-        ).unwrap();
+            "[project]\nname = \"myapp\"\n",
+        )
+        .unwrap();
 
         let packages = parse_all_python_packages(root).unwrap();
 
         // Try to resolve an import for a different package
-        let resolved = resolve_python_import_to_path(
-            "other_package.module",
-            &packages,
-            None
-        );
+        let resolved = resolve_python_import_to_path("other_package.module", &packages, None);
 
         // Should return None for packages not in the monorepo
         assert!(resolved.is_none());
@@ -1570,7 +1802,11 @@ exec("import dynamic")
 
         // Verify dynamic imports are NOT captured
         assert!(!deps.iter().any(|d| d.imported_path.contains("some_module")));
-        assert!(!deps.iter().any(|d| d.imported_path.contains("package") && d.imported_path != "json"));
+        assert!(
+            !deps
+                .iter()
+                .any(|d| d.imported_path.contains("package") && d.imported_path != "json")
+        );
         assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic")));
     }
 }

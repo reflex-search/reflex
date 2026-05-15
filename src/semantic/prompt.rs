@@ -22,7 +22,10 @@ fn read_project_config(workspace_root: &std::path::Path) -> Option<String> {
 
     match std::fs::read_to_string(&config_path) {
         Ok(contents) => {
-            log::info!("Loaded project configuration from REFLEX.md ({} bytes)", contents.len());
+            log::info!(
+                "Loaded project configuration from REFLEX.md ({} bytes)",
+                contents.len()
+            );
             Some(contents)
         }
         Err(e) => {
@@ -41,20 +44,22 @@ pub fn build_prompt(
     additional_context: Option<&str>,
 ) -> Result<String> {
     // Extract comprehensive codebase context
-    let context = CodebaseContext::extract(cache)
-        .unwrap_or_else(|e| {
-            log::warn!("Failed to extract full codebase context: {}. Using minimal context.", e);
-            // Fallback to minimal context if extraction fails
-            CodebaseContext {
-                total_files: 0,
-                languages: vec![],
-                top_level_dirs: vec![],
-                common_paths: vec![],
-                is_monorepo: false,
-                project_count: None,
-                dominant_language: None,
-            }
-        });
+    let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
+        log::warn!(
+            "Failed to extract full codebase context: {}. Using minimal context.",
+            e
+        );
+        // Fallback to minimal context if extraction fails
+        CodebaseContext {
+            total_files: 0,
+            languages: vec![],
+            top_level_dirs: vec![],
+            common_paths: vec![],
+            is_monorepo: false,
+            project_count: None,
+            dominant_language: None,
+        }
+    });
 
     // Format context as a prompt-friendly string
     let context_str = if context.total_files == 0 {
@@ -65,11 +70,10 @@ pub fn build_prompt(
 
     // Read project-specific configuration from REFLEX.md
     let workspace_root = cache.workspace_root();
-    let project_config = read_project_config(&workspace_root)
-        .unwrap_or_else(|| {
-            log::debug!("No project-specific configuration found, using defaults");
-            "No project-specific instructions provided.".to_string()
-        });
+    let project_config = read_project_config(&workspace_root).unwrap_or_else(|| {
+        log::debug!("No project-specific configuration found, using defaults");
+        "No project-specific instructions provided.".to_string()
+    });
 
     // Format additional context
     let additional_context_str = additional_context
@@ -132,7 +136,10 @@ mod tests {
         let prompt = build_prompt("test", &cache, None).unwrap();
 
         // Should handle empty codebase gracefully (note: includes period)
-        assert!(prompt.contains("No files indexed yet (empty codebase).") || prompt.contains("Languages:"));
+        assert!(
+            prompt.contains("No files indexed yet (empty codebase).")
+                || prompt.contains("Languages:")
+        );
     }
 
     #[test]

@@ -52,22 +52,23 @@ impl PathAliasMap {
     /// Parse a tsconfig.json file and extract path aliases
     pub fn from_file(tsconfig_path: impl AsRef<Path>) -> Result<Self> {
         let tsconfig_path = tsconfig_path.as_ref();
-        let content = std::fs::read_to_string(tsconfig_path)
-            .with_context(|| format!("Failed to read tsconfig.json: {}", tsconfig_path.display()))?;
+        let content = std::fs::read_to_string(tsconfig_path).with_context(|| {
+            format!("Failed to read tsconfig.json: {}", tsconfig_path.display())
+        })?;
 
         // Parse JSON5 (tsconfig.json supports comments and trailing commas)
-        let config: TsConfig = json5::from_str(&content)
-            .with_context(|| format!("Failed to parse tsconfig.json: {}", tsconfig_path.display()))?;
+        let config: TsConfig = json5::from_str(&content).with_context(|| {
+            format!("Failed to parse tsconfig.json: {}", tsconfig_path.display())
+        })?;
 
-        let config_dir = tsconfig_path.parent()
+        let config_dir = tsconfig_path
+            .parent()
             .ok_or_else(|| anyhow::anyhow!("Invalid tsconfig.json path"))?
             .to_path_buf();
 
-        let compiler_options = config.compiler_options.unwrap_or_else(|| {
-            CompilerOptions {
-                base_url: None,
-                paths: None,
-            }
+        let compiler_options = config.compiler_options.unwrap_or_else(|| CompilerOptions {
+            base_url: None,
+            paths: None,
         });
 
         Ok(Self {
@@ -110,11 +111,19 @@ impl PathAliasMap {
     /// - Import: `@packages/ui/stores/auth`
     /// - Resolves to: `../../packages/ui/stores/auth`
     pub fn resolve_alias(&self, import_path: &str) -> Option<String> {
-        log::debug!("  resolve_alias: trying to match '{}' against {} aliases", import_path, self.aliases.len());
+        log::debug!(
+            "  resolve_alias: trying to match '{}' against {} aliases",
+            import_path,
+            self.aliases.len()
+        );
 
         // Try to match against each alias pattern
         for (alias_pattern, target_paths) in &self.aliases {
-            log::trace!("    Checking alias pattern: {} => {:?}", alias_pattern, target_paths);
+            log::trace!(
+                "    Checking alias pattern: {} => {:?}",
+                alias_pattern,
+                target_paths
+            );
             // Check if pattern has a wildcard
             if alias_pattern.ends_with("/*") {
                 let alias_prefix = alias_pattern.trim_end_matches("/*");
@@ -144,7 +153,12 @@ impl PathAliasMap {
                             }
                         };
 
-                        log::trace!("Resolved alias {} + {} => {}", alias_pattern, import_path, resolved);
+                        log::trace!(
+                            "Resolved alias {} + {} => {}",
+                            alias_pattern,
+                            import_path,
+                            resolved
+                        );
                         return Some(resolved);
                     }
                 }
@@ -174,7 +188,8 @@ impl PathAliasMap {
 
         // Normalize the path to resolve .. components without requiring file to exist
         // Example: /home/user/packages/ui/./ui => /home/user/packages/ui
-        let normalized = joined.components()
+        let normalized = joined
+            .components()
             .fold(PathBuf::new(), |mut acc, component| {
                 match component {
                     std::path::Component::CurDir => acc, // Skip .
@@ -200,9 +215,11 @@ impl PathAliasMap {
 ///
 /// This supports monorepos with multiple tsconfig.json files in different directories.
 /// Respects .gitignore rules to skip node_modules and other ignored directories.
-pub fn parse_all_tsconfigs(root: &Path) -> Result<std::collections::HashMap<PathBuf, PathAliasMap>> {
-    use std::collections::HashMap;
+pub fn parse_all_tsconfigs(
+    root: &Path,
+) -> Result<std::collections::HashMap<PathBuf, PathAliasMap>> {
     use ignore::WalkBuilder;
+    use std::collections::HashMap;
 
     log::debug!("Starting tsconfig discovery in {}", root.display());
     let mut tsconfigs = HashMap::new();
@@ -219,16 +236,22 @@ pub fn parse_all_tsconfigs(root: &Path) -> Result<std::collections::HashMap<Path
         // Check if this is a tsconfig.json file
         if path.file_name().and_then(|n| n.to_str()) == Some("tsconfig.json") {
             file_count += 1;
-            log::debug!("Found tsconfig.json file #{}: {}", file_count, path.display());
+            log::debug!(
+                "Found tsconfig.json file #{}: {}",
+                file_count,
+                path.display()
+            );
 
             // Parse the tsconfig file
             match PathAliasMap::from_file(path) {
                 Ok(alias_map) => {
                     // Store using the directory containing the tsconfig as key
                     let config_dir = alias_map.config_dir.clone();
-                    log::debug!("  Parsed successfully: base_url={:?}, {} aliases",
-                               alias_map.base_url,
-                               alias_map.aliases.len());
+                    log::debug!(
+                        "  Parsed successfully: base_url={:?}, {} aliases",
+                        alias_map.base_url,
+                        alias_map.aliases.len()
+                    );
                     tsconfigs.insert(config_dir, alias_map);
                 }
                 Err(e) => {
@@ -238,7 +261,11 @@ pub fn parse_all_tsconfigs(root: &Path) -> Result<std::collections::HashMap<Path
         }
     }
 
-    log::debug!("Tsconfig discovery complete: found {} files, parsed {} successfully", file_count, tsconfigs.len());
+    log::debug!(
+        "Tsconfig discovery complete: found {} files, parsed {} successfully",
+        file_count,
+        tsconfigs.len()
+    );
     Ok(tsconfigs)
 }
 
@@ -277,9 +304,10 @@ mod tests {
     fn test_resolve_wildcard_alias() {
         let temp = TempDir::new().unwrap();
         let alias_map = PathAliasMap {
-            aliases: HashMap::from([
-                ("@packages/*".to_string(), vec!["../../packages/*".to_string()]),
-            ]),
+            aliases: HashMap::from([(
+                "@packages/*".to_string(),
+                vec!["../../packages/*".to_string()],
+            )]),
             base_url: Some(".".to_string()),
             config_dir: temp.path().to_path_buf(),
         };
@@ -293,9 +321,7 @@ mod tests {
     fn test_resolve_exact_alias() {
         let temp = TempDir::new().unwrap();
         let alias_map = PathAliasMap {
-            aliases: HashMap::from([
-                ("~".to_string(), vec!["./src".to_string()]),
-            ]),
+            aliases: HashMap::from([("~".to_string(), vec!["./src".to_string()])]),
             base_url: None,
             config_dir: temp.path().to_path_buf(),
         };
@@ -309,9 +335,10 @@ mod tests {
     fn test_no_match() {
         let temp = TempDir::new().unwrap();
         let alias_map = PathAliasMap {
-            aliases: HashMap::from([
-                ("@packages/*".to_string(), vec!["../../packages/*".to_string()]),
-            ]),
+            aliases: HashMap::from([(
+                "@packages/*".to_string(),
+                vec!["../../packages/*".to_string()],
+            )]),
             base_url: None,
             config_dir: temp.path().to_path_buf(),
         };

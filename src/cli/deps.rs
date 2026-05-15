@@ -1,8 +1,7 @@
-use anyhow::Result;
-use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::output;
-
+use anyhow::Result;
+use std::path::PathBuf;
 
 /// Handle the `analyze` subcommand
 #[allow(clippy::too_many_arguments)]
@@ -52,38 +51,81 @@ pub(super) fn handle_analyze(
 
     // Smart limit handling for analyze commands (default: 200 per page)
     let final_limit = if all {
-        None  // --all means no limit
+        None // --all means no limit
     } else if let Some(user_limit) = limit {
-        Some(user_limit)  // Use user-specified limit
+        Some(user_limit) // Use user-specified limit
     } else {
-        Some(200)  // Default: limit to 200 results per page for token efficiency
+        Some(200) // Default: limit to 200 results per page for token efficiency
     };
 
     // If no specific flags, show summary
     if !circular && !hotspots && !unused && !islands {
-        return handle_analyze_summary(&deps_index, min_dependents, count_only, as_json, pretty_json);
+        return handle_analyze_summary(
+            &deps_index,
+            min_dependents,
+            count_only,
+            as_json,
+            pretty_json,
+        );
     }
 
     // Run specific analyses based on flags
     if circular {
-        handle_deps_circular(&deps_index, format, pretty_json, final_limit, offset, count_only, plain, sort.clone())?;
+        handle_deps_circular(
+            &deps_index,
+            format,
+            pretty_json,
+            final_limit,
+            offset,
+            count_only,
+            plain,
+            sort.clone(),
+        )?;
     }
 
     if hotspots {
-        handle_deps_hotspots(&deps_index, format, pretty_json, final_limit, offset, min_dependents, count_only, plain, sort.clone())?;
+        handle_deps_hotspots(
+            &deps_index,
+            format,
+            pretty_json,
+            final_limit,
+            offset,
+            min_dependents,
+            count_only,
+            plain,
+            sort.clone(),
+        )?;
     }
 
     if unused {
-        handle_deps_unused(&deps_index, format, pretty_json, final_limit, offset, count_only, plain)?;
+        handle_deps_unused(
+            &deps_index,
+            format,
+            pretty_json,
+            final_limit,
+            offset,
+            count_only,
+            plain,
+        )?;
     }
 
     if islands {
-        handle_deps_islands(&deps_index, format, pretty_json, final_limit, offset, min_island_size, max_island_size, count_only, plain, sort.clone())?;
+        handle_deps_islands(
+            &deps_index,
+            format,
+            pretty_json,
+            final_limit,
+            offset,
+            min_island_size,
+            max_island_size,
+            count_only,
+            plain,
+            sort.clone(),
+        )?;
     }
 
     Ok(())
 }
-
 
 /// Handle analyze summary (default --analyze behavior)
 fn handle_analyze_summary(
@@ -128,9 +170,18 @@ fn handle_analyze_summary(
     } else if count_only {
         // Just show counts without any extra formatting
         println!("{} circular dependencies", cycles.len());
-        println!("{} hotspots ({}+ dependents)", hotspots.len(), min_dependents);
+        println!(
+            "{} hotspots ({}+ dependents)",
+            hotspots.len(),
+            min_dependents
+        );
         println!("{} unused files", unused.len());
-        println!("{} islands ({} multi-file, {} isolated)", all_islands.len(), multi_file_islands, singleton_islands);
+        println!(
+            "{} islands ({} multi-file, {} isolated)",
+            all_islands.len(),
+            multi_file_islands,
+            singleton_islands
+        );
     } else {
         // Full summary with headers and suggestions
         println!("Dependency Analysis Summary\n");
@@ -139,15 +190,23 @@ fn handle_analyze_summary(
         println!("Circular Dependencies: {} cycle(s)", cycles.len());
 
         // Hotspots
-        println!("Hotspots: {} file(s) with {}+ dependents", hotspots.len(), min_dependents);
+        println!(
+            "Hotspots: {} file(s) with {}+ dependents",
+            hotspots.len(),
+            min_dependents
+        );
 
         // Unused
         println!("Unused Files: {} file(s)", unused.len());
 
         // Islands — show both total and the multi-file breakdown so the count matches --islands
         if singleton_islands > 0 {
-            println!("Islands: {} disconnected component(s) ({} clusters of 2+ files, {} isolated files)",
-                all_islands.len(), multi_file_islands, singleton_islands);
+            println!(
+                "Islands: {} disconnected component(s) ({} clusters of 2+ files, {} isolated files)",
+                all_islands.len(),
+                multi_file_islands,
+                singleton_islands
+            );
         } else {
             println!("Islands: {} disconnected component(s)", all_islands.len());
         }
@@ -161,7 +220,6 @@ fn handle_analyze_summary(
 
     Ok(())
 }
-
 
 /// Handle the `deps` subcommand
 pub(super) fn handle_deps(
@@ -216,7 +274,8 @@ pub(super) fn handle_deps(
     };
 
     // Get file ID
-    let file_id = deps_index.get_file_id_by_path(&file_str)?
+    let file_id = deps_index
+        .get_file_id_by_path(&file_str)?
         .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", file_str))?;
 
     if reverse {
@@ -227,9 +286,7 @@ pub(super) fn handle_deps(
         match format.as_ref() {
             "json" => {
                 // Expose only paths (file_id is an internal detail)
-                let output: Vec<_> = dependents.iter()
-                    .filter_map(|id| paths.get(id))
-                    .collect();
+                let output: Vec<_> = dependents.iter().filter_map(|id| paths.get(id)).collect();
 
                 let json_str = if pretty_json {
                     serde_json::to_string_pretty(&output)?
@@ -258,7 +315,10 @@ pub(super) fn handle_deps(
                 eprintln!("\nFound {} dependents", dependents.len());
             }
             _ => {
-                anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                anyhow::bail!(
+                    "Unknown format '{}'. Supported: json, tree, table, dot",
+                    format
+                );
             }
         }
     } else {
@@ -269,18 +329,21 @@ pub(super) fn handle_deps(
 
             match format.as_ref() {
                 "json" => {
-                    let output: Vec<_> = deps.iter()
-                        .map(|dep| serde_json::json!({
-                            "path": dep.imported_path,
-                            "import_type": match dep.import_type {
-                                crate::models::ImportType::Internal => "internal",
-                                crate::models::ImportType::External => "external",
-                                crate::models::ImportType::Stdlib => "stdlib",
-                                crate::models::ImportType::ModDecl => "mod_decl",
-                            },
-                            "line": dep.line_number,
-                            "symbols": dep.imported_symbols,
-                        }))
+                    let output: Vec<_> = deps
+                        .iter()
+                        .map(|dep| {
+                            serde_json::json!({
+                                "path": dep.imported_path,
+                                "import_type": match dep.import_type {
+                                    crate::models::ImportType::Internal => "internal",
+                                    crate::models::ImportType::External => "external",
+                                    crate::models::ImportType::Stdlib => "stdlib",
+                                    crate::models::ImportType::ModDecl => "mod_decl",
+                                },
+                                "line": dep.line_number,
+                                "symbols": dep.imported_symbols,
+                            })
+                        })
                         .collect();
 
                     let json_str = if pretty_json {
@@ -299,7 +362,10 @@ pub(super) fn handle_deps(
                             crate::models::ImportType::Stdlib => "[stdlib]",
                             crate::models::ImportType::ModDecl => "[mod_decl]",
                         };
-                        println!("  └─ {} {} (line {})", dep.imported_path, type_label, dep.line_number);
+                        println!(
+                            "  └─ {} {} (line {})",
+                            dep.imported_path, type_label, dep.line_number
+                        );
                     }
                     eprintln!("\nFound {} dependencies", deps.len());
                 }
@@ -313,12 +379,18 @@ pub(super) fn handle_deps(
                             crate::models::ImportType::Stdlib => "stdlib",
                             crate::models::ImportType::ModDecl => "mod_decl",
                         };
-                        println!("{:<28}  {:<9}  {}", dep.imported_path, type_str, dep.line_number);
+                        println!(
+                            "{:<28}  {:<9}  {}",
+                            dep.imported_path, type_str, dep.line_number
+                        );
                     }
                     eprintln!("\nFound {} dependencies", deps.len());
                 }
                 _ => {
-                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                    anyhow::bail!(
+                        "Unknown format '{}'. Supported: json, tree, table, dot",
+                        format
+                    );
                 }
             }
         } else {
@@ -329,12 +401,15 @@ pub(super) fn handle_deps(
 
             match format.as_ref() {
                 "json" => {
-                    let output: Vec<_> = transitive.iter()
+                    let output: Vec<_> = transitive
+                        .iter()
                         .filter_map(|(id, d)| {
-                            paths.get(id).map(|path| serde_json::json!({
-                                "path": path,
-                                "depth": d,
-                            }))
+                            paths.get(id).map(|path| {
+                                serde_json::json!({
+                                    "path": path,
+                                    "depth": d,
+                                })
+                            })
                         })
                         .collect();
 
@@ -348,7 +423,8 @@ pub(super) fn handle_deps(
                 "tree" => {
                     println!("Dependencies of {} (depth {}):", file_str, depth);
                     // Group by depth for tree display; skip depth 0 (the file itself)
-                    let mut by_depth: std::collections::BTreeMap<usize, Vec<i64>> = std::collections::BTreeMap::new();
+                    let mut by_depth: std::collections::BTreeMap<usize, Vec<i64>> =
+                        std::collections::BTreeMap::new();
                     for (id, d) in &transitive {
                         if *d > 0 {
                             by_depth.entry(*d).or_insert_with(Vec::new).push(*id);
@@ -380,7 +456,10 @@ pub(super) fn handle_deps(
                     eprintln!("\nFound {} transitive dependencies", transitive.len());
                 }
                 _ => {
-                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                    anyhow::bail!(
+                        "Unknown format '{}'. Supported: json, tree, table, dot",
+                        format
+                    );
                 }
             }
         }
@@ -388,7 +467,6 @@ pub(super) fn handle_deps(
 
     Ok(())
 }
-
 
 /// Handle --circular flag (detect cycles)
 fn handle_deps_circular(
@@ -433,7 +511,10 @@ fn handle_deps_circular(
 
     if all_cycles.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []})
+            );
         } else {
             println!("No circular dependencies found.");
         }
@@ -451,7 +532,10 @@ fn handle_deps_circular(
 
     if cycles.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
+            );
         } else {
             println!("No circular dependencies found at offset {}.", offset_val);
         }
@@ -466,9 +550,11 @@ fn handle_deps_circular(
             let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
-            let results: Vec<_> = cycles.iter()
+            let results: Vec<_> = cycles
+                .iter()
                 .map(|cycle| {
-                    let cycle_paths: Vec<_> = cycle.iter()
+                    let cycle_paths: Vec<_> = cycle
+                        .iter()
                         .filter_map(|id| paths.get(id).cloned())
                         .collect();
                     serde_json::json!({
@@ -530,7 +616,8 @@ fn handle_deps_circular(
             let paths = deps_index.get_file_paths(&file_ids)?;
 
             for (idx, cycle) in cycles.iter().enumerate() {
-                let cycle_str = cycle.iter()
+                let cycle_str = cycle
+                    .iter()
                     .filter_map(|id| paths.get(id).map(|p| p.as_str()))
                     .collect::<Vec<_>>()
                     .join(" → ");
@@ -552,7 +639,6 @@ fn handle_deps_circular(
 
     Ok(())
 }
-
 
 /// Handle --hotspots flag (most-imported files)
 fn handle_deps_hotspots(
@@ -592,14 +678,20 @@ fn handle_deps_hotspots(
         if as_json {
             println!("{}", serde_json::json!({"count": total_count}));
         } else {
-            println!("Found {} hotspots with {}+ dependents", total_count, min_dependents);
+            println!(
+                "Found {} hotspots with {}+ dependents",
+                total_count, min_dependents
+            );
         }
         return Ok(());
     }
 
     if all_hotspots.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []})
+            );
         } else {
             println!("No hotspots found.");
         }
@@ -617,7 +709,10 @@ fn handle_deps_hotspots(
 
     if hotspots.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
+            );
         } else {
             println!("No hotspots found at offset {}.", offset_val);
         }
@@ -632,12 +727,15 @@ fn handle_deps_hotspots(
 
     match format {
         "json" => {
-            let results: Vec<_> = hotspots.iter()
+            let results: Vec<_> = hotspots
+                .iter()
                 .filter_map(|(id, import_count)| {
-                    paths.get(id).map(|path| serde_json::json!({
-                        "path": path,
-                        "import_count": import_count,
-                    }))
+                    paths.get(id).map(|path| {
+                        serde_json::json!({
+                            "path": path,
+                            "import_count": import_count,
+                        })
+                    })
                 })
                 .collect();
 
@@ -700,7 +798,6 @@ fn handle_deps_hotspots(
     Ok(())
 }
 
-
 /// Handle --unused flag (orphaned files)
 fn handle_deps_unused(
     deps_index: &crate::dependency::DependencyIndex,
@@ -726,7 +823,10 @@ fn handle_deps_unused(
 
     if all_unused.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []})
+            );
         } else {
             println!("No unused files found (all files have incoming dependencies).");
         }
@@ -739,7 +839,10 @@ fn handle_deps_unused(
 
     if unused.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
+            );
         } else {
             println!("No unused files found at offset {}.", offset_val);
         }
@@ -759,7 +862,8 @@ fn handle_deps_unused(
     match format {
         "json" => {
             // Return flat array of path strings (no "path" key wrapper)
-            let results: Vec<String> = unused.iter()
+            let results: Vec<String> = unused
+                .iter()
                 .filter_map(|id| paths.get(id).cloned())
                 .collect();
 
@@ -822,7 +926,6 @@ fn handle_deps_unused(
     Ok(())
 }
 
-
 /// Handle --islands flag (disconnected components)
 fn handle_deps_islands(
     deps_index: &crate::dependency::DependencyIndex,
@@ -850,7 +953,8 @@ fn handle_deps_islands(
     });
 
     // Filter islands by size
-    let mut islands: Vec<_> = all_islands.into_iter()
+    let mut islands: Vec<_> = all_islands
+        .into_iter()
         .filter(|island| {
             let size = island.len();
             size >= min_island_size && size <= max_size
@@ -903,7 +1007,10 @@ fn handle_deps_islands(
         islands = islands.into_iter().skip(offset_val).collect();
     } else if offset_val >= islands.len() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": islands.len(), "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": islands.len(), "count": 0, "offset": offset_val, "has_more": false}, "results": []})
+            );
         } else if filtered_count > 0 {
             println!("No islands at offset {}{}", offset_val, filter_note);
         } else {
@@ -919,7 +1026,10 @@ fn handle_deps_islands(
 
     if islands.is_empty() {
         if as_json {
-            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+            println!(
+                "{}",
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
+            );
         } else if filtered_count > 0 {
             println!("No islands found{}", filter_note);
         } else {
@@ -933,15 +1043,21 @@ fn handle_deps_islands(
     let count = islands.len();
     let has_more = offset_val + count < visible_total;
 
-    let file_ids: Vec<i64> = islands.iter().flat_map(|island| island.iter()).copied().collect();
+    let file_ids: Vec<i64> = islands
+        .iter()
+        .flat_map(|island| island.iter())
+        .copied()
+        .collect();
     let paths = deps_index.get_file_paths(&file_ids)?;
 
     match format {
         "json" => {
-            let results: Vec<_> = islands.iter()
+            let results: Vec<_> = islands
+                .iter()
                 .enumerate()
                 .map(|(idx, island)| {
-                    let island_paths: Vec<_> = island.iter()
+                    let island_paths: Vec<_> = island
+                        .iter()
                         .filter_map(|id| paths.get(id).cloned())
                         .collect();
                     serde_json::json!({
@@ -983,7 +1099,11 @@ fn handle_deps_islands(
         "tree" => {
             println!("Islands (Disconnected Components):");
             for (idx, island) in islands.iter().enumerate() {
-                println!("\nIsland {} ({} files):", idx + offset_val + 1, island.len());
+                println!(
+                    "\nIsland {} ({} files):",
+                    idx + offset_val + 1,
+                    island.len()
+                );
                 for id in island {
                     if let Some(path) = paths.get(id) {
                         println!("  ├─ {}", path);
@@ -991,7 +1111,10 @@ fn handle_deps_islands(
                 }
             }
             if visible_total > count {
-                eprintln!("\nShowing {}/{} islands{}", count, visible_total, filter_note);
+                eprintln!(
+                    "\nShowing {}/{} islands{}",
+                    count, visible_total, filter_note
+                );
                 if has_more {
                     eprintln!("Use --limit and --offset to paginate");
                 }
@@ -1003,14 +1126,23 @@ fn handle_deps_islands(
             println!("Island  Size  Files");
             println!("------  ----  -----");
             for (idx, island) in islands.iter().enumerate() {
-                let island_files = island.iter()
+                let island_files = island
+                    .iter()
                     .filter_map(|id| paths.get(id).map(|p| p.as_str()))
                     .collect::<Vec<_>>()
                     .join(", ");
-                println!("{:<6}  {:<4}  {}", idx + offset_val + 1, island.len(), island_files);
+                println!(
+                    "{:<6}  {:<4}  {}",
+                    idx + offset_val + 1,
+                    island.len(),
+                    island_files
+                );
             }
             if visible_total > count {
-                eprintln!("\nShowing {}/{} islands{}", count, visible_total, filter_note);
+                eprintln!(
+                    "\nShowing {}/{} islands{}",
+                    count, visible_total, filter_note
+                );
                 if has_more {
                     eprintln!("Use --limit and --offset to paginate");
                 }

@@ -16,23 +16,23 @@ use std::time::Instant;
 use crate::cache::CacheManager;
 use crate::content_store::{ContentReader, ContentWriter};
 use crate::dependency::DependencyIndex;
-use crate::models::{Dependency, IndexConfig, IndexStats, Language, ImportType};
+use crate::models::{Dependency, ImportType, IndexConfig, IndexStats, Language};
 use crate::output;
-use crate::parsers::{DependencyExtractor, ImportInfo, ExportInfo};
-use crate::parsers::rust::RustDependencyExtractor;
-use crate::parsers::python::PythonDependencyExtractor;
-use crate::parsers::typescript::TypeScriptDependencyExtractor;
-use crate::parsers::go::GoDependencyExtractor;
-use crate::parsers::java::JavaDependencyExtractor;
 use crate::parsers::c::CDependencyExtractor;
 use crate::parsers::cpp::CppDependencyExtractor;
 use crate::parsers::csharp::CSharpDependencyExtractor;
-use crate::parsers::php::PhpDependencyExtractor;
-use crate::parsers::ruby::RubyDependencyExtractor;
+use crate::parsers::go::GoDependencyExtractor;
+use crate::parsers::java::JavaDependencyExtractor;
 use crate::parsers::kotlin::KotlinDependencyExtractor;
-use crate::parsers::zig::ZigDependencyExtractor;
-use crate::parsers::vue::VueDependencyExtractor;
+use crate::parsers::php::PhpDependencyExtractor;
+use crate::parsers::python::PythonDependencyExtractor;
+use crate::parsers::ruby::RubyDependencyExtractor;
+use crate::parsers::rust::RustDependencyExtractor;
 use crate::parsers::svelte::SvelteDependencyExtractor;
+use crate::parsers::typescript::TypeScriptDependencyExtractor;
+use crate::parsers::vue::VueDependencyExtractor;
+use crate::parsers::zig::ZigDependencyExtractor;
+use crate::parsers::{DependencyExtractor, ExportInfo, ImportInfo};
 use crate::trigram::TrigramIndex;
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
@@ -141,14 +141,20 @@ impl Indexer {
                 .unwrap_or(4);
             // Use 80% of available cores (minimum 1, maximum 8)
             // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
-            ((available_cores as f64 * 0.8).ceil() as usize).max(1).min(8)
+            ((available_cores as f64 * 0.8).ceil() as usize)
+                .max(1)
+                .min(8)
         } else {
             self.config.parallel_threads
         };
 
-        log::info!("Using {} threads for parallel indexing (out of {} available)",
-                   num_threads,
-                   std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+        log::info!(
+            "Using {} threads for parallel indexing (out of {} available)",
+            num_threads,
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        );
 
         // Ensure cache is initialized
         self.cache.init()?;
@@ -158,27 +164,36 @@ impl Indexer {
 
         // Load existing hashes for incremental indexing (for current branch)
         let existing_hashes = self.cache.load_hashes_for_branch(&branch)?;
-        log::debug!("Loaded {} existing file hashes for branch '{}'", existing_hashes.len(), branch);
+        log::debug!(
+            "Loaded {} existing file hashes for branch '{}'",
+            existing_hashes.len(),
+            branch
+        );
 
         // Step 1: Walk directory tree and collect files
         let (files, skipped_too_large, skipped_bytes_too_large) = self.discover_files(root)?;
         let total_files = files.len();
-        log::info!("Discovered {} files to index ({} skipped: too large)", total_files, skipped_too_large);
+        log::info!(
+            "Discovered {} files to index ({} skipped: too large)",
+            total_files,
+            skipped_too_large
+        );
 
         // Step 1.4: Parse tsconfig.json files for TypeScript/Vue path alias resolution
         // Must be done before parallel processing so it's available during dependency extraction
-        let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root)
-            .unwrap_or_else(|e| {
-                log::warn!("Failed to parse tsconfig.json files: {}", e);
-                HashMap::new()
-            });
+        let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
+            log::warn!("Failed to parse tsconfig.json files: {}", e);
+            HashMap::new()
+        });
         if !tsconfigs.is_empty() {
             log::info!("Found {} tsconfig.json files", tsconfigs.len());
             for (config_dir, alias_map) in &tsconfigs {
-                log::debug!("  {} (base_url: {:?}, {} aliases)",
-                           config_dir.display(),
-                           alias_map.base_url,
-                           alias_map.aliases.len());
+                log::debug!(
+                    "  {} (base_url: {:?}, {} aliases)",
+                    config_dir.display(),
+                    alias_map.base_url,
+                    alias_map.aliases.len()
+                );
             }
         }
 
@@ -259,7 +274,9 @@ impl Indexer {
                             stats.skipped_bytes_too_large = skipped_bytes_too_large;
                             return Ok(stats);
                         }
-                        log::warn!("content.bin has no files despite hashes matching - forcing rebuild");
+                        log::warn!(
+                            "content.bin has no files despite hashes matching - forcing rebuild"
+                        );
                     } else {
                         log::warn!("content.bin invalid despite hashes matching - forcing rebuild");
                     }
@@ -270,8 +287,11 @@ impl Indexer {
                 }
             }
         } else if total_files != existing_hashes.len() {
-            log::info!("File count changed ({} -> {}) - full reindex required",
-                       existing_hashes.len(), total_files);
+            log::info!(
+                "File count changed ({} -> {}) - full reindex required",
+                existing_hashes.len(),
+                total_files
+            );
         }
 
         // Step 2: Build trigram index + content store
@@ -291,14 +311,16 @@ impl Indexer {
         // Enable batch-flush mode for trigram index if we have lots of files
         if total_files > 10000 {
             let temp_dir = self.cache.path().join("trigram_temp");
-            trigram_index.enable_batch_flush(temp_dir)
+            trigram_index
+                .enable_batch_flush(temp_dir)
                 .context("Failed to enable batch-flush mode for trigram index")?;
             log::info!("Enabled batch-flush mode for {} files", total_files);
         }
 
         // Initialize content writer to start streaming writes immediately
         let content_path = self.cache.path().join("content.bin");
-        content_writer.init(content_path.clone())
+        content_writer
+            .init(content_path.clone())
             .context("Failed to initialize content writer")?;
 
         // Create progress bar (only if requested via --progress flag)
@@ -363,12 +385,20 @@ impl Indexer {
         // Batch size: process 5000 files at a time to limit memory usage
         const BATCH_SIZE: usize = 5000;
         let num_batches = total_files.div_ceil(BATCH_SIZE);
-        log::info!("Processing {} files in {} batches of up to {} files",
-                   total_files, num_batches, BATCH_SIZE);
+        log::info!(
+            "Processing {} files in {} batches of up to {} files",
+            total_files,
+            num_batches,
+            BATCH_SIZE
+        );
 
         for (batch_idx, batch_files) in files.chunks(BATCH_SIZE).enumerate() {
-            log::info!("Processing batch {}/{} ({} files)",
-                       batch_idx + 1, num_batches, batch_files.len());
+            log::info!(
+                "Processing batch {}/{} ({} files)",
+                batch_idx + 1,
+                num_batches,
+                batch_files.len()
+            );
 
             // Process files in parallel using rayon with custom thread pool
             let counter_clone = Arc::clone(&progress_counter);
@@ -615,7 +645,7 @@ impl Indexer {
                     result.path_str.clone(),
                     result.hash.clone(),
                     format!("{:?}", result.language),
-                    result.line_count
+                    result.line_count,
                 ));
 
                 // Collect dependencies for batch insertion (if any)
@@ -638,7 +668,8 @@ impl Indexer {
                     pb.set_message(flush_msg.clone());
                 }
                 *progress_status.lock().unwrap() = flush_msg;
-                trigram_index.flush_batch()
+                trigram_index
+                    .flush_batch()
                     .context("Failed to flush trigram batch")?;
             }
         }
@@ -676,11 +707,11 @@ impl Indexer {
                 .map(|(path, _hash, lang, lines)| (path.clone(), lang.clone(), *lines))
                 .collect();
 
-        // Record files for this branch (for branch-aware indexing)
-        *progress_status.lock().unwrap() = "Recording branch files...".to_string();
-        if show_progress {
-            pb.set_message("Recording branch files...".to_string());
-        }
+            // Record files for this branch (for branch-aware indexing)
+            *progress_status.lock().unwrap() = "Recording branch files...".to_string();
+            if show_progress {
+                pb.set_message("Recording branch files...".to_string());
+            }
 
             // Prepare branch files data (path, hash)
             let branch_files: Vec<(String, String)> = file_metadata
@@ -689,14 +720,19 @@ impl Indexer {
                 .collect();
 
             // Use atomic method that combines both operations
-            self.cache.batch_update_files_and_branch(
-                &files_without_hash,
-                &branch_files,
-                &branch,
-                git_state.as_ref().map(|s| s.commit.as_str()),
-            ).context("Failed to batch update files and branch hashes")?;
+            self.cache
+                .batch_update_files_and_branch(
+                    &files_without_hash,
+                    &branch_files,
+                    &branch,
+                    git_state.as_ref().map(|s| s.commit.as_str()),
+                )
+                .context("Failed to batch update files and branch hashes")?;
 
-            log::info!("Wrote metadata and hashes for {} files to database", file_metadata.len());
+            log::info!(
+                "Wrote metadata and hashes for {} files to database",
+                file_metadata.len()
+            );
         }
 
         // Update branch metadata
@@ -709,7 +745,8 @@ impl Indexer {
 
         // Force WAL checkpoint to ensure background processes see all committed data
         // This is critical when spawning background symbol indexer immediately after
-        self.cache.checkpoint_wal()
+        self.cache
+            .checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
         log::debug!("WAL checkpoint completed - database is fully synced");
 
@@ -721,11 +758,10 @@ impl Indexer {
             }
 
             // Find and parse all go.mod files for Go projects (monorepo support)
-            let go_modules = crate::parsers::go::parse_all_go_modules(root)
-                .unwrap_or_else(|e| {
-                    log::warn!("Failed to parse go.mod files: {}", e);
-                    Vec::new()
-                });
+            let go_modules = crate::parsers::go::parse_all_go_modules(root).unwrap_or_else(|e| {
+                log::warn!("Failed to parse go.mod files: {}", e);
+                Vec::new()
+            });
             if !go_modules.is_empty() {
                 log::info!("Found {} Go modules", go_modules.len());
                 for module in &go_modules {
@@ -734,15 +770,19 @@ impl Indexer {
             }
 
             // Find and parse all pom.xml/build.gradle files for Java projects (monorepo support)
-            let java_projects = crate::parsers::java::parse_all_java_projects(root)
-                .unwrap_or_else(|e| {
+            let java_projects =
+                crate::parsers::java::parse_all_java_projects(root).unwrap_or_else(|e| {
                     log::warn!("Failed to parse Java project configs: {}", e);
                     Vec::new()
                 });
             if !java_projects.is_empty() {
                 log::info!("Found {} Java projects", java_projects.len());
                 for project in &java_projects {
-                    log::debug!("  {} (project: {})", project.package_name, project.project_root);
+                    log::debug!(
+                        "  {} (project: {})",
+                        project.package_name,
+                        project.project_root
+                    );
                 }
             }
 
@@ -760,8 +800,8 @@ impl Indexer {
             }
 
             // Find and parse *.gemspec files for Ruby projects (monorepo support)
-            let ruby_projects = crate::parsers::ruby::parse_all_ruby_projects(root)
-                .unwrap_or_else(|e| {
+            let ruby_projects =
+                crate::parsers::ruby::parse_all_ruby_projects(root).unwrap_or_else(|e| {
                     log::warn!("Failed to parse Ruby project configs: {}", e);
                     Vec::new()
                 });
@@ -773,8 +813,8 @@ impl Indexer {
             }
 
             // Find and parse all Cargo.toml files for Rust workspace support
-            let rust_crates = crate::parsers::rust::parse_all_rust_crates(root)
-                .unwrap_or_else(|e| {
+            let rust_crates =
+                crate::parsers::rust::parse_all_rust_crates(root).unwrap_or_else(|e| {
                     log::warn!("Failed to parse Cargo.toml files: {}", e);
                     Vec::new()
                 });
@@ -794,25 +834,35 @@ impl Indexer {
                     Vec::new()
                 });
             if !php_psr4_mappings.is_empty() {
-                log::info!("Found {} PSR-4 mappings from composer.json files", php_psr4_mappings.len());
+                log::info!(
+                    "Found {} PSR-4 mappings from composer.json files",
+                    php_psr4_mappings.len()
+                );
                 for mapping in &php_psr4_mappings {
-                    log::debug!("  {} => {} (project: {})", mapping.namespace_prefix, mapping.directory, mapping.project_root);
+                    log::debug!(
+                        "  {} => {} (project: {})",
+                        mapping.namespace_prefix,
+                        mapping.directory,
+                        mapping.project_root
+                    );
                 }
             }
 
             // Find and parse all tsconfig.json files for TypeScript/Vue projects (monorepo support)
-            let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root)
-                .unwrap_or_else(|e| {
+            let tsconfigs =
+                crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
                     log::warn!("Failed to parse tsconfig.json files: {}", e);
                     HashMap::new()
                 });
             if !tsconfigs.is_empty() {
                 log::info!("Found {} tsconfig.json files", tsconfigs.len());
                 for (config_dir, alias_map) in &tsconfigs {
-                    log::debug!("  {} (base_url: {:?}, {} aliases)",
-                               config_dir.display(),
-                               alias_map.base_url,
-                               alias_map.aliases.len());
+                    log::debug!(
+                        "  {} (base_url: {:?}, {} aliases)",
+                        config_dir.display(),
+                        alias_map.base_url,
+                        alias_map.aliases.len()
+                    );
                 }
             }
 
@@ -828,7 +878,10 @@ impl Indexer {
                 let file_id = match dep_index.get_file_id_by_path(&file_path)? {
                     Some(id) => id,
                     None => {
-                        log::warn!("File not found in database (skipping dependencies): {}", file_path);
+                        log::warn!(
+                            "File not found in database (skipping dependencies): {}",
+                            file_path
+                        );
                         continue;
                     }
                 };
@@ -890,10 +943,11 @@ impl Indexer {
                         // Check if the import matches any Python package
                         let mut reclassified = false;
                         for package in &python_packages {
-                            import_info.import_type = crate::parsers::python::reclassify_python_import(
-                                &import_info.imported_path,
-                                Some(&package.name),
-                            );
+                            import_info.import_type =
+                                crate::parsers::python::reclassify_python_import(
+                                    &import_info.imported_path,
+                                    Some(&package.name),
+                                );
                             // If it's internal, we've found the right package
                             if matches!(import_info.import_type, ImportType::Internal) {
                                 reclassified = true;
@@ -902,15 +956,19 @@ impl Indexer {
                         }
                         // If no package matched, use base classification
                         if !reclassified {
-                            import_info.import_type = crate::parsers::python::reclassify_python_import(
-                                &import_info.imported_path,
-                                None,
-                            );
+                            import_info.import_type =
+                                crate::parsers::python::reclassify_python_import(
+                                    &import_info.imported_path,
+                                    None,
+                                );
                         }
                     }
 
                     // Reclassify Ruby imports using gem names (if Ruby project)
-                    if file_path.ends_with(".rb") || file_path.ends_with(".rake") || file_path.ends_with(".gemspec") {
+                    if file_path.ends_with(".rb")
+                        || file_path.ends_with(".rake")
+                        || file_path.ends_with(".gemspec")
+                    {
                         // Check if the import matches any Ruby project
                         let mut reclassified = false;
                         for project in &ruby_projects {
@@ -939,10 +997,11 @@ impl Indexer {
                         // Check if the import matches any Java/Kotlin project (same build systems)
                         let mut reclassified = false;
                         for project in &java_projects {
-                            import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
-                                &import_info.imported_path,
-                                Some(&project.package_name),
-                            );
+                            import_info.import_type =
+                                crate::parsers::kotlin::reclassify_kotlin_import(
+                                    &import_info.imported_path,
+                                    Some(&project.package_name),
+                                );
                             // If it's internal, we've found the right project
                             if matches!(import_info.import_type, ImportType::Internal) {
                                 reclassified = true;
@@ -951,10 +1010,11 @@ impl Indexer {
                         }
                         // If no project matched, use base classification
                         if !reclassified {
-                            import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
-                                &import_info.imported_path,
-                                None,
-                            );
+                            import_info.import_type =
+                                crate::parsers::kotlin::reclassify_kotlin_import(
+                                    &import_info.imported_path,
+                                    None,
+                                );
                         }
                     }
 
@@ -972,7 +1032,10 @@ impl Indexer {
                     // External and Stdlib imports: store with resolved_file_id = None.
                     // Graph-analysis queries all filter WHERE resolved_file_id IS NOT NULL,
                     // so storing these here only affects the `rfx deps` display path (REF-78).
-                    if matches!(import_info.import_type, ImportType::External | ImportType::Stdlib) {
+                    if matches!(
+                        import_info.import_type,
+                        ImportType::External | ImportType::Stdlib
+                    ) {
                         resolved_deps.push(Dependency {
                             file_id,
                             imported_path: import_info.imported_path.clone(),
@@ -985,60 +1048,93 @@ impl Indexer {
                     }
 
                     // Resolve PHP dependencies using PSR-4 (deterministic)
-                    let resolved_file_id = if file_path.ends_with(".php") && !php_psr4_mappings.is_empty() {
+                    let resolved_file_id = if file_path.ends_with(".php")
+                        && !php_psr4_mappings.is_empty()
+                    {
                         // Use PSR-4 to resolve namespace to file path
-                        if let Some(resolved_path) = crate::parsers::php::resolve_php_namespace_to_path(
-                            &import_info.imported_path,
-                            &php_psr4_mappings,
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::php::resolve_php_namespace_to_path(
+                                &import_info.imported_path,
+                                &php_psr4_mappings,
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved PHP dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved PHP dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("PHP dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "PHP dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping PHP dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping PHP dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve PHP namespace using PSR-4: {}",
-                                       import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve PHP namespace using PSR-4: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".py") && !python_packages.is_empty() {
                         // Resolve Python dependencies using package mappings
-                        if let Some(resolved_path) = crate::parsers::python::resolve_python_import_to_path(
-                            &import_info.imported_path,
-                            &python_packages,
-                            Some(&file_path),
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::python::resolve_python_import_to_path(
+                                &import_info.imported_path,
+                                &python_packages,
+                                Some(&file_path),
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Python dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Python dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Python dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Python dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Python dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Python dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Python import: {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Python import: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".go") && !go_modules.is_empty() {
@@ -1051,35 +1147,56 @@ impl Indexer {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Go dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Go dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Go dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Go dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Go dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Go dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Go import: {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Go import: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
-                    } else if file_path.ends_with(".ts") || file_path.ends_with(".tsx")
-                            || file_path.ends_with(".js") || file_path.ends_with(".jsx")
-                            || file_path.ends_with(".mts") || file_path.ends_with(".cts")
-                            || file_path.ends_with(".mjs") || file_path.ends_with(".cjs") {
+                    } else if file_path.ends_with(".ts")
+                        || file_path.ends_with(".tsx")
+                        || file_path.ends_with(".js")
+                        || file_path.ends_with(".jsx")
+                        || file_path.ends_with(".mts")
+                        || file_path.ends_with(".cts")
+                        || file_path.ends_with(".mjs")
+                        || file_path.ends_with(".cjs")
+                    {
                         // Resolve TypeScript/JavaScript dependencies (relative imports and path aliases)
                         let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
-                        if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                            &import_info.imported_path,
-                            Some(&file_path),
-                            alias_map,
-                        ) {
+                        if let Some(candidates_str) =
+                            crate::parsers::typescript::resolve_ts_import_to_path(
+                                &import_info.imported_path,
+                                Some(&file_path),
+                                alias_map,
+                            )
+                        {
                             // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
                             let candidates: Vec<&str> = candidates_str.split('|').collect();
 
@@ -1088,38 +1205,60 @@ impl Indexer {
                             for candidate_path in candidates {
                                 // Normalize path to be relative to project root
                                 // Convert absolute paths to relative (without requiring file to exist)
-                                let normalized_candidate = if let Ok(rel_path) = std::path::Path::new(candidate_path).strip_prefix(root) {
+                                let normalized_candidate = if let Ok(rel_path) =
+                                    std::path::Path::new(candidate_path).strip_prefix(root)
+                                {
                                     rel_path.to_string_lossy().to_string()
                                 } else {
                                     // Not an absolute path or not under root - use as-is
                                     candidate_path.to_string()
                                 };
 
-                                log::debug!("Looking up TS/JS candidate: '{}' (from '{}')", normalized_candidate, candidate_path);
+                                log::debug!(
+                                    "Looking up TS/JS candidate: '{}' (from '{}')",
+                                    normalized_candidate,
+                                    candidate_path
+                                );
                                 match dep_index.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
-                                        log::debug!("Resolved TS/JS dependency: {} -> {} (file_id={})",
-                                                   import_info.imported_path, normalized_candidate, id);
+                                        log::debug!(
+                                            "Resolved TS/JS dependency: {} -> {} (file_id={})",
+                                            import_info.imported_path,
+                                            normalized_candidate,
+                                            id
+                                        );
                                         resolved_id = Some(id);
                                         break; // Found a match, stop trying
                                     }
                                     Ok(None) => {
-                                        log::trace!("TS/JS candidate not in index: {}", candidate_path);
+                                        log::trace!(
+                                            "TS/JS candidate not in index: {}",
+                                            candidate_path
+                                        );
                                     }
                                     Err(e) => {
-                                        log::debug!("Skipping TS/JS dependency resolution for '{}': {}", normalized_candidate, e);
+                                        log::debug!(
+                                            "Skipping TS/JS dependency resolution for '{}': {}",
+                                            normalized_candidate,
+                                            e
+                                        );
                                     }
                                 }
                             }
 
                             if resolved_id.is_none() {
-                                log::trace!("TS/JS dependency: no matching file found in database for any candidate: {}",
-                                           candidates_str);
+                                log::trace!(
+                                    "TS/JS dependency: no matching file found in database for any candidate: {}",
+                                    candidates_str
+                                );
                             }
 
                             resolved_id
                         } else {
-                            log::trace!("Could not resolve TS/JS import (non-relative or external): {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve TS/JS import (non-relative or external): {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".rs") {
@@ -1129,7 +1268,8 @@ impl Indexer {
                             &import_info.imported_path,
                             Some(&file_path),
                             Some(root.to_str().unwrap_or("")),
-                        ).or_else(|| {
+                        )
+                        .or_else(|| {
                             crate::parsers::rust::resolve_rust_workspace_path(
                                 &import_info.imported_path,
                                 &rust_crates,
@@ -1140,106 +1280,174 @@ impl Indexer {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Rust dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Rust dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Rust dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Rust dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Rust dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Rust dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Rust import (external or stdlib): {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Rust import (external or stdlib): {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".java") && !java_projects.is_empty() {
                         // Resolve Java dependencies using project mappings
-                        if let Some(resolved_path) = crate::parsers::java::resolve_java_import_to_path(
-                            &import_info.imported_path,
-                            &java_projects,
-                            Some(&file_path),
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::java::resolve_java_import_to_path(
+                                &import_info.imported_path,
+                                &java_projects,
+                                Some(&file_path),
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Java dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Java dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Java dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Java dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Java dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Java dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Java import: {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Java import: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
-                    } else if (file_path.ends_with(".kt") || file_path.ends_with(".kts")) && !java_projects.is_empty() {
+                    } else if (file_path.ends_with(".kt") || file_path.ends_with(".kts"))
+                        && !java_projects.is_empty()
+                    {
                         // Resolve Kotlin dependencies using project mappings (same build systems as Java)
-                        if let Some(resolved_path) = crate::parsers::java::resolve_kotlin_import_to_path(
-                            &import_info.imported_path,
-                            &java_projects,
-                            Some(&file_path),
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::java::resolve_kotlin_import_to_path(
+                                &import_info.imported_path,
+                                &java_projects,
+                                Some(&file_path),
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Kotlin dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Kotlin dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Kotlin dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Kotlin dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Kotlin dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Kotlin dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Kotlin import: {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Kotlin import: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
-                    } else if (file_path.ends_with(".rb") || file_path.ends_with(".rake") || file_path.ends_with(".gemspec")) && !ruby_projects.is_empty() {
+                    } else if (file_path.ends_with(".rb")
+                        || file_path.ends_with(".rake")
+                        || file_path.ends_with(".gemspec"))
+                        && !ruby_projects.is_empty()
+                    {
                         // Resolve Ruby dependencies using project mappings
-                        if let Some(resolved_path) = crate::parsers::ruby::resolve_ruby_require_to_path(
-                            &import_info.imported_path,
-                            &ruby_projects,
-                            Some(&file_path),
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::ruby::resolve_ruby_require_to_path(
+                                &import_info.imported_path,
+                                &ruby_projects,
+                                Some(&file_path),
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Ruby dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Ruby dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Ruby dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Ruby dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Ruby dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Ruby dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Ruby require: {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Ruby require: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".c") || file_path.ends_with(".h") {
@@ -1251,78 +1459,130 @@ impl Indexer {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved C dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved C dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("C dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "C dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping C dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping C dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve C include (system header): {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve C include (system header): {}",
+                                import_info.imported_path
+                            );
                             None
                         }
-                    } else if file_path.ends_with(".cpp") || file_path.ends_with(".cc") || file_path.ends_with(".cxx")
-                           || file_path.ends_with(".hpp") || file_path.ends_with(".hxx") || file_path.ends_with(".h++")
-                           || file_path.ends_with(".C") || file_path.ends_with(".H") {
+                    } else if file_path.ends_with(".cpp")
+                        || file_path.ends_with(".cc")
+                        || file_path.ends_with(".cxx")
+                        || file_path.ends_with(".hpp")
+                        || file_path.ends_with(".hxx")
+                        || file_path.ends_with(".h++")
+                        || file_path.ends_with(".C")
+                        || file_path.ends_with(".H")
+                    {
                         // Resolve C++ dependencies (relative #include paths)
-                        if let Some(resolved_path) = crate::parsers::cpp::resolve_cpp_include_to_path(
-                            &import_info.imported_path,
-                            Some(&file_path),
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::cpp::resolve_cpp_include_to_path(
+                                &import_info.imported_path,
+                                Some(&file_path),
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved C++ dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved C++ dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("C++ dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "C++ dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping C++ dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping C++ dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve C++ include (system header): {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve C++ include (system header): {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".cs") {
                         // Resolve C# dependencies (using namespace-to-path mapping)
-                        if let Some(resolved_path) = crate::parsers::csharp::resolve_csharp_using_to_path(
-                            &import_info.imported_path,
-                            Some(&file_path),
-                        ) {
+                        if let Some(resolved_path) =
+                            crate::parsers::csharp::resolve_csharp_using_to_path(
+                                &import_info.imported_path,
+                                Some(&file_path),
+                            )
+                        {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved C# dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved C# dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("C# dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "C# dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping C# dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping C# dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve C# using directive: {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve C# using directive: {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".zig") {
@@ -1334,32 +1594,48 @@ impl Indexer {
                             // Look up file ID in database using exact match
                             match dep_index.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
-                                    log::trace!("Resolved Zig dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
+                                    log::trace!(
+                                        "Resolved Zig dependency: {} -> {} (file_id={})",
+                                        import_info.imported_path,
+                                        resolved_path,
+                                        id
+                                    );
                                     Some(id)
                                 }
                                 Ok(None) => {
-                                    log::trace!("Zig dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
+                                    log::trace!(
+                                        "Zig dependency resolved to path but file not in index: {} -> {}",
+                                        import_info.imported_path,
+                                        resolved_path
+                                    );
                                     None
                                 }
                                 Err(e) => {
-                                    log::debug!("Skipping Zig dependency resolution for '{}': {}", resolved_path, e);
+                                    log::debug!(
+                                        "Skipping Zig dependency resolution for '{}': {}",
+                                        resolved_path,
+                                        e
+                                    );
                                     None
                                 }
                             }
                         } else {
-                            log::trace!("Could not resolve Zig import (external or stdlib): {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Zig import (external or stdlib): {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else if file_path.ends_with(".vue") || file_path.ends_with(".svelte") {
                         // Resolve Vue/Svelte dependencies (use TypeScript/JavaScript resolver for imports in <script> blocks)
                         let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
-                        if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                            &import_info.imported_path,
-                            Some(&file_path),
-                            alias_map,
-                        ) {
+                        if let Some(candidates_str) =
+                            crate::parsers::typescript::resolve_ts_import_to_path(
+                                &import_info.imported_path,
+                                Some(&file_path),
+                                alias_map,
+                            )
+                        {
                             // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
                             let candidates: Vec<&str> = candidates_str.split('|').collect();
 
@@ -1368,7 +1644,9 @@ impl Indexer {
                             for candidate_path in candidates {
                                 // Normalize path to be relative to project root
                                 // Convert absolute paths to relative (without requiring file to exist)
-                                let normalized_candidate = if let Ok(rel_path) = std::path::Path::new(candidate_path).strip_prefix(root) {
+                                let normalized_candidate = if let Ok(rel_path) =
+                                    std::path::Path::new(candidate_path).strip_prefix(root)
+                                {
                                     rel_path.to_string_lossy().to_string()
                                 } else {
                                     // Not an absolute path or not under root - use as-is
@@ -1377,28 +1655,44 @@ impl Indexer {
 
                                 match dep_index.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
-                                        log::trace!("Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
-                                                   import_info.imported_path, candidate_path, id);
+                                        log::trace!(
+                                            "Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
+                                            import_info.imported_path,
+                                            candidate_path,
+                                            id
+                                        );
                                         resolved_id = Some(id);
                                         break; // Found a match, stop trying
                                     }
                                     Ok(None) => {
-                                        log::trace!("Vue/Svelte candidate not in index: {}", candidate_path);
+                                        log::trace!(
+                                            "Vue/Svelte candidate not in index: {}",
+                                            candidate_path
+                                        );
                                     }
                                     Err(e) => {
-                                        log::debug!("Skipping Vue/Svelte dependency resolution for '{}': {}", normalized_candidate, e);
+                                        log::debug!(
+                                            "Skipping Vue/Svelte dependency resolution for '{}': {}",
+                                            normalized_candidate,
+                                            e
+                                        );
                                     }
                                 }
                             }
 
                             if resolved_id.is_none() {
-                                log::trace!("Vue/Svelte dependency: no matching file found in database for any candidate: {}",
-                                           candidates_str);
+                                log::trace!(
+                                    "Vue/Svelte dependency: no matching file found in database for any candidate: {}",
+                                    candidates_str
+                                );
                             }
 
                             resolved_id
                         } else {
-                            log::trace!("Could not resolve Vue/Svelte import (non-relative or external): {}", import_info.imported_path);
+                            log::trace!(
+                                "Could not resolve Vue/Svelte import (non-relative or external): {}",
+                                import_info.imported_path
+                            );
                             None
                         }
                     } else {
@@ -1438,8 +1732,8 @@ impl Indexer {
             }
 
             // Reuse the tsconfigs parsed earlier for TypeScript/Vue path alias resolution
-            let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root)
-                .unwrap_or_else(|e| {
+            let tsconfigs =
+                crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
                     log::warn!("Failed to parse tsconfig.json files: {}", e);
                     HashMap::new()
                 });
@@ -1456,7 +1750,10 @@ impl Indexer {
                 let file_id = match dep_index.get_file_id_by_path(&file_path)? {
                     Some(id) => id,
                     None => {
-                        log::warn!("File not found in database (skipping exports): {}", file_path);
+                        log::warn!(
+                            "File not found in database (skipping exports): {}",
+                            file_path
+                        );
                         continue;
                     }
                 };
@@ -1464,18 +1761,25 @@ impl Indexer {
                 // Resolve export source paths and insert
                 for export_info in export_infos {
                     // Resolve export source path (same logic as imports)
-                    let resolved_source_id = if file_path.ends_with(".ts") || file_path.ends_with(".tsx")
-                            || file_path.ends_with(".js") || file_path.ends_with(".jsx")
-                            || file_path.ends_with(".mts") || file_path.ends_with(".cts")
-                            || file_path.ends_with(".mjs") || file_path.ends_with(".cjs")
-                            || file_path.ends_with(".vue") {
+                    let resolved_source_id = if file_path.ends_with(".ts")
+                        || file_path.ends_with(".tsx")
+                        || file_path.ends_with(".js")
+                        || file_path.ends_with(".jsx")
+                        || file_path.ends_with(".mts")
+                        || file_path.ends_with(".cts")
+                        || file_path.ends_with(".mjs")
+                        || file_path.ends_with(".cjs")
+                        || file_path.ends_with(".vue")
+                    {
                         // Resolve TypeScript/JavaScript/Vue export paths (relative imports and path aliases)
                         let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
-                        if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                            &export_info.source_path,
-                            Some(&file_path),
-                            alias_map,
-                        ) {
+                        if let Some(candidates_str) =
+                            crate::parsers::typescript::resolve_ts_import_to_path(
+                                &export_info.source_path,
+                                Some(&file_path),
+                                alias_map,
+                            )
+                        {
                             // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js|path.vue")
                             let candidates: Vec<&str> = candidates_str.split('|').collect();
 
@@ -1483,7 +1787,9 @@ impl Indexer {
                             let mut resolved_id = None;
                             for candidate_path in candidates {
                                 // Normalize path to be relative to project root
-                                let normalized_candidate = if let Ok(rel_path) = std::path::Path::new(candidate_path).strip_prefix(root) {
+                                let normalized_candidate = if let Ok(rel_path) =
+                                    std::path::Path::new(candidate_path).strip_prefix(root)
+                                {
                                     rel_path.to_string_lossy().to_string()
                                 } else {
                                     candidate_path.to_string()
@@ -1491,28 +1797,44 @@ impl Indexer {
 
                                 match dep_index.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
-                                        log::trace!("Resolved export source: {} -> {} (file_id={})",
-                                                   export_info.source_path, normalized_candidate, id);
+                                        log::trace!(
+                                            "Resolved export source: {} -> {} (file_id={})",
+                                            export_info.source_path,
+                                            normalized_candidate,
+                                            id
+                                        );
                                         resolved_id = Some(id);
                                         break; // Found a match, stop trying
                                     }
                                     Ok(None) => {
-                                        log::trace!("Export source candidate not in index: {}", candidate_path);
+                                        log::trace!(
+                                            "Export source candidate not in index: {}",
+                                            candidate_path
+                                        );
                                     }
                                     Err(e) => {
-                                        log::debug!("Skipping export source resolution for '{}': {}", normalized_candidate, e);
+                                        log::debug!(
+                                            "Skipping export source resolution for '{}': {}",
+                                            normalized_candidate,
+                                            e
+                                        );
                                     }
                                 }
                             }
 
                             if resolved_id.is_none() {
-                                log::trace!("Export source: no matching file found in database for any candidate: {}",
-                                           candidates_str);
+                                log::trace!(
+                                    "Export source: no matching file found in database for any candidate: {}",
+                                    candidates_str
+                                );
                             }
 
                             resolved_id
                         } else {
-                            log::trace!("Could not resolve export source (non-relative or external): {}", export_info.source_path);
+                            log::trace!(
+                                "Could not resolve export source (non-relative or external): {}",
+                                export_info.source_path
+                            );
                             None
                         }
                     } else {
@@ -1547,10 +1869,13 @@ impl Indexer {
             pb.set_message("Writing trigram index...".to_string());
         }
         let trigrams_path = self.cache.path().join("trigrams.bin");
-        log::info!("Writing trigram index with {} trigrams to trigrams.bin",
-                   trigram_index.trigram_count());
+        log::info!(
+            "Writing trigram index with {} trigrams to trigrams.bin",
+            trigram_index.trigram_count()
+        );
 
-        trigram_index.write(&trigrams_path)
+        trigram_index
+            .write(&trigrams_path)
             .context("Failed to write trigram index")?;
         log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
 
@@ -1559,10 +1884,14 @@ impl Indexer {
         if show_progress {
             pb.set_message("Finalizing content store...".to_string());
         }
-        content_writer.finalize_if_needed()
+        content_writer
+            .finalize_if_needed()
             .context("Failed to finalize content store")?;
-        log::info!("Wrote {} files ({} bytes) to content.bin",
-                   content_writer.file_count(), content_writer.content_size());
+        log::info!(
+            "Wrote {} files ({} bytes) to content.bin",
+            content_writer.file_count(),
+            content_writer.content_size()
+        );
 
         // Step 5: Update SQLite statistics from database totals (branch-aware)
         *progress_status.lock().unwrap() = "Updating statistics...".to_string();
@@ -1584,8 +1913,13 @@ impl Indexer {
         stats.unchanged_files = unchanged_file_count;
         stats.skipped_too_large = skipped_too_large;
         stats.skipped_bytes_too_large = skipped_bytes_too_large;
-        log::info!("Indexing complete: {} files (new={}, modified={}, unchanged={})",
-                   stats.total_files, new_file_count, modified_file_count, unchanged_file_count);
+        log::info!(
+            "Indexing complete: {} files (new={}, modified={}, unchanged={})",
+            stats.total_files,
+            new_file_count,
+            modified_file_count,
+            unchanged_file_count
+        );
 
         Ok(stats)
     }
@@ -1604,7 +1938,7 @@ impl Indexer {
         // - Hidden files (can be configured)
         let walker = WalkBuilder::new(root)
             .follow_links(self.config.follow_symlinks)
-            .git_ignore(true)  // Explicitly enable gitignore support (enabled by default, but be explicit)
+            .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
             .git_global(false) // Don't use global gitignore
             .git_exclude(false) // Don't use .git/info/exclude
             .build();
@@ -1651,13 +1985,21 @@ impl Indexer {
 
         if !lang.is_supported() {
             if !matches!(lang, Language::Unknown) {
-                log::debug!("Skipping {} ({:?} parser not yet implemented)", path.display(), lang);
+                log::debug!(
+                    "Skipping {} ({:?} parser not yet implemented)",
+                    path.display(),
+                    lang
+                );
             }
             return false;
         }
 
         if !self.config.languages.is_empty() && !self.config.languages.contains(&lang) {
-            log::debug!("Skipping {} ({:?} not in configured languages)", path.display(), lang);
+            log::debug!(
+                "Skipping {} ({:?} not in configured languages)",
+                path.display(),
+                lang
+            );
             return false;
         }
 
@@ -1673,8 +2015,11 @@ impl Indexer {
         // Check file size limits
         if let Ok(metadata) = std::fs::metadata(path) {
             if metadata.len() > self.config.max_file_size as u64 {
-                log::debug!("Skipping {} (too large: {} bytes)",
-                           path.display(), metadata.len());
+                log::debug!(
+                    "Skipping {} (too large: {} bytes)",
+                    path.display(),
+                    metadata.len()
+                );
                 return false;
             }
         }
@@ -1725,8 +2070,14 @@ impl Indexer {
 
                                         // Warn if less than 100MB available
                                         if available_mb < 100 {
-                                            log::warn!("Low disk space: only {}MB available. Indexing may fail.", available_mb);
-                                            output::warn(&format!("Low disk space ({}MB available). Consider freeing up space.", available_mb));
+                                            log::warn!(
+                                                "Low disk space: only {}MB available. Indexing may fail.",
+                                                available_mb
+                                            );
+                                            output::warn(&format!(
+                                                "Low disk space ({}MB available). Consider freeing up space.",
+                                                available_mb
+                                            ));
                                         } else {
                                             log::debug!("Available disk space: {}MB", available_mb);
                                         }
@@ -1746,8 +2097,13 @@ impl Indexer {
                 }
                 Err(e) => {
                     // If we can't write, it might be a disk space issue
-                    log::warn!("Failed to write test file (possible disk space issue): {}", e);
-                    Err(e).context("Failed to verify disk space - indexing may fail due to insufficient space")
+                    log::warn!(
+                        "Failed to write test file (possible disk space issue): {}",
+                        e
+                    );
+                    Err(e).context(
+                        "Failed to verify disk space - indexing may fail due to insufficient space",
+                    )
                 }
             }
         }
@@ -1768,8 +2124,13 @@ impl Indexer {
                     )
                 }
                 Err(e) => {
-                    log::warn!("Failed to write test file (possible disk space issue): {}", e);
-                    Err(e).context("Failed to verify disk space - indexing may fail due to insufficient space")
+                    log::warn!(
+                        "Failed to write test file (possible disk space issue): {}",
+                        e
+                    );
+                    Err(e).context(
+                        "Failed to verify disk space - indexing may fail due to insufficient space",
+                    )
                 }
             }
         }
@@ -1779,8 +2140,8 @@ impl Indexer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_indexer_creation() {
@@ -1975,19 +2336,32 @@ mod tests {
         let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
 
         // Verify the expected files are found
-        assert!(files.iter().any(|f| f.ends_with("included.rs")), "Should find included.rs");
-        assert!(files.iter().any(|f| f.ends_with("also_included.py")), "Should find also_included.py");
+        assert!(
+            files.iter().any(|f| f.ends_with("included.rs")),
+            "Should find included.rs"
+        );
+        assert!(
+            files.iter().any(|f| f.ends_with("also_included.py")),
+            "Should find also_included.py"
+        );
 
         // Verify excluded.rs in ignored/ directory is NOT found
         // This is the key test - gitignore should filter it out
-        assert!(!files.iter().any(|f| {
-            let path_str = f.to_string_lossy();
-            path_str.contains("ignored") && f.ends_with("excluded.rs")
-        }), "Should NOT find excluded.rs in ignored/ directory (gitignore pattern)");
+        assert!(
+            !files.iter().any(|f| {
+                let path_str = f.to_string_lossy();
+                path_str.contains("ignored") && f.ends_with("excluded.rs")
+            }),
+            "Should NOT find excluded.rs in ignored/ directory (gitignore pattern)"
+        );
 
         // Should find exactly 2 files (included.rs and also_included.py)
         // .gitignore file itself has no supported language extension, so it won't be indexed
-        assert_eq!(files.len(), 2, "Should find exactly 2 files (not including .gitignore or ignored/excluded.rs)");
+        assert_eq!(
+            files.len(),
+            2,
+            "Should find exactly 2 files (not including .gitignore or ignored/excluded.rs)"
+        );
     }
 
     #[test]
@@ -2015,8 +2389,9 @@ mod tests {
         // Create a Rust file
         fs::write(
             project_root.join("main.rs"),
-            "fn main() { println!(\"Hello\"); }"
-        ).unwrap();
+            "fn main() { println!(\"Hello\"); }",
+        )
+        .unwrap();
 
         let stats = indexer.index(&project_root, false).unwrap();
 

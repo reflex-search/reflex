@@ -13,11 +13,11 @@
 //! - Type aliases
 //! - Macros (macro_rules! definitions)
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::parsers::{DependencyExtractor, ImportInfo};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
-use crate::parsers::{DependencyExtractor, ImportInfo};
 
 /// Parse Rust source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -50,7 +50,6 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_macros(source, &root_node)?);
     symbols.extend(extract_attributes(source, &root_node)?);
 
-
     // Add file path to all symbols
     for symbol in &mut symbols {
         symbol.path = path.to_string();
@@ -68,8 +67,8 @@ fn extract_functions(source: &str, root: &tree_sitter::Node) -> Result<Vec<Searc
             name: (identifier) @name) @function
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create function query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create function query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Function, None)
 }
@@ -82,8 +81,7 @@ fn extract_structs(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchR
             name: (type_identifier) @name) @struct
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create struct query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create struct query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Struct, None)
 }
@@ -96,8 +94,7 @@ fn extract_enums(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
             name: (type_identifier) @name) @enum
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create enum query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
@@ -110,8 +107,7 @@ fn extract_traits(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRe
             name: (type_identifier) @name) @trait
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create trait query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create trait query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Trait, None)
 }
@@ -129,8 +125,7 @@ fn extract_impls(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
                     name: (identifier) @method_name))) @impl
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create impl query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create impl query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -146,10 +141,22 @@ fn extract_impls(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "impl_name" => {
-                    impl_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    impl_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent function_item node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -164,7 +171,9 @@ fn extract_impls(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
             }
         }
 
-        if let (Some(impl_name), Some(method_name), Some(node)) = (impl_name, method_name, method_node) {
+        if let (Some(impl_name), Some(method_name), Some(node)) =
+            (impl_name, method_name, method_node)
+        {
             let scope = format!("impl {}", impl_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -192,8 +201,7 @@ fn extract_constants(source: &str, root: &tree_sitter::Node) -> Result<Vec<Searc
             name: (identifier) @name) @const
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create const query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create const query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
@@ -206,8 +214,7 @@ fn extract_statics(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchR
             name: (identifier) @name) @static
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create static query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create static query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
@@ -234,8 +241,7 @@ fn extract_modules(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchR
             name: (identifier) @name) @module
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create module query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create module query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Module, None)
 }
@@ -248,8 +254,7 @@ fn extract_type_aliases(source: &str, root: &tree_sitter::Node) -> Result<Vec<Se
             name: (type_identifier) @name) @type
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create type query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create type query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
@@ -262,8 +267,7 @@ fn extract_macros(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRe
             name: (identifier) @name) @macro
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create macro query")?;
+    let query = Query::new(&language.into(), query_str).context("Failed to create macro query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Macro, None)
 }
@@ -281,8 +285,8 @@ fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Sear
             name: (identifier) @name) @function
     "#;
 
-    let func_query = Query::new(&language.into(), func_query_str)
-        .context("Failed to create function query")?;
+    let func_query =
+        Query::new(&language.into(), func_query_str).context("Failed to create function query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&func_query, *root, source.as_bytes());
@@ -295,7 +299,13 @@ fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Sear
             let capture_name: &str = &func_query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "function" => {
                     func_node = Some(capture.node);
@@ -327,7 +337,9 @@ fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Sear
                                 if attr_text.contains("proc_macro_attribute") {
                                     has_proc_macro_attr = true;
                                 }
-                            } else if !child.kind().contains("comment") && child.kind() != "line_comment" {
+                            } else if !child.kind().contains("comment")
+                                && child.kind() != "line_comment"
+                            {
                                 break;
                             }
                         }
@@ -373,7 +385,13 @@ fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Sear
             let capture_name: &str = &attr_query.capture_names()[capture.index as usize];
             match capture_name {
                 "attr_name" => {
-                    attr_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    attr_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "attr" => {
                     attr_node = Some(capture.node);
@@ -422,7 +440,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -454,7 +478,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -554,8 +578,8 @@ fn extract_mod_items(source: &str, root: &tree_sitter::Node) -> Result<Vec<Impor
             name: (identifier) @name) @mod
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create mod item query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create mod item query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -570,7 +594,13 @@ fn extract_mod_items(source: &str, root: &tree_sitter::Node) -> Result<Vec<Impor
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "mod" => {
                     mod_node = Some(capture.node);
@@ -609,8 +639,8 @@ fn extract_extern_crates(source: &str, root: &tree_sitter::Node) -> Result<Vec<I
             name: (identifier) @name) @extern
     "#;
 
-    let query = Query::new(&language.into(), query_str)
-        .context("Failed to create extern crate query")?;
+    let query =
+        Query::new(&language.into(), query_str).context("Failed to create extern crate query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -625,7 +655,13 @@ fn extract_extern_crates(source: &str, root: &tree_sitter::Node) -> Result<Vec<I
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "extern" => {
                     extern_node = Some(capture.node);
@@ -656,7 +692,10 @@ fn classify_rust_import(path: &str) -> crate::models::ImportType {
 
     if path.starts_with("std::") || path.starts_with("core::") || path.starts_with("alloc::") {
         ImportType::Stdlib
-    } else if path.starts_with("crate::") || path.starts_with("super::") || path.starts_with("self::") {
+    } else if path.starts_with("crate::")
+        || path.starts_with("super::")
+        || path.starts_with("self::")
+    {
         ImportType::Internal
     } else {
         // External crate
@@ -674,16 +713,22 @@ fn classify_rust_import(path: &str) -> crate::models::ImportType {
 /// - Glob: use std::collections::*;
 fn parse_rust_use_declaration(text: &str) -> Vec<(String, Option<Vec<String>>)> {
     // Remove visibility modifiers and keywords
-    let text = text.trim()
-        .strip_prefix("pub(crate)").unwrap_or(text)
+    let text = text
         .trim()
-        .strip_prefix("pub(super)").unwrap_or(text)
+        .strip_prefix("pub(crate)")
+        .unwrap_or(text)
         .trim()
-        .strip_prefix("pub").unwrap_or(text)
+        .strip_prefix("pub(super)")
+        .unwrap_or(text)
         .trim()
-        .strip_prefix("use").unwrap_or(text)
+        .strip_prefix("pub")
+        .unwrap_or(text)
         .trim()
-        .strip_suffix(";").unwrap_or(text)
+        .strip_prefix("use")
+        .unwrap_or(text)
+        .trim()
+        .strip_suffix(";")
+        .unwrap_or(text)
         .trim();
 
     // Handle different patterns
@@ -781,13 +826,22 @@ mod tests {
         // Should find: struct User, method new, method get_name
         assert!(symbols.len() >= 3);
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("new")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_name")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("new"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("get_name"))
+        );
 
         // Note: scope field was removed from SearchResult for token optimization
         // Methods are identified by SymbolKind::Method
@@ -871,15 +925,32 @@ mod tests {
         let symbols = parse("test.rs", source).unwrap();
 
         // Filter to just variables
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that local variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final_value")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("local_var"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("temp"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("final_value"))
+        );
 
         // Note: scope field was removed from SearchResult for token optimization
     }
@@ -900,20 +971,34 @@ mod tests {
         let symbols = parse("test.rs", source).unwrap();
 
         // Filter to statics and constants
-        let statics: Vec<_> = symbols.iter()
+        let statics: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
-        let constants: Vec<_> = symbols.iter()
+        let constants: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         // Check that static variables are captured
-        assert!(statics.iter().any(|v| v.symbol.as_deref() == Some("GLOBAL_COUNTER")));
-        assert!(statics.iter().any(|v| v.symbol.as_deref() == Some("MUTABLE_GLOBAL")));
+        assert!(
+            statics
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("GLOBAL_COUNTER"))
+        );
+        assert!(
+            statics
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("MUTABLE_GLOBAL"))
+        );
 
         // Check that constants are still separate
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("MAX_SIZE"))
+        );
     }
 
     #[test]
@@ -939,13 +1024,22 @@ mod tests {
         let symbols = parse("test.rs", source).unwrap();
 
         // Filter to macros
-        let macros: Vec<_> = symbols.iter()
+        let macros: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Macro))
             .collect();
 
         // Check that macros are captured
-        assert!(macros.iter().any(|m| m.symbol.as_deref() == Some("say_hello")));
-        assert!(macros.iter().any(|m| m.symbol.as_deref() == Some("vec_of_strings")));
+        assert!(
+            macros
+                .iter()
+                .any(|m| m.symbol.as_deref() == Some("say_hello"))
+        );
+        assert!(
+            macros
+                .iter()
+                .any(|m| m.symbol.as_deref() == Some("vec_of_strings"))
+        );
         assert_eq!(macros.len(), 2);
     }
 
@@ -971,16 +1065,29 @@ mod tests {
         let symbols = parse("test.rs", source).unwrap();
 
         // Filter to attributes
-        let attributes: Vec<_> = symbols.iter()
+        let attributes: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
         // Check that attribute proc macro DEFINITIONS are captured
-        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("test")));
-        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("route")));
+        assert!(
+            attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("test"))
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("route"))
+        );
 
         // Verify helper function is NOT captured as attribute
-        assert!(!attributes.iter().any(|a| a.symbol.as_deref() == Some("helper")));
+        assert!(
+            !attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("helper"))
+        );
 
         // Should find 2 proc macro definitions + 2 attribute uses (#[proc_macro_attribute])
         assert_eq!(attributes.len(), 4);
@@ -1015,15 +1122,32 @@ mod tests {
         let symbols = parse("test.rs", source).unwrap();
 
         // Filter to attributes
-        let attributes: Vec<_> = symbols.iter()
+        let attributes: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
         // Check that attribute USES are captured
-        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("test")));
-        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("should_panic")));
-        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("derive")));
-        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("cfg")));
+        assert!(
+            attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("test"))
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("should_panic"))
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("derive"))
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|a| a.symbol.as_deref() == Some("cfg"))
+        );
 
         // Should find: test (3x), should_panic (1x), derive (1x), cfg (1x) = 6 total
         assert_eq!(attributes.len(), 6);
@@ -1044,12 +1168,24 @@ mod tests {
         assert_eq!(deps.len(), 4);
 
         // Check std import
-        let std_import = deps.iter().find(|d| d.imported_path == "std::collections::HashMap").unwrap();
-        assert!(matches!(std_import.import_type, crate::models::ImportType::Stdlib));
+        let std_import = deps
+            .iter()
+            .find(|d| d.imported_path == "std::collections::HashMap")
+            .unwrap();
+        assert!(matches!(
+            std_import.import_type,
+            crate::models::ImportType::Stdlib
+        ));
 
         // Check crate import with symbols
-        let crate_import = deps.iter().find(|d| d.imported_path == "crate::models").unwrap();
-        assert!(matches!(crate_import.import_type, crate::models::ImportType::Internal));
+        let crate_import = deps
+            .iter()
+            .find(|d| d.imported_path == "crate::models")
+            .unwrap();
+        assert!(matches!(
+            crate_import.import_type,
+            crate::models::ImportType::Internal
+        ));
         assert!(crate_import.imported_symbols.is_some());
         let symbols = crate_import.imported_symbols.as_ref().unwrap();
         assert_eq!(symbols.len(), 2);
@@ -1057,12 +1193,24 @@ mod tests {
         assert!(symbols.contains(&"SearchResult".to_string()));
 
         // Check super import
-        let super_import = deps.iter().find(|d| d.imported_path == "super::utils").unwrap();
-        assert!(matches!(super_import.import_type, crate::models::ImportType::Internal));
+        let super_import = deps
+            .iter()
+            .find(|d| d.imported_path == "super::utils")
+            .unwrap();
+        assert!(matches!(
+            super_import.import_type,
+            crate::models::ImportType::Internal
+        ));
 
         // Check external import
-        let external_import = deps.iter().find(|d| d.imported_path == "anyhow::Result").unwrap();
-        assert!(matches!(external_import.import_type, crate::models::ImportType::External));
+        let external_import = deps
+            .iter()
+            .find(|d| d.imported_path == "anyhow::Result")
+            .unwrap();
+        assert!(matches!(
+            external_import.import_type,
+            crate::models::ImportType::External
+        ));
     }
 
     #[test]
@@ -1082,7 +1230,10 @@ mod tests {
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.imported_path == "parser"));
         assert!(deps.iter().any(|d| d.imported_path == "utils"));
-        assert!(deps.iter().all(|d| matches!(d.import_type, crate::models::ImportType::ModDecl)));
+        assert!(
+            deps.iter()
+                .all(|d| matches!(d.import_type, crate::models::ImportType::ModDecl))
+        );
     }
 
     #[test]
@@ -1098,7 +1249,10 @@ mod tests {
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.imported_path == "serde"));
         assert!(deps.iter().any(|d| d.imported_path == "serde_json"));
-        assert!(deps.iter().all(|d| matches!(d.import_type, crate::models::ImportType::External)));
+        assert!(
+            deps.iter()
+                .all(|d| matches!(d.import_type, crate::models::ImportType::External))
+        );
     }
 
     #[test]
@@ -1111,10 +1265,19 @@ mod tests {
         let deps = RustDependencyExtractor::extract_dependencies(source).unwrap();
 
         // Check alias handling - should extract the original name
-        let io_import = deps.iter().find(|d| d.imported_path == "std::io::Result").unwrap();
-        assert!(matches!(io_import.import_type, crate::models::ImportType::Stdlib));
+        let io_import = deps
+            .iter()
+            .find(|d| d.imported_path == "std::io::Result")
+            .unwrap();
+        assert!(matches!(
+            io_import.import_type,
+            crate::models::ImportType::Stdlib
+        ));
 
-        let collections_import = deps.iter().find(|d| d.imported_path == "std::collections").unwrap();
+        let collections_import = deps
+            .iter()
+            .find(|d| d.imported_path == "std::collections")
+            .unwrap();
         let symbols = collections_import.imported_symbols.as_ref().unwrap();
         assert_eq!(symbols.len(), 2);
         assert!(symbols.contains(&"HashMap".to_string()));
@@ -1126,19 +1289,46 @@ mod tests {
         use crate::models::ImportType;
 
         // Stdlib
-        assert!(matches!(classify_rust_import("std::collections::HashMap"), ImportType::Stdlib));
-        assert!(matches!(classify_rust_import("core::ptr"), ImportType::Stdlib));
-        assert!(matches!(classify_rust_import("alloc::vec::Vec"), ImportType::Stdlib));
+        assert!(matches!(
+            classify_rust_import("std::collections::HashMap"),
+            ImportType::Stdlib
+        ));
+        assert!(matches!(
+            classify_rust_import("core::ptr"),
+            ImportType::Stdlib
+        ));
+        assert!(matches!(
+            classify_rust_import("alloc::vec::Vec"),
+            ImportType::Stdlib
+        ));
 
         // Internal
-        assert!(matches!(classify_rust_import("crate::models::Language"), ImportType::Internal));
-        assert!(matches!(classify_rust_import("super::utils"), ImportType::Internal));
-        assert!(matches!(classify_rust_import("self::helper"), ImportType::Internal));
+        assert!(matches!(
+            classify_rust_import("crate::models::Language"),
+            ImportType::Internal
+        ));
+        assert!(matches!(
+            classify_rust_import("super::utils"),
+            ImportType::Internal
+        ));
+        assert!(matches!(
+            classify_rust_import("self::helper"),
+            ImportType::Internal
+        ));
 
         // External
-        assert!(matches!(classify_rust_import("serde::Serialize"), ImportType::External));
-        assert!(matches!(classify_rust_import("anyhow::Result"), ImportType::External));
-        assert!(matches!(classify_rust_import("tokio::runtime"), ImportType::External));
+        assert!(matches!(
+            classify_rust_import("serde::Serialize"),
+            ImportType::External
+        ));
+        assert!(matches!(
+            classify_rust_import("anyhow::Result"),
+            ImportType::External
+        ));
+        assert!(matches!(
+            classify_rust_import("tokio::runtime"),
+            ImportType::External
+        ));
     }
 }
 
@@ -1194,7 +1384,8 @@ pub fn resolve_rust_use_to_path(
     // Only handle internal imports (crate::, super::, self::, or bare module names)
     if !import_path.starts_with("crate::")
         && !import_path.starts_with("super::")
-        && !import_path.starts_with("self::") {
+        && !import_path.starts_with("self::")
+    {
         // Check if it's a simple module name (no :: separator at all)
         if import_path.contains("::") {
             return None; // External or stdlib import
@@ -1382,7 +1573,10 @@ mod path_resolution_tests {
         assert!(result.is_some());
         let path = result.unwrap();
         // Should resolve to src/models/language.rs or src/models/language/mod.rs
-        assert!(path.contains("models") && (path.contains("language.rs") || path.contains("language/mod.rs")));
+        assert!(
+            path.contains("models")
+                && (path.contains("language.rs") || path.contains("language/mod.rs"))
+        );
     }
 
     #[test]
@@ -1413,11 +1607,7 @@ mod path_resolution_tests {
 
     #[test]
     fn test_resolve_without_current_file() {
-        let result = resolve_rust_use_to_path(
-            "crate::models",
-            None,
-            Some("/home/user/project"),
-        );
+        let result = resolve_rust_use_to_path("crate::models", None, Some("/home/user/project"));
 
         // Should return None if no current file provided
         assert!(result.is_none());
@@ -1446,9 +1636,7 @@ pub fn parse_all_rust_crates(root: &std::path::Path) -> anyhow::Result<Vec<RustC
     }
 
     let mut crates = Vec::new();
-    let walker = ignore::WalkBuilder::new(root)
-        .git_ignore(true)
-        .build();
+    let walker = ignore::WalkBuilder::new(root).git_ignore(true).build();
 
     for entry in walker {
         let entry = entry?;
@@ -1482,10 +1670,7 @@ fn extract_crate_name(content: &str) -> Option<String> {
 /// If the import path matches a workspace crate name (e.g., `my_crate` or
 /// `my_crate::module`), reclassify it as Internal. Otherwise, fall back to
 /// the default Rust import classification.
-pub fn reclassify_rust_import(
-    path: &str,
-    crates: &[RustCrate],
-) -> crate::models::ImportType {
+pub fn reclassify_rust_import(path: &str, crates: &[RustCrate]) -> crate::models::ImportType {
     for krate in crates {
         if path == krate.name || path.starts_with(&format!("{}::", krate.name)) {
             return crate::models::ImportType::Internal;
@@ -1498,16 +1683,15 @@ pub fn reclassify_rust_import(
 ///
 /// Handles imports like `my_crate::config` by finding the matching workspace
 /// crate and resolving the module path within its `src/` directory.
-pub fn resolve_rust_workspace_path(
-    import_path: &str,
-    crates: &[RustCrate],
-) -> Option<String> {
+pub fn resolve_rust_workspace_path(import_path: &str, crates: &[RustCrate]) -> Option<String> {
     for krate in crates {
         if import_path == krate.name || import_path.starts_with(&format!("{}::", krate.name)) {
             let relative_module = if import_path == krate.name {
                 ""
             } else {
-                import_path.strip_prefix(&format!("{}::", krate.name)).unwrap_or("")
+                import_path
+                    .strip_prefix(&format!("{}::", krate.name))
+                    .unwrap_or("")
             };
 
             let src_root = krate.root_path.join("src");
@@ -1534,7 +1718,9 @@ pub fn resolve_rust_workspace_path(
 
                 // Try popping the last component (it may be an item like a struct/fn, not a module)
                 if parts.len() > 1 {
-                    if let Some(path) = resolve_rust_module_path(&src_root, &parts[..parts.len() - 1]) {
+                    if let Some(path) =
+                        resolve_rust_module_path(&src_root, &parts[..parts.len() - 1])
+                    {
                         if std::path::Path::new(&path).exists() {
                             return Some(path);
                         }
@@ -1565,7 +1751,8 @@ mod workspace_tests {
             r#"[workspace]
 members = ["crate_a", "crate_b"]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
 
         // crate_a
         let crate_a = dir.join("crate_a");
@@ -1576,7 +1763,8 @@ members = ["crate_a", "crate_b"]
 name = "crate_a"
 version = "0.1.0"
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(crate_a.join("src/lib.rs"), "pub mod config;").unwrap();
         fs::write(crate_a.join("src/config.rs"), "pub struct Config;").unwrap();
 
@@ -1589,7 +1777,8 @@ version = "0.1.0"
 name = "crate_b" # a comment
 version = "0.1.0"
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(crate_b.join("src/lib.rs"), "").unwrap();
     }
 
@@ -1619,7 +1808,10 @@ edition = "2021"
 name = "commented_crate" # my crate
 version = "0.1.0"
 "#;
-        assert_eq!(extract_crate_name(toml), Some("commented_crate".to_string()));
+        assert_eq!(
+            extract_crate_name(toml),
+            Some("commented_crate".to_string())
+        );
     }
 
     #[test]
@@ -1653,12 +1845,10 @@ members = ["crate_a"]
 
     #[test]
     fn test_reclassify_rust_import_workspace_crate() {
-        let crates = vec![
-            RustCrate {
-                name: "crate_a".to_string(),
-                root_path: std::path::PathBuf::from("/workspace/crate_a"),
-            },
-        ];
+        let crates = vec![RustCrate {
+            name: "crate_a".to_string(),
+            root_path: std::path::PathBuf::from("/workspace/crate_a"),
+        }];
 
         assert!(matches!(
             reclassify_rust_import("crate_a", &crates),

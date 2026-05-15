@@ -81,11 +81,7 @@ fn read_varint(data: &[u8]) -> Result<(u32, usize)> {
 /// * `mmap` - Memory-mapped file data
 /// * `offset` - Absolute byte offset where compressed data starts
 /// * `size` - Number of bytes to read
-fn decompress_posting_list(
-    mmap: &[u8],
-    offset: u64,
-    size: u32,
-) -> Result<Vec<FileLocation>> {
+fn decompress_posting_list(mmap: &[u8], offset: u64, size: u32) -> Result<Vec<FileLocation>> {
     let start = offset as usize;
     let end = start + size as usize;
 
@@ -243,11 +239,14 @@ impl TrigramIndex {
     /// This clears the in-memory HashMap and writes a sorted partial index to disk.
     /// Called periodically during indexing to limit memory usage.
     pub fn flush_batch(&mut self) -> Result<()> {
-        let temp_dir = self.temp_dir.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Batch flush not enabled - call enable_batch_flush() first"))?;
+        let temp_dir = self.temp_dir.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Batch flush not enabled - call enable_batch_flush() first")
+        })?;
 
         // Take ownership of temp_index to finalize it
-        let temp_map = self.temp_index.take()
+        let temp_map = self
+            .temp_index
+            .take()
             .ok_or_else(|| anyhow::anyhow!("No temp index to flush"))?;
 
         if temp_map.is_empty() {
@@ -405,8 +404,10 @@ impl TrigramIndex {
         // If we have partial indices from batch flushing, DON'T merge yet
         // We'll do streaming merge in write() or write_with_streaming_merge()
         if !self.partial_indices.is_empty() {
-            log::info!("Deferring finalization - will stream merge {} partial indices during write()",
-                       self.partial_indices.len());
+            log::info!(
+                "Deferring finalization - will stream merge {} partial indices during write()",
+                self.partial_indices.len()
+            );
 
             // Flush final batch if temp_index is not empty
             if let Some(ref temp_map) = self.temp_index {
@@ -431,7 +432,12 @@ impl TrigramIndex {
             list.sort_unstable();
             list.dedup(); // Remove duplicates (same trigram appearing multiple times on same line)
             if cap > 0 && list.len() > cap {
-                log::warn!("Trigram 0x{:06X} posting list has {} entries (cap {}); truncating.", trigram, list.len(), cap);
+                log::warn!(
+                    "Trigram 0x{:06X} posting list has {} entries (cap {}); truncating.",
+                    trigram,
+                    list.len(),
+                    cap
+                );
                 list.truncate(cap);
             }
         }
@@ -448,12 +454,15 @@ impl TrigramIndex {
     /// 3. Writing compressed posting lists directly to disk
     /// 4. Never accumulating more than K posting lists in memory at once
     fn merge_partial_indices_to_file(&mut self, output_path: &Path) -> Result<()> {
-        use std::io::{BufReader, BufWriter, Read};
         use std::cmp::Ordering;
         use std::collections::BinaryHeap;
+        use std::io::{BufReader, BufWriter, Read};
 
-        log::info!("Streaming merge of {} partial indices to {:?}",
-                   self.partial_indices.len(), output_path);
+        log::info!(
+            "Streaming merge of {} partial indices to {:?}",
+            self.partial_indices.len(),
+            output_path
+        );
 
         // Open all partial indices as buffered readers
         struct PartialIndexReader {
@@ -501,11 +510,18 @@ impl TrigramIndex {
                         let mut loc_buf = [0u8; 12];
                         reader.reader.read_exact(&mut loc_buf)?;
 
-                        let file_id = u32::from_le_bytes([loc_buf[0], loc_buf[1], loc_buf[2], loc_buf[3]]);
-                        let line_no = u32::from_le_bytes([loc_buf[4], loc_buf[5], loc_buf[6], loc_buf[7]]);
-                        let byte_offset = u32::from_le_bytes([loc_buf[8], loc_buf[9], loc_buf[10], loc_buf[11]]);
+                        let file_id =
+                            u32::from_le_bytes([loc_buf[0], loc_buf[1], loc_buf[2], loc_buf[3]]);
+                        let line_no =
+                            u32::from_le_bytes([loc_buf[4], loc_buf[5], loc_buf[6], loc_buf[7]]);
+                        let byte_offset =
+                            u32::from_le_bytes([loc_buf[8], loc_buf[9], loc_buf[10], loc_buf[11]]);
 
-                        locations.push(FileLocation { file_id, line_no, byte_offset });
+                        locations.push(FileLocation {
+                            file_id,
+                            line_no,
+                            byte_offset,
+                        });
                     }
 
                     reader.current_trigram = Some(trigram);
@@ -535,7 +551,9 @@ impl TrigramIndex {
         impl Ord for HeapEntry {
             fn cmp(&self, other: &Self) -> Ordering {
                 // Reverse for min-heap
-                other.trigram.cmp(&self.trigram)
+                other
+                    .trigram
+                    .cmp(&self.trigram)
                     .then_with(|| other.reader_id.cmp(&self.reader_id))
             }
         }
@@ -593,13 +611,19 @@ impl TrigramIndex {
 
                 let cap = self.max_posting_list_entries;
                 if cap > 0 && merged_locations.len() > cap {
-                    log::warn!("Trigram 0x{:06X} posting list has {} entries (cap {}); truncating.", trigram, merged_locations.len(), cap);
+                    log::warn!(
+                        "Trigram 0x{:06X} posting list has {} entries (cap {}); truncating.",
+                        trigram,
+                        merged_locations.len(),
+                        cap
+                    );
                     merged_locations.truncate(cap);
                 }
 
                 // Compress and write this trigram's posting list
                 let data_offset = writer.stream_position()?;
-                let compressed_size = self.write_compressed_posting_list(&mut writer, &merged_locations)?;
+                let compressed_size =
+                    self.write_compressed_posting_list(&mut writer, &merged_locations)?;
 
                 directory.push(DirectoryEntry {
                     trigram,
@@ -635,12 +659,18 @@ impl TrigramIndex {
 
             let cap = self.max_posting_list_entries;
             if cap > 0 && merged_locations.len() > cap {
-                log::warn!("Trigram 0x{:06X} posting list has {} entries (cap {}); truncating.", trigram, merged_locations.len(), cap);
+                log::warn!(
+                    "Trigram 0x{:06X} posting list has {} entries (cap {}); truncating.",
+                    trigram,
+                    merged_locations.len(),
+                    cap
+                );
                 merged_locations.truncate(cap);
             }
 
             let data_offset = writer.stream_position()?;
-            let compressed_size = self.write_compressed_posting_list(&mut writer, &merged_locations)?;
+            let compressed_size =
+                self.write_compressed_posting_list(&mut writer, &merged_locations)?;
 
             directory.push(DirectoryEntry {
                 trigram,
@@ -651,7 +681,11 @@ impl TrigramIndex {
             num_trigrams += 1;
         }
 
-        log::info!("Merged {} trigrams from {} partial indices", num_trigrams, self.partial_indices.len());
+        log::info!(
+            "Merged {} trigrams from {} partial indices",
+            num_trigrams,
+            self.partial_indices.len()
+        );
 
         // Remember where data section ended (not used but kept for clarity)
         let _data_end_pos = writer.stream_position()?;
@@ -681,7 +715,10 @@ impl TrigramIndex {
         }
 
         // Rewrite file with correct structure
-        let file = OpenOptions::new().write(true).truncate(true).open(output_path)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(output_path)?;
         let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
 
         // Write header with correct num_trigrams
@@ -790,17 +827,30 @@ impl TrigramIndex {
                     let mut loc_buf = [0u8; 12]; // 3 * u32
                     reader.read_exact(&mut loc_buf)?;
 
-                    let file_id = u32::from_le_bytes([loc_buf[0], loc_buf[1], loc_buf[2], loc_buf[3]]);
-                    let line_no = u32::from_le_bytes([loc_buf[4], loc_buf[5], loc_buf[6], loc_buf[7]]);
-                    let byte_offset = u32::from_le_bytes([loc_buf[8], loc_buf[9], loc_buf[10], loc_buf[11]]);
+                    let file_id =
+                        u32::from_le_bytes([loc_buf[0], loc_buf[1], loc_buf[2], loc_buf[3]]);
+                    let line_no =
+                        u32::from_le_bytes([loc_buf[4], loc_buf[5], loc_buf[6], loc_buf[7]]);
+                    let byte_offset =
+                        u32::from_le_bytes([loc_buf[8], loc_buf[9], loc_buf[10], loc_buf[11]]);
 
-                    all_entries.push((trigram, FileLocation { file_id, line_no, byte_offset }));
+                    all_entries.push((
+                        trigram,
+                        FileLocation {
+                            file_id,
+                            line_no,
+                            byte_offset,
+                        },
+                    ));
                 }
             }
         }
 
-        log::info!("Read {} total trigram entries from {} partial indices",
-                   all_entries.len(), self.partial_indices.len());
+        log::info!(
+            "Read {} total trigram entries from {} partial indices",
+            all_entries.len(),
+            self.partial_indices.len()
+        );
 
         // Group by trigram
         let mut index_map: HashMap<Trigram, Vec<FileLocation>> = HashMap::new();
@@ -865,10 +915,18 @@ impl TrigramIndex {
                     Ok(idx) => {
                         let entry = &self.directory[idx];
                         // Decompress this posting list on-demand
-                        match decompress_posting_list(mmap, entry.data_offset, entry.compressed_size) {
+                        match decompress_posting_list(
+                            mmap,
+                            entry.data_offset,
+                            entry.compressed_size,
+                        ) {
                             Ok(locations) => posting_lists.push(locations),
                             Err(e) => {
-                                log::warn!("Failed to decompress posting list for trigram {}: {}", trigram, e);
+                                log::warn!(
+                                    "Failed to decompress posting list for trigram {}: {}",
+                                    trigram,
+                                    e
+                                );
                                 return vec![];
                             }
                         }
@@ -944,7 +1002,10 @@ impl TrigramIndex {
 
         // If we have partial indices from batch flushing, use streaming merge
         if !self.partial_indices.is_empty() {
-            log::info!("Using streaming merge to write {} partial indices", self.partial_indices.len());
+            log::info!(
+                "Using streaming merge to write {} partial indices",
+                self.partial_indices.len()
+            );
             return self.merge_partial_indices_to_file(path);
         }
 
@@ -1058,8 +1119,8 @@ impl TrigramIndex {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open {}", path.display()))?;
+        let file =
+            File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
 
         // Memory-map the file (keep it alive for lazy access)
         let mmap = unsafe {
@@ -1069,7 +1130,10 @@ impl TrigramIndex {
 
         // Validate header
         if mmap.len() < HEADER_SIZE {
-            anyhow::bail!("trigrams.bin too small (expected at least {} bytes)", HEADER_SIZE);
+            anyhow::bail!(
+                "trigrams.bin too small (expected at least {} bytes)",
+                HEADER_SIZE
+            );
         }
 
         if &mmap[0..4] != MAGIC {
@@ -1080,21 +1144,24 @@ impl TrigramIndex {
         if version != VERSION {
             anyhow::bail!(
                 "Unsupported trigrams.bin version: {} (expected {}). Please re-index with 'reflex index'.",
-                version, VERSION
+                version,
+                VERSION
             );
         }
 
         let num_trigrams = u64::from_le_bytes([
-            mmap[8], mmap[9], mmap[10], mmap[11],
-            mmap[12], mmap[13], mmap[14], mmap[15],
+            mmap[8], mmap[9], mmap[10], mmap[11], mmap[12], mmap[13], mmap[14], mmap[15],
         ]) as usize;
 
         let num_files = u64::from_le_bytes([
-            mmap[16], mmap[17], mmap[18], mmap[19],
-            mmap[20], mmap[21], mmap[22], mmap[23],
+            mmap[16], mmap[17], mmap[18], mmap[19], mmap[20], mmap[21], mmap[22], mmap[23],
         ]) as usize;
 
-        log::debug!("Loading lazy trigram index: {} trigrams, {} files", num_trigrams, num_files);
+        log::debug!(
+            "Loading lazy trigram index: {} trigrams, {} files",
+            num_trigrams,
+            num_files
+        );
 
         // Read directory (trigram → offset mappings) - fast, just metadata
         let mut directory = Vec::with_capacity(num_trigrams);
@@ -1106,12 +1173,8 @@ impl TrigramIndex {
                 anyhow::bail!("Truncated directory entry at pos={}", pos);
             }
 
-            let trigram = u32::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-            ]);
+            let trigram =
+                u32::from_le_bytes([mmap[pos], mmap[pos + 1], mmap[pos + 2], mmap[pos + 3]]);
             pos += 4;
 
             let data_offset = u64::from_le_bytes([
@@ -1126,12 +1189,8 @@ impl TrigramIndex {
             ]);
             pos += 8;
 
-            let compressed_size = u32::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-            ]);
+            let compressed_size =
+                u32::from_le_bytes([mmap[pos], mmap[pos + 1], mmap[pos + 2], mmap[pos + 3]]);
             pos += 4;
 
             directory.push(DirectoryEntry {
@@ -1162,8 +1221,7 @@ impl TrigramIndex {
             }
 
             let path_bytes = &mmap[pos..pos + path_len];
-            let path_str = std::str::from_utf8(path_bytes)
-                .context("Invalid UTF-8 in file path")?;
+            let path_str = std::str::from_utf8(path_bytes).context("Invalid UTF-8 in file path")?;
             files.push(PathBuf::from(path_str));
             pos += path_len;
         }
@@ -1271,10 +1329,8 @@ fn intersect_by_file(lists: &[&Vec<FileLocation>]) -> Vec<FileLocation> {
 
     // Intersect with (file_id, line_no) pairs from other lists
     for &list in &lists[1..] {
-        let list_pairs: HashSet<(u32, u32)> = list
-            .iter()
-            .map(|loc| (loc.file_id, loc.line_no))
-            .collect();
+        let list_pairs: HashSet<(u32, u32)> =
+            list.iter().map(|loc| (loc.file_id, loc.line_no)).collect();
         candidates.retain(|pair| list_pairs.contains(pair));
     }
 
@@ -1315,10 +1371,8 @@ fn intersect_by_file_owned(lists: &[Vec<FileLocation>]) -> Vec<FileLocation> {
 
     // Intersect with (file_id, line_no) pairs from other lists
     for list in &lists[1..] {
-        let list_pairs: HashSet<(u32, u32)> = list
-            .iter()
-            .map(|loc| (loc.file_id, loc.line_no))
-            .collect();
+        let list_pairs: HashSet<(u32, u32)> =
+            list.iter().map(|loc| (loc.file_id, loc.line_no)).collect();
         candidates.retain(|pair| list_pairs.contains(pair));
     }
 
@@ -1458,7 +1512,10 @@ mod tests {
         let file2 = index.add_file(PathBuf::from("src/lib.rs"));
 
         index.index_file(file1, "fn main() { println!(\"hello\"); }");
-        index.index_file(file2, "pub fn hello() -> String { String::from(\"hello\") }");
+        index.index_file(
+            file2,
+            "pub fn hello() -> String { String::from(\"hello\") }",
+        );
         index.finalize();
 
         // Write to disk
@@ -1492,7 +1549,9 @@ mod tests {
         index.index_file(file_id, &content);
         index.finalize();
         let aaa = bytes_to_trigram(b"aaa");
-        let list = index.get_posting_list(aaa).expect("aaa trigram should exist");
+        let list = index
+            .get_posting_list(aaa)
+            .expect("aaa trigram should exist");
         assert!(list.len() <= cap, "cap exceeded: {} > {}", list.len(), cap);
     }
 
@@ -1506,7 +1565,14 @@ mod tests {
         index.index_file(file_id, &content);
         index.finalize();
         let aaa = bytes_to_trigram(b"aaa");
-        let list = index.get_posting_list(aaa).expect("aaa trigram should exist");
-        assert!(list.len() >= repetitions, "expected >= {} entries, got {}", repetitions, list.len());
+        let list = index
+            .get_posting_list(aaa)
+            .expect("aaa trigram should exist");
+        assert!(
+            list.len() >= repetitions,
+            "expected >= {} entries, got {}",
+            repetitions,
+            list.len()
+        );
     }
 }

@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -56,20 +56,21 @@ struct JsonRpcError {
 
 /// Parse language string to Language enum
 fn parse_language(lang: Option<String>) -> Option<Language> {
-    lang.as_deref().and_then(|s| match s.to_lowercase().as_str() {
-        "rust" | "rs" => Some(Language::Rust),
-        "javascript" | "js" => Some(Language::JavaScript),
-        "typescript" | "ts" => Some(Language::TypeScript),
-        "vue" => Some(Language::Vue),
-        "svelte" => Some(Language::Svelte),
-        "php" => Some(Language::PHP),
-        "python" | "py" => Some(Language::Python),
-        "go" => Some(Language::Go),
-        "java" => Some(Language::Java),
-        "c" => Some(Language::C),
-        "cpp" | "c++" => Some(Language::Cpp),
-        _ => None,
-    })
+    lang.as_deref()
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "rust" | "rs" => Some(Language::Rust),
+            "javascript" | "js" => Some(Language::JavaScript),
+            "typescript" | "ts" => Some(Language::TypeScript),
+            "vue" => Some(Language::Vue),
+            "svelte" => Some(Language::Svelte),
+            "php" => Some(Language::PHP),
+            "python" | "py" => Some(Language::Python),
+            "go" => Some(Language::Go),
+            "java" => Some(Language::Java),
+            "c" => Some(Language::C),
+            "cpp" | "c++" => Some(Language::Cpp),
+            _ => None,
+        })
 }
 
 /// Parse symbol kind string to SymbolKind enum
@@ -667,11 +668,19 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let glob_patterns = arguments["glob"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let exclude_patterns = arguments["exclude"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
@@ -683,7 +692,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 kind: None,
                 use_ast: false,
                 use_regex: false,
-                limit: None,  // No limit for paths-only mode
+                limit: None, // No limit for paths-only mode
                 symbols_mode: false,
                 expand: false,
                 file_pattern: file,
@@ -692,10 +701,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,
-                paths_only: true,  // KEY: Enable paths-only mode
+                paths_only: true, // KEY: Enable paths-only mode
                 offset: None,
                 force,
-                suppress_output: true,  // MCP always returns JSON
+                suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
                 ..Default::default()
             };
@@ -705,7 +714,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let response = engine.search_with_metadata(&pattern, filter)?;
 
             // Extract locations (path + line) for each match
-            let locations: Vec<serde_json::Value> = response.results.iter()
+            let locations: Vec<serde_json::Value> = response
+                .results
+                .iter()
                 .flat_map(|file_group| {
                     file_group.matches.iter().map(move |m| {
                         json!({
@@ -743,11 +754,19 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let glob_patterns = arguments["glob"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let exclude_patterns = arguments["exclude"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
@@ -761,7 +780,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 kind: parsed_kind,
                 use_ast: false,
                 use_regex: false,
-                limit: None,  // No limit for counting
+                limit: None, // No limit for counting
                 symbols_mode,
                 expand: false,
                 file_pattern: file,
@@ -770,10 +789,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,
-                paths_only: false,  // Need to count all occurrences
+                paths_only: false, // Need to count all occurrences
                 offset: None,
                 force,
-                suppress_output: true,  // MCP always returns JSON
+                suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
                 ..Default::default()
             };
@@ -784,7 +803,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Count unique files
             use std::collections::HashSet;
-            let unique_files: HashSet<String> = response.results.iter().map(|fg| fg.path.clone()).collect();
+            let unique_files: HashSet<String> =
+                response.results.iter().map(|fg| fg.path.clone()).collect();
 
             // Return minimal stats
             let stats = json!({
@@ -816,11 +836,19 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let expand = arguments["expand"].as_bool();
             let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let exclude_patterns = arguments["exclude"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
@@ -841,11 +869,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             // 2. If user specified limit: use that value
             // 3. Otherwise: use default limit of 100
             let final_limit = if paths_only && limit.is_none() {
-                None  // --paths without explicit limit means no limit
+                None // --paths without explicit limit means no limit
             } else if let Some(user_limit) = limit {
-                Some(user_limit)  // Use user-specified limit
+                Some(user_limit) // Use user-specified limit
             } else {
-                Some(100)  // Default: limit to 100 results for token efficiency
+                Some(100) // Default: limit to 100 results for token efficiency
             };
 
             let filter = QueryFilter {
@@ -859,13 +887,13 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 file_pattern: file,
                 exact: exact.unwrap_or(false),
                 use_contains: false, // Default to word-boundary matching for MCP
-                timeout_secs: 30, // Default 30 second timeout for MCP queries
+                timeout_secs: 30,    // Default 30 second timeout for MCP queries
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
                 paths_only,
                 offset,
                 force,
-                suppress_output: true,  // MCP always returns JSON
+                suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
                 ..Default::default()
             };
@@ -891,8 +919,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 response.pagination.has_more,
                 symbols_mode,
                 paths_only,
-                false,  // use_ast
-                false,  // use_regex
+                false, // use_ast
+                false, // use_regex
                 language.is_some(),
                 !glob_patterns.is_empty(),
                 exact.unwrap_or(false),
@@ -916,11 +944,19 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let exclude_patterns = arguments["exclude"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
@@ -931,11 +967,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Smart limit handling (same as search_code)
             let final_limit = if paths_only && limit.is_none() {
-                None  // --paths without explicit limit means no limit
+                None // --paths without explicit limit means no limit
             } else if let Some(user_limit) = limit {
-                Some(user_limit)  // Use user-specified limit
+                Some(user_limit) // Use user-specified limit
             } else {
-                Some(100)  // Default: limit to 100 results for token efficiency
+                Some(100) // Default: limit to 100 results for token efficiency
             };
 
             let filter = QueryFilter {
@@ -949,13 +985,13 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 file_pattern: file,
                 exact: false,
                 use_contains: false, // Regex mode uses substring matching via use_regex flag
-                timeout_secs: 30, // Default 30 second timeout for MCP queries
+                timeout_secs: 30,    // Default 30 second timeout for MCP queries
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
                 paths_only,
                 offset,
                 force,
-                suppress_output: true,  // MCP always returns JSON
+                suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
                 ..Default::default()
             };
@@ -967,7 +1003,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             // Apply preview truncation for token efficiency
             for file_group in response.results.iter_mut() {
                 for m in file_group.matches.iter_mut() {
-                    m.preview = crate::cli::truncate_preview(&m.preview, DEFAULT_MCP_PREVIEW_LENGTH);
+                    m.preview =
+                        crate::cli::truncate_preview(&m.preview, DEFAULT_MCP_PREVIEW_LENGTH);
                 }
             }
 
@@ -979,13 +1016,13 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 result_count,
                 response.pagination.total,
                 response.pagination.has_more,
-                false,  // symbols_mode
+                false, // symbols_mode
                 paths_only,
-                false,  // use_ast
-                true,   // use_regex
+                false, // use_ast
+                true,  // use_regex
                 language.is_some(),
                 !glob_patterns.is_empty(),
-                false,  // exact
+                false, // exact
             );
 
             Ok(json!({
@@ -1011,34 +1048,47 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let exclude_patterns: Vec<String> = arguments["exclude"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
 
-            let language = parse_language(Some(lang_str))
-                .ok_or_else(|| anyhow::anyhow!("Invalid or unsupported language for AST queries"))?;
+            let language = parse_language(Some(lang_str)).ok_or_else(|| {
+                anyhow::anyhow!("Invalid or unsupported language for AST queries")
+            })?;
 
             // Warn if glob patterns are not provided (performance issue)
             if glob_patterns.is_empty() && exclude_patterns.is_empty() {
-                log::warn!("⚠️  AST query without glob patterns will scan the ENTIRE codebase. This may take 2-10+ seconds.");
-                log::warn!("    Strongly recommend using glob patterns, e.g., glob=['src/**/*.rs']");
+                log::warn!(
+                    "⚠️  AST query without glob patterns will scan the ENTIRE codebase. This may take 2-10+ seconds."
+                );
+                log::warn!(
+                    "    Strongly recommend using glob patterns, e.g., glob=['src/**/*.rs']"
+                );
             }
 
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
 
             // Smart limit handling (same as search_code)
             let final_limit = if paths_only && limit.is_none() {
-                None  // --paths without explicit limit means no limit
+                None // --paths without explicit limit means no limit
             } else if let Some(user_limit) = limit {
-                Some(user_limit)  // Use user-specified limit
+                Some(user_limit) // Use user-specified limit
             } else {
-                Some(100)  // Default: limit to 100 results for token efficiency
+                Some(100) // Default: limit to 100 results for token efficiency
             };
 
             let filter = QueryFilter {
@@ -1058,7 +1108,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 paths_only,
                 offset,
                 force,
-                suppress_output: true,  // MCP always returns JSON
+                suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
                 ..Default::default()
             };
@@ -1071,7 +1121,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Apply preview truncation for token efficiency
             for result in &mut results {
-                result.preview = crate::cli::truncate_preview(&result.preview, DEFAULT_MCP_PREVIEW_LENGTH);
+                result.preview =
+                    crate::cli::truncate_preview(&result.preview, DEFAULT_MCP_PREVIEW_LENGTH);
             }
 
             Ok(json!({
@@ -1083,13 +1134,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
         }
         "index_project" => {
             let force = arguments["force"].as_bool();
-            let languages = arguments["languages"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                });
+            let languages = arguments["languages"].as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            });
 
             let cache = CacheManager::new(".");
 
@@ -1130,7 +1179,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let deps_index = DependencyIndex::new(cache);
 
             // Fuzzy path matching
-            let file_id = deps_index.get_file_id_by_path(&path)?
+            let file_id = deps_index
+                .get_file_id_by_path(&path)?
                 .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
 
             let dependencies = deps_index.get_dependencies_info(file_id)?;
@@ -1152,14 +1202,16 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let deps_index = DependencyIndex::new(cache);
 
             // Fuzzy path matching
-            let file_id = deps_index.get_file_id_by_path(&path)?
+            let file_id = deps_index
+                .get_file_id_by_path(&path)?
                 .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
 
             let dependents = deps_index.get_dependents(file_id)?;
             let paths = deps_index.get_file_paths(&dependents)?;
 
             // Convert to array of paths
-            let path_list: Vec<String> = dependents.iter()
+            let path_list: Vec<String> = dependents
+                .iter()
                 .filter_map(|id| paths.get(id).cloned())
                 .collect();
 
@@ -1176,16 +1228,14 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .ok_or_else(|| anyhow::anyhow!("Missing path"))?
                 .to_string();
 
-            let depth = arguments["depth"]
-                .as_u64()
-                .map(|n| n as usize)
-                .unwrap_or(3);  // Default depth of 3
+            let depth = arguments["depth"].as_u64().map(|n| n as usize).unwrap_or(3); // Default depth of 3
 
             let cache = CacheManager::new(".");
             let deps_index = DependencyIndex::new(cache);
 
             // Fuzzy path matching
-            let file_id = deps_index.get_file_id_by_path(&path)?
+            let file_id = deps_index
+                .get_file_id_by_path(&path)?
                 .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
 
             let transitive = deps_index.get_transitive_deps(file_id, depth)?;
@@ -1195,12 +1245,15 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let paths = deps_index.get_file_paths(&file_ids)?;
 
             // Build result with path → depth mapping
-            let result: Vec<serde_json::Value> = transitive.iter()
+            let result: Vec<serde_json::Value> = transitive
+                .iter()
                 .filter_map(|(id, depth)| {
-                    paths.get(id).map(|path| json!({
-                        "path": path,
-                        "depth": depth
-                    }))
+                    paths.get(id).map(|path| {
+                        json!({
+                            "path": path,
+                            "depth": depth
+                        })
+                    })
                 })
                 .collect();
 
@@ -1238,7 +1291,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     all_hotspots.sort_by(|a, b| b.1.cmp(&a.1));
                 }
                 _ => {
-                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                    return Err(anyhow::anyhow!(
+                        "Invalid sort order '{}'. Supported: asc, desc",
+                        sort_order
+                    ));
                 }
             }
 
@@ -1260,12 +1316,15 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let paths = deps_index.get_file_paths(&file_ids)?;
 
             // Build result with path + import_count (no file_id)
-            let results: Vec<serde_json::Value> = hotspots.iter()
+            let results: Vec<serde_json::Value> = hotspots
+                .iter()
                 .filter_map(|(id, import_count)| {
-                    paths.get(id).map(|path| json!({
-                        "path": path,
-                        "import_count": import_count,
-                    }))
+                    paths.get(id).map(|path| {
+                        json!({
+                            "path": path,
+                            "import_count": import_count,
+                        })
+                    })
                 })
                 .collect();
 
@@ -1309,7 +1368,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     all_cycles.sort_by_key(|cycle| std::cmp::Reverse(cycle.len()));
                 }
                 _ => {
-                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                    return Err(anyhow::anyhow!(
+                        "Invalid sort order '{}'. Supported: asc, desc",
+                        sort_order
+                    ));
                 }
             }
 
@@ -1330,9 +1392,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
-            let results: Vec<serde_json::Value> = cycles.iter()
+            let results: Vec<serde_json::Value> = cycles
+                .iter()
                 .map(|cycle| {
-                    let cycle_paths: Vec<_> = cycle.iter()
+                    let cycle_paths: Vec<_> = cycle
+                        .iter()
                         .filter_map(|id| paths.get(id).cloned())
                         .collect();
                     json!({
@@ -1384,7 +1448,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let paths = deps_index.get_file_paths(&unused)?;
 
             // Build result (flat array of path strings)
-            let results: Vec<String> = unused.iter()
+            let results: Vec<String> = unused
+                .iter()
                 .filter_map(|id| paths.get(id).cloned())
                 .collect();
 
@@ -1413,9 +1478,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .as_u64()
                 .map(|n| n as usize)
                 .unwrap_or(2);
-            let max_island_size = arguments["max_island_size"]
-                .as_u64()
-                .map(|n| n as usize);
+            let max_island_size = arguments["max_island_size"].as_u64().map(|n| n as usize);
             let sort = arguments["sort"].as_str().map(|s| s.to_string());
 
             let cache = CacheManager::new(".");
@@ -1434,7 +1497,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             });
 
             // Filter islands by size
-            let mut islands: Vec<_> = all_islands.into_iter()
+            let mut islands: Vec<_> = all_islands
+                .into_iter()
                 .filter(|island| {
                     let size = island.len();
                     size >= min_island_size && size <= max_size
@@ -1453,7 +1517,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     islands.sort_by_key(|island| std::cmp::Reverse(island.len()));
                 }
                 _ => {
-                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                    return Err(anyhow::anyhow!(
+                        "Invalid sort order '{}'. Supported: asc, desc",
+                        sort_order
+                    ));
                 }
             }
 
@@ -1476,14 +1543,20 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let has_more = offset_val + count < total_after_filter;
 
             // Get all file IDs from all islands
-            let file_ids: Vec<i64> = islands.iter().flat_map(|island| island.iter()).copied().collect();
+            let file_ids: Vec<i64> = islands
+                .iter()
+                .flat_map(|island| island.iter())
+                .copied()
+                .collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
             // Build result (array of islands with paths, no file_ids)
-            let results: Vec<serde_json::Value> = islands.iter()
+            let results: Vec<serde_json::Value> = islands
+                .iter()
                 .enumerate()
                 .map(|(idx, island)| {
-                    let island_paths: Vec<_> = island.iter()
+                    let island_paths: Vec<_> = island
+                        .iter()
                         .filter_map(|id| paths.get(id).cloned())
                         .collect();
                     json!({
@@ -1550,10 +1623,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let entry_points = arguments["entry_points"].as_bool().unwrap_or(false);
             let test_layout = arguments["test_layout"].as_bool().unwrap_or(false);
             let config_files = arguments["config_files"].as_bool().unwrap_or(false);
-            let depth = arguments["depth"]
-                .as_u64()
-                .map(|n| n as usize)
-                .unwrap_or(2);
+            let depth = arguments["depth"].as_u64().map(|n| n as usize).unwrap_or(2);
             let path = arguments["path"].as_str().map(|s| s.to_string());
 
             // Build context options
@@ -1567,7 +1637,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 test_layout,
                 config_files,
                 depth,
-                json: false,  // MCP always returns text format
+                json: false, // MCP always returns text format
             };
 
             // If no context flags specified, return minimal orientation context only.
@@ -1651,11 +1721,19 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
             let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let exclude_patterns: Vec<String> = arguments["exclude"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let force = arguments["force"].as_bool().unwrap_or(false);
 
@@ -1690,20 +1768,24 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let def_response = engine.search_with_metadata(&pattern, def_filter)?;
 
             // Extract first definition as a compact object (reuse MatchResult's Serialize impl)
-            let definition: Option<serde_json::Value> = def_response.results.first().and_then(|fg| {
-                fg.matches.first().map(|m| {
-                    let mut def_obj = serde_json::to_value(m).unwrap_or(json!({}));
-                    if let serde_json::Value::Object(ref mut map) = def_obj {
-                        map.insert("path".to_string(), json!(fg.path.clone()));
-                        // Truncate preview if present
-                        if let Some(preview) = map.get("preview").and_then(|v| v.as_str()) {
-                            let truncated = crate::cli::truncate_preview(preview, DEFAULT_MCP_PREVIEW_LENGTH);
-                            map.insert("preview".to_string(), json!(truncated));
+            let definition: Option<serde_json::Value> =
+                def_response.results.first().and_then(|fg| {
+                    fg.matches.first().map(|m| {
+                        let mut def_obj = serde_json::to_value(m).unwrap_or(json!({}));
+                        if let serde_json::Value::Object(ref mut map) = def_obj {
+                            map.insert("path".to_string(), json!(fg.path.clone()));
+                            // Truncate preview if present
+                            if let Some(preview) = map.get("preview").and_then(|v| v.as_str()) {
+                                let truncated = crate::cli::truncate_preview(
+                                    preview,
+                                    DEFAULT_MCP_PREVIEW_LENGTH,
+                                );
+                                map.insert("preview".to_string(), json!(truncated));
+                            }
                         }
-                    }
-                    def_obj
-                })
-            });
+                        def_obj
+                    })
+                });
 
             // Search 2: Find all textual references (symbols_mode=false)
             let ref_filter = QueryFilter {
@@ -1786,22 +1868,23 @@ fn process_request(request: JsonRpcRequest) -> JsonRpcResponse {
             log::error!("MCP error: {}", e);
             let msg = e.to_string();
             // REF-67: map to the correct JSON-RPC error code instead of always using -32603.
-            let (code, kind, message) = if let Some(re) = e.downcast_ref::<crate::errors::ReflexError>() {
-                let code = match re {
-                    crate::errors::ReflexError::QuerySyntaxError(_) => -32602, // Invalid params
-                    _ => -32603, // Internal error
+            let (code, kind, message) =
+                if let Some(re) = e.downcast_ref::<crate::errors::ReflexError>() {
+                    let code = match re {
+                        crate::errors::ReflexError::QuerySyntaxError(_) => -32602, // Invalid params
+                        _ => -32603,                                               // Internal error
+                    };
+                    (code, re.kind().to_string(), re.to_string())
+                } else if msg.starts_with("Unknown method:") {
+                    (-32601, "MethodNotFound".to_string(), msg)
+                } else if msg.starts_with("Missing")
+                    || msg.starts_with("Unknown tool:")
+                    || msg.starts_with("Invalid or unsupported")
+                {
+                    (-32602, "InvalidParams".to_string(), msg)
+                } else {
+                    (-32603, "InternalError".to_string(), msg)
                 };
-                (code, re.kind().to_string(), re.to_string())
-            } else if msg.starts_with("Unknown method:") {
-                (-32601, "MethodNotFound".to_string(), msg)
-            } else if msg.starts_with("Missing")
-                || msg.starts_with("Unknown tool:")
-                || msg.starts_with("Invalid or unsupported")
-            {
-                (-32602, "InvalidParams".to_string(), msg)
-            } else {
-                (-32603, "InternalError".to_string(), msg)
-            };
             JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
@@ -1945,6 +2028,9 @@ mod tests {
     fn test_notification_produces_no_response() {
         let notif = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":null}"#;
         let raw = call_server(&format!("{}\n", notif));
-        assert!(raw.trim().is_empty(), "notification must not get a response");
+        assert!(
+            raw.trim().is_empty(),
+            "notification must not get a response"
+        );
     }
 }

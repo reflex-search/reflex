@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
 use crate::cache::CacheManager;
-
+use anyhow::{Context, Result};
 
 /// Handle the `stats` subcommand
 pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
@@ -40,8 +39,8 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
                     f.read_exact(&mut header).ok()?;
                     if &header[..4] == b"RFTG" {
                         Some(u64::from_le_bytes([
-                            header[8], header[9], header[10], header[11],
-                            header[12], header[13], header[14], header[15],
+                            header[8], header[9], header[10], header[11], header[12], header[13],
+                            header[14], header[15],
                         ]))
                     } else {
                         None
@@ -69,18 +68,26 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         if crate::git::is_git_repo(&root) {
             match crate::git::get_git_state(&root) {
                 Ok(git_state) => {
-                    let dirty_indicator = if git_state.dirty { " (uncommitted changes)" } else { " (clean)" };
-                    println!("Branch:         {}@{}{}",
-                             git_state.branch,
-                             &git_state.commit[..7],
-                             dirty_indicator);
+                    let dirty_indicator = if git_state.dirty {
+                        " (uncommitted changes)"
+                    } else {
+                        " (clean)"
+                    };
+                    println!(
+                        "Branch:         {}@{}{}",
+                        git_state.branch,
+                        &git_state.commit[..7],
+                        dirty_indicator
+                    );
 
                     // Check if current branch is indexed
                     match cache.get_branch_info(&git_state.branch) {
                         Ok(branch_info) => {
                             if branch_info.commit_sha != git_state.commit {
-                                println!("                ⚠️  Index commit mismatch (indexed: {})",
-                                         &branch_info.commit_sha[..7]);
+                                println!(
+                                    "                ⚠️  Index commit mismatch (indexed: {})",
+                                    &branch_info.commit_sha[..7]
+                                );
                             }
                             if git_state.dirty && !branch_info.is_dirty {
                                 println!("                ⚠️  Uncommitted changes not indexed");
@@ -101,7 +108,10 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         }
 
         println!("Files indexed:  {}", stats.total_files);
-        println!("Index size:     {}", super::format_bytes(stats.index_size_bytes));
+        println!(
+            "Index size:     {}",
+            super::format_bytes(stats.index_size_bytes)
+        );
         if trigram_count > 0 {
             println!("Trigrams:       {}", trigram_count);
         }
@@ -116,7 +126,11 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
             lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
 
             // Calculate column widths
-            let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
+            let max_lang_len = lang_vec
+                .iter()
+                .map(|(lang, _)| lang.len())
+                .max()
+                .unwrap_or(8);
             let lang_width = max_lang_len.max(8); // At least "Language" header width
 
             // Print table header
@@ -126,16 +140,19 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
             // Print rows
             for (language, file_count) in lang_vec {
                 let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
-                println!("  {:<width$}  {:5}  {:7}",
-                    language, file_count, line_count,
-                    width = lang_width);
+                println!(
+                    "  {:<width$}  {:5}  {:7}",
+                    language,
+                    file_count,
+                    line_count,
+                    width = lang_width
+                );
             }
         }
     }
 
     Ok(())
 }
-
 
 /// Handle the `clear` subcommand
 pub(super) fn handle_clear(skip_confirm: bool) -> Result<()> {
@@ -147,7 +164,10 @@ pub(super) fn handle_clear(skip_confirm: bool) -> Result<()> {
     }
 
     if !skip_confirm {
-        println!("This will delete the local Reflex cache at: {:?}", cache.path());
+        println!(
+            "This will delete the local Reflex cache at: {:?}",
+            cache.path()
+        );
         print!("Are you sure? [y/N] ");
         use std::io::{self, Write};
         io::stdout().flush()?;
@@ -166,7 +186,6 @@ pub(super) fn handle_clear(skip_confirm: bool) -> Result<()> {
 
     Ok(())
 }
-
 
 /// Handle the `list-files` subcommand
 pub(super) fn handle_list_files(
@@ -197,7 +216,8 @@ pub(super) fn handle_list_files(
         if Language::from_name(lang_str).is_none() {
             anyhow::bail!(
                 "Unknown language: '{}'\n\nSupported languages:\n  {}\n\nExample: rfx list-files --lang rust",
-                lang_str, Language::supported_names_help()
+                lang_str,
+                Language::supported_names_help()
             );
         }
         // Normalise to the canonical lowercase name stored in the DB
@@ -210,7 +230,10 @@ pub(super) fn handle_list_files(
     let glob_set = if !glob_patterns.is_empty() {
         let mut builder = globset::GlobSetBuilder::new();
         for pat in &glob_patterns {
-            builder.add(globset::Glob::new(pat).with_context(|| format!("Invalid glob pattern: {}", pat))?);
+            builder.add(
+                globset::Glob::new(pat)
+                    .with_context(|| format!("Invalid glob pattern: {}", pat))?,
+            );
         }
         Some(builder.build().context("Failed to build glob set")?)
     } else {
@@ -219,22 +242,26 @@ pub(super) fn handle_list_files(
 
     let all_files = cache.list_files()?;
 
-    let files: Vec<_> = all_files.into_iter().filter(|f| {
-        // Language filter: compare lowercase language name
-        if let Some(ref wanted_lang) = lang_name_filter {
-            if !f.language.to_lowercase().starts_with(wanted_lang.as_str()) &&
-               f.language.to_lowercase() != *wanted_lang {
-                return false;
+    let files: Vec<_> = all_files
+        .into_iter()
+        .filter(|f| {
+            // Language filter: compare lowercase language name
+            if let Some(ref wanted_lang) = lang_name_filter {
+                if !f.language.to_lowercase().starts_with(wanted_lang.as_str())
+                    && f.language.to_lowercase() != *wanted_lang
+                {
+                    return false;
+                }
             }
-        }
-        // Glob filter
-        if let Some(ref gs) = glob_set {
-            if !gs.is_match(&f.path) {
-                return false;
+            // Glob filter
+            if let Some(ref gs) = glob_set {
+                if !gs.is_match(&f.path) {
+                    return false;
+                }
             }
-        }
-        true
-    }).collect();
+            true
+        })
+        .collect();
 
     if as_json {
         let total = files.len();
@@ -258,13 +285,11 @@ pub(super) fn handle_list_files(
     Ok(())
 }
 
-
 /// Handle the `mcp` subcommand
 pub(super) fn handle_mcp() -> Result<()> {
     log::info!("Starting MCP server");
     crate::mcp::run_mcp_server()
 }
-
 
 /// Handle the `context` command
 pub(super) fn handle_context(

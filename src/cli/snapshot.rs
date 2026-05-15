@@ -1,6 +1,5 @@
-use anyhow::Result;
 use crate::cache::CacheManager;
-
+use anyhow::Result;
 
 pub(super) fn handle_snapshot_create() -> Result<()> {
     let cache = CacheManager::new(".");
@@ -10,7 +9,10 @@ pub(super) fn handle_snapshot_create() -> Result<()> {
 
     let info = crate::pulse::snapshot::create_snapshot(&cache)?;
     eprintln!("Snapshot created: {}", info.id);
-    eprintln!("  Files: {}, Lines: {}, Edges: {}", info.file_count, info.total_lines, info.edge_count);
+    eprintln!(
+        "  Files: {}, Lines: {}, Edges: {}",
+        info.file_count, info.total_lines, info.edge_count
+    );
     if let Some(branch) = &info.git_branch {
         eprintln!("  Branch: {}", branch);
     }
@@ -24,7 +26,6 @@ pub(super) fn handle_snapshot_create() -> Result<()> {
 
     Ok(())
 }
-
 
 pub(super) fn handle_snapshot_list(json: bool, pretty: bool) -> Result<()> {
     let cache = CacheManager::new(".");
@@ -46,19 +47,26 @@ pub(super) fn handle_snapshot_list(json: bool, pretty: bool) -> Result<()> {
             eprintln!("No snapshots found. Run `rfx snapshot` to create one.");
             return Ok(());
         }
-        println!("{:<20} {:>6} {:>8} {:>6}  {}", "ID", "Files", "Lines", "Edges", "Branch");
+        println!(
+            "{:<20} {:>6} {:>8} {:>6}  {}",
+            "ID", "Files", "Lines", "Edges", "Branch"
+        );
         println!("{}", "-".repeat(60));
         for s in &snapshots {
-            println!("{:<20} {:>6} {:>8} {:>6}  {}",
-                s.id, s.file_count, s.total_lines, s.edge_count,
-                s.git_branch.as_deref().unwrap_or("-"));
+            println!(
+                "{:<20} {:>6} {:>8} {:>6}  {}",
+                s.id,
+                s.file_count,
+                s.total_lines,
+                s.edge_count,
+                s.git_branch.as_deref().unwrap_or("-")
+            );
         }
         eprintln!("\n{} snapshot(s)", snapshots.len());
     }
 
     Ok(())
 }
-
 
 pub(super) fn handle_snapshot_diff(
     baseline: Option<String>,
@@ -75,17 +83,25 @@ pub(super) fn handle_snapshot_diff(
     let pulse_config = crate::pulse::config::load_pulse_config(cache.path())?;
 
     let current_snapshot = match &current {
-        Some(id) => snapshots.iter().find(|s| s.id == *id)
+        Some(id) => snapshots
+            .iter()
+            .find(|s| s.id == *id)
             .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?,
-        None => snapshots.first()
+        None => snapshots
+            .first()
             .ok_or_else(|| anyhow::anyhow!("No snapshots found. Run `rfx snapshot` first."))?,
     };
 
     let baseline_snapshot = match &baseline {
-        Some(id) => snapshots.iter().find(|s| s.id == *id)
+        Some(id) => snapshots
+            .iter()
+            .find(|s| s.id == *id)
             .ok_or_else(|| anyhow::anyhow!("Snapshot '{}' not found", id))?,
-        None => snapshots.get(1)
-            .ok_or_else(|| anyhow::anyhow!("Need at least 2 snapshots to diff. Run `rfx snapshot` again after making changes."))?,
+        None => snapshots.get(1).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Need at least 2 snapshots to diff. Run `rfx snapshot` again after making changes."
+            )
+        })?,
     };
 
     let diff = crate::pulse::diff::compute_diff(
@@ -104,7 +120,10 @@ pub(super) fn handle_snapshot_diff(
     } else {
         let s = &diff.summary;
         println!("Diff: {} → {}", diff.baseline_id, diff.current_id);
-        println!("  Files: +{} -{} ~{}", s.files_added, s.files_removed, s.files_modified);
+        println!(
+            "  Files: +{} -{} ~{}",
+            s.files_added, s.files_removed, s.files_modified
+        );
         println!("  Edges: +{} -{}", s.edges_added, s.edges_removed);
         if !diff.threshold_alerts.is_empty() {
             println!("  Alerts: {}", diff.threshold_alerts.len());
@@ -116,7 +135,6 @@ pub(super) fn handle_snapshot_diff(
 
     Ok(())
 }
-
 
 pub(super) fn handle_snapshot_gc(json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
@@ -130,7 +148,10 @@ pub(super) fn handle_snapshot_gc(json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&report)?);
     } else {
-        println!("GC complete: before {}, after {}, removed {}", report.snapshots_before, report.snapshots_after, report.removed);
+        println!(
+            "GC complete: before {}, after {}, removed {}",
+            report.snapshots_before, report.snapshots_after, report.removed
+        );
     }
 
     Ok(())

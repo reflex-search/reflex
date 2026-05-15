@@ -151,11 +151,11 @@ impl BackgroundIndexer {
             return Ok(None);
         }
 
-        let status_json = std::fs::read_to_string(&status_path)
-            .context("Failed to read indexing status")?;
+        let status_json =
+            std::fs::read_to_string(&status_path).context("Failed to read indexing status")?;
 
-        let status: IndexingStatus = serde_json::from_str(&status_json)
-            .context("Failed to parse indexing status")?;
+        let status: IndexingStatus =
+            serde_json::from_str(&status_json).context("Failed to parse indexing status")?;
 
         Ok(Some(status))
     }
@@ -179,8 +179,7 @@ impl BackgroundIndexer {
             }
         }
 
-        let mut lock_file = File::create(&lock_path)
-            .context("Failed to create lock file")?;
+        let mut lock_file = File::create(&lock_path).context("Failed to create lock file")?;
 
         let pid = std::process::id();
         writeln!(lock_file, "{}", pid)?;
@@ -194,8 +193,7 @@ impl BackgroundIndexer {
         let lock_path = self.cache_path.join(LOCK_FILE);
 
         if lock_path.exists() {
-            std::fs::remove_file(&lock_path)
-                .context("Failed to remove lock file")?;
+            std::fs::remove_file(&lock_path).context("Failed to remove lock file")?;
             log::debug!("Released indexing lock");
         }
 
@@ -207,11 +205,10 @@ impl BackgroundIndexer {
         self.status.updated_at = chrono::Utc::now().to_rfc3339();
 
         let status_path = self.cache_path.join(STATUS_FILE);
-        let status_json = serde_json::to_string_pretty(&self.status)
-            .context("Failed to serialize status")?;
+        let status_json =
+            serde_json::to_string_pretty(&self.status).context("Failed to serialize status")?;
 
-        std::fs::write(&status_path, status_json)
-            .context("Failed to write status file")?;
+        std::fs::write(&status_path, status_json).context("Failed to write status file")?;
 
         Ok(())
     }
@@ -224,7 +221,8 @@ impl BackgroundIndexer {
         let start_time = Instant::now();
 
         // Acquire lock (fails if already running)
-        let _lock_file = self.acquire_lock()
+        let _lock_file = self
+            .acquire_lock()
             .context("Failed to acquire indexing lock")?;
 
         // Ensure lock is released even on panic
@@ -289,8 +287,8 @@ impl BackgroundIndexer {
 
         // Open cache manager and symbol cache
         let cache_mgr = CacheManager::new(&self.workspace_path);
-        let symbol_cache = SymbolCache::open(&self.cache_path)
-            .context("Failed to open symbol cache")?;
+        let symbol_cache =
+            SymbolCache::open(&self.cache_path).context("Failed to open symbol cache")?;
 
         // Load content reader to iterate through all indexed files
         let content_path = self.cache_path.join("content.bin");
@@ -304,17 +302,21 @@ impl BackgroundIndexer {
             return Ok(());
         }
 
-        let content_reader = ContentReader::open(&content_path)
-            .context("Failed to open content.bin")?;
+        let content_reader =
+            ContentReader::open(&content_path).context("Failed to open content.bin")?;
 
         // Get file hashes across all branches (background indexer processes all files)
-        let file_hashes = cache_mgr.load_all_hashes()
+        let file_hashes = cache_mgr
+            .load_all_hashes()
             .context("Failed to load file hashes")?;
 
         let total_files = content_reader.file_count();
         self.status.total_files = total_files;
         log::info!("Found {} indexed files to process", total_files);
-        log::debug!("Loaded {} file hashes from file_branches table", file_hashes.len());
+        log::debug!(
+            "Loaded {} file hashes from file_branches table",
+            file_hashes.len()
+        );
 
         // DEFENSIVE CHECK: If file_hashes is empty but we have files, this indicates a problem
         if file_hashes.is_empty() && total_files > 0 {
@@ -355,7 +357,11 @@ impl BackgroundIndexer {
             log::debug!("=== Path Comparison Diagnostic ===");
             for sample_id in file_ids.iter().take(3) {
                 if let Some(path) = content_reader.get_file_path(*sample_id) {
-                    log::debug!("  content.bin path[{}]: '{}'", sample_id, path.to_string_lossy());
+                    log::debug!(
+                        "  content.bin path[{}]: '{}'",
+                        sample_id,
+                        path.to_string_lossy()
+                    );
                 }
             }
             // Log first 3 keys from file_hashes HashMap
@@ -384,7 +390,12 @@ impl BackgroundIndexer {
                     let file_hash = file_hashes.get(&path_str)?;
 
                     // Check if already cached
-                    if symbol_cache.get(&path_str, file_hash).ok().flatten().is_some() {
+                    if symbol_cache
+                        .get(&path_str, file_hash)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
                         // Update cached count
                         let mut status = status_mutex.lock().unwrap();
                         status.0 += 1;
@@ -452,7 +463,8 @@ impl BackgroundIndexer {
         self.write_status()?;
 
         // Cleanup stale entries
-        let removed = symbol_cache.cleanup_stale()
+        let removed = symbol_cache
+            .cleanup_stale()
             .context("Failed to cleanup stale symbols")?;
 
         if removed > 0 {
@@ -470,7 +482,8 @@ impl BackgroundIndexer {
         path: &str,
     ) -> Result<Vec<crate::models::SearchResult>> {
         // Read file contents from content.bin (memory-mapped, zero-copy)
-        let source = content_reader.get_file_content(file_id)
+        let source = content_reader
+            .get_file_content(file_id)
             .with_context(|| format!("Failed to read file from content.bin: {}", path))?;
 
         // Detect language from file extension
@@ -525,7 +538,12 @@ mod tests {
         let result = indexer2.acquire_lock();
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already in progress"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("already in progress")
+        );
     }
 
     #[test]
@@ -589,15 +607,17 @@ mod tests {
         assert!(!is_lock_stale(&lock_path), "fresh lock should not be stale");
 
         // Backdate mtime to 2 hours ago (exceeds LOCK_MAX_AGE of 1 hour)
-        let two_hours_ago = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(2 * 3600);
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
         set_file_mtime(&lock_path, FileTime::from_system_time(two_hours_ago)).unwrap();
 
         assert!(is_lock_stale(&lock_path), "2-hour-old lock should be stale");
 
         // Nonexistent lock file should not be reported as stale
         std::fs::remove_file(&lock_path).unwrap();
-        assert!(!is_lock_stale(&lock_path), "missing lock should not be stale");
+        assert!(
+            !is_lock_stale(&lock_path),
+            "missing lock should not be stale"
+        );
     }
 
     #[test]
@@ -612,11 +632,13 @@ mod tests {
 
         // Create a stale lock file (backdated 2 hours)
         std::fs::write(&lock_path, "99999999").unwrap();
-        let two_hours_ago = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(2 * 3600);
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
         set_file_mtime(&lock_path, FileTime::from_system_time(two_hours_ago)).unwrap();
 
-        assert!(lock_path.exists(), "lock file should exist before is_running()");
+        assert!(
+            lock_path.exists(),
+            "lock file should exist before is_running()"
+        );
 
         // is_running() should detect staleness, remove the lock, and return false
         assert!(!BackgroundIndexer::is_running(cache_mgr.path()));
@@ -638,13 +660,14 @@ mod tests {
 
         // Create a stale lock file
         std::fs::write(&lock_path, "99999999").unwrap();
-        let two_hours_ago = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(2 * 3600);
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
         set_file_mtime(&lock_path, FileTime::from_system_time(two_hours_ago)).unwrap();
 
         // acquire_lock() should succeed by treating the stale lock as removable
         let indexer = BackgroundIndexer::new(temp.path()).unwrap();
-        let _lock = indexer.acquire_lock().expect("stale lock should not block acquire_lock");
+        let _lock = indexer
+            .acquire_lock()
+            .expect("stale lock should not block acquire_lock");
 
         assert!(lock_path.exists(), "new lock file should be created");
     }

@@ -127,8 +127,7 @@ pub fn compute_diff(
     thresholds: &super::config::ThresholdConfig,
 ) -> Result<SnapshotDiff> {
     // Open in-memory connection and attach both snapshots
-    let conn = Connection::open_in_memory()
-        .context("Failed to open in-memory database")?;
+    let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
 
     conn.execute(
         "ATTACH DATABASE ?1 AS baseline",
@@ -144,32 +143,36 @@ pub fn compute_diff(
     let current_id = read_meta(&conn, "current", "timestamp")?;
 
     // File diffs
-    let files_added = query_file_deltas(&conn,
+    let files_added = query_file_deltas(
+        &conn,
         "SELECT c.path, c.language, COALESCE(c.line_count, 0)
          FROM current.files c
          LEFT JOIN baseline.files b ON c.path = b.path
          WHERE b.path IS NULL
-         ORDER BY c.path"
+         ORDER BY c.path",
     )?;
 
-    let files_removed = query_file_deltas(&conn,
+    let files_removed = query_file_deltas(
+        &conn,
         "SELECT b.path, b.language, COALESCE(b.line_count, 0)
          FROM baseline.files b
          LEFT JOIN current.files c ON b.path = c.path
          WHERE c.path IS NULL
-         ORDER BY b.path"
+         ORDER BY b.path",
     )?;
 
-    let files_modified = query_file_mod_deltas(&conn,
+    let files_modified = query_file_mod_deltas(
+        &conn,
         "SELECT b.path, b.language, COALESCE(b.line_count, 0), COALESCE(c.line_count, 0)
          FROM baseline.files b
          JOIN current.files c ON b.path = c.path
          WHERE b.line_count != c.line_count OR b.language != c.language
-         ORDER BY b.path"
+         ORDER BY b.path",
     )?;
 
     // Edge diffs (compare by path, not by file ID)
-    let edges_added = query_edge_deltas(&conn,
+    let edges_added = query_edge_deltas(
+        &conn,
         "SELECT sf.path, tf.path, ce.import_type
          FROM current.dependency_edges ce
          JOIN current.files sf ON ce.source_file_id = sf.id
@@ -180,10 +183,11 @@ pub fn compute_diff(
              JOIN baseline.files btf ON be.target_file_id = btf.id
              WHERE bsf.path = sf.path AND btf.path = tf.path
          )
-         ORDER BY sf.path, tf.path"
+         ORDER BY sf.path, tf.path",
     )?;
 
-    let edges_removed = query_edge_deltas(&conn,
+    let edges_removed = query_edge_deltas(
+        &conn,
         "SELECT sf.path, tf.path, be.import_type
          FROM baseline.dependency_edges be
          JOIN baseline.files sf ON be.source_file_id = sf.id
@@ -194,7 +198,7 @@ pub fn compute_diff(
              JOIN current.files ctf ON ce.target_file_id = ctf.id
              WHERE csf.path = sf.path AND ctf.path = tf.path
          )
-         ORDER BY sf.path, tf.path"
+         ORDER BY sf.path, tf.path",
     )?;
 
     // Module metric diffs
@@ -208,17 +212,25 @@ pub fn compute_diff(
     let current_hotspots = current_deps.find_hotspots(None, 1).unwrap_or_default();
 
     let hotspot_changes = compute_hotspot_changes(
-        &baseline_deps, &current_deps,
-        &baseline_hotspots, &current_hotspots,
+        &baseline_deps,
+        &current_deps,
+        &baseline_hotspots,
+        &current_hotspots,
     );
 
     // Cycle analysis
-    let baseline_cycles = baseline_deps.detect_circular_dependencies().unwrap_or_default();
-    let current_cycles = current_deps.detect_circular_dependencies().unwrap_or_default();
+    let baseline_cycles = baseline_deps
+        .detect_circular_dependencies()
+        .unwrap_or_default();
+    let current_cycles = current_deps
+        .detect_circular_dependencies()
+        .unwrap_or_default();
 
     let (new_cycles, resolved_cycles) = compute_cycle_changes(
-        &baseline_deps, &current_deps,
-        &baseline_cycles, &current_cycles,
+        &baseline_deps,
+        &current_deps,
+        &baseline_cycles,
+        &current_cycles,
     );
 
     // Island analysis
@@ -232,8 +244,14 @@ pub fn compute_diff(
 
     // Compute net line change
     let net_line_change: i64 = files_added.iter().map(|f| f.line_count as i64).sum::<i64>()
-        - files_removed.iter().map(|f| f.line_count as i64).sum::<i64>()
-        + files_modified.iter().map(|f| f.new_line_count as i64 - f.old_line_count as i64).sum::<i64>();
+        - files_removed
+            .iter()
+            .map(|f| f.line_count as i64)
+            .sum::<i64>()
+        + files_modified
+            .iter()
+            .map(|f| f.new_line_count as i64 - f.old_line_count as i64)
+            .sum::<i64>();
 
     // Threshold alerts
     let threshold_alerts = compute_threshold_alerts(
@@ -291,41 +309,44 @@ impl<T> Pipe for T {}
 
 fn query_file_deltas(conn: &Connection, sql: &str) -> Result<Vec<FileDelta>> {
     let mut stmt = conn.prepare(sql)?;
-    let results = stmt.query_map([], |row| {
-        Ok(FileDelta {
-            path: row.get(0)?,
-            language: row.get(1)?,
-            line_count: row.get::<_, i64>(2)? as usize,
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let results = stmt
+        .query_map([], |row| {
+            Ok(FileDelta {
+                path: row.get(0)?,
+                language: row.get(1)?,
+                line_count: row.get::<_, i64>(2)? as usize,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(results)
 }
 
 fn query_file_mod_deltas(conn: &Connection, sql: &str) -> Result<Vec<FileModDelta>> {
     let mut stmt = conn.prepare(sql)?;
-    let results = stmt.query_map([], |row| {
-        Ok(FileModDelta {
-            path: row.get(0)?,
-            language: row.get(1)?,
-            old_line_count: row.get::<_, i64>(2)? as usize,
-            new_line_count: row.get::<_, i64>(3)? as usize,
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let results = stmt
+        .query_map([], |row| {
+            Ok(FileModDelta {
+                path: row.get(0)?,
+                language: row.get(1)?,
+                old_line_count: row.get::<_, i64>(2)? as usize,
+                new_line_count: row.get::<_, i64>(3)? as usize,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(results)
 }
 
 fn query_edge_deltas(conn: &Connection, sql: &str) -> Result<Vec<EdgeDelta>> {
     let mut stmt = conn.prepare(sql)?;
-    let results = stmt.query_map([], |row| {
-        Ok(EdgeDelta {
-            source_path: row.get(0)?,
-            target_path: row.get(1)?,
-            import_type: row.get(2)?,
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let results = stmt
+        .query_map([], |row| {
+            Ok(EdgeDelta {
+                source_path: row.get(0)?,
+                target_path: row.get(1)?,
+                import_type: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(results)
 }
 
@@ -352,16 +373,17 @@ fn query_module_deltas(conn: &Connection) -> Result<Vec<ModuleMetricsDelta>> {
     ORDER BY module_path";
 
     let mut stmt = conn.prepare(sql)?;
-    let results = stmt.query_map([], |row| {
-        Ok(ModuleMetricsDelta {
-            module_path: row.get(0)?,
-            old_file_count: row.get::<_, Option<i64>>(1)?.map(|v| v as usize),
-            new_file_count: row.get::<_, Option<i64>>(2)?.map(|v| v as usize),
-            old_total_lines: row.get::<_, Option<i64>>(3)?.map(|v| v as usize),
-            new_total_lines: row.get::<_, Option<i64>>(4)?.map(|v| v as usize),
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let results = stmt
+        .query_map([], |row| {
+            Ok(ModuleMetricsDelta {
+                module_path: row.get(0)?,
+                old_file_count: row.get::<_, Option<i64>>(1)?.map(|v| v as usize),
+                new_file_count: row.get::<_, Option<i64>>(2)?.map(|v| v as usize),
+                old_total_lines: row.get::<_, Option<i64>>(3)?.map(|v| v as usize),
+                new_total_lines: row.get::<_, Option<i64>>(4)?.map(|v| v as usize),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(results)
 }
 
@@ -374,16 +396,22 @@ fn compute_hotspot_changes(
     let mut changes = Vec::new();
 
     // Build path-based maps for comparison
-    let baseline_map: std::collections::HashMap<String, usize> = baseline_hotspots.iter()
+    let baseline_map: std::collections::HashMap<String, usize> = baseline_hotspots
+        .iter()
         .filter_map(|(id, count)| {
-            baseline_deps.get_file_paths(&[*id]).ok()
+            baseline_deps
+                .get_file_paths(&[*id])
+                .ok()
                 .and_then(|paths| paths.get(id).map(|p| (p.clone(), *count)))
         })
         .collect();
 
-    let current_map: std::collections::HashMap<String, usize> = current_hotspots.iter()
+    let current_map: std::collections::HashMap<String, usize> = current_hotspots
+        .iter()
         .filter_map(|(id, count)| {
-            current_deps.get_file_paths(&[*id]).ok()
+            current_deps
+                .get_file_paths(&[*id])
+                .ok()
                 .and_then(|paths| paths.get(id).map(|p| (p.clone(), *count)))
         })
         .collect();
@@ -419,24 +447,38 @@ fn compute_cycle_changes(
     // Convert cycles to path-based representation for comparison
     let to_path_cycle = |deps: &DependencyIndex, cycle: &[i64]| -> Option<Vec<String>> {
         let paths = deps.get_file_paths(cycle).ok()?;
-        let path_cycle: Vec<String> = cycle.iter()
+        let path_cycle: Vec<String> = cycle
+            .iter()
             .filter_map(|id| paths.get(id).cloned())
             .collect();
-        if path_cycle.len() == cycle.len() { Some(path_cycle) } else { None }
+        if path_cycle.len() == cycle.len() {
+            Some(path_cycle)
+        } else {
+            None
+        }
     };
 
-    let baseline_set: HashSet<Vec<String>> = baseline_cycles.iter()
+    let baseline_set: HashSet<Vec<String>> = baseline_cycles
+        .iter()
         .filter_map(|c| to_path_cycle(baseline_deps, c))
-        .map(|mut c| { c.sort(); c })
+        .map(|mut c| {
+            c.sort();
+            c
+        })
         .collect();
 
-    let current_set: HashSet<Vec<String>> = current_cycles.iter()
+    let current_set: HashSet<Vec<String>> = current_cycles
+        .iter()
         .filter_map(|c| to_path_cycle(current_deps, c))
-        .map(|mut c| { c.sort(); c })
+        .map(|mut c| {
+            c.sort();
+            c
+        })
         .collect();
 
     let new_cycles: Vec<Vec<String>> = current_set.difference(&baseline_set).cloned().collect();
-    let resolved_cycles: Vec<Vec<String>> = baseline_set.difference(&current_set).cloned().collect();
+    let resolved_cycles: Vec<Vec<String>> =
+        baseline_set.difference(&current_set).cloned().collect();
 
     (new_cycles, resolved_cycles)
 }
@@ -454,21 +496,31 @@ fn compute_threshold_alerts(
     // Fan-in alerts
     for &(file_id, count) in current_hotspots {
         if count >= thresholds.fan_in_critical {
-            let path = current_deps.get_file_paths(&[file_id]).ok()
+            let path = current_deps
+                .get_file_paths(&[file_id])
+                .ok()
                 .and_then(|paths| paths.get(&file_id).cloned());
             alerts.push(ThresholdAlert {
                 severity: AlertSeverity::Critical,
                 category: "fan_in".to_string(),
-                message: format!("Critical fan-in: {} imports ({} threshold)", count, thresholds.fan_in_critical),
+                message: format!(
+                    "Critical fan-in: {} imports ({} threshold)",
+                    count, thresholds.fan_in_critical
+                ),
                 path,
             });
         } else if count >= thresholds.fan_in_warning {
-            let path = current_deps.get_file_paths(&[file_id]).ok()
+            let path = current_deps
+                .get_file_paths(&[file_id])
+                .ok()
                 .and_then(|paths| paths.get(&file_id).cloned());
             alerts.push(ThresholdAlert {
                 severity: AlertSeverity::Warning,
                 category: "fan_in".to_string(),
-                message: format!("High fan-in: {} imports ({} threshold)", count, thresholds.fan_in_warning),
+                message: format!(
+                    "High fan-in: {} imports ({} threshold)",
+                    count, thresholds.fan_in_warning
+                ),
                 path,
             });
         }
@@ -493,7 +545,10 @@ fn compute_threshold_alerts(
                 alerts.push(ThresholdAlert {
                     severity: AlertSeverity::Warning,
                     category: "module_size".to_string(),
-                    message: format!("Module has {} files (threshold: {})", count, thresholds.module_file_count),
+                    message: format!(
+                        "Module has {} files (threshold: {})",
+                        count, thresholds.module_file_count
+                    ),
                     path: Some(change.module_path.clone()),
                 });
             }

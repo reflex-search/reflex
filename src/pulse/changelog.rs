@@ -41,7 +41,10 @@ pub struct ChangelogCommit {
 /// Extract recent commits and branch name from git.
 ///
 /// Returns `(commits, branch_name)`.
-pub fn extract_changelog_commits(root: &Path, count: usize) -> Result<(Vec<ChangelogCommit>, String)> {
+pub fn extract_changelog_commits(
+    root: &Path,
+    count: usize,
+) -> Result<(Vec<ChangelogCommit>, String)> {
     // Get branch name
     let branch_output = Command::new("git")
         .arg("-C")
@@ -51,7 +54,9 @@ pub fn extract_changelog_commits(root: &Path, count: usize) -> Result<(Vec<Chang
         .context("Failed to run git rev-parse")?;
 
     let branch = if branch_output.status.success() {
-        String::from_utf8_lossy(&branch_output.stdout).trim().to_string()
+        String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string()
     } else {
         "unknown".to_string()
     };
@@ -164,7 +169,10 @@ pub fn build_changelog_context(commits: &[ChangelogCommit], branch: &str) -> Str
 ///
 /// Expected format: `{ "entries": [{ "title": "...", "description": "..." }] }`
 /// Falls back to structural entries on parse failure.
-pub fn parse_changelog_response(response: &str, commits: &[ChangelogCommit]) -> Vec<ChangelogEntry> {
+pub fn parse_changelog_response(
+    response: &str,
+    commits: &[ChangelogCommit],
+) -> Vec<ChangelogEntry> {
     // Strip markdown fences if present
     let cleaned = response
         .trim()
@@ -219,8 +227,7 @@ pub fn generate_structural_entries(commits: &[ChangelogCommit]) -> Vec<Changelog
 /// - Different year: "Apr 8, 2025"
 fn format_date_short(date_str: &str, reference_year: i32) -> String {
     const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
 
     let parts: Vec<&str> = date_str.split('-').collect();
@@ -343,7 +350,8 @@ mod tests {
 
     #[test]
     fn test_parse_changelog_response_valid() {
-        let json = r#"{"entries": [{"title": "New search", "description": "Added full-text search."}]}"#;
+        let json =
+            r#"{"entries": [{"title": "New search", "description": "Added full-text search."}]}"#;
         let entries = parse_changelog_response(json, &[]);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "New search");
@@ -351,7 +359,8 @@ mod tests {
 
     #[test]
     fn test_parse_changelog_response_with_fences() {
-        let json = "```json\n{\"entries\": [{\"title\": \"Test\", \"description\": \"Desc\"}]}\n```";
+        let json =
+            "```json\n{\"entries\": [{\"title\": \"Test\", \"description\": \"Desc\"}]}\n```";
         let entries = parse_changelog_response(json, &[]);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "Test");
@@ -433,7 +442,11 @@ mod tests {
         };
 
         let md = render_markdown(&changelog);
-        assert!(md.contains("Apr 8 – Apr 12"), "Should contain date range, got: {}", md);
+        assert!(
+            md.contains("Apr 8 – Apr 12"),
+            "Should contain date range, got: {}",
+            md
+        );
     }
 
     #[test]
@@ -456,7 +469,11 @@ mod tests {
         };
 
         let md = render_markdown(&changelog);
-        assert!(md.contains("*Apr 10*"), "Should contain date subtitle, got: {}", md);
+        assert!(
+            md.contains("*Apr 10*"),
+            "Should contain date subtitle, got: {}",
+            md
+        );
         assert!(md.contains("## Full-text search added"));
         assert!(md.contains("documentation site"));
     }
@@ -488,7 +505,10 @@ mod tests {
             subject: "Test".into(),
             files_changed: vec![],
         }];
-        assert_eq!(format_commit_date_range(&commits), Some("Apr 10".to_string()));
+        assert_eq!(
+            format_commit_date_range(&commits),
+            Some("Apr 10".to_string())
+        );
     }
 
     #[test]

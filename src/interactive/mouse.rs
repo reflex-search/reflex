@@ -1,4 +1,4 @@
-use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::cell::Cell;
 use std::time::Instant;
@@ -7,7 +7,7 @@ use std::time::Instant;
 /// Uses interior mutability to allow updates during rendering
 #[derive(Debug, Default)]
 pub struct FilterBadgePositions {
-    pub symbols: Cell<(usize, usize)>,    // (start, end) column positions
+    pub symbols: Cell<(usize, usize)>, // (start, end) column positions
     pub regex: Cell<(usize, usize)>,
     pub language: Cell<(usize, usize)>,
     pub kind: Cell<(usize, usize)>,
@@ -46,10 +46,7 @@ impl MouseState {
     /// Check if a position is within a rectangular area
     pub fn is_in_area(&self, area: Rect) -> bool {
         let (col, row) = self.position;
-        col >= area.x
-            && col < area.x + area.width
-            && row >= area.y
-            && row < area.y + area.height
+        col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height
     }
 
     /// Get the row index relative to an area's top
@@ -83,14 +80,15 @@ impl MouseState {
                 let current_pos = (event.column, event.row);
 
                 // Check for double-click (within 300ms at same position)
-                let is_double_click = if let Some((last_col, last_row, last_button, last_time)) = self.last_click {
-                    last_button == MouseButton::Left
-                        && last_col == current_pos.0
-                        && last_row == current_pos.1
-                        && now.duration_since(last_time).as_millis() < 300
-                } else {
-                    false
-                };
+                let is_double_click =
+                    if let Some((last_col, last_row, last_button, last_time)) = self.last_click {
+                        last_button == MouseButton::Left
+                            && last_col == current_pos.0
+                            && last_row == current_pos.1
+                            && now.duration_since(last_time).as_millis() < 300
+                    } else {
+                        false
+                    };
 
                 // Update last click
                 self.last_click = Some((event.column, event.row, button, now));

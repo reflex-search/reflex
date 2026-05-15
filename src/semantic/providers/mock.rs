@@ -68,10 +68,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_turn_returns_configured_response() {
-        let payload = r#"{"queries": [{"command": "query \"fn main\"", "order": 1, "merge": true}]}"#;
+        let payload =
+            r#"{"queries": [{"command": "query \"fn main\"", "order": 1, "merge": true}]}"#;
         let mock = MockLlmProvider::single(payload);
 
-        let response = mock.complete("find the main function", false).await.unwrap();
+        let response = mock
+            .complete("find the main function", false)
+            .await
+            .unwrap();
 
         assert!(response.contains("fn main"));
         assert_eq!(mock.call_count(), 1);
@@ -145,7 +149,10 @@ mod tests {
         let mock = MockLlmProvider::single(agentic_json);
 
         // complete() never touches the network
-        let response = mock.complete("What is the project structure?", true).await.unwrap();
+        let response = mock
+            .complete("What is the project structure?", true)
+            .await
+            .unwrap();
 
         // Parse as AgenticResponse — mirrors what the agentic loop does
         let parsed: AgenticResponse = serde_json::from_str(&response).unwrap();
@@ -193,6 +200,11 @@ mod tests {
         let mock = MockLlmProvider::new(Vec::<String>::new());
         let result = mock.complete("anything", false).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no responses configured"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no responses configured")
+        );
     }
 }

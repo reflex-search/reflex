@@ -33,11 +33,9 @@ pub fn is_git_repo(root: impl AsRef<Path>) -> bool {
 /// still counts as "available" so legitimate git errors propagate normally.
 pub fn is_git_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        match Command::new("git").arg("--version").output() {
-            Ok(_) => true,
-            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
-        }
+    *AVAILABLE.get_or_init(|| match Command::new("git").arg("--version").output() {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     })
 }
 

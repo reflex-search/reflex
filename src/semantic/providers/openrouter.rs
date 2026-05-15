@@ -15,8 +15,8 @@ use std::time::Duration;
 pub struct OpenRouterModel {
     pub id: String,
     pub name: String,
-    pub prompt_price: f64,      // USD per million tokens
-    pub completion_price: f64,  // USD per million tokens
+    pub prompt_price: f64,     // USD per million tokens
+    pub completion_price: f64, // USD per million tokens
     pub context_length: u64,
 }
 
@@ -101,10 +101,21 @@ impl OpenRouterProvider {
     /// * `api_key` - OpenRouter API key
     /// * `model` - Optional model override (default: anthropic/claude-sonnet-4)
     /// * `sort` - Optional sort strategy: "price", "speed", or "throughput" (default: "price")
-    pub fn new(api_key: String, model: Option<String>, sort: Option<String>, timeout_secs: u64) -> Result<Self> {
+    pub fn new(
+        api_key: String,
+        model: Option<String>,
+        sort: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<Self> {
         // Normalize sort value: map legacy "speed" to the correct API value "latency"
         let sort = sort
-            .map(|s| if s == "speed" { "latency".to_string() } else { s })
+            .map(|s| {
+                if s == "speed" {
+                    "latency".to_string()
+                } else {
+                    s
+                }
+            })
             .unwrap_or_else(|| "price".to_string());
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
@@ -181,7 +192,11 @@ impl LlmProvider for OpenRouterProvider {
                     "Rate limit exceeded (try again in a few seconds)".to_string()
                 }
                 503 | 502 | 504 => {
-                    log::warn!("OpenRouter service unavailable ({}): {}", status, error_text);
+                    log::warn!(
+                        "OpenRouter service unavailable ({}): {}",
+                        status,
+                        error_text
+                    );
                     format!("OpenRouter service temporarily unavailable ({})", status)
                 }
                 401 => {
@@ -246,13 +261,9 @@ mod tests {
 
     #[test]
     fn test_new_maps_legacy_speed_to_latency() {
-        let provider = OpenRouterProvider::new(
-            "test-key".to_string(),
-            None,
-            Some("speed".to_string()),
-            300,
-        )
-        .unwrap();
+        let provider =
+            OpenRouterProvider::new("test-key".to_string(), None, Some("speed".to_string()), 300)
+                .unwrap();
         assert_eq!(provider.sort, "latency");
     }
 

@@ -209,7 +209,11 @@ fn download_pagefind(pagefind_path: &PathBuf) -> Result<()> {
             .context("Failed to set executable permission on pagefind binary")?;
     }
 
-    eprintln!("Pagefind v{} installed at {}", PAGEFIND_VERSION, pagefind_path.display());
+    eprintln!(
+        "Pagefind v{} installed at {}",
+        PAGEFIND_VERSION,
+        pagefind_path.display()
+    );
 
     Ok(())
 }
@@ -238,16 +242,26 @@ mod tests {
         let bytes = b"this is a tampered binary payload";
         let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
         let result = verify_sha256(bytes, wrong_hash);
-        assert!(result.is_err(), "Tampered binary must not pass verification");
+        assert!(
+            result.is_err(),
+            "Tampered binary must not pass verification"
+        );
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("SHA256 mismatch"), "Expected mismatch error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("SHA256 mismatch"),
+            "Expected mismatch error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
     fn test_sha256_correct_hash_passes() {
         let bytes = b"known content for testing";
         let correct_hash = compute_sha256(bytes);
-        assert!(verify_sha256(bytes, &correct_hash).is_ok(), "Correct hash must pass");
+        assert!(
+            verify_sha256(bytes, &correct_hash).is_ok(),
+            "Correct hash must pass"
+        );
     }
 
     #[test]

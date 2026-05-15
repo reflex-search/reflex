@@ -187,9 +187,9 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
         "SELECT COALESCE(language, 'other'), COUNT(*) FROM files \
          GROUP BY language ORDER BY COUNT(*) DESC LIMIT 10",
     ) {
-        if let Ok(rows) =
-            stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?)))
-        {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        }) {
             language_mix = rows.flatten().collect();
         }
     }
@@ -300,7 +300,11 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
         .collect();
 
     // Largest modules first, then alphabetical. Cap at MAX_MODULES_IN_EVIDENCE.
-    modules.sort_by(|a, b| b.file_count.cmp(&a.file_count).then_with(|| a.path.cmp(&b.path)));
+    modules.sort_by(|a, b| {
+        b.file_count
+            .cmp(&a.file_count)
+            .then_with(|| a.path.cmp(&b.path))
+    });
     modules.truncate(MAX_MODULES_IN_EVIDENCE);
 
     Ok(Some(GlossaryEvidence {
@@ -432,7 +436,11 @@ pub fn render_glossary_markdown(data: &GlossaryData) -> String {
         "**{}** core concepts across {} {}.\n\n",
         data.concepts.len(),
         order.len(),
-        if order.len() == 1 { "category" } else { "categories" },
+        if order.len() == 1 {
+            "category"
+        } else {
+            "categories"
+        },
     ));
 
     for cat in &order {
@@ -453,9 +461,7 @@ pub fn render_glossary_markdown(data: &GlossaryData) -> String {
                     let links: Vec<String> = concept
                         .related_modules
                         .iter()
-                        .map(|m| {
-                            format!("[`{}`](/wiki/{}/)", m.trim(), module_slug(m.trim()))
-                        })
+                        .map(|m| format!("[`{}`](/wiki/{}/)", m.trim(), module_slug(m.trim())))
                         .collect();
                     md.push_str(&format!("*Implemented in {}*\n\n", links.join(", ")));
                 }
@@ -557,10 +563,7 @@ mod tests {
                 ModuleEvidence {
                     path: "src/pulse".to_string(),
                     file_count: 18,
-                    anchor_symbols: vec![
-                        "generate_site".to_string(),
-                        "PulseReport".to_string(),
-                    ],
+                    anchor_symbols: vec!["generate_site".to_string(), "PulseReport".to_string()],
                 },
                 ModuleEvidence {
                     path: "src/query".to_string(),
@@ -605,7 +608,10 @@ mod tests {
         let parsed = parse_concepts_response(raw).expect("should parse");
         assert_eq!(parsed.concepts.len(), 2);
         assert_eq!(parsed.concepts[0].name, "Trigram Index");
-        assert_eq!(parsed.concepts[0].related_modules, vec!["src/index", "src/query"]);
+        assert_eq!(
+            parsed.concepts[0].related_modules,
+            vec!["src/index", "src/query"]
+        );
         assert!(parsed.intro.as_ref().unwrap().contains("search primitives"));
     }
 
@@ -637,8 +643,7 @@ mod tests {
     fn test_render_with_concepts() {
         let data = GlossaryData {
             intro: Some(
-                "Reflex catalogs the core pieces of a local code-search engine."
-                    .to_string(),
+                "Reflex catalogs the core pieces of a local code-search engine.".to_string(),
             ),
             concepts: vec![
                 Concept {

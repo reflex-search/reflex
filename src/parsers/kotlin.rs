@@ -10,10 +10,10 @@
 //! - Companion objects
 //! - Extensions
 
+use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse Kotlin source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -39,7 +39,11 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_annotations(source, &root_node, &language.into())?);
     symbols.extend(extract_functions(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -61,8 +65,7 @@ fn extract_classes(
             (identifier) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -78,8 +81,7 @@ fn extract_objects(
             (identifier) @name) @object
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create object query")?;
+    let query = Query::new(language, query_str).context("Failed to create object query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -96,8 +98,7 @@ fn extract_interfaces(
             (identifier) @name) @interface
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create interface query")?;
+    let query = Query::new(language, query_str).context("Failed to create interface query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Interface, None)
 }
@@ -132,7 +133,13 @@ fn extract_annotations(
             let capture_name: &str = &def_query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "annotation" => {
                     class_node = Some(capture.node);
@@ -146,9 +153,12 @@ fn extract_annotations(
             let class_text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
             // Check if the class declaration starts with "annotation class"
-            if class_text.trim_start().starts_with("annotation ") ||
-               class_text.trim_start().starts_with("@Target") && class_text.contains("annotation class") ||
-               class_text.trim_start().starts_with("@Retention") && class_text.contains("annotation class") {
+            if class_text.trim_start().starts_with("annotation ")
+                || class_text.trim_start().starts_with("@Target")
+                    && class_text.contains("annotation class")
+                || class_text.trim_start().starts_with("@Retention")
+                    && class_text.contains("annotation class")
+            {
                 let span = node_to_span(&node);
                 let preview = extract_preview(source, &span);
 
@@ -170,8 +180,8 @@ fn extract_annotations(
         (annotation) @attr
     "#;
 
-    let use_query = Query::new(language, use_query_str)
-        .context("Failed to create annotation use query")?;
+    let use_query =
+        Query::new(language, use_query_str).context("Failed to create annotation use query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&use_query, *root, source.as_bytes());
@@ -239,8 +249,7 @@ fn extract_functions(
                     (identifier) @method_name))) @object
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -257,15 +266,33 @@ fn extract_functions(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "object_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("object");
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent function_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -281,7 +308,8 @@ fn extract_functions(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(method_name), Some(node)) =
-            (scope_name, scope_type, method_name, method_node) {
+            (scope_name, scope_type, method_name, method_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -323,8 +351,7 @@ fn extract_properties(
                         (identifier) @property_name)))) @object
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create property query")?;
+    let query = Query::new(language, query_str).context("Failed to create property query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -341,15 +368,33 @@ fn extract_properties(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "object_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("object");
                 }
                 "property_name" => {
-                    property_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    property_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent property_declaration node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -365,7 +410,8 @@ fn extract_properties(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(property_name), Some(node)) =
-            (scope_name, scope_type, property_name, property_node) {
+            (scope_name, scope_type, property_name, property_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -397,8 +443,7 @@ fn extract_local_variables(
                 (identifier) @name)) @var
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -413,7 +458,13 @@ fn extract_local_variables(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "var" => {
                     var_node = Some(capture.node);
@@ -462,7 +513,7 @@ fn extract_local_variables(
                     kind,
                     Some(name),
                     span,
-                    None,  // No scope for local variables
+                    None, // No scope for local variables
                     preview,
                 ));
             }
@@ -493,7 +544,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -525,7 +582,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -555,7 +612,8 @@ class User(val name: String, val age: Int)
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -571,7 +629,8 @@ data class Person(val firstName: String, val lastName: String)
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -589,7 +648,8 @@ object Singleton {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let object_symbols: Vec<_> = symbols.iter()
+        let object_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .filter(|s| s.symbol.as_deref() == Some("Singleton"))
             .collect();
@@ -613,13 +673,22 @@ class Calculator {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -639,14 +708,27 @@ class User {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let property_symbols: Vec<_> = symbols.iter()
+        let property_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         assert_eq!(property_symbols.len(), 3);
-        assert!(property_symbols.iter().any(|s| s.symbol.as_deref() == Some("name")));
-        assert!(property_symbols.iter().any(|s| s.symbol.as_deref() == Some("age")));
-        assert!(property_symbols.iter().any(|s| s.symbol.as_deref() == Some("email")));
+        assert!(
+            property_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("name"))
+        );
+        assert!(
+            property_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("age"))
+        );
+        assert!(
+            property_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("email"))
+        );
     }
 
     #[test]
@@ -661,7 +743,8 @@ class User {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -680,13 +763,18 @@ sealed class Result {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
         // Should find Result, Success, and Error
         assert!(class_symbols.len() >= 1);
-        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Result")));
+        assert!(
+            class_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("Result"))
+        );
     }
 
     #[test]
@@ -720,18 +808,28 @@ class MainActivity : AppCompatActivity() {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("onCreate")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("onResume")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("onCreate"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("onResume"))
+        );
     }
 
     #[test]
@@ -786,42 +884,67 @@ fun topLevel(): String {
         let symbols = parse("test.kt", source).unwrap();
 
         // Filter to constants and variables
-        let constants: Vec<_> = symbols.iter()
+        let constants: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that val local variables are captured as constants
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("localConst")));
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("result")));
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("localConst"))
+        );
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("result"))
+        );
 
         // Check that var local variables are captured as variables
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("counter")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("counter"))
+        );
 
         // Check that class property is still captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("multiplier")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("multiplier"))
+        );
 
         // Verify that local variables have no scope
         for constant in &constants {
             if constant.symbol.as_deref() == Some("localConst")
-                || constant.symbol.as_deref() == Some("result") {
+                || constant.symbol.as_deref() == Some("result")
+            {
                 // Removed: scope field no longer exists: assert_eq!(constant.scope, None);
             }
         }
 
         for variable in &variables {
             if variable.symbol.as_deref() == Some("localVar")
-                || variable.symbol.as_deref() == Some("counter") {
+                || variable.symbol.as_deref() == Some("counter")
+            {
                 // Removed: scope field no longer exists: assert_eq!(variable.scope, None);
             }
         }
 
         // Verify that class property has scope
-        let multiplier = variables.iter()
+        let multiplier = variables
+            .iter()
             .find(|v| v.symbol.as_deref() == Some("multiplier"))
             .unwrap();
         // Removed: scope field no longer exists: assert_eq!(multiplier.scope.as_ref().unwrap(), "class Calculator");
@@ -842,7 +965,8 @@ annotation class Composable
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let annotation_symbols: Vec<_> = symbols.iter()
+        let annotation_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
@@ -883,7 +1007,8 @@ class MyViewModel {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        let annotation_symbols: Vec<_> = symbols.iter()
+        let annotation_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Attribute))
             .collect();
 
@@ -893,11 +1018,13 @@ class MyViewModel {
         assert!(annotation_symbols.len() >= 4);
 
         // Count specific annotation uses
-        let test_count = annotation_symbols.iter()
+        let test_count = annotation_symbols
+            .iter()
             .filter(|s| s.symbol.as_deref() == Some("Test"))
             .count();
 
-        let composable_count = annotation_symbols.iter()
+        let composable_count = annotation_symbols
+            .iter()
             .filter(|s| s.symbol.as_deref() == Some("Composable"))
             .count();
 
@@ -927,29 +1054,55 @@ class MyViewModel {
 
         assert_eq!(deps.len(), 4, "Should extract 4 import statements");
         assert!(deps.iter().any(|d| d.imported_path == "java.util.List"));
-        assert!(deps.iter().any(|d| d.imported_path == "kotlinx.coroutines.launch"));
-        assert!(deps.iter().any(|d| d.imported_path == "com.example.myapp.models.User"));
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "kotlinx.coroutines.launch")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.imported_path == "com.example.myapp.models.User")
+        );
         assert!(deps.iter().any(|d| d.imported_path == "android.os.Bundle"));
 
         // Check stdlib classification
-        let java_dep = deps.iter().find(|d| d.imported_path == "java.util.List").unwrap();
-        assert!(matches!(java_dep.import_type, ImportType::Stdlib),
-                "java.util.List should be classified as Stdlib");
+        let java_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "java.util.List")
+            .unwrap();
+        assert!(
+            matches!(java_dep.import_type, ImportType::Stdlib),
+            "java.util.List should be classified as Stdlib"
+        );
 
         // Check kotlinx classification (external)
-        let coroutines_dep = deps.iter().find(|d| d.imported_path == "kotlinx.coroutines.launch").unwrap();
-        assert!(matches!(coroutines_dep.import_type, ImportType::External),
-                "kotlinx.coroutines.launch should be classified as External");
+        let coroutines_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "kotlinx.coroutines.launch")
+            .unwrap();
+        assert!(
+            matches!(coroutines_dep.import_type, ImportType::External),
+            "kotlinx.coroutines.launch should be classified as External"
+        );
 
         // Check user package classification (external)
-        let user_dep = deps.iter().find(|d| d.imported_path == "com.example.myapp.models.User").unwrap();
-        assert!(matches!(user_dep.import_type, ImportType::External),
-                "com.example.myapp.models.User should be classified as External");
+        let user_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "com.example.myapp.models.User")
+            .unwrap();
+        assert!(
+            matches!(user_dep.import_type, ImportType::External),
+            "com.example.myapp.models.User should be classified as External"
+        );
 
         // Check android classification (stdlib)
-        let android_dep = deps.iter().find(|d| d.imported_path == "android.os.Bundle").unwrap();
-        assert!(matches!(android_dep.import_type, ImportType::Stdlib),
-                "android.os.Bundle should be classified as Stdlib");
+        let android_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "android.os.Bundle")
+            .unwrap();
+        assert!(
+            matches!(android_dep.import_type, ImportType::Stdlib),
+            "android.os.Bundle should be classified as Stdlib"
+        );
     }
 }
 
@@ -989,10 +1142,7 @@ impl DependencyExtractor for KotlinDependencyExtractor {
 
 /// Extract Kotlin import statements
 /// Uses improved text parsing since tree-sitter-kotlin-ng has non-standard node types
-fn extract_kotlin_imports(
-    source: &str,
-    _root: &tree_sitter::Node,
-) -> Result<Vec<ImportInfo>> {
+fn extract_kotlin_imports(source: &str, _root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let mut imports = Vec::new();
 
     // Parse import statements line by line (improved from previous version)
@@ -1079,10 +1229,7 @@ fn extract_import_path_from_text(text: &str) -> Option<String> {
 
 /// Reclassify a Kotlin import using the project's package prefix
 /// Similar to reclassify_go_import() and reclassify_java_import()
-pub fn reclassify_kotlin_import(
-    import_path: &str,
-    package_prefix: Option<&str>,
-) -> ImportType {
+pub fn reclassify_kotlin_import(import_path: &str, package_prefix: Option<&str>) -> ImportType {
     classify_kotlin_import_impl(import_path, package_prefix)
 }
 
@@ -1116,8 +1263,16 @@ fn classify_kotlin_import_impl(import_path: &str, package_prefix: Option<&str>) 
 
     // Common external libraries
     let external_prefixes = [
-        "kotlinx.", "com.google.", "org.jetbrains.", "io.ktor.", "com.squareup.",
-        "retrofit2.", "okhttp3.", "com.jakewharton.", "org.koin.", "com.github.",
+        "kotlinx.",
+        "com.google.",
+        "org.jetbrains.",
+        "io.ktor.",
+        "com.squareup.",
+        "retrofit2.",
+        "okhttp3.",
+        "com.jakewharton.",
+        "org.koin.",
+        "com.github.",
     ];
 
     for prefix in &external_prefixes {

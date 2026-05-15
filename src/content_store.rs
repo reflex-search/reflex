@@ -206,7 +206,9 @@ impl ContentWriter {
 
     /// Finalize the content.bin file by writing the file index and updating the header
     fn finalize(&mut self) -> Result<()> {
-        let mut writer = self.writer.take()
+        let mut writer = self
+            .writer
+            .take()
             .ok_or_else(|| anyhow::anyhow!("ContentWriter not initialized"))?;
 
         // Write file index at current position
@@ -223,7 +225,8 @@ impl ContentWriter {
         }
 
         // Consume BufWriter and get the underlying File
-        let mut file = writer.into_inner()
+        let mut file = writer
+            .into_inner()
             .map_err(|e| anyhow::anyhow!("Failed to flush BufWriter: {}", e.error()))?;
 
         // Rewind to header and update with correct values
@@ -298,17 +301,19 @@ impl ContentReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open {}", path.display()))?;
+        let file =
+            File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
 
         let mmap = unsafe {
-            Mmap::map(&file)
-                .with_context(|| format!("Failed to mmap {}", path.display()))?
+            Mmap::map(&file).with_context(|| format!("Failed to mmap {}", path.display()))?
         };
 
         // Validate header
         if mmap.len() < HEADER_SIZE {
-            anyhow::bail!("content.bin too small (expected at least {} bytes)", HEADER_SIZE);
+            anyhow::bail!(
+                "content.bin too small (expected at least {} bytes)",
+                HEADER_SIZE
+            );
         }
 
         if &mmap[0..4] != MAGIC {
@@ -321,13 +326,11 @@ impl ContentReader {
         }
 
         let num_files = u64::from_le_bytes([
-            mmap[8], mmap[9], mmap[10], mmap[11],
-            mmap[12], mmap[13], mmap[14], mmap[15],
+            mmap[8], mmap[9], mmap[10], mmap[11], mmap[12], mmap[13], mmap[14], mmap[15],
         ]);
 
         let index_offset = u64::from_le_bytes([
-            mmap[16], mmap[17], mmap[18], mmap[19],
-            mmap[20], mmap[21], mmap[22], mmap[23],
+            mmap[16], mmap[17], mmap[18], mmap[19], mmap[20], mmap[21], mmap[22], mmap[23],
         ]) as usize;
 
         // Read file index
@@ -336,25 +339,32 @@ impl ContentReader {
 
         for i in 0..num_files {
             if pos + 4 > mmap.len() {
-                anyhow::bail!("Truncated file index at file {} (pos={}, mmap.len()={})", i, pos, mmap.len());
+                anyhow::bail!(
+                    "Truncated file index at file {} (pos={}, mmap.len()={})",
+                    i,
+                    pos,
+                    mmap.len()
+                );
             }
 
-            let path_len = u32::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-            ]) as usize;
+            let path_len =
+                u32::from_le_bytes([mmap[pos], mmap[pos + 1], mmap[pos + 2], mmap[pos + 3]])
+                    as usize;
             pos += 4;
 
             if pos + path_len + 16 > mmap.len() {
-                anyhow::bail!("Truncated file entry at file {} (pos={}, path_len={}, need={}, mmap.len()={})",
-                    i, pos, path_len, pos + path_len + 16, mmap.len());
+                anyhow::bail!(
+                    "Truncated file entry at file {} (pos={}, path_len={}, need={}, mmap.len()={})",
+                    i,
+                    pos,
+                    path_len,
+                    pos + path_len + 16,
+                    mmap.len()
+                );
             }
 
             let path_bytes = &mmap[pos..pos + path_len];
-            let path_str = std::str::from_utf8(path_bytes)
-                .context("Invalid UTF-8 in file path")?;
+            let path_str = std::str::from_utf8(path_bytes).context("Invalid UTF-8 in file path")?;
             let path = PathBuf::from(path_str);
             pos += path_len;
 
@@ -398,7 +408,8 @@ impl ContentReader {
 
     /// Get file content by file_id
     pub fn get_file_content(&self, file_id: u32) -> Result<&str> {
-        let entry = self.files
+        let entry = self
+            .files
             .get(file_id as usize)
             .ok_or_else(|| anyhow::anyhow!("Invalid file_id: {}", file_id))?;
 
@@ -433,17 +444,26 @@ impl ContentReader {
         // Normalize the input path (strip ./ prefix if present)
         let normalized_input = path.strip_prefix("./").unwrap_or(path);
 
-        self.files.iter().position(|entry| {
-            // Normalize the stored path (strip ./ prefix if present)
-            let stored_path = entry.path.to_string_lossy();
-            let normalized_stored = stored_path.strip_prefix("./").unwrap_or(&stored_path);
-            normalized_stored == normalized_input
-        }).map(|idx| idx as u32)
+        self.files
+            .iter()
+            .position(|entry| {
+                // Normalize the stored path (strip ./ prefix if present)
+                let stored_path = entry.path.to_string_lossy();
+                let normalized_stored = stored_path.strip_prefix("./").unwrap_or(&stored_path);
+                normalized_stored == normalized_input
+            })
+            .map(|idx| idx as u32)
     }
 
     /// Get content at a specific byte offset
-    pub fn get_content_at_offset(&self, file_id: u32, byte_offset: u32, length: usize) -> Result<&str> {
-        let entry = self.files
+    pub fn get_content_at_offset(
+        &self,
+        file_id: u32,
+        byte_offset: u32,
+        length: usize,
+    ) -> Result<&str> {
+        let entry = self
+            .files
             .get(file_id as usize)
             .ok_or_else(|| anyhow::anyhow!("Invalid file_id: {}", file_id))?;
 
@@ -461,7 +481,12 @@ impl ContentReader {
     /// Get context around a byte offset (for showing match results)
     ///
     /// Returns (lines_before, matching_line, lines_after)
-    pub fn get_context(&self, file_id: u32, byte_offset: u32, context_lines: usize) -> Result<(Vec<String>, String, Vec<String>)> {
+    pub fn get_context(
+        &self,
+        file_id: u32,
+        byte_offset: u32,
+        context_lines: usize,
+    ) -> Result<(Vec<String>, String, Vec<String>)> {
         let content = self.get_file_content(file_id)?;
         let lines: Vec<&str> = content.lines().collect();
 
@@ -487,7 +512,8 @@ impl ContentReader {
             .map(|s| s.to_string())
             .collect();
 
-        let matching = lines.get(line_idx)
+        let matching = lines
+            .get(line_idx)
             .map(|s| s.to_string())
             .unwrap_or_default();
 
@@ -502,7 +528,12 @@ impl ContentReader {
     /// Get context around a specific line number (1-indexed)
     ///
     /// Returns (lines_before, lines_after)
-    pub fn get_context_by_line(&self, file_id: u32, line_number: usize, context_lines: usize) -> Result<(Vec<String>, Vec<String>)> {
+    pub fn get_context_by_line(
+        &self,
+        file_id: u32,
+        line_number: usize,
+        context_lines: usize,
+    ) -> Result<(Vec<String>, Vec<String>)> {
         let content = self.get_file_content(file_id)?;
         let lines: Vec<&str> = content.lines().collect();
 
@@ -598,14 +629,20 @@ mod tests {
         let mut writer = ContentWriter::new();
         writer.init(content_path.clone()).unwrap();
         writer.add_file(PathBuf::from("src/main.rs"), "fn main() {}\n");
-        writer.add_file(PathBuf::from("src/lib.rs"), "pub fn hello() -> &'static str { \"hi\" }\n");
+        writer.add_file(
+            PathBuf::from("src/lib.rs"),
+            "pub fn hello() -> &'static str { \"hi\" }\n",
+        );
         writer.finalize_if_needed().unwrap();
 
         // Verify the file can be read back correctly
         let reader = ContentReader::open(&content_path).unwrap();
         assert_eq!(reader.file_count(), 2);
         assert_eq!(reader.get_file_content(0).unwrap(), "fn main() {}\n");
-        assert_eq!(reader.get_file_content(1).unwrap(), "pub fn hello() -> &'static str { \"hi\" }\n");
+        assert_eq!(
+            reader.get_file_content(1).unwrap(),
+            "pub fn hello() -> &'static str { \"hi\" }\n"
+        );
         assert_eq!(reader.get_file_path(0).unwrap(), Path::new("src/main.rs"));
         assert_eq!(reader.get_file_path(1).unwrap(), Path::new("src/lib.rs"));
     }

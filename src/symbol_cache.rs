@@ -36,8 +36,7 @@ impl SymbolCache {
 
     /// Initialize the symbols table schema if it doesn't exist
     fn init_schema(&self) -> Result<()> {
-        let conn = Connection::open(&self.db_path)
-            .context("Failed to open meta.db")?;
+        let conn = Connection::open(&self.db_path).context("Failed to open meta.db")?;
 
         // Check if we need to migrate to file_id-based schema
         let uses_file_id: bool = conn
@@ -46,7 +45,8 @@ impl SymbolCache {
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .unwrap_or(0) > 0;
+            .unwrap_or(0)
+            > 0;
 
         if !uses_file_id {
             // Old schema detected - drop and recreate with new schema
@@ -56,7 +56,8 @@ impl SymbolCache {
                     [],
                     |row| row.get::<_, i64>(0),
                 )
-                .unwrap_or(0) > 0;
+                .unwrap_or(0)
+                > 0;
 
             if table_exists {
                 log::warn!("Symbol cache schema outdated - migrating to file_id-based schema");
@@ -97,11 +98,9 @@ impl SymbolCache {
 
         // Lookup file_id
         let file_id: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?",
-                [file_path],
-                |row| row.get(0),
-            )
+            .query_row("SELECT id FROM files WHERE path = ?", [file_path], |row| {
+                row.get(0)
+            })
             .optional()?;
 
         let Some(file_id) = file_id else {
@@ -119,15 +118,19 @@ impl SymbolCache {
 
         match symbols_json {
             Some(json) => {
-                let mut symbols: Vec<SearchResult> = serde_json::from_str(&json)
-                    .context("Failed to deserialize cached symbols")?;
+                let mut symbols: Vec<SearchResult> =
+                    serde_json::from_str(&json).context("Failed to deserialize cached symbols")?;
 
                 // Restore file_path (it was removed during serialization to save space)
                 for symbol in &mut symbols {
                     symbol.path = file_path.to_string();
                 }
 
-                log::debug!("Symbol cache HIT: {} ({} symbols)", file_path, symbols.len());
+                log::debug!(
+                    "Symbol cache HIT: {} ({} symbols)",
+                    file_path,
+                    symbols.len()
+                );
                 Ok(Some(symbols))
             }
             None => {
@@ -145,7 +148,10 @@ impl SymbolCache {
     /// - Executes in ONE transaction instead of N
     ///
     /// Returns results in the same order as input. None means cache miss or hash mismatch.
-    pub fn batch_get(&self, files: &[(String, String)]) -> Result<Vec<(String, Option<Vec<SearchResult>>)>> {
+    pub fn batch_get(
+        &self,
+        files: &[(String, String)],
+    ) -> Result<Vec<(String, Option<Vec<SearchResult>>)>> {
         if files.is_empty() {
             return Ok(Vec::new());
         }
@@ -154,9 +160,8 @@ impl SymbolCache {
 
         // Prepare statements for file_id lookup and symbol retrieval
         let mut file_id_stmt = conn.prepare("SELECT id FROM files WHERE path = ?")?;
-        let mut symbols_stmt = conn.prepare(
-            "SELECT symbols_json FROM symbols WHERE file_id = ? AND file_hash = ?"
-        )?;
+        let mut symbols_stmt =
+            conn.prepare("SELECT symbols_json FROM symbols WHERE file_id = ? AND file_hash = ?")?;
 
         let mut results = Vec::with_capacity(files.len());
         let mut hits = 0;
@@ -185,7 +190,11 @@ impl SymbolCache {
                                 Some(symbols)
                             }
                             Err(e) => {
-                                log::warn!("Failed to deserialize cached symbols for {}: {}", file_path, e);
+                                log::warn!(
+                                    "Failed to deserialize cached symbols for {}: {}",
+                                    file_path,
+                                    e
+                                );
                                 misses += 1;
                                 None
                             }
@@ -204,7 +213,12 @@ impl SymbolCache {
             results.push((file_path.clone(), symbols));
         }
 
-        log::debug!("Batch symbol cache: {} hits, {} misses ({}  total)", hits, misses, files.len());
+        log::debug!(
+            "Batch symbol cache: {} hits, {} misses ({}  total)",
+            hits,
+            misses,
+            files.len()
+        );
         Ok(results)
     }
 
@@ -222,8 +236,8 @@ impl SymbolCache {
     /// Returns HashMap of file_id → symbols for cache hits.
     pub fn batch_get_with_kind(
         &self,
-        file_ids: &[(i64, String, String)],  // (file_id, hash, path)
-        kind_filter: Option<crate::models::SymbolKind>
+        file_ids: &[(i64, String, String)], // (file_id, hash, path)
+        kind_filter: Option<crate::models::SymbolKind>,
     ) -> Result<std::collections::HashMap<i64, Vec<SearchResult>>> {
         use std::collections::HashMap;
 
@@ -238,7 +252,8 @@ impl SymbolCache {
         const BATCH_SIZE: usize = 900;
 
         // Build lookup map for file_ids → (hash, path)
-        let file_info: HashMap<i64, (String, String)> = file_ids.iter()
+        let file_info: HashMap<i64, (String, String)> = file_ids
+            .iter()
             .map(|(id, hash, path)| (*id, (hash.clone(), path.clone())))
             .collect();
 
@@ -251,10 +266,7 @@ impl SymbolCache {
 
         for chunk in file_ids.chunks(BATCH_SIZE) {
             // Build placeholders for IN clause for this chunk
-            let id_placeholders = chunk.iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(", ");
+            let id_placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
             // Always use simple query - filter by kind in Rust to avoid cache miss detection bug
             let query = format!(
@@ -265,7 +277,8 @@ impl SymbolCache {
             );
 
             // Prepare parameters for this chunk
-            let params: Vec<Box<dyn rusqlite::ToSql>> = chunk.iter()
+            let params: Vec<Box<dyn rusqlite::ToSql>> = chunk
+                .iter()
                 .map(|(id, _, _)| Box::new(*id) as Box<dyn rusqlite::ToSql>)
                 .collect();
 
@@ -273,10 +286,7 @@ impl SymbolCache {
             let mut stmt = conn.prepare(&query)?;
             let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?
-                ))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })?;
 
             for row_result in rows {
@@ -304,7 +314,11 @@ impl SymbolCache {
                             hits += 1;
                         }
                         Err(e) => {
-                            log::warn!("Failed to deserialize cached symbols for file_id {}: {}", file_id, e);
+                            log::warn!(
+                                "Failed to deserialize cached symbols for file_id {}: {}",
+                                file_id,
+                                e
+                            );
                         }
                     }
                 }
@@ -316,12 +330,18 @@ impl SymbolCache {
         if kind_for_filtering.is_some() {
             log::debug!(
                 "Batch symbol cache with Rust-side kind filter: {} hits, {} misses ({} total, {} chunks)",
-                hits, misses, file_ids.len(), (file_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE
+                hits,
+                misses,
+                file_ids.len(),
+                (file_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE
             );
         } else {
             log::debug!(
                 "Batch symbol cache: {} hits, {} misses ({} total, {} chunks)",
-                hits, misses, file_ids.len(), (file_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE
+                hits,
+                misses,
+                file_ids.len(),
+                (file_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE
             );
         }
 
@@ -333,31 +353,36 @@ impl SymbolCache {
         let conn = Connection::open(&self.db_path)?;
 
         // Lookup file_id from file_path
-        let file_id: i64 = conn.query_row(
-            "SELECT id FROM files WHERE path = ?",
-            [file_path],
-            |row| row.get(0)
-        ).context(format!("File not found in index: {}", file_path))?;
+        let file_id: i64 = conn
+            .query_row("SELECT id FROM files WHERE path = ?", [file_path], |row| {
+                row.get(0)
+            })
+            .context(format!("File not found in index: {}", file_path))?;
 
         // Serialize symbols WITHOUT path (we'll restore it on read to save ~90MB)
         let symbols_without_path: Vec<_> = symbols
             .iter()
             .map(|s| {
                 let mut s = s.clone();
-                s.path = String::new();  // Clear path to avoid duplication
+                s.path = String::new(); // Clear path to avoid duplication
                 s
             })
             .collect();
 
-        let symbols_json = serde_json::to_string(&symbols_without_path)
-            .context("Failed to serialize symbols")?;
+        let symbols_json =
+            serde_json::to_string(&symbols_without_path).context("Failed to serialize symbols")?;
 
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
             "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
              VALUES (?, ?, ?, ?)",
-            [&file_id.to_string(), file_hash, &symbols_json, &now.to_string()],
+            [
+                &file_id.to_string(),
+                file_hash,
+                &symbols_json,
+                &now.to_string(),
+            ],
         )?;
 
         log::debug!("Cached {} symbols for {}", symbols.len(), file_path);
@@ -374,11 +399,13 @@ impl SymbolCache {
 
         for (file_path, file_hash, symbols) in entries {
             // Lookup file_id
-            let file_id: i64 = tx.query_row(
-                "SELECT id FROM files WHERE path = ?",
-                [file_path.as_str()],
-                |row| row.get(0)
-            ).context(format!("File not found in index: {}", file_path))?;
+            let file_id: i64 = tx
+                .query_row(
+                    "SELECT id FROM files WHERE path = ?",
+                    [file_path.as_str()],
+                    |row| row.get(0),
+                )
+                .context(format!("File not found in index: {}", file_path))?;
 
             // Serialize symbols WITHOUT path
             let symbols_without_path: Vec<_> = symbols
@@ -397,7 +424,12 @@ impl SymbolCache {
             tx.execute(
                 "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
                  VALUES (?, ?, ?, ?)",
-                [&file_id.to_string(), file_hash.as_str(), &symbols_json, &now_str],
+                [
+                    &file_id.to_string(),
+                    file_hash.as_str(),
+                    &symbols_json,
+                    &now_str,
+                ],
             )?;
         }
 
@@ -430,11 +462,9 @@ impl SymbolCache {
 
         // Estimate cache size by summing length of symbols_json
         let cache_size_bytes: u64 = conn
-            .query_row(
-                "SELECT SUM(LENGTH(symbols_json)) FROM symbols",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT SUM(LENGTH(symbols_json)) FROM symbols", [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0);
 
         Ok(SymbolCacheStats {
@@ -503,31 +533,24 @@ mod tests {
 
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
-        let symbols = vec![
-            SearchResult::new(
-                "test.rs".to_string(),
-                Language::Rust,
-                SymbolKind::Function,
-                Some("test_fn".to_string()),
-                Span::new(1, 0, 5, 0),
-                None,
-                "fn test_fn() {}".to_string(),
-            ),
-        ];
+        let symbols = vec![SearchResult::new(
+            "test.rs".to_string(),
+            Language::Rust,
+            SymbolKind::Function,
+            Some("test_fn".to_string()),
+            Span::new(1, 0, 5, 0),
+            None,
+            "fn test_fn() {}".to_string(),
+        )];
 
         // Store symbols
-        symbol_cache
-            .set("test.rs", "hash123", &symbols)
-            .unwrap();
+        symbol_cache.set("test.rs", "hash123", &symbols).unwrap();
 
         // Retrieve symbols
         let cached = symbol_cache.get("test.rs", "hash123").unwrap();
         assert!(cached.is_some());
         assert_eq!(cached.as_ref().unwrap().len(), 1);
-        assert_eq!(
-            cached.unwrap()[0].symbol.as_deref(),
-            Some("test_fn")
-        );
+        assert_eq!(cached.unwrap()[0].symbol.as_deref(), Some("test_fn"));
     }
 
     #[test]
@@ -552,9 +575,7 @@ mod tests {
         )];
 
         // Store with hash123
-        symbol_cache
-            .set("test.rs", "hash123", &symbols)
-            .unwrap();
+        symbol_cache.set("test.rs", "hash123", &symbols).unwrap();
 
         // Try to retrieve with different hash - should return None
         let cached = symbol_cache.get("test.rs", "hash456").unwrap();
@@ -684,28 +705,37 @@ mod tests {
 
         // Verify all hits
         assert!(results[0].1.is_some());
-        assert_eq!(results[0].1.as_ref().unwrap()[0].symbol.as_deref(), Some("fn1"));
+        assert_eq!(
+            results[0].1.as_ref().unwrap()[0].symbol.as_deref(),
+            Some("fn1")
+        );
 
         assert!(results[1].1.is_some());
-        assert_eq!(results[1].1.as_ref().unwrap()[0].symbol.as_deref(), Some("Struct2"));
+        assert_eq!(
+            results[1].1.as_ref().unwrap()[0].symbol.as_deref(),
+            Some("Struct2")
+        );
 
         assert!(results[2].1.is_some());
-        assert_eq!(results[2].1.as_ref().unwrap()[0].symbol.as_deref(), Some("Enum3"));
+        assert_eq!(
+            results[2].1.as_ref().unwrap()[0].symbol.as_deref(),
+            Some("Enum3")
+        );
 
         // Test batch_get with mixed hits and misses
         let mixed_lookup = vec![
-            ("file1.rs".to_string(), "hash1".to_string()),      // Hit
+            ("file1.rs".to_string(), "hash1".to_string()), // Hit
             ("nonexistent.rs".to_string(), "hash999".to_string()), // Miss (file doesn't exist)
-            ("file2.rs".to_string(), "wrong_hash".to_string()),  // Miss (hash mismatch)
-            ("file3.rs".to_string(), "hash3".to_string()),      // Hit
+            ("file2.rs".to_string(), "wrong_hash".to_string()), // Miss (hash mismatch)
+            ("file3.rs".to_string(), "hash3".to_string()), // Hit
         ];
 
         let mixed_results = symbol_cache.batch_get(&mixed_lookup).unwrap();
         assert_eq!(mixed_results.len(), 4);
 
         assert!(mixed_results[0].1.is_some()); // file1.rs - hit
-        assert!(mixed_results[1].1.is_none());  // nonexistent.rs - miss
-        assert!(mixed_results[2].1.is_none());  // file2.rs wrong hash - miss
+        assert!(mixed_results[1].1.is_none()); // nonexistent.rs - miss
+        assert!(mixed_results[2].1.is_none()); // file2.rs wrong hash - miss
         assert!(mixed_results[3].1.is_some()); // file3.rs - hit
 
         // Test batch_get with empty input
@@ -753,7 +783,9 @@ mod tests {
 
         // Add a file to the index
         cache_mgr.update_file("exists.rs", "rust", 100).unwrap();
-        cache_mgr.record_branch_file("exists.rs", "main", "hash1", None).unwrap();
+        cache_mgr
+            .record_branch_file("exists.rs", "main", "hash1", None)
+            .unwrap();
 
         // Add deleted.rs to index temporarily
         cache_mgr.update_file("deleted.rs", "rust", 200).unwrap();
@@ -772,9 +804,7 @@ mod tests {
         )];
 
         symbol_cache.set("exists.rs", "hash1", &symbols).unwrap();
-        symbol_cache
-            .set("deleted.rs", "hash2", &symbols)
-            .unwrap();
+        symbol_cache.set("deleted.rs", "hash2", &symbols).unwrap();
 
         let stats_before = symbol_cache.stats().unwrap();
         assert_eq!(stats_before.total_files, 2);
@@ -783,7 +813,8 @@ mod tests {
         // Note: With CASCADE DELETE foreign key constraint, the symbol entry is automatically
         // removed when the file is deleted, so cleanup_stale() won't find anything to remove.
         let conn = rusqlite::Connection::open(cache_mgr.path().join("meta.db")).unwrap();
-        conn.execute("DELETE FROM files WHERE path = 'deleted.rs'", []).unwrap();
+        conn.execute("DELETE FROM files WHERE path = 'deleted.rs'", [])
+            .unwrap();
 
         // Cleanup stale entries (should find 0 because CASCADE DELETE already cleaned it up)
         let removed = symbol_cache.cleanup_stale().unwrap();

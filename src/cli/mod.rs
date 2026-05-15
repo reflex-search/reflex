@@ -1,9 +1,9 @@
 //! CLI argument parsing and command router
 
+use crate::cache::CacheManager;
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
-use crate::cache::CacheManager;
 
 mod ask;
 mod deps;
@@ -984,7 +984,11 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
 
     // Spawn background thread for compaction
     std::thread::spawn(move || {
-        let cache = CacheManager::new(cache_path.parent().expect("Cache should have parent directory"));
+        let cache = CacheManager::new(
+            cache_path
+                .parent()
+                .expect("Cache should have parent directory"),
+        );
 
         match cache.compact() {
             Ok(report) => {
@@ -1009,10 +1013,10 @@ impl Cli {
     pub fn execute(self) -> Result<()> {
         // Setup logging based on verbosity
         let log_level = match self.verbose {
-            0 => "warn",   // Default: only warnings and errors
-            1 => "info",   // -v: show info messages
-            2 => "debug",  // -vv: show debug messages
-            _ => "trace",  // -vvv: show trace messages
+            0 => "warn",  // Default: only warnings and errors
+            1 => "info",  // -v: show info messages
+            2 => "debug", // -vv: show debug messages
+            _ => "trace", // -vvv: show trace messages
         };
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
             .init();
@@ -1029,24 +1033,55 @@ impl Cli {
             None => {
                 // No subcommand: show help
                 Cli::command().print_help()?;
-                println!();  // Add newline after help
+                println!(); // Add newline after help
                 Ok(())
             }
-            Some(Command::Index { path, force, languages, quiet, command }) => {
+            Some(Command::Index {
+                path,
+                force,
+                languages,
+                quiet,
+                command,
+            }) => {
                 match command {
                     None => {
                         // Default: run index build
                         index::handle_index_build(&path, &force, &languages, &quiet)
                     }
-                    Some(IndexSubcommand::Status) => {
-                        index::handle_index_status()
-                    }
+                    Some(IndexSubcommand::Status) => index::handle_index_status(),
                     Some(IndexSubcommand::Compact { json, pretty }) => {
                         index::handle_index_compact(&json, &pretty)
                     }
                 }
             }
-            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, context, all, force, dependencies }) => {
+            Some(Command::Query {
+                pattern,
+                symbols,
+                lang,
+                kind,
+                ast,
+                regex,
+                json,
+                pretty,
+                ai,
+                limit,
+                offset,
+                expand,
+                file,
+                exact,
+                contains,
+                count,
+                timeout,
+                plain,
+                glob,
+                exclude,
+                paths,
+                no_truncate,
+                context,
+                all,
+                force,
+                dependencies,
+            }) => {
                 // If no pattern provided, launch interactive mode (REF-68: require TTY)
                 match pattern {
                     None => {
@@ -1058,90 +1093,227 @@ impl Cli {
                         }
                         query::handle_interactive()
                     }
-                    Some(pattern) => query::handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, context, all, force, dependencies)
+                    Some(pattern) => query::handle_query(
+                        pattern,
+                        symbols,
+                        lang,
+                        kind,
+                        ast,
+                        regex,
+                        json,
+                        pretty,
+                        ai,
+                        limit,
+                        offset,
+                        expand,
+                        file,
+                        exact,
+                        contains,
+                        count,
+                        timeout,
+                        plain,
+                        glob,
+                        exclude,
+                        paths,
+                        no_truncate,
+                        context,
+                        all,
+                        force,
+                        dependencies,
+                    ),
                 }
             }
-            Some(Command::Serve { port, host }) => {
-                serve::handle_serve(port, host)
-            }
-            Some(Command::Stats { json, pretty }) => {
-                misc::handle_stats(json, pretty)
-            }
-            Some(Command::Clear { yes }) => {
-                misc::handle_clear(yes)
-            }
-            Some(Command::ListFiles { json, pretty, lang, glob }) => {
-                misc::handle_list_files(json, pretty, lang, glob)
-            }
-            Some(Command::Watch { path, debounce, quiet }) => {
-                watch::handle_watch(path, debounce, quiet)
-            }
-            Some(Command::Mcp) => {
-                misc::handle_mcp()
-            }
-            Some(Command::Analyze { circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, count, all, plain, glob, exclude, force, limit, offset, sort }) => {
-                deps::handle_analyze(circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, count, all, plain, glob, exclude, force, limit, offset, sort)
-            }
-            Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
-                deps::handle_deps(file, reverse, depth, format, json, pretty)
-            }
-            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug }) => {
-                ask::handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug)
-            }
-            Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, depth, json }) => {
-                misc::handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, depth, json)
-            }
+            Some(Command::Serve { port, host }) => serve::handle_serve(port, host),
+            Some(Command::Stats { json, pretty }) => misc::handle_stats(json, pretty),
+            Some(Command::Clear { yes }) => misc::handle_clear(yes),
+            Some(Command::ListFiles {
+                json,
+                pretty,
+                lang,
+                glob,
+            }) => misc::handle_list_files(json, pretty, lang, glob),
+            Some(Command::Watch {
+                path,
+                debounce,
+                quiet,
+            }) => watch::handle_watch(path, debounce, quiet),
+            Some(Command::Mcp) => misc::handle_mcp(),
+            Some(Command::Analyze {
+                circular,
+                hotspots,
+                min_dependents,
+                unused,
+                islands,
+                min_island_size,
+                max_island_size,
+                format,
+                json,
+                pretty,
+                count,
+                all,
+                plain,
+                glob,
+                exclude,
+                force,
+                limit,
+                offset,
+                sort,
+            }) => deps::handle_analyze(
+                circular,
+                hotspots,
+                min_dependents,
+                unused,
+                islands,
+                min_island_size,
+                max_island_size,
+                format,
+                json,
+                pretty,
+                count,
+                all,
+                plain,
+                glob,
+                exclude,
+                force,
+                limit,
+                offset,
+                sort,
+            ),
+            Some(Command::Deps {
+                file,
+                reverse,
+                depth,
+                format,
+                json,
+                pretty,
+            }) => deps::handle_deps(file, reverse, depth, format, json, pretty),
+            Some(Command::Ask {
+                question,
+                execute,
+                provider,
+                json,
+                pretty,
+                additional_context,
+                configure,
+                agentic,
+                max_iterations,
+                no_eval,
+                show_reasoning,
+                verbose,
+                quiet,
+                answer,
+                interactive,
+                debug,
+            }) => ask::handle_ask(
+                question,
+                execute,
+                provider,
+                json,
+                pretty,
+                additional_context,
+                configure,
+                agentic,
+                max_iterations,
+                no_eval,
+                show_reasoning,
+                verbose,
+                quiet,
+                answer,
+                interactive,
+                debug,
+            ),
+            Some(Command::Context {
+                structure,
+                path,
+                file_types,
+                project_type,
+                framework,
+                entry_points,
+                test_layout,
+                config_files,
+                depth,
+                json,
+            }) => misc::handle_context(
+                structure,
+                path,
+                file_types,
+                project_type,
+                framework,
+                entry_points,
+                test_layout,
+                config_files,
+                depth,
+                json,
+            ),
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 index::handle_index_symbols_internal(cache_dir)
             }
-            Some(Command::Snapshot { command }) => {
-                match command {
-                    None => snapshot::handle_snapshot_create(),
-                    Some(SnapshotSubcommand::List { json, pretty }) => {
-                        snapshot::handle_snapshot_list(json, pretty)
-                    }
-                    Some(SnapshotSubcommand::Diff { baseline, current, json, pretty }) => {
-                        snapshot::handle_snapshot_diff(baseline, current, json, pretty)
-                    }
-                    Some(SnapshotSubcommand::Gc { json }) => {
-                        snapshot::handle_snapshot_gc(json)
-                    }
+            Some(Command::Snapshot { command }) => match command {
+                None => snapshot::handle_snapshot_create(),
+                Some(SnapshotSubcommand::List { json, pretty }) => {
+                    snapshot::handle_snapshot_list(json, pretty)
                 }
-            }
-            Some(Command::Pulse { command }) => {
-                match command {
-                    PulseSubcommand::Changelog { count, no_llm, json, pretty } => {
-                        pulse::handle_pulse_changelog(count, no_llm, json, pretty)
-                    }
-                    PulseSubcommand::Wiki { no_llm, output, json } => {
-                        pulse::handle_pulse_wiki(no_llm, output, json)
-                    }
-                    PulseSubcommand::Map { format, output, zoom } => {
-                        pulse::handle_pulse_map(format, output, zoom)
-                    }
-                    PulseSubcommand::Generate { output, base_url, title, include, no_llm, clean, force_renarrate, concurrency, depth, min_files } => {
-                        pulse::handle_pulse_generate(output, base_url, title, include, no_llm, clean, force_renarrate, concurrency, depth, min_files)
-                    }
-                    PulseSubcommand::Serve { output, port, open } => {
-                        pulse::handle_pulse_serve(output, port, open)
-                    }
-                    PulseSubcommand::Onboard { no_llm, json } => {
-                        pulse::handle_pulse_onboard(no_llm, json)
-                    }
-                    PulseSubcommand::Timeline { json } => {
-                        pulse::handle_pulse_timeline(json)
-                    }
-                    PulseSubcommand::Glossary { json } => {
-                        pulse::handle_pulse_glossary(json)
-                    }
+                Some(SnapshotSubcommand::Diff {
+                    baseline,
+                    current,
+                    json,
+                    pretty,
+                }) => snapshot::handle_snapshot_diff(baseline, current, json, pretty),
+                Some(SnapshotSubcommand::Gc { json }) => snapshot::handle_snapshot_gc(json),
+            },
+            Some(Command::Pulse { command }) => match command {
+                PulseSubcommand::Changelog {
+                    count,
+                    no_llm,
+                    json,
+                    pretty,
+                } => pulse::handle_pulse_changelog(count, no_llm, json, pretty),
+                PulseSubcommand::Wiki {
+                    no_llm,
+                    output,
+                    json,
+                } => pulse::handle_pulse_wiki(no_llm, output, json),
+                PulseSubcommand::Map {
+                    format,
+                    output,
+                    zoom,
+                } => pulse::handle_pulse_map(format, output, zoom),
+                PulseSubcommand::Generate {
+                    output,
+                    base_url,
+                    title,
+                    include,
+                    no_llm,
+                    clean,
+                    force_renarrate,
+                    concurrency,
+                    depth,
+                    min_files,
+                } => pulse::handle_pulse_generate(
+                    output,
+                    base_url,
+                    title,
+                    include,
+                    no_llm,
+                    clean,
+                    force_renarrate,
+                    concurrency,
+                    depth,
+                    min_files,
+                ),
+                PulseSubcommand::Serve { output, port, open } => {
+                    pulse::handle_pulse_serve(output, port, open)
                 }
-            }
-            Some(Command::Llm { command }) => {
-                match command {
-                    LlmSubcommand::Config => llm::handle_llm_config(),
-                    LlmSubcommand::Status => llm::handle_llm_status(),
+                PulseSubcommand::Onboard { no_llm, json } => {
+                    pulse::handle_pulse_onboard(no_llm, json)
                 }
-            }
+                PulseSubcommand::Timeline { json } => pulse::handle_pulse_timeline(json),
+                PulseSubcommand::Glossary { json } => pulse::handle_pulse_glossary(json),
+            },
+            Some(Command::Llm { command }) => match command {
+                LlmSubcommand::Config => llm::handle_llm_config(),
+                LlmSubcommand::Status => llm::handle_llm_status(),
+            },
         }
     }
 }

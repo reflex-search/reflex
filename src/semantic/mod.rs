@@ -1,5 +1,6 @@
 //! Semantic query generation using LLMs
 
+pub mod answer;
 pub mod config;
 pub mod configure;
 pub mod context;
@@ -7,32 +8,31 @@ pub mod executor;
 pub mod prompt;
 pub mod providers;
 pub mod schema;
-pub mod answer;
 
 // Agentic mode modules (experimental)
-pub mod schema_agentic;
 pub mod agentic;
-pub mod tools;
 pub mod evaluator;
 pub mod prompt_agentic;
 pub mod reporter;
+pub mod schema_agentic;
+pub mod tools;
 
 // Interactive chat mode modules
 pub mod chat_session;
 pub mod chat_tui;
 
 // Re-export main types for convenience
-pub use configure::run_configure_wizard;
-pub use executor::{execute_queries, parse_command, ParsedCommand};
-pub use schema::{QueryCommand, QueryResponse as SemanticQueryResponse, AgenticQueryResponse};
-pub use agentic::{run_agentic_loop, AgenticConfig};
-pub use reporter::{AgenticReporter, ConsoleReporter, QuietReporter};
+pub use agentic::{AgenticConfig, run_agentic_loop};
 pub use answer::generate_answer;
 pub use chat_tui::run_chat_mode;
-pub use config::{save_user_provider, is_any_api_key_configured};
+pub use config::{is_any_api_key_configured, save_user_provider};
+pub use configure::run_configure_wizard;
+pub use executor::{ParsedCommand, execute_queries, parse_command};
+pub use reporter::{AgenticReporter, ConsoleReporter, QuietReporter};
+pub use schema::{AgenticQueryResponse, QueryCommand, QueryResponse as SemanticQueryResponse};
 
-use anyhow::{Context, Result};
 use crate::cache::CacheManager;
+use anyhow::{Context, Result};
 
 /// Generate query commands from a natural language question
 ///
@@ -66,7 +66,11 @@ pub async fn ask_question(
         config.timeout_seconds,
     )?;
 
-    log::info!("Using provider: {} (model: {})", provider.name(), provider.default_model());
+    log::info!(
+        "Using provider: {} (model: {})",
+        provider.name(),
+        provider.default_model()
+    );
 
     // Build prompt with language injection
     let prompt = prompt::build_prompt(question, cache, additional_context.as_deref())?;
@@ -100,7 +104,15 @@ pub async fn ask_question(
         anyhow::bail!("{}", msg);
     }
 
-    log::info!("Generated {} quer{}", response.queries.len(), if response.queries.len() == 1 { "y" } else { "ies" });
+    log::info!(
+        "Generated {} quer{}",
+        response.queries.len(),
+        if response.queries.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    );
 
     Ok(response)
 }
@@ -122,9 +134,7 @@ pub(crate) fn extract_json(text: &str) -> &str {
     if trimmed.starts_with("```") && trimmed.ends_with("```") {
         // Find end of opening fence line
         let after_backticks = &trimmed[3..];
-        let content_start = after_backticks.find('\n')
-            .map(|i| 3 + i + 1)
-            .unwrap_or(3);
+        let content_start = after_backticks.find('\n').map(|i| 3 + i + 1).unwrap_or(3);
 
         // Remove closing fence
         let content = &trimmed[content_start..trimmed.len() - 3];
@@ -174,13 +184,11 @@ pub(crate) fn extract_json(text: &str) -> &str {
 /// Handles LLMs that return `"true"` instead of `true`.
 fn coerce_string_values(value: &mut serde_json::Value) {
     match value {
-        serde_json::Value::String(s) => {
-            match s.as_str() {
-                "true" => *value = serde_json::Value::Bool(true),
-                "false" => *value = serde_json::Value::Bool(false),
-                _ => {}
-            }
-        }
+        serde_json::Value::String(s) => match s.as_str() {
+            "true" => *value = serde_json::Value::Bool(true),
+            "false" => *value = serde_json::Value::Bool(false),
+            _ => {}
+        },
         serde_json::Value::Object(map) => {
             for v in map.values_mut() {
                 coerce_string_values(v);
@@ -218,23 +226,29 @@ pub(crate) async fn call_with_retry(
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            log::warn!("Retrying LLM call (attempt {}/{})", attempt + 1, max_retries + 1);
+            log::warn!(
+                "Retrying LLM call (attempt {}/{})",
+                attempt + 1,
+                max_retries + 1
+            );
         }
 
-        match provider.complete(prompt, true).await {  // json_mode: true for query generation
+        match provider.complete(prompt, true).await {
+            // json_mode: true for query generation
             Ok(response) => {
                 // Extract JSON from response (handles markdown fences, embedded text, etc.)
                 let cleaned_response = extract_json(&response);
 
                 // Coerce string-encoded booleans ("true" → true, "false" → false)
                 // Some LLMs (e.g., DeepSeek via OpenRouter) return "true" instead of true
-                let cleaned_response = match serde_json::from_str::<serde_json::Value>(cleaned_response) {
-                    Ok(mut value) => {
-                        coerce_string_values(&mut value);
-                        value.to_string()
-                    }
-                    Err(_) => cleaned_response.to_string(), // Not valid JSON yet — let validator report the error
-                };
+                let cleaned_response =
+                    match serde_json::from_str::<serde_json::Value>(cleaned_response) {
+                        Ok(mut value) => {
+                            coerce_string_values(&mut value);
+                            value.to_string()
+                        }
+                        Err(_) => cleaned_response.to_string(), // Not valid JSON yet — let validator report the error
+                    };
 
                 // Validate using caller-specified schema check
                 match validator(&cleaned_response) {
@@ -416,9 +430,10 @@ Some trailing text here."#;
     fn test_validate_agentic_or_query_response() {
         // Both formats should pass
         assert!(validate_agentic_or_query_response(r#"{"queries": []}"#).is_ok());
-        assert!(validate_agentic_or_query_response(
-            r#"{"phase": "final", "reasoning": "done"}"#
-        ).is_ok());
+        assert!(
+            validate_agentic_or_query_response(r#"{"phase": "final", "reasoning": "done"}"#)
+                .is_ok()
+        );
 
         // Invalid JSON should fail
         assert!(validate_agentic_or_query_response(r#"{"bad": true}"#).is_err());
@@ -460,7 +475,10 @@ Some trailing text here."#;
         coerce_string_values(&mut value);
         assert_eq!(value["tool_calls"][0]["expand"], serde_json::json!(true));
         assert_eq!(value["tool_calls"][0]["symbols"], serde_json::json!(false));
-        assert_eq!(value["tool_calls"][0]["query"], serde_json::json!("search term"));
+        assert_eq!(
+            value["tool_calls"][0]["query"],
+            serde_json::json!("search term")
+        );
         assert_eq!(value["outer"]["inner_bool"], serde_json::json!(true));
     }
 
@@ -505,7 +523,13 @@ Some trailing text here."#;
         assert_eq!(value["tool_calls"][0]["expand"], serde_json::json!(true));
         // String fields preserved
         assert_eq!(value["phase"], serde_json::json!("assessment"));
-        assert_eq!(value["reasoning"], serde_json::json!("need to find relevant files"));
-        assert_eq!(value["tool_calls"][0]["query"], serde_json::json!("trigram"));
+        assert_eq!(
+            value["reasoning"],
+            serde_json::json!("need to find relevant files")
+        );
+        assert_eq!(
+            value["tool_calls"][0]["query"],
+            serde_json::json!("trigram")
+        );
     }
 }

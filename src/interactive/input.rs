@@ -198,13 +198,11 @@ impl KeyCommand {
             return match key.code {
                 KeyCode::Esc => Self::UnfocusInput,
                 KeyCode::Enter => Self::UnfocusInput,
-                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    match c {
-                        'p' => Self::HistoryPrev,
-                        'n' => Self::HistoryNext,
-                        _ => Self::None,
-                    }
-                }
+                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => match c {
+                    'p' => Self::HistoryPrev,
+                    'n' => Self::HistoryNext,
+                    _ => Self::None,
+                },
                 _ => Self::None, // Let InputField handle it
             };
         }

@@ -53,17 +53,15 @@ impl LlmCache {
             return Ok(None);
         }
 
-        let content = std::fs::read_to_string(&path)
-            .context("Failed to read LLM cache entry")?;
-        let cached: CachedResponse = serde_json::from_str(&content)
-            .context("Failed to parse LLM cache entry")?;
+        let content = std::fs::read_to_string(&path).context("Failed to read LLM cache entry")?;
+        let cached: CachedResponse =
+            serde_json::from_str(&content).context("Failed to parse LLM cache entry")?;
         Ok(Some(cached))
     }
 
     /// Store a response in the cache
     pub fn put(&self, key: &str, context_hash: &str, response: &str) -> Result<()> {
-        std::fs::create_dir_all(&self.cache_dir)
-            .context("Failed to create LLM cache directory")?;
+        std::fs::create_dir_all(&self.cache_dir).context("Failed to create LLM cache directory")?;
 
         let entry = CachedResponse {
             context_hash: context_hash.to_string(),
@@ -73,8 +71,7 @@ impl LlmCache {
 
         let json = serde_json::to_string_pretty(&entry)?;
         let path = self.cache_dir.join(format!("{}.json", key));
-        std::fs::write(&path, json)
-            .context("Failed to write LLM cache entry")?;
+        std::fs::write(&path, json).context("Failed to write LLM cache entry")?;
 
         Ok(())
     }
@@ -82,8 +79,7 @@ impl LlmCache {
     /// Clear all cached responses
     pub fn clear(&self) -> Result<()> {
         if self.cache_dir.exists() {
-            std::fs::remove_dir_all(&self.cache_dir)
-                .context("Failed to clear LLM cache")?;
+            std::fs::remove_dir_all(&self.cache_dir).context("Failed to clear LLM cache")?;
         }
         Ok(())
     }
@@ -122,7 +118,9 @@ mod tests {
         assert!(cache.get(key).unwrap().is_none());
         assert_eq!(cache.count(), 0);
 
-        cache.put(key, "hash123", "This module handles authentication.").unwrap();
+        cache
+            .put(key, "hash123", "This module handles authentication.")
+            .unwrap();
         assert_eq!(cache.count(), 1);
 
         let cached = cache.get(key).unwrap().unwrap();

@@ -8,12 +8,12 @@
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame, Terminal,
 };
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -22,8 +22,8 @@ use textwrap;
 
 use crate::cache::CacheManager;
 
-use super::chat_session::{ChatSession, MessageRole};
 use super::AgenticConfig;
+use super::chat_session::{ChatSession, MessageRole};
 
 /// Progress updates from async execution
 #[derive(Debug, Clone)]
@@ -45,9 +45,7 @@ enum PhaseUpdate {
         tool_calls: Vec<String>,
     },
     /// Phase 3: Query generation (agentic path)
-    Queries {
-        queries: Vec<String>,
-    },
+    Queries { queries: Vec<String> },
     /// Phase 4: Execution status (agentic path)
     Executing {
         results_count: usize,
@@ -60,19 +58,13 @@ enum PhaseUpdate {
         message: String,
     },
     /// Phase 5: Final answer (both paths)
-    Answer {
-        answer: String,
-    },
+    Answer { answer: String },
     /// Error occurred
-    Error {
-        error: String,
-    },
+    Error { error: String },
     /// Non-fatal notice surfaced to the status bar (e.g. degraded LLM mode
     /// when the LLM call failed but the path can still produce a useful
     /// result via fallback).
-    Notice {
-        message: String,
-    },
+    Notice { message: String },
     /// Processing complete
     Done,
 }
@@ -129,7 +121,11 @@ fn wrap_with_prefix(content: &str, area_width: u16, border_color: Color) -> Vec<
 }
 
 /// Helper function to render markdown with consistent "│ " prefix on each line
-fn render_markdown_with_prefix(content: &str, area_width: u16, border_color: Color) -> Vec<Line<'static>> {
+fn render_markdown_with_prefix(
+    content: &str,
+    area_width: u16,
+    border_color: Color,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     // Calculate usable width: total width - borders (2) - prefix "│ " (2)
@@ -161,13 +157,19 @@ fn render_markdown_with_prefix(content: &str, area_width: u16, border_color: Col
             // Separate border color from content color
             lines.push(Line::from(vec![
                 Span::styled("│ ", Style::default().fg(border_color)),
-                Span::styled(content_line.to_string(), Style::default().fg(Color::Cyan).bg(Color::Black)),
+                Span::styled(
+                    content_line.to_string(),
+                    Style::default().fg(Color::Cyan).bg(Color::Black),
+                ),
             ]));
             continue;
         }
 
         if content_line.is_empty() {
-            lines.push(Line::from(Span::styled("│ ", Style::default().fg(border_color))));
+            lines.push(Line::from(Span::styled(
+                "│ ",
+                Style::default().fg(border_color),
+            )));
             continue;
         }
 
@@ -203,7 +205,11 @@ fn render_markdown_with_prefix(content: &str, area_width: u16, border_color: Col
                     line_spans.push(Span::styled(span.content.to_string(), style));
                 }
             } else {
-                line_spans.extend(parsed_spans.into_iter().map(|s| Span::styled(s.content.to_string(), s.style)));
+                line_spans.extend(
+                    parsed_spans
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.to_string(), s.style)),
+                );
             }
 
             lines.push(Line::from(line_spans));
@@ -226,7 +232,9 @@ fn parse_inline_markdown(text: &str) -> Vec<Span<'static>> {
                 let content: String = chars[i + 2..end].iter().collect();
                 result.push(Span::styled(
                     content,
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ));
                 i = end + 2;
                 continue;
@@ -240,7 +248,9 @@ fn parse_inline_markdown(text: &str) -> Vec<Span<'static>> {
                 let content: String = chars[i + 1..end].iter().collect();
                 result.push(Span::styled(
                     content,
-                    Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::ITALIC),
                 ));
                 i = end + 1;
                 continue;
@@ -274,8 +284,11 @@ fn parse_inline_markdown(text: &str) -> Vec<Span<'static>> {
         // SAFETY: If we're still at a markdown character with no match, treat it as plain text
         // This prevents infinite loops on unmatched *, _, or `
         if i < chars.len() && (chars[i] == '*' || chars[i] == '_' || chars[i] == '`') {
-            result.push(Span::styled(chars[i].to_string(), Style::default().fg(Color::White)));
-            i += 1;  // CRITICAL: Always advance to prevent infinite loop
+            result.push(Span::styled(
+                chars[i].to_string(),
+                Style::default().fg(Color::White),
+            ));
+            i += 1; // CRITICAL: Always advance to prevent infinite loop
         }
     }
 
@@ -360,16 +373,17 @@ impl ChatApp {
         // For self-hosted providers with no built-in default, fall back to
         // a "(not configured)" placeholder for the session label — the
         // failure will surface at send time as a Notice.
-        let model = super::config::resolve_model_for(&provider_name, None, model_override.as_deref())
-            .or_else(|| {
-                let d = super::providers::default_model_for(&provider_name);
-                if d.is_empty() {
-                    None
-                } else {
-                    Some(d.to_string())
-                }
-            })
-            .unwrap_or_else(|| "(not configured)".to_string());
+        let model =
+            super::config::resolve_model_for(&provider_name, None, model_override.as_deref())
+                .or_else(|| {
+                    let d = super::providers::default_model_for(&provider_name);
+                    if d.is_empty() {
+                        None
+                    } else {
+                        Some(d.to_string())
+                    }
+                })
+                .unwrap_or_else(|| "(not configured)".to_string());
 
         let session = ChatSession::new(provider_name.clone(), model);
 
@@ -406,7 +420,8 @@ impl ChatApp {
              • /model [provider] [model] - Show or change provider/model\n\
              • /help - Show this help message\n\
              \n\
-             Press Ctrl+C to exit.".to_string()
+             Press Ctrl+C to exit."
+                .to_string(),
         );
 
         // Main event loop
@@ -470,9 +485,9 @@ impl ChatApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),  // Stats panel
-                Constraint::Min(10),    // Message history (scrollable)
-                Constraint::Length(4),  // Input box
+                Constraint::Length(2), // Stats panel
+                Constraint::Min(10),   // Message history (scrollable)
+                Constraint::Length(4), // Input box
             ])
             .split(size);
 
@@ -499,7 +514,9 @@ impl ChatApp {
             Span::raw("Model: "),
             Span::styled(
                 format!("{} ", self.session.model()),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("│ Provider: "),
             Span::styled(
@@ -508,8 +525,14 @@ impl ChatApp {
             ),
             Span::raw("│ Tokens: "),
             Span::styled(
-                format!("{}/{} ", self.session.total_tokens(), self.session.context_limit()),
-                Style::default().fg(usage_color).add_modifier(Modifier::BOLD),
+                format!(
+                    "{}/{} ",
+                    self.session.total_tokens(),
+                    self.session.context_limit()
+                ),
+                Style::default()
+                    .fg(usage_color)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("({}%)", percentage),
@@ -542,8 +565,7 @@ impl ChatApp {
 
         let line2 = Line::from(Span::styled(line2_text, Style::default().fg(line2_color)));
 
-        let paragraph = Paragraph::new(vec![line1, line2])
-            .style(Style::default().bg(Color::Black));
+        let paragraph = Paragraph::new(vec![line1, line2]).style(Style::default().bg(Color::Black));
 
         f.render_widget(paragraph, area);
     }
@@ -559,7 +581,9 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ You ─────────────────────────────────────",
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Message content (with proper wrapping and consistent green border)
@@ -575,7 +599,9 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Thinking) ────────────────────",
-                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Show needs_context indicator
@@ -583,7 +609,10 @@ impl ChatApp {
                         if meta.needs_context {
                             lines.push(Line::from(vec![
                                 Span::styled("│ ", Style::default().fg(Color::Magenta)),
-                                Span::styled("🔍 Needs context gathering", Style::default().fg(Color::Yellow)),
+                                Span::styled(
+                                    "🔍 Needs context gathering",
+                                    Style::default().fg(Color::Yellow),
+                                ),
                             ]));
                         }
                     }
@@ -601,7 +630,9 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Tools) ───────────────────────",
-                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Show tool calls
@@ -611,7 +642,7 @@ impl ChatApp {
                                 Span::styled("│ ", Style::default().fg(Color::Blue)),
                                 Span::styled(
                                     format!("🔧 {} tool calls made", meta.tool_calls.len()),
-                                    Style::default().fg(Color::DarkGray)
+                                    Style::default().fg(Color::DarkGray),
                                 ),
                             ]));
                         }
@@ -630,7 +661,9 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Queries) ─────────────────────",
-                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Show query count
@@ -640,7 +673,7 @@ impl ChatApp {
                                 Span::styled("│ ", Style::default().fg(Color::Magenta)),
                                 Span::styled(
                                     format!("📝 Generated {} queries", meta.queries.len()),
-                                    Style::default().fg(Color::DarkGray)
+                                    Style::default().fg(Color::DarkGray),
                                 ),
                             ]));
                             // Optionally show the queries
@@ -649,7 +682,7 @@ impl ChatApp {
                                     Span::styled("│ ", Style::default().fg(Color::Magenta)),
                                     Span::styled(
                                         format!("  {}. {}", i + 1, query),
-                                        Style::default().fg(Color::DarkGray)
+                                        Style::default().fg(Color::DarkGray),
                                     ),
                                 ]));
                             }
@@ -669,7 +702,9 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Executing) ───────────────────",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Show execution stats
@@ -682,8 +717,13 @@ impl ChatApp {
                         lines.push(Line::from(vec![
                             Span::styled("│ ", Style::default().fg(Color::Yellow)),
                             Span::styled(
-                                format!("⚡ Found {} result{}{}", meta.results_count, if meta.results_count == 1 { "" } else { "s" }, time_str),
-                                Style::default().fg(Color::DarkGray)
+                                format!(
+                                    "⚡ Found {} result{}{}",
+                                    meta.results_count,
+                                    if meta.results_count == 1 { "" } else { "s" },
+                                    time_str
+                                ),
+                                Style::default().fg(Color::DarkGray),
                             ),
                         ]));
                     }
@@ -701,11 +741,17 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Answer) ──────────────────────",
-                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Message content (with markdown rendering and consistent blue border)
-                    lines.extend(render_markdown_with_prefix(&msg.content, area.width, Color::Blue));
+                    lines.extend(render_markdown_with_prefix(
+                        &msg.content,
+                        area.width,
+                        Color::Blue,
+                    ));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -717,7 +763,9 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ System ──────────────────────────────────",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )));
 
                     // Message content (with proper wrapping)
@@ -738,20 +786,26 @@ impl ChatApp {
             let spinner_char = SPINNER_CHARS[self.spinner_frame % SPINNER_CHARS.len()];
 
             // Get current status message or default
-            let status_text = self.status_message.as_ref()
+            let status_text = self
+                .status_message
+                .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or_else(|| "Working...".to_string());
 
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "╭─ Processing ──────────────────────────────",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(vec![
                 Span::styled("│ ", Style::default().fg(Color::Cyan)),
                 Span::styled(
                     spinner_char,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {}", status_text),
@@ -789,10 +843,12 @@ impl ChatApp {
         };
 
         let paragraph = Paragraph::new(lines)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title(" Messages ")
-                .border_style(Style::default().fg(Color::DarkGray)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Messages ")
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
             .scroll((scroll as u16, 0));
 
         f.render_widget(paragraph, area);
@@ -815,28 +871,36 @@ impl ChatApp {
         let shortcuts = " Enter: Send | Ctrl+C: Quit | Ctrl+L: /clear | Ctrl+K: /compact | Ctrl+U: Clear input ";
 
         let paragraph = Paragraph::new(input_display)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title(vec![
-                    Span::raw(" "),
-                    Span::styled(">", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                    Span::raw(" Input "),
-                ])
-                .title_bottom(Line::from(Span::styled(
-                    shortcuts,
-                    Style::default().fg(Color::DarkGray)
-                )))
-                .border_style(Style::default().fg(if self.waiting { Color::DarkGray } else { Color::Green })))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(vec![
+                        Span::raw(" "),
+                        Span::styled(
+                            ">",
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" Input "),
+                    ])
+                    .title_bottom(Line::from(Span::styled(
+                        shortcuts,
+                        Style::default().fg(Color::DarkGray),
+                    )))
+                    .border_style(Style::default().fg(if self.waiting {
+                        Color::DarkGray
+                    } else {
+                        Color::Green
+                    })),
+            )
             .style(input_style);
 
         f.render_widget(paragraph, area);
 
         // Set cursor position if not waiting
         if !self.waiting && !self.input.is_empty() {
-            f.set_cursor_position((
-                area.x + 1 + (self.cursor as u16),
-                area.y + 1,
-            ));
+            f.set_cursor_position((area.x + 1 + (self.cursor as u16), area.y + 1));
         }
     }
 
@@ -1013,7 +1077,8 @@ impl ChatApp {
                     &provider_name,
                     model_override.as_deref(),
                     tx,
-                ).await
+                )
+                .await
             });
         });
 
@@ -1028,13 +1093,20 @@ impl ChatApp {
             PhaseUpdate::AnsweringFromContext => {
                 self.status_message = Some("Answering from conversation...".to_string());
             }
-            PhaseUpdate::Thinking { reasoning, needs_context } => {
+            PhaseUpdate::Thinking {
+                reasoning,
+                needs_context,
+            } => {
                 self.status_message = Some("Thinking...".to_string());
                 self.session.add_thinking_message(reasoning, needs_context);
                 self.scroll_offset = 0; // Auto-scroll to bottom
             }
-            PhaseUpdate::Tools { content, tool_calls } => {
-                self.status_message = Some(format!("Gathering context ({} tools)...", tool_calls.len()));
+            PhaseUpdate::Tools {
+                content,
+                tool_calls,
+            } => {
+                self.status_message =
+                    Some(format!("Gathering context ({} tools)...", tool_calls.len()));
                 self.session.add_tools_message(content, tool_calls);
                 self.scroll_offset = 0;
             }
@@ -1043,12 +1115,24 @@ impl ChatApp {
                 self.session.add_queries_message(queries);
                 self.scroll_offset = 0;
             }
-            PhaseUpdate::Executing { results_count, execution_time_ms } => {
-                self.status_message = Some(format!("Found {} result{}...", results_count, if results_count == 1 { "" } else { "s" }));
-                self.session.add_execution_message(results_count, execution_time_ms);
+            PhaseUpdate::Executing {
+                results_count,
+                execution_time_ms,
+            } => {
+                self.status_message = Some(format!(
+                    "Found {} result{}...",
+                    results_count,
+                    if results_count == 1 { "" } else { "s" }
+                ));
+                self.session
+                    .add_execution_message(results_count, execution_time_ms);
                 self.scroll_offset = 0;
             }
-            PhaseUpdate::Reindexing { current, total, message } => {
+            PhaseUpdate::Reindexing {
+                current,
+                total,
+                message,
+            } => {
                 let percentage = if total > 0 {
                     (current as f32 / total as f32 * 100.0) as u8
                 } else {
@@ -1094,9 +1178,8 @@ impl ChatApp {
                 self.cursor = 0;
 
                 // Add welcome message again
-                self.session.add_system_message(
-                    "Conversation cleared. Start fresh!".to_string()
-                );
+                self.session
+                    .add_system_message("Conversation cleared. Start fresh!".to_string());
             }
             "/compact" => {
                 self.handle_compact()?;
@@ -1119,7 +1202,8 @@ impl ChatApp {
                      • Ctrl+K - Compact conversation\n\
                      • Ctrl+U - Clear input\n\
                      • Up/Down - Scroll messages\n\
-                     • PgUp/PgDn - Fast scroll".to_string()
+                     • PgUp/PgDn - Fast scroll"
+                        .to_string(),
                 );
                 self.input.clear();
                 self.cursor = 0;
@@ -1139,7 +1223,8 @@ impl ChatApp {
 
     fn handle_compact(&mut self) -> Result<()> {
         // Prepare compaction (keep last 4 messages)
-        let (old_messages, removed_count, tokens_saved_potential) = self.session.prepare_compaction(4);
+        let (old_messages, removed_count, tokens_saved_potential) =
+            self.session.prepare_compaction(4);
 
         if old_messages.is_empty() {
             self.status_message = Some("Nothing to compact (less than 4 messages)".to_string());
@@ -1150,8 +1235,7 @@ impl ChatApp {
         self.status_message = Some("Compacting conversation...".to_string());
 
         // Create tokio runtime for async operations
-        let runtime = tokio::runtime::Runtime::new()
-            .context("Failed to create async runtime")?;
+        let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
         // Initialize provider for summarization
         let provider_instance = {
@@ -1159,7 +1243,13 @@ impl ChatApp {
             config.provider = self.provider_name.clone();
             let api_key = super::config::get_api_key(&config.provider)?;
             let model = super::config::resolve_model(&config, self.model_override.as_deref());
-            super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider), config.timeout_seconds)?
+            super::providers::create_provider(
+                &config.provider,
+                api_key,
+                model,
+                super::config::get_provider_options(&config.provider),
+                config.timeout_seconds,
+            )?
         };
 
         // Build summarization prompt
@@ -1171,18 +1261,17 @@ impl ChatApp {
         );
 
         // Get summary from LLM
-        let summary = runtime.block_on(async {
-            provider_instance.complete(&prompt, false).await
-        })?;
+        let summary =
+            runtime.block_on(async { provider_instance.complete(&prompt, false).await })?;
 
         // Apply compaction
-        self.session.apply_compaction(removed_count, summary.clone());
+        self.session
+            .apply_compaction(removed_count, summary.clone());
 
         self.waiting = false;
         self.status_message = Some(format!(
             "✓ Compacted {} messages (saved ~{} tokens)",
-            removed_count,
-            tokens_saved_potential
+            removed_count, tokens_saved_potential
         ));
 
         Ok(())
@@ -1225,12 +1314,9 @@ impl ChatApp {
         }
 
         // Determine model (priority: command arg > user config > provider default)
-        let new_model = super::config::resolve_model_for(
-            &new_provider,
-            None,
-            new_model_arg.as_deref(),
-        )
-        .unwrap_or_else(|| super::providers::default_model_for(&new_provider).to_string());
+        let new_model =
+            super::config::resolve_model_for(&new_provider, None, new_model_arg.as_deref())
+                .unwrap_or_else(|| super::providers::default_model_for(&new_provider).to_string());
 
         // openai-compatible has no built-in default; refuse the switch with a
         // friendly message rather than persisting a blank model name.
@@ -1244,7 +1330,8 @@ impl ChatApp {
         }
 
         // Update session
-        self.session.update_provider(new_provider.clone(), new_model.clone());
+        self.session
+            .update_provider(new_provider.clone(), new_model.clone());
         self.provider_name = new_provider.clone();
         self.model_override = new_model_arg.clone();
 
@@ -1253,11 +1340,7 @@ impl ChatApp {
             log::warn!("Failed to save provider preference to config: {}", e);
             self.status_message = Some("⚠ Model changed but not saved to config".to_string());
         } else {
-            self.status_message = Some(format!(
-                "✓ Switched to {} ({})",
-                new_provider,
-                new_model
-            ));
+            self.status_message = Some(format!("✓ Switched to {} ({})", new_provider, new_model));
         }
 
         // Add system message
@@ -1265,8 +1348,7 @@ impl ChatApp {
             "Switched to provider '{}' with model '{}'.\n\
              \n\
              This preference has been saved to ~/.reflex/config.toml.",
-            new_provider,
-            new_model
+            new_provider, new_model
         ));
 
         Ok(())
@@ -1292,7 +1374,8 @@ where
                 let err_msg = e.to_string();
 
                 // Determine wait time based on error type
-                let wait_ms = if err_msg.contains("Rate limit exceeded") || err_msg.contains("429") {
+                let wait_ms = if err_msg.contains("Rate limit exceeded") || err_msg.contains("429")
+                {
                     // Rate limit: longer wait
                     5000 * (attempt as u64 + 1)
                 } else if err_msg.contains("timeout") || err_msg.contains("Timeout") {
@@ -1337,7 +1420,13 @@ async fn triage_question(
         config.provider = provider_name.to_string();
         let api_key = super::config::get_api_key(&config.provider)?;
         let model = super::config::resolve_model(&config, model_override);
-        super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider), config.timeout_seconds)?
+        super::providers::create_provider(
+            &config.provider,
+            api_key,
+            model,
+            super::config::get_provider_options(&config.provider),
+            config.timeout_seconds,
+        )?
     };
 
     // Build triage prompt
@@ -1364,8 +1453,7 @@ async fn triage_question(
          - Examples: \"How is auth implemented?\", \"Find all uses of X\", \"Where is Y defined?\"\n\
          \n\
          Respond with ONLY a single word: either \"direct\" or \"search\"",
-        conversation_history,
-        question
+        conversation_history, question
     );
 
     // Call LLM for triage
@@ -1409,7 +1497,9 @@ async fn execute_query_async(
         provider_name,
         model_override,
         &cache_path,
-    ).await {
+    )
+    .await
+    {
         Ok(decision) => decision,
         Err(e) => {
             let msg = format!("LLM unavailable, falling back to search: {}", e);
@@ -1432,7 +1522,13 @@ async fn execute_query_async(
                 config.provider = provider_name.to_string();
                 let api_key = super::config::get_api_key(&config.provider)?;
                 let model = super::config::resolve_model(&config, model_override);
-                super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider), config.timeout_seconds)
+                super::providers::create_provider(
+                    &config.provider,
+                    api_key,
+                    model,
+                    super::config::get_provider_options(&config.provider),
+                    config.timeout_seconds,
+                )
             })() {
                 Ok(provider) => provider,
                 Err(e) => {
@@ -1447,18 +1543,16 @@ async fn execute_query_async(
                 "{}\n\nUSER'S QUESTION: {}\n\n\
                  Answer the question based on the conversation history above. \
                  Be concise and helpful.",
-                conversation_history,
-                question
+                conversation_history, question
             );
 
             // Retry answer generation with exponential backoff
             let answer_result = retry_with_backoff(
-                || async {
-                    provider_instance.complete(&answer_prompt, false).await
-                },
+                || async { provider_instance.complete(&answer_prompt, false).await },
                 2, // max 2 retries
-                "Answer generation"
-            ).await;
+                "Answer generation",
+            )
+            .await;
 
             match answer_result {
                 Ok(answer) => {
@@ -1467,7 +1561,10 @@ async fn execute_query_async(
                 }
                 Err(e) => {
                     // Fallback: If direct answer fails after retries, try search instead
-                    log::warn!("Direct answer failed after retries, falling back to search: {}", e);
+                    log::warn!(
+                        "Direct answer failed after retries, falling back to search: {}",
+                        e
+                    );
                     let _ = tx.send(PhaseUpdate::Thinking {
                         reasoning: format!(
                             "Direct answer failed ({}), searching codebase as fallback",
@@ -1491,12 +1588,15 @@ async fn execute_query_async(
 
                     let reporter = Box::new(super::QuietReporter);
 
-                    match super::run_agentic_loop(question, &cache, agentic_config, &*reporter).await {
+                    match super::run_agentic_loop(question, &cache, agentic_config, &*reporter)
+                        .await
+                    {
                         Ok(agentic_response) => {
                             // Send tools phase update if tools were executed
                             if let Some(ref tools) = agentic_response.tools_executed {
                                 if !tools.is_empty() {
-                                    let content = format!("Gathered context using {} tools", tools.len());
+                                    let content =
+                                        format!("Gathered context using {} tools", tools.len());
                                     let _ = tx.send(PhaseUpdate::Tools {
                                         content,
                                         tool_calls: tools.clone(),
@@ -1509,12 +1609,15 @@ async fn execute_query_async(
 
                             // Send queries phase update only if queries were generated
                             if !agentic_response.queries.is_empty() {
-                                let query_strings: Vec<String> = agentic_response.queries
+                                let query_strings: Vec<String> = agentic_response
+                                    .queries
                                     .iter()
                                     .map(|q| q.command.clone())
                                     .collect();
 
-                                let _ = tx.send(PhaseUpdate::Queries { queries: query_strings });
+                                let _ = tx.send(PhaseUpdate::Queries {
+                                    queries: query_strings,
+                                });
 
                                 let _ = tx.send(PhaseUpdate::Executing {
                                     results_count,
@@ -1527,12 +1630,21 @@ async fn execute_query_async(
                                 config.provider = provider_name.to_string();
                                 let api_key = super::config::get_api_key(&config.provider)?;
                                 let model = super::config::resolve_model(&config, model_override);
-                                super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider), config.timeout_seconds)
+                                super::providers::create_provider(
+                                    &config.provider,
+                                    api_key,
+                                    model,
+                                    super::config::get_provider_options(&config.provider),
+                                    config.timeout_seconds,
+                                )
                             })() {
                                 Ok(provider) => provider,
                                 Err(e) => {
                                     let _ = tx.send(PhaseUpdate::Error {
-                                        error: format!("Failed to create provider for fallback: {}", e),
+                                        error: format!(
+                                            "Failed to create provider for fallback: {}",
+                                            e
+                                        ),
                                     });
                                     return;
                                 }
@@ -1545,7 +1657,9 @@ async fn execute_query_async(
                                 agentic_response.gathered_context.as_deref(),
                                 codebase_context_str.as_deref(),
                                 &*provider_instance,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(answer) => {
                                     let _ = tx.send(PhaseUpdate::Answer { answer });
                                     let _ = tx.send(PhaseUpdate::Done);
@@ -1591,20 +1705,16 @@ async fn execute_query_async(
             let reporter = Box::new(super::QuietReporter);
 
             // Run agentic loop
-            let agentic_response = match super::run_agentic_loop(
-                question,
-                &cache,
-                agentic_config,
-                &*reporter,
-            ).await {
-                Ok(response) => response,
-                Err(e) => {
-                    let _ = tx.send(PhaseUpdate::Error {
-                        error: format!("Agentic loop failed: {}", e),
-                    });
-                    return;
-                }
-            };
+            let agentic_response =
+                match super::run_agentic_loop(question, &cache, agentic_config, &*reporter).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        let _ = tx.send(PhaseUpdate::Error {
+                            error: format!("Agentic loop failed: {}", e),
+                        });
+                        return;
+                    }
+                };
 
             // Send tools phase update if tools were executed
             if let Some(ref tools) = agentic_response.tools_executed {
@@ -1622,7 +1732,8 @@ async fn execute_query_async(
 
             // Send queries phase update only if queries were generated
             if !agentic_response.queries.is_empty() {
-                let query_strings: Vec<String> = agentic_response.queries
+                let query_strings: Vec<String> = agentic_response
+                    .queries
                     .iter()
                     .map(|q| q.command.clone())
                     .collect();
@@ -1647,7 +1758,13 @@ async fn execute_query_async(
                 config.provider = provider_name.to_string();
                 let api_key = super::config::get_api_key(&config.provider)?;
                 let model = super::config::resolve_model(&config, model_override);
-                super::providers::create_provider(&config.provider, api_key, model, super::config::get_provider_options(&config.provider), config.timeout_seconds)
+                super::providers::create_provider(
+                    &config.provider,
+                    api_key,
+                    model,
+                    super::config::get_provider_options(&config.provider),
+                    config.timeout_seconds,
+                )
             })() {
                 Ok(provider) => provider,
                 Err(e) => {
@@ -1665,7 +1782,9 @@ async fn execute_query_async(
                 agentic_response.gathered_context.as_deref(),
                 codebase_context_str.as_deref(),
                 &*provider_instance,
-            ).await {
+            )
+            .await
+            {
                 Ok(answer) => answer,
                 Err(e) => {
                     let _ = tx.send(PhaseUpdate::Error {

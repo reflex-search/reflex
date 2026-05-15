@@ -1,9 +1,8 @@
+use crate::cache::CacheManager;
 use anyhow::{Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use std::sync::{Arc, Mutex};
-use indicatif::{ProgressBar, ProgressStyle};
-use crate::cache::CacheManager;
-
 
 /// Handle the `ask` command
 pub(super) fn handle_ask(
@@ -86,8 +85,7 @@ pub(super) fn handle_ask(
     }
 
     // Create a tokio runtime for async operations
-    let runtime = tokio::runtime::Runtime::new()
-        .context("Failed to create async runtime")?;
+    let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
     // Force quiet mode for JSON output (machine-readable, no UI output)
     let quiet = quiet || as_json;
@@ -99,7 +97,7 @@ pub(super) fn handle_ask(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
                 .unwrap()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
         );
         s.set_message("Generating queries...".to_string());
         s.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -122,7 +120,12 @@ pub(super) fn handle_ask(
         let reporter: Box<dyn crate::semantic::AgenticReporter> = if quiet {
             Box::new(crate::semantic::QuietReporter)
         } else {
-            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose, debug, spinner_shared))
+            Box::new(crate::semantic::ConsoleReporter::new(
+                show_reasoning,
+                verbose,
+                debug,
+                spinner_shared,
+            ))
         };
 
         // Set initial spinner message and enable ticking
@@ -143,9 +146,12 @@ pub(super) fn handle_ask(
             debug,
         };
 
-        let agentic_response = runtime.block_on(async {
-            crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter).await
-        }).context("Failed to run agentic loop")?;
+        let agentic_response = runtime
+            .block_on(async {
+                crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter)
+                    .await
+            })
+            .context("Failed to run agentic loop")?;
 
         // Clear spinner after agentic loop completes
         if let Some(ref s) = spinner {
@@ -157,12 +163,21 @@ pub(super) fn handle_ask(
             reporter.clear_all();
         }
 
-        log::info!("Agentic loop completed: {} queries generated", agentic_response.queries.len());
+        log::info!(
+            "Agentic loop completed: {} queries generated",
+            agentic_response.queries.len()
+        );
 
         // Destructure AgenticQueryResponse into tuple (preserve gathered_context)
         let count_only_mode = agentic_response.total_count.is_none();
         let count = agentic_response.total_count.unwrap_or(0);
-        (agentic_response.queries, agentic_response.results, count, count_only_mode, agentic_response.gathered_context)
+        (
+            agentic_response.queries,
+            agentic_response.results,
+            count,
+            count_only_mode,
+            agentic_response.gathered_context,
+        )
     } else {
         // Standard mode: single LLM call + execution
         if let Some(ref s) = spinner {
@@ -170,9 +185,18 @@ pub(super) fn handle_ask(
             s.enable_steady_tick(std::time::Duration::from_millis(80));
         }
 
-        let semantic_response = runtime.block_on(async {
-            crate::semantic::ask_question(&question, &cache, provider_override.clone(), additional_context, debug).await
-        }).context("Failed to generate semantic queries")?;
+        let semantic_response = runtime
+            .block_on(async {
+                crate::semantic::ask_question(
+                    &question,
+                    &cache,
+                    provider_override.clone(),
+                    additional_context,
+                    debug,
+                )
+                .await
+            })
+            .context("Failed to generate semantic queries")?;
 
         if let Some(ref s) = spinner {
             s.finish_and_clear();
@@ -192,9 +216,14 @@ pub(super) fn handle_ask(
                 );
             }
             println!();
-            eprint!("{}", "⚠  Run these queries against your codebase? [y/N] ".yellow());
+            eprint!(
+                "{}",
+                "⚠  Run these queries against your codebase? [y/N] ".yellow()
+            );
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input).context("Failed to read confirmation")?;
+            std::io::stdin()
+                .read_line(&mut input)
+                .context("Failed to read confirmation")?;
             if !input.trim().eq_ignore_ascii_case("y") {
                 eprintln!("Aborted.");
                 return Ok(());
@@ -202,11 +231,19 @@ pub(super) fn handle_ask(
         }
 
         // Execute queries for standard mode
-        let (exec_results, exec_total, exec_count_only) = runtime.block_on(async {
-            crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
-        }).context("Failed to execute queries")?;
+        let (exec_results, exec_total, exec_count_only) = runtime
+            .block_on(async {
+                crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
+            })
+            .context("Failed to execute queries")?;
 
-        (semantic_response.queries, exec_results, exec_total, exec_count_only, None)
+        (
+            semantic_response.queries,
+            exec_results,
+            exec_total,
+            exec_count_only,
+            None,
+        )
     };
 
     // Generate conversational answer if --answer flag is set
@@ -218,7 +255,7 @@ pub(super) fn handle_ask(
                 ProgressStyle::default_spinner()
                     .template("{spinner:.cyan} {msg}")
                     .unwrap()
-                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
             );
             s.set_message("Generating answer...".to_string());
             s.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -252,16 +289,19 @@ pub(super) fn handle_ask(
             .map(|ctx| ctx.to_prompt_string());
 
         // Generate answer (with optional gathered context from agentic mode + codebase context)
-        let answer_result = runtime.block_on(async {
-            crate::semantic::generate_answer(
-                &question,
-                &results,
-                total_count,
-                gathered_context.as_deref(),
-                codebase_context_str.as_deref(),
-                &*provider_instance,
-            ).await
-        }).context("Failed to generate answer")?;
+        let answer_result = runtime
+            .block_on(async {
+                crate::semantic::generate_answer(
+                    &question,
+                    &results,
+                    total_count,
+                    gathered_context.as_deref(),
+                    codebase_context_str.as_deref(),
+                    &*provider_instance,
+                )
+                .await
+            })
+            .context("Failed to generate answer")?;
 
         if let Some(s) = answer_spinner {
             s.finish_and_clear();
@@ -333,14 +373,25 @@ pub(super) fn handle_ask(
                     "(Based on {} matches across {} files)",
                     total_count,
                     results.len()
-                ).dimmed()
+                )
+                .dimmed()
             );
         }
     } else {
         // Standard mode: show raw results
         if count_only {
             // Count-only mode: just show the total count (matching direct CLI behavior)
-            println!("{} {}", "Found".bright_green().bold(), format!("{} result{}", total_count, if total_count == 1 { "" } else { "s" }).bright_white().bold());
+            println!(
+                "{} {}",
+                "Found".bright_green().bold(),
+                format!(
+                    "{} result{}",
+                    total_count,
+                    if total_count == 1 { "" } else { "s" }
+                )
+                .bright_white()
+                .bold()
+            );
         } else if results.is_empty() {
             println!("{}", "No results found.".yellow());
         } else {

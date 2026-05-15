@@ -110,10 +110,13 @@ fn extract_commits(root: &Path) -> Result<Vec<CommitInfo>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let commits: Vec<CommitInfo> = stdout.lines()
+    let commits: Vec<CommitInfo> = stdout
+        .lines()
         .filter_map(|line| {
             let parts: Vec<&str> = line.splitn(5, '|').collect();
-            if parts.len() < 5 { return None; }
+            if parts.len() < 5 {
+                return None;
+            }
             Some(CommitInfo {
                 hash: parts[0].to_string(),
                 author: parts[1].to_string(),
@@ -131,12 +134,14 @@ fn extract_commits(root: &Path) -> Result<Vec<CommitInfo>> {
 fn compute_contributors(commits: &[CommitInfo]) -> Vec<Contributor> {
     let mut by_name: HashMap<String, (String, usize)> = HashMap::new();
     for commit in commits {
-        let entry = by_name.entry(commit.author.clone())
+        let entry = by_name
+            .entry(commit.author.clone())
             .or_insert_with(|| (commit.email.clone(), 0));
         entry.1 += 1;
     }
 
-    let mut contributors: Vec<Contributor> = by_name.into_iter()
+    let mut contributors: Vec<Contributor> = by_name
+        .into_iter()
         .map(|(name, (email, count))| Contributor {
             name,
             email,
@@ -179,16 +184,19 @@ fn extract_file_churn(root: &Path) -> Result<Vec<FileChurn>> {
             current_author = trimmed.to_string();
         } else if !current_author.is_empty() {
             *file_counts.entry(trimmed.to_string()).or_default() += 1;
-            *file_authors.entry(trimmed.to_string())
+            *file_authors
+                .entry(trimmed.to_string())
                 .or_default()
                 .entry(current_author.clone())
                 .or_default() += 1;
         }
     }
 
-    let mut churn: Vec<FileChurn> = file_counts.into_iter()
+    let mut churn: Vec<FileChurn> = file_counts
+        .into_iter()
         .map(|(path, count)| {
-            let primary = file_authors.get(&path)
+            let primary = file_authors
+                .get(&path)
                 .and_then(|authors| authors.iter().max_by_key(|(_, c)| *c))
                 .map(|(name, _)| name.clone())
                 .unwrap_or_default();
@@ -225,7 +233,9 @@ fn compute_weekly_summaries(root: &Path, commits: &[CommitInfo]) -> Result<Vec<W
         let monday = days_since_epoch - week_day;
         let week_key = format!("{}", monday); // Use epoch-day of Monday as key
 
-        let entry = weeks.entry(week_key).or_insert_with(|| (0, vec![], HashMap::new()));
+        let entry = weeks
+            .entry(week_key)
+            .or_insert_with(|| (0, vec![], HashMap::new()));
         entry.0 += 1;
         if !entry.1.contains(&commit.author) {
             entry.1.push(commit.author.clone());
@@ -248,7 +258,9 @@ fn compute_weekly_summaries(root: &Path, commits: &[CommitInfo]) -> Result<Vec<W
             let mut current_ts: i64 = 0;
             for line in stdout.lines() {
                 let trimmed = line.trim();
-                if trimmed.is_empty() { continue; }
+                if trimmed.is_empty() {
+                    continue;
+                }
                 if let Ok(ts) = trimmed.parse::<i64>() {
                     current_ts = ts;
                 } else if current_ts > 0 {
@@ -256,7 +268,8 @@ fn compute_weekly_summaries(root: &Path, commits: &[CommitInfo]) -> Result<Vec<W
                     let week_day = ((days + 3) % 7) as i64;
                     let monday = days - week_day;
                     let week_key = format!("{}", monday);
-                    week_files.entry(week_key)
+                    week_files
+                        .entry(week_key)
                         .or_default()
                         .insert(trimmed.to_string(), true);
                 }
@@ -265,7 +278,8 @@ fn compute_weekly_summaries(root: &Path, commits: &[CommitInfo]) -> Result<Vec<W
     }
 
     // Build summaries
-    let mut summaries: Vec<WeekSummary> = weeks.into_iter()
+    let mut summaries: Vec<WeekSummary> = weeks
+        .into_iter()
         .map(|(week_key, (count, contributors, _))| {
             let files_changed = week_files.get(&week_key).map(|f| f.len()).unwrap_or(0);
 
@@ -280,7 +294,8 @@ fn compute_weekly_summaries(root: &Path, commits: &[CommitInfo]) -> Result<Vec<W
             }
             let mut top_modules: Vec<(String, usize)> = module_counts.into_iter().collect();
             top_modules.sort_by(|a, b| b.1.cmp(&a.1));
-            let top_modules: Vec<String> = top_modules.into_iter().take(3).map(|(m, _)| m).collect();
+            let top_modules: Vec<String> =
+                top_modules.into_iter().take(3).map(|(m, _)| m).collect();
 
             // Convert monday epoch-days back to date string
             let monday_days: i64 = week_key.parse().unwrap_or(0);
@@ -315,9 +330,11 @@ fn compute_module_activity(churn: &[FileChurn]) -> Vec<ModuleActivity> {
         *entry.2.entry(file.primary_author.clone()).or_default() += file.change_count;
     }
 
-    let mut activity: Vec<ModuleActivity> = by_module.into_iter()
+    let mut activity: Vec<ModuleActivity> = by_module
+        .into_iter()
         .map(|(module, (commits, files, authors))| {
-            let primary = authors.into_iter()
+            let primary = authors
+                .into_iter()
                 .max_by_key(|(_, c)| *c)
                 .map(|(name, _)| name)
                 .unwrap_or_default();
@@ -362,7 +379,10 @@ pub fn days_to_ymd(days: i64) -> (i64, u32, u32) {
 pub fn build_timeline_context(data: &GitIntel) -> String {
     let mut ctx = String::new();
 
-    ctx.push_str(&format!("Total commits (last 6 months): {}\n", data.commits.len()));
+    ctx.push_str(&format!(
+        "Total commits (last 6 months): {}\n",
+        data.commits.len()
+    ));
     ctx.push_str(&format!("Contributors: {}\n\n", data.contributors.len()));
 
     // Top contributors
@@ -375,23 +395,33 @@ pub fn build_timeline_context(data: &GitIntel) -> String {
     // Hottest files
     ctx.push_str("Most-changed files:\n");
     for f in data.churn.iter().take(15) {
-        ctx.push_str(&format!("- {} ({} changes, primarily by {})\n", f.path, f.change_count, f.primary_author));
+        ctx.push_str(&format!(
+            "- {} ({} changes, primarily by {})\n",
+            f.path, f.change_count, f.primary_author
+        ));
     }
     ctx.push('\n');
 
     // Module activity
     ctx.push_str("Module activity:\n");
     for m in data.module_activity.iter().take(10) {
-        ctx.push_str(&format!("- {} ({} changes across {} files, led by {})\n",
-            m.module_path, m.commit_count, m.files_changed, m.primary_contributor));
+        ctx.push_str(&format!(
+            "- {} ({} changes across {} files, led by {})\n",
+            m.module_path, m.commit_count, m.files_changed, m.primary_contributor
+        ));
     }
     ctx.push('\n');
 
     // Recent weeks
     ctx.push_str("Recent weekly activity:\n");
     for w in data.weekly_summaries.iter().take(4) {
-        ctx.push_str(&format!("- Week of {}: {} commits, {} files changed by {} contributors\n",
-            w.week_start, w.commit_count, w.files_changed, w.contributors.len()));
+        ctx.push_str(&format!(
+            "- Week of {}: {} commits, {} files changed by {} contributors\n",
+            w.week_start,
+            w.commit_count,
+            w.files_changed,
+            w.contributors.len()
+        ));
         if !w.top_modules.is_empty() {
             ctx.push_str(&format!("  Most active: {}\n", w.top_modules.join(", ")));
         }
@@ -419,7 +449,12 @@ pub fn render_timeline_markdown(data: &GitIntel) -> String {
     if !data.weekly_summaries.is_empty() {
         md.push_str("## Weekly Activity\n\n");
         let weeks: Vec<&WeekSummary> = data.weekly_summaries.iter().rev().collect();
-        let max_commits = weeks.iter().map(|w| w.commit_count).max().unwrap_or(1).max(1);
+        let max_commits = weeks
+            .iter()
+            .map(|w| w.commit_count)
+            .max()
+            .unwrap_or(1)
+            .max(1);
         const BAR_WIDTH: usize = 24;
         for w in &weeks {
             let label = if w.week_start.len() >= 10 {
@@ -453,7 +488,10 @@ pub fn render_timeline_markdown(data: &GitIntel) -> String {
         md.push_str("## Most-Changed Files\n\n");
         md.push_str("| File | Changes | Primary Author |\n|---|---|---|\n");
         for f in data.churn.iter().take(20) {
-            md.push_str(&format!("| `{}` | {} | {} |\n", f.path, f.change_count, f.primary_author));
+            md.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                f.path, f.change_count, f.primary_author
+            ));
         }
         md.push('\n');
     }
@@ -463,8 +501,10 @@ pub fn render_timeline_markdown(data: &GitIntel) -> String {
         md.push_str("## Module Activity\n\n");
         md.push_str("| Module | Changes | Files | Primary Contributor |\n|---|---|---|---|\n");
         for m in &data.module_activity {
-            md.push_str(&format!("| `{}` | {} | {} | {} |\n",
-                m.module_path, m.commit_count, m.files_changed, m.primary_contributor));
+            md.push_str(&format!(
+                "| `{}` | {} | {} | {} |\n",
+                m.module_path, m.commit_count, m.files_changed, m.primary_contributor
+            ));
         }
         md.push('\n');
     }
@@ -491,9 +531,27 @@ mod tests {
     #[test]
     fn test_compute_contributors() {
         let commits = vec![
-            CommitInfo { hash: "a".into(), author: "Alice".into(), email: "a@x.com".into(), timestamp: 1, subject: "test".into() },
-            CommitInfo { hash: "b".into(), author: "Alice".into(), email: "a@x.com".into(), timestamp: 2, subject: "test2".into() },
-            CommitInfo { hash: "c".into(), author: "Bob".into(), email: "b@x.com".into(), timestamp: 3, subject: "test3".into() },
+            CommitInfo {
+                hash: "a".into(),
+                author: "Alice".into(),
+                email: "a@x.com".into(),
+                timestamp: 1,
+                subject: "test".into(),
+            },
+            CommitInfo {
+                hash: "b".into(),
+                author: "Alice".into(),
+                email: "a@x.com".into(),
+                timestamp: 2,
+                subject: "test2".into(),
+            },
+            CommitInfo {
+                hash: "c".into(),
+                author: "Bob".into(),
+                email: "b@x.com".into(),
+                timestamp: 3,
+                subject: "test3".into(),
+            },
         ];
         let contributors = compute_contributors(&commits);
         assert_eq!(contributors.len(), 2);

@@ -8,16 +8,16 @@
 //! 5. Phase 5: Evaluate results
 //! 6. Phase 6: Refine if needed
 
-use anyhow::{Context as AnyhowContext, Result};
 use crate::cache::CacheManager;
+use anyhow::{Context as AnyhowContext, Result};
 
-use super::providers::{LlmProvider, create_provider};
 use super::config;
-use super::schema::{QueryResponse, AgenticQueryResponse};
-use super::schema_agentic::{AgenticResponse, Phase, ToolCall};
-use super::tools::{execute_tool, format_tool_results, ToolResult};
-use super::evaluator::{evaluate_results, EvaluationConfig};
+use super::evaluator::{EvaluationConfig, evaluate_results};
+use super::providers::{LlmProvider, create_provider};
 use super::reporter::AgenticReporter;
+use super::schema::{AgenticQueryResponse, QueryResponse};
+use super::schema_agentic::{AgenticResponse, Phase, ToolCall};
+use super::tools::{ToolResult, execute_tool, format_tool_results};
 
 /// Configuration for agentic loop
 #[derive(Debug, Clone)]
@@ -113,13 +113,8 @@ pub async fn run_agentic_loop(
     let provider = initialize_provider(&config, cache)?;
 
     // Phase 1: Initial assessment - does the LLM need more context?
-    let (needs_context, initial_response) = phase_1_assess(
-        question,
-        cache,
-        &*provider,
-        reporter,
-        config.debug,
-    ).await?;
+    let (needs_context, initial_response) =
+        phase_1_assess(question, cache, &*provider, reporter, config.debug).await?;
 
     // Phase 2: Context gathering (if needed)
     let (gathered_context, tools_executed) = if needs_context {
@@ -130,7 +125,8 @@ pub async fn run_agentic_loop(
             &*provider,
             &config,
             reporter,
-        ).await?
+        )
+        .await?
     } else {
         (String::new(), Vec::new())
     };
@@ -143,15 +139,18 @@ pub async fn run_agentic_loop(
         &*provider,
         reporter,
         config.debug,
-    ).await?;
+    )
+    .await?;
 
     // Phase 4: Execute queries
-    let (results, total_count, count_only) = super::executor::execute_queries(
-        query_response.queries.clone(),
-        cache,
-    ).await?;
+    let (results, total_count, count_only) =
+        super::executor::execute_queries(query_response.queries.clone(), cache).await?;
 
-    log::info!("Executed queries: {} file groups, {} total matches", results.len(), total_count);
+    log::info!(
+        "Executed queries: {} file groups, {} total matches",
+        results.len(),
+        total_count
+    );
 
     // Phase 5: Evaluate results (if enabled and not count-only)
     if config.enable_evaluation && !count_only {
@@ -160,12 +159,20 @@ pub async fn run_agentic_loop(
             total_count,
             question,
             &config.eval_config,
-            if !gathered_context.is_empty() { Some(gathered_context.as_str()) } else { None },
+            if !gathered_context.is_empty() {
+                Some(gathered_context.as_str())
+            } else {
+                None
+            },
             query_response.queries.len(),
             Some(query_confidence),
         );
 
-        log::info!("Evaluation: success={}, score={:.2}", evaluation.success, evaluation.score);
+        log::info!(
+            "Evaluation: success={}, score={:.2}",
+            evaluation.success,
+            evaluation.score
+        );
 
         // Report evaluation
         reporter.report_evaluation(&evaluation);
@@ -184,7 +191,8 @@ pub async fn run_agentic_loop(
                 &config,
                 reporter,
                 config.debug,
-            ).await;
+            )
+            .await;
         }
     }
 
@@ -203,7 +211,7 @@ pub async fn run_agentic_loop(
         } else {
             None
         },
-        answer: None,  // No answer generation in agentic mode (handled in CLI)
+        answer: None, // No answer generation in agentic mode (handled in CLI)
     })
 }
 
@@ -230,17 +238,19 @@ async fn phase_1_assess(
     }
 
     // Call LLM — validate against AgenticResponse (requires phase + reasoning)
-    let json_response = call_with_retry(
-        provider, &prompt, 2, super::validate_agentic_response,
-    ).await?;
+    let json_response =
+        call_with_retry(provider, &prompt, 2, super::validate_agentic_response).await?;
 
     // Parse response
-    let response: AgenticResponse = serde_json::from_str(&json_response)
-        .context("Failed to parse LLM assessment response")?;
+    let response: AgenticResponse =
+        serde_json::from_str(&json_response).context("Failed to parse LLM assessment response")?;
 
     // Validate phase
     if response.phase != Phase::Assessment && response.phase != Phase::Final {
-        anyhow::bail!("Expected 'assessment' or 'final' phase, got {:?}", response.phase);
+        anyhow::bail!(
+            "Expected 'assessment' or 'final' phase, got {:?}",
+            response.phase
+        );
     }
 
     let needs_context = response.needs_context && !response.tool_calls.is_empty();
@@ -272,7 +282,8 @@ async fn phase_2_gather(
     let mut tool_descriptions = Vec::new();
 
     // Limit tool calls to prevent excessive execution
-    let tool_calls: Vec<ToolCall> = initial_response.tool_calls
+    let tool_calls: Vec<ToolCall> = initial_response
+        .tool_calls
         .into_iter()
         .take(config.max_tools_per_phase)
         .collect();
@@ -281,7 +292,12 @@ async fn phase_2_gather(
 
     // Execute all tool calls
     for (idx, tool) in tool_calls.iter().enumerate() {
-        log::debug!("Executing tool {}/{}: {:?}", idx + 1, tool_calls.len(), tool);
+        log::debug!(
+            "Executing tool {}/{}: {:?}",
+            idx + 1,
+            tool_calls.len(),
+            tool
+        );
 
         // Get tool description for UI display
         let tool_desc = describe_tool_for_ui(tool);
@@ -313,7 +329,10 @@ async fn phase_2_gather(
     // Format all tool results into context string
     let gathered_context = format_tool_results(&all_tool_results);
 
-    log::info!("Context gathering complete: {} chars", gathered_context.len());
+    log::info!(
+        "Context gathering complete: {} chars",
+        gathered_context.len()
+    );
 
     Ok((gathered_context, tool_descriptions))
 }
@@ -323,13 +342,27 @@ fn describe_tool_for_ui(tool: &ToolCall) -> String {
     match tool {
         ToolCall::GatherContext { params } => {
             let mut parts = Vec::new();
-            if params.structure { parts.push("structure"); }
-            if params.file_types { parts.push("file types"); }
-            if params.project_type { parts.push("project type"); }
-            if params.framework { parts.push("frameworks"); }
-            if params.entry_points { parts.push("entry points"); }
-            if params.test_layout { parts.push("test layout"); }
-            if params.config_files { parts.push("config files"); }
+            if params.structure {
+                parts.push("structure");
+            }
+            if params.file_types {
+                parts.push("file types");
+            }
+            if params.project_type {
+                parts.push("project type");
+            }
+            if params.framework {
+                parts.push("frameworks");
+            }
+            if params.entry_points {
+                parts.push("entry points");
+            }
+            if params.test_layout {
+                parts.push("test layout");
+            }
+            if params.config_files {
+                parts.push("config files");
+            }
 
             if parts.is_empty() {
                 "gather_context: General codebase context".to_string()
@@ -363,9 +396,7 @@ fn describe_tool_for_ui(tool: &ToolCall) -> String {
         ToolCall::GetAnalysisSummary { .. } => {
             "get_analysis_summary: Dependency health overview".to_string()
         }
-        ToolCall::FindIslands { .. } => {
-            "find_islands: Disconnected component analysis".to_string()
-        }
+        ToolCall::FindIslands { .. } => "find_islands: Disconnected component analysis".to_string(),
     }
 }
 
@@ -383,11 +414,7 @@ async fn phase_3_generate(
     log::info!("Phase 3: Generating final queries");
 
     // Build generation prompt with gathered context
-    let prompt = super::prompt_agentic::build_generation_prompt(
-        question,
-        gathered_context,
-        cache,
-    )?;
+    let prompt = super::prompt_agentic::build_generation_prompt(question, gathered_context, cache)?;
 
     // Debug mode: output full prompt
     if debug {
@@ -400,8 +427,12 @@ async fn phase_3_generate(
 
     // Call LLM — accepts either AgenticResponse or QueryResponse (fallback path)
     let json_response = call_with_retry(
-        provider, &prompt, 2, super::validate_agentic_or_query_response,
-    ).await?;
+        provider,
+        &prompt,
+        2,
+        super::validate_agentic_or_query_response,
+    )
+    .await?;
 
     // Parse response - could be AgenticResponse or QueryResponse
     // Try AgenticResponse first (for agentic mode)
@@ -476,21 +507,21 @@ async fn phase_6_refine(
     }
 
     // Call LLM for refinement — expects QueryResponse format
-    let json_response = call_with_retry(
-        provider, &prompt, 2, super::validate_query_response,
-    ).await?;
+    let json_response =
+        call_with_retry(provider, &prompt, 2, super::validate_query_response).await?;
 
     // Parse refined response
-    let refined_response: QueryResponse = serde_json::from_str(&json_response)
-        .context("Failed to parse LLM refinement response")?;
+    let refined_response: QueryResponse =
+        serde_json::from_str(&json_response).context("Failed to parse LLM refinement response")?;
 
-    log::info!("Refinement complete: {} refined queries", refined_response.queries.len());
+    log::info!(
+        "Refinement complete: {} refined queries",
+        refined_response.queries.len()
+    );
 
     // Execute refined queries
-    let (results, total_count, count_only) = super::executor::execute_queries(
-        refined_response.queries.clone(),
-        cache,
-    ).await?;
+    let (results, total_count, count_only) =
+        super::executor::execute_queries(refined_response.queries.clone(), cache).await?;
 
     // Evaluate refined results (one final time)
     let refined_evaluation = evaluate_results(
@@ -498,9 +529,13 @@ async fn phase_6_refine(
         total_count,
         question,
         &config.eval_config,
-        if !gathered_context.is_empty() { Some(gathered_context) } else { None },
+        if !gathered_context.is_empty() {
+            Some(gathered_context)
+        } else {
+            None
+        },
         refined_response.queries.len(),
-        None,  // No confidence available in refinement
+        None, // No confidence available in refinement
     );
 
     log::info!(
@@ -519,8 +554,8 @@ async fn phase_6_refine(
         } else {
             None
         },
-        tools_executed: None,  // No new tools executed during refinement
-        answer: None,  // No answer generation in agentic mode (handled in CLI)
+        tools_executed: None, // No new tools executed during refinement
+        answer: None,         // No answer generation in agentic mode (handled in CLI)
     })
 }
 
@@ -543,7 +578,13 @@ fn initialize_provider(
     let model = config::resolve_model(&semantic_config, config.model_override.as_deref());
 
     // Create provider
-    create_provider(&semantic_config.provider, api_key, model, config::get_provider_options(&semantic_config.provider), semantic_config.timeout_seconds)
+    create_provider(
+        &semantic_config.provider,
+        api_key,
+        model,
+        config::get_provider_options(&semantic_config.provider),
+        semantic_config.timeout_seconds,
+    )
 }
 
 /// Call LLM provider with retry logic (from semantic/mod.rs)

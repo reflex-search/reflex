@@ -13,12 +13,12 @@
 //! Note: This parser uses regex-based extraction for script blocks since
 //! tree-sitter-vue is not compatible with tree-sitter 0.24+.
 
-use anyhow::{Context, Result};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
-use tree_sitter::{Parser, Query, QueryCursor};
-use streaming_iterator::StreamingIterator;
-use crate::parsers::{DependencyExtractor, ImportInfo};
 use crate::parsers::typescript::TypeScriptDependencyExtractor;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+use anyhow::{Context, Result};
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Parser, Query, QueryCursor};
 
 /// Parse Vue SFC and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -125,9 +125,24 @@ fn parse_script_block(
     let mut symbols = Vec::new();
 
     // Extract symbols from the script block
-    symbols.extend(extract_functions(script_source, &root_node, &ts_language, line_offset)?);
-    symbols.extend(extract_arrow_functions(script_source, &root_node, &ts_language, line_offset)?);
-    symbols.extend(extract_variables(script_source, &root_node, &ts_language, line_offset)?);
+    symbols.extend(extract_functions(
+        script_source,
+        &root_node,
+        &ts_language,
+        line_offset,
+    )?);
+    symbols.extend(extract_arrow_functions(
+        script_source,
+        &root_node,
+        &ts_language,
+        line_offset,
+    )?);
+    symbols.extend(extract_variables(
+        script_source,
+        &root_node,
+        &ts_language,
+        line_offset,
+    )?);
 
     // Add file path and language to all symbols
     for symbol in &mut symbols {
@@ -137,7 +152,6 @@ fn parse_script_block(
 
     Ok(symbols)
 }
-
 
 /// Extract regular function declarations
 fn extract_functions(
@@ -151,10 +165,16 @@ fn extract_functions(
             name: (identifier) @name) @function
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+    let query = Query::new(language, query_str).context("Failed to create function query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Function, None, line_offset)
+    extract_symbols(
+        source,
+        root,
+        &query,
+        SymbolKind::Function,
+        None,
+        line_offset,
+    )
 }
 
 /// Extract arrow functions
@@ -176,10 +196,16 @@ fn extract_arrow_functions(
                 value: (arrow_function))) @arrow_fn
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create arrow function query")?;
+    let query = Query::new(language, query_str).context("Failed to create arrow function query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Function, None, line_offset)
+    extract_symbols(
+        source,
+        root,
+        &query,
+        SymbolKind::Function,
+        None,
+        line_offset,
+    )
 }
 
 /// Extract variable and constant declarations (const, let, var at all scopes)
@@ -199,8 +225,7 @@ fn extract_variables(
                 name: (identifier) @name)) @decl
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -216,7 +241,13 @@ fn extract_variables(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     if let Some(parent) = capture.node.parent() {
                         if parent.kind() == "variable_declarator" {
                             declarator_node = Some(parent);
@@ -291,7 +322,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 full_node = Some(capture.node);
             }
@@ -367,7 +404,10 @@ impl VueDependencyExtractor {
         // Extract dependencies from each script block
         for (script_source, line_offset) in script_blocks {
             // Use TypeScript dependency extractor for the script content with alias map
-            match TypeScriptDependencyExtractor::extract_dependencies_with_alias_map(&script_source, alias_map) {
+            match TypeScriptDependencyExtractor::extract_dependencies_with_alias_map(
+                &script_source,
+                alias_map,
+            ) {
                 Ok(mut imports) => {
                     // Adjust line numbers to account for the script block offset in the Vue file
                     for import in &mut imports {
@@ -376,7 +416,10 @@ impl VueDependencyExtractor {
                     all_imports.extend(imports);
                 }
                 Err(e) => {
-                    log::warn!("Failed to extract dependencies from Vue script block: {}", e);
+                    log::warn!(
+                        "Failed to extract dependencies from Vue script block: {}",
+                        e
+                    );
                 }
             }
         }
@@ -399,7 +442,10 @@ impl VueDependencyExtractor {
         // Extract exports from each script block
         for (script_source, line_offset) in script_blocks {
             // Use TypeScript export extractor for the script content
-            match TypeScriptDependencyExtractor::extract_export_declarations(&script_source, alias_map) {
+            match TypeScriptDependencyExtractor::extract_export_declarations(
+                &script_source,
+                alias_map,
+            ) {
                 Ok(mut exports) => {
                     // Adjust line numbers to account for the script block offset in the Vue file
                     for export in &mut exports {
@@ -445,7 +491,11 @@ div {
 
         let symbols = parse("test.vue", source).unwrap();
         // Should extract message constant and greet function
-        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("message")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("message"))
+        );
         assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("greet")));
     }
 
@@ -469,7 +519,11 @@ const increment = () => {
         let symbols = parse("test.vue", source).unwrap();
         // Should extract count and increment
         assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("count")));
-        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("increment")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("increment"))
+        );
     }
 
     #[test]
@@ -525,23 +579,49 @@ function process(value) {
         let symbols = parse("test.vue", source).unwrap();
 
         // Filter to variables and constants
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
-        let constants: Vec<_> = symbols.iter()
+        let constants: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         // Check that local variables (let/var) are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("squared")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("doubled")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("localVar"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("squared"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("doubled"))
+        );
 
         // Check that const declarations are captured as constants
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("API_KEY")));
-        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("temp")));
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("API_KEY"))
+        );
+        assert!(
+            constants
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("temp"))
+        );
 
         // Verify that all have no scope
         for var in variables {
@@ -577,7 +657,11 @@ div { color: blue; }
 
         let deps = VueDependencyExtractor::extract_dependencies(source).unwrap();
 
-        assert!(deps.len() >= 5, "Should extract at least 5 imports, got {}", deps.len());
+        assert!(
+            deps.len() >= 5,
+            "Should extract at least 5 imports, got {}",
+            deps.len()
+        );
 
         // Check for specific imports
         assert!(deps.iter().any(|d| d.imported_path == "vue"));
@@ -589,7 +673,11 @@ div { color: blue; }
         // Verify line numbers are adjusted for script block offset
         // Script block starts around line 6, so imports should have line numbers >= 7
         for dep in &deps {
-            assert!(dep.line_number >= 7, "Import line number should be >= 7, got {}", dep.line_number);
+            assert!(
+                dep.line_number >= 7,
+                "Import line number should be >= 7, got {}",
+                dep.line_number
+            );
         }
     }
 }

@@ -12,11 +12,11 @@
 //! - Attr readers/writers/accessors (attr_reader, attr_writer, attr_accessor)
 //! - Blocks (lambda, proc)
 
+use crate::models::{ImportType, Language, SearchResult, Span, SymbolKind};
+use crate::parsers::{DependencyExtractor, ImportInfo};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind, ImportType};
-use crate::parsers::{DependencyExtractor, ImportInfo};
 
 /// Parse Ruby source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -39,12 +39,32 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_modules(source, &root_node, &language.into())?);
     symbols.extend(extract_classes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
-    symbols.extend(extract_singleton_methods(source, &root_node, &language.into())?);
+    symbols.extend(extract_singleton_methods(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
-    symbols.extend(extract_instance_variables(source, &root_node, &language.into())?);
-    symbols.extend(extract_class_variables(source, &root_node, &language.into())?);
-    symbols.extend(extract_attr_accessors(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_instance_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
+    symbols.extend(extract_class_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
+    symbols.extend(extract_attr_accessors(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
+    symbols.extend(extract_local_variables(
+        source,
+        &root_node,
+        &language.into(),
+    )?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -66,8 +86,7 @@ fn extract_modules(
             name: (constant) @name) @module
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create module query")?;
+    let query = Query::new(language, query_str).context("Failed to create module query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Module, None)
 }
@@ -83,8 +102,7 @@ fn extract_classes(
             name: (constant) @name) @class
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
+    let query = Query::new(language, query_str).context("Failed to create class query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Class, None)
 }
@@ -109,8 +127,7 @@ fn extract_methods(
                     name: (_) @method_name))) @module
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create method query")?;
+    let query = Query::new(language, query_str).context("Failed to create method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -127,15 +144,33 @@ fn extract_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("class");
                 }
                 "module_name" => {
-                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     scope_type = Some("module");
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                     // Find the parent method node
                     let mut current = capture.node;
                     while let Some(parent) = current.parent() {
@@ -151,7 +186,8 @@ fn extract_methods(
         }
 
         if let (Some(scope_name), Some(scope_type), Some(method_name), Some(node)) =
-            (scope_name, scope_type, method_name, method_node) {
+            (scope_name, scope_type, method_name, method_node)
+        {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -183,8 +219,8 @@ fn extract_singleton_methods(
             name: (_) @method_name) @method
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create singleton method query")?;
+    let query =
+        Query::new(language, query_str).context("Failed to create singleton method query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -200,10 +236,22 @@ fn extract_singleton_methods(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
-                    class_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    class_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method_name" => {
-                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "method" => {
                     method_node = Some(capture.node);
@@ -212,7 +260,9 @@ fn extract_singleton_methods(
             }
         }
 
-        if let (Some(class_name), Some(method_name), Some(node)) = (class_name, method_name, method_node) {
+        if let (Some(class_name), Some(method_name), Some(node)) =
+            (class_name, method_name, method_node)
+        {
             let scope = format!("class {}", class_name);
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
@@ -244,8 +294,7 @@ fn extract_constants(
             right: (_)) @const
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create constant query")?;
+    let query = Query::new(language, query_str).context("Failed to create constant query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
@@ -261,8 +310,7 @@ fn extract_local_variables(
             left: (identifier) @name) @assignment
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create local variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -277,7 +325,13 @@ fn extract_local_variables(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
-                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    name = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "assignment" => {
                     assignment_node = Some(capture.node);
@@ -297,7 +351,10 @@ fn extract_local_variables(
                     break;
                 }
                 // Stop at program/module/class level
-                if parent.kind() == "program" || parent.kind() == "module" || parent.kind() == "class" {
+                if parent.kind() == "program"
+                    || parent.kind() == "module"
+                    || parent.kind() == "class"
+                {
                     break;
                 }
                 current = parent;
@@ -333,8 +390,8 @@ fn extract_instance_variables(
         (instance_variable) @name
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create instance variable query")?;
+    let query =
+        Query::new(language, query_str).context("Failed to create instance variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -379,8 +436,7 @@ fn extract_class_variables(
         (class_variable) @name
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create class variable query")?;
+    let query = Query::new(language, query_str).context("Failed to create class variable query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -430,8 +486,7 @@ fn extract_attr_accessors(
         (#match? @method_type "^(attr_reader|attr_writer|attr_accessor)$")
     "#;
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create attr accessor query")?;
+    let query = Query::new(language, query_str).context("Failed to create attr accessor query")?;
 
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
@@ -447,7 +502,13 @@ fn extract_attr_accessors(
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "method_type" => {
-                    method_type = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    method_type = Some(
+                        capture
+                            .node
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
                 "name" => {
                     let symbol_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
@@ -508,7 +569,13 @@ fn extract_symbols(
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    capture
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
@@ -540,7 +607,7 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     let end = node.end_position();
 
     Span::new(
-        start.row + 1,  // Convert 0-indexed to 1-indexed
+        start.row + 1, // Convert 0-indexed to 1-indexed
         start.column,
         end.row + 1,
         end.column,
@@ -603,7 +670,13 @@ impl DependencyExtractor for RubyDependencyExtractor {
                 let capture_name: &str = &query.capture_names()[capture.index as usize];
                 match capture_name {
                     "method_name" => {
-                        method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                        method_name = Some(
+                            capture
+                                .node
+                                .utf8_text(source.as_bytes())
+                                .unwrap_or("")
+                                .to_string(),
+                        );
                     }
                     "args" => {
                         args_node = Some(capture.node);
@@ -643,7 +716,12 @@ impl DependencyExtractor for RubyDependencyExtractor {
                             let mut child_cursor = child.walk();
                             for grandchild in child.children(&mut child_cursor) {
                                 if grandchild.kind() == "string_content" {
-                                    content = Some(grandchild.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                                    content = Some(
+                                        grandchild
+                                            .utf8_text(source.as_bytes())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    );
                                     break;
                                 }
                             }
@@ -674,7 +752,8 @@ impl DependencyExtractor for RubyDependencyExtractor {
                             }
                         }
                         "simple_symbol" => {
-                            let mut path = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                            let mut path =
+                                child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                             // Remove leading ':'
                             if path.starts_with(':') {
                                 path = path.trim_start_matches(':').to_string();
@@ -713,9 +792,9 @@ impl DependencyExtractor for RubyDependencyExtractor {
 /// Ruby project metadata for monorepo support
 #[derive(Debug, Clone)]
 pub struct RubyProject {
-    pub gem_name: String,           // Gem name from gemspec
-    pub project_root: String,       // Relative path to project root (gemspec directory)
-    pub abs_project_root: String,   // Absolute path to project root
+    pub gem_name: String,         // Gem name from gemspec
+    pub project_root: String,     // Relative path to project root (gemspec directory)
+    pub abs_project_root: String, // Absolute path to project root
 }
 
 /// Find all gemspec files in the project (no depth limit for monorepo support)
@@ -750,7 +829,8 @@ pub fn parse_all_ruby_projects(root: &std::path::Path) -> Result<Vec<RubyProject
         if let Some(project_dir) = gemspec_path.parent() {
             if let Some(gem_name) = parse_gemspec_name(gemspec_path) {
                 let project_abs = project_dir.canonicalize()?;
-                let project_rel = project_abs.strip_prefix(&root_abs)
+                let project_rel = project_abs
+                    .strip_prefix(&root_abs)
                     .unwrap_or(project_dir)
                     .to_string_lossy()
                     .to_string();
@@ -892,10 +972,7 @@ pub fn resolve_ruby_require_to_path(
 
 /// Reclassify a Ruby import using the project's gem names
 /// Similar to reclassify_go_import() and reclassify_java_import()
-pub fn reclassify_ruby_import(
-    import_path: &str,
-    gem_names: &[String],
-) -> ImportType {
+pub fn reclassify_ruby_import(import_path: &str, gem_names: &[String]) -> ImportType {
     // require_relative is always internal
     if import_path.starts_with("./") || import_path.starts_with("../") {
         return ImportType::Internal;
@@ -925,13 +1002,46 @@ pub fn reclassify_ruby_import(
 /// Check if a require path is Ruby stdlib
 fn is_ruby_stdlib(path: &str) -> bool {
     let stdlib_prefixes = [
-        "json", "csv", "yaml", "uri", "net/", "open-uri", "openssl",
-        "digest", "base64", "securerandom", "time", "date", "set",
-        "fileutils", "pathname", "tempfile", "logger", "benchmark",
-        "ostruct", "forwardable", "singleton", "observer", "delegate",
-        "abbrev", "cgi", "erb", "optparse", "shellwords", "stringio",
-        "strscan", "socket", "thread", "mutex_m", "monitor", "sync",
-        "timeout", "weakref", "English", "fiddle", "rbconfig",
+        "json",
+        "csv",
+        "yaml",
+        "uri",
+        "net/",
+        "open-uri",
+        "openssl",
+        "digest",
+        "base64",
+        "securerandom",
+        "time",
+        "date",
+        "set",
+        "fileutils",
+        "pathname",
+        "tempfile",
+        "logger",
+        "benchmark",
+        "ostruct",
+        "forwardable",
+        "singleton",
+        "observer",
+        "delegate",
+        "abbrev",
+        "cgi",
+        "erb",
+        "optparse",
+        "shellwords",
+        "stringio",
+        "strscan",
+        "socket",
+        "thread",
+        "mutex_m",
+        "monitor",
+        "sync",
+        "timeout",
+        "weakref",
+        "English",
+        "fiddle",
+        "rbconfig",
     ];
 
     for prefix in &stdlib_prefixes {
@@ -978,7 +1088,8 @@ end
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -998,7 +1109,8 @@ end
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let module_symbols: Vec<_> = symbols.iter()
+        let module_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Module))
             .collect();
 
@@ -1022,13 +1134,22 @@ end
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("add"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("subtract"))
+        );
 
         // Check scope
         for method in method_symbols {
@@ -1048,12 +1169,17 @@ end
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert!(method_symbols.len() >= 1);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref().unwrap_or("").contains("create")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref().unwrap_or("").contains("create"))
+        );
     }
 
     #[test]
@@ -1066,14 +1192,27 @@ API_KEY = "secret123"
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let const_symbols: Vec<_> = symbols.iter()
+        let const_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Constant))
             .collect();
 
         assert_eq!(const_symbols.len(), 3);
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT")));
-        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("API_KEY")));
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("MAX_SIZE"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT"))
+        );
+        assert!(
+            const_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("API_KEY"))
+        );
     }
 
     #[test]
@@ -1090,11 +1229,13 @@ end
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let module_symbols: Vec<_> = symbols.iter()
+        let module_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Module))
             .collect();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
@@ -1127,19 +1268,33 @@ end
 
         let symbols = parse("test.rb", source).unwrap();
 
-        let class_symbols: Vec<_> = symbols.iter()
+        let class_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
 
-        let method_symbols: Vec<_> = symbols.iter()
+        let method_symbols: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("index")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("show")));
-        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("create")));
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("index"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("show"))
+        );
+        assert!(
+            method_symbols
+                .iter()
+                .any(|s| s.symbol.as_deref() == Some("create"))
+        );
     }
 
     #[test]
@@ -1196,16 +1351,37 @@ end
         let symbols = parse("test.rb", source).unwrap();
 
         // Filter to just variables
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that local variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("squared")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("doubled")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("local_var"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("result"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("temp"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("squared"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("doubled"))
+        );
 
         // Verify that local variables have no scope
         for var in variables {
@@ -1213,7 +1389,8 @@ end
         }
 
         // Verify that GLOBAL_CONSTANT is not included as a variable
-        let var_names: Vec<_> = symbols.iter()
+        let var_names: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .filter_map(|s| s.symbol.as_deref())
             .collect();
@@ -1245,16 +1422,29 @@ end
         let symbols = parse("test.rb", source).unwrap();
 
         // Filter to just variables
-        let variables: Vec<_> = symbols.iter()
+        let variables: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
         // Check that instance variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("@name")));
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("@count")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("@name"))
+        );
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("@count"))
+        );
 
         // Check that class variables are captured
-        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("@@total_count")));
+        assert!(
+            variables
+                .iter()
+                .any(|v| v.symbol.as_deref() == Some("@@total_count"))
+        );
     }
 
     #[test]
@@ -1275,16 +1465,37 @@ end
         let symbols = parse("test.rb", source).unwrap();
 
         // Filter to properties
-        let properties: Vec<_> = symbols.iter()
+        let properties: Vec<_> = symbols
+            .iter()
             .filter(|s| matches!(s.kind, SymbolKind::Property))
             .collect();
 
         // Check that attr_* declarations are captured
-        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("name")));
-        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("age")));
-        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("email")));
-        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("phone")));
-        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("address")));
+        assert!(
+            properties
+                .iter()
+                .any(|p| p.symbol.as_deref() == Some("name"))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| p.symbol.as_deref() == Some("age"))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| p.symbol.as_deref() == Some("email"))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| p.symbol.as_deref() == Some("phone"))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| p.symbol.as_deref() == Some("address"))
+        );
 
         assert_eq!(properties.len(), 5);
     }
@@ -1316,18 +1527,27 @@ end
 
         // Check stdlib classification
         let json_dep = deps.iter().find(|d| d.imported_path == "json").unwrap();
-        assert!(matches!(json_dep.import_type, ImportType::Stdlib),
-                "json should be classified as Stdlib");
+        assert!(
+            matches!(json_dep.import_type, ImportType::Stdlib),
+            "json should be classified as Stdlib"
+        );
 
         // Check external classification
         let rails_dep = deps.iter().find(|d| d.imported_path == "rails").unwrap();
-        assert!(matches!(rails_dep.import_type, ImportType::External),
-                "rails should be classified as External");
+        assert!(
+            matches!(rails_dep.import_type, ImportType::External),
+            "rails should be classified as External"
+        );
 
         // Check internal classification (require_relative)
-        let user_dep = deps.iter().find(|d| d.imported_path == "../models/user").unwrap();
-        assert!(matches!(user_dep.import_type, ImportType::Internal),
-                "require_relative should be classified as Internal");
+        let user_dep = deps
+            .iter()
+            .find(|d| d.imported_path == "../models/user")
+            .unwrap();
+        assert!(
+            matches!(user_dep.import_type, ImportType::Internal),
+            "require_relative should be classified as Internal"
+        );
     }
 
     #[test]
@@ -1369,41 +1589,32 @@ mod monorepo_tests {
 
     #[test]
     fn test_resolve_ruby_require_lib_structure() {
-        let projects = vec![
-            RubyProject {
-                gem_name: "activerecord".to_string(),
-                project_root: "gems/activerecord".to_string(),
-                abs_project_root: "/path/to/gems/activerecord".to_string(),
-            },
-        ];
+        let projects = vec![RubyProject {
+            gem_name: "activerecord".to_string(),
+            project_root: "gems/activerecord".to_string(),
+            abs_project_root: "/path/to/gems/activerecord".to_string(),
+        }];
 
         // Test gem-based require with lib/ structure
-        let result = resolve_ruby_require_to_path(
-            "activerecord/base",
-            &projects,
-            None,
-        );
+        let result = resolve_ruby_require_to_path("activerecord/base", &projects, None);
 
-        assert_eq!(result, Some("gems/activerecord/lib/activerecord/base.rb".to_string()));
+        assert_eq!(
+            result,
+            Some("gems/activerecord/lib/activerecord/base.rb".to_string())
+        );
     }
 
     #[test]
     fn test_resolve_ruby_require_root_structure() {
-        let projects = vec![
-            RubyProject {
-                gem_name: "my-gem".to_string(),
-                project_root: "gems/my-gem".to_string(),
-                abs_project_root: "/path/to/gems/my-gem".to_string(),
-            },
-        ];
+        let projects = vec![RubyProject {
+            gem_name: "my-gem".to_string(),
+            project_root: "gems/my-gem".to_string(),
+            abs_project_root: "/path/to/gems/my-gem".to_string(),
+        }];
 
         // Test gem-based require with root structure (no lib/)
         // Should return lib/ path first, but both candidates are generated
-        let result = resolve_ruby_require_to_path(
-            "my_gem/utils",
-            &projects,
-            None,
-        );
+        let result = resolve_ruby_require_to_path("my_gem/utils", &projects, None);
 
         // The resolver returns the first candidate (lib/ version)
         assert_eq!(result, Some("gems/my-gem/lib/my_gem/utils.rb".to_string()));
@@ -1411,42 +1622,33 @@ mod monorepo_tests {
 
     #[test]
     fn test_resolve_ruby_require_no_match() {
-        let projects = vec![
-            RubyProject {
-                gem_name: "activerecord".to_string(),
-                project_root: "gems/activerecord".to_string(),
-                abs_project_root: "/path/to/gems/activerecord".to_string(),
-            },
-        ];
+        let projects = vec![RubyProject {
+            gem_name: "activerecord".to_string(),
+            project_root: "gems/activerecord".to_string(),
+            abs_project_root: "/path/to/gems/activerecord".to_string(),
+        }];
 
         // Test require that doesn't match any gem
-        let result = resolve_ruby_require_to_path(
-            "rails/application",
-            &projects,
-            None,
-        );
+        let result = resolve_ruby_require_to_path("rails/application", &projects, None);
 
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_resolve_ruby_require_hyphen_underscore_conversion() {
-        let projects = vec![
-            RubyProject {
-                gem_name: "active-record".to_string(),
-                project_root: "gems/active-record".to_string(),
-                abs_project_root: "/path/to/gems/active-record".to_string(),
-            },
-        ];
+        let projects = vec![RubyProject {
+            gem_name: "active-record".to_string(),
+            project_root: "gems/active-record".to_string(),
+            abs_project_root: "/path/to/gems/active-record".to_string(),
+        }];
 
         // Test that hyphenated gem name matches underscored require
-        let result = resolve_ruby_require_to_path(
-            "active_record/base",
-            &projects,
-            None,
-        );
+        let result = resolve_ruby_require_to_path("active_record/base", &projects, None);
 
-        assert_eq!(result, Some("gems/active-record/lib/active_record/base.rb".to_string()));
+        assert_eq!(
+            result,
+            Some("gems/active-record/lib/active_record/base.rb".to_string())
+        );
     }
 
     #[test]
@@ -1470,25 +1672,22 @@ mod monorepo_tests {
         ];
 
         // Test resolving to different gems
-        let ar_result = resolve_ruby_require_to_path(
-            "activerecord/base",
-            &projects,
-            None,
+        let ar_result = resolve_ruby_require_to_path("activerecord/base", &projects, None);
+        assert_eq!(
+            ar_result,
+            Some("gems/activerecord/lib/activerecord/base.rb".to_string())
         );
-        assert_eq!(ar_result, Some("gems/activerecord/lib/activerecord/base.rb".to_string()));
 
-        let as_result = resolve_ruby_require_to_path(
-            "activesupport/core_ext",
-            &projects,
-            None,
+        let as_result = resolve_ruby_require_to_path("activesupport/core_ext", &projects, None);
+        assert_eq!(
+            as_result,
+            Some("gems/activesupport/lib/activesupport/core_ext.rb".to_string())
         );
-        assert_eq!(as_result, Some("gems/activesupport/lib/activesupport/core_ext.rb".to_string()));
 
-        let ap_result = resolve_ruby_require_to_path(
-            "actionpack/controller",
-            &projects,
-            None,
+        let ap_result = resolve_ruby_require_to_path("actionpack/controller", &projects, None);
+        assert_eq!(
+            ap_result,
+            Some("gems/actionpack/lib/actionpack/controller.rb".to_string())
         );
-        assert_eq!(ap_result, Some("gems/actionpack/lib/actionpack/controller.rb".to_string()));
     }
 }
