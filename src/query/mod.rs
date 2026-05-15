@@ -2161,7 +2161,7 @@ impl QueryEngine {
     ///
     /// Returns (status, can_trust_results, warning) tuple for JSON output.
     /// This is optimized for AI agents to detect staleness and auto-reindex.
-    fn get_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
+    pub fn get_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
         let root = self.cache.workspace_root();
 
         // Check git state if in a git repo
@@ -2172,6 +2172,7 @@ impl QueryEngine {
                     let warning = IndexWarning {
                         reason: format!("Branch '{}' has not been indexed", current_branch),
                         action_required: "rfx index".to_string(),
+                        files_modified: None,
                         details: Some(IndexWarningDetails {
                             current_branch: Some(current_branch),
                             indexed_branch: None,
@@ -2194,6 +2195,7 @@ impl QueryEngine {
                                 &current_commit[..7]
                             ),
                             action_required: "rfx index".to_string(),
+                            files_modified: None,
                             details: Some(IndexWarningDetails {
                                 current_branch: Some(current_branch.clone()),
                                 indexed_branch: Some(current_branch.clone()),
@@ -2234,6 +2236,7 @@ impl QueryEngine {
                             let warning = IndexWarning {
                                 reason: format!("{} of {} sampled files modified", changed, checked),
                                 action_required: "rfx index".to_string(),
+                                files_modified: Some(changed as u32),
                                 details: Some(IndexWarningDetails {
                                     current_branch: Some(current_branch.clone()),
                                     indexed_branch: Some(branch_info.branch.clone()),

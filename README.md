@@ -1,703 +1,258 @@
 # Reflex
 
-**Local-first code search engine with full-text search, symbol extraction, and dependency analysis for AI coding workflows**
+**Sub-100ms local code search — CLI, scripts, and AI agents**
 
-Reflex is a code search engine designed for developers and AI coding assistants. It combines trigram indexing for full-text search with Tree-sitter parsing for symbol extraction and static analysis for dependency tracking. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns, function calls, variable usage, comments, and more with deterministic, repeatable results.
+Reflex is a local-first, full-text code search engine. Use it from the command line, pipe it into scripts, or connect it to AI coding assistants (Claude Code, Cursor, and any MCP-compatible tool) for instant symbol lookup, dependency analysis, and codebase exploration — fully offline, fully deterministic, no cloud required.
 
 [![CI](https://github.com/reflex-search/reflex/actions/workflows/ci.yml/badge.svg)](https://github.com/reflex-search/reflex/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-347%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
-[![gitcgr](https://gitcgr.com/badge/reflex-search/reflex.svg)](https://gitcgr.com/reflex-search/reflex)
+[![MCP Quickstart](https://img.shields.io/badge/MCP-quickstart-blue)](docs/ai-agent-integration.md)
 
-## ✨ Features
+---
 
-- **🔍 Complete Coverage**: Find every occurrence, not just symbol definitions
-- **⚡ Fast Queries**: Trigram indexing with memory-mapped I/O for efficient search
-- **🎯 Symbol-Aware**: Runtime tree-sitter parsing for precise symbol filtering
-- **🖥️ Interactive Mode**: Live TUI for exploring code with instant search and filters
-- **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
-- **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
-- **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, OpenRouter, or any OpenAI-compatible endpoint such as LMStudio, Ollama, llama.cpp, or litellm)
-- **📡 MCP Support**: Model Context Protocol server for AI assistants
-- **📦 Local-First**: Fully offline, all data stays on your machine
-- **🎨 Regex Support**: Trigram-optimized regex search
-- **🌳 AST Queries**: Structure-aware search with Tree-sitter
-- **🔒 Deterministic**: Same query → same results (no probabilistic ranking)
-- **📊 Pulse**: Auto-generated digest, wiki, and architecture map from structural index data
+## Quick start
 
-## 🚀 Quick Start
-
-### Installation
+### 1. Install
 
 ```bash
 # Via NPM
 npm install -g reflex-search
 
-# Or via cargo
+# Or via Cargo
 cargo install reflex-search
 ```
 
-**Important Setup Notes:**
-- Run `rfx` commands from the root of your project directory
-- Add `.reflex/` to your `.gitignore` file to exclude the search index from version control
-
-### Basic Usage
+### 2. Index and search
 
 ```bash
-# Index your codebase
+# From your project root
 rfx index
 
-# Full-text search (finds all occurrences)
+# Full-text search
 rfx query "extract_symbols"
 
-# Symbol-only search (definitions only)
-rfx query "extract_symbols" --symbols
+# Symbol definitions only
+rfx query "CacheManager" --symbols
 
-# Filter by language and symbol kind
-rfx query "parse" --lang rust --kind function --symbols
-
-# Include dependency information (imports)
-rfx query "MyStruct" --dependencies
-
-# Regex search
-rfx query "fn.*test" --regex
-
-# Paths-only mode (for piping to other tools)
-vim $(rfx query "TODO" --paths)
-
-# Export as JSON for AI agents
-rfx query "unwrap" --json --limit 10
+# JSON output for scripting
+rfx query "TODO" --json --limit 20
 ```
 
-## 🤖 AI Query Assistant
+### 3. (Optional) Connect to an AI agent via MCP
 
-Don't want to remember search syntax? Use `rfx ask` to translate natural language questions into `rfx query` commands.
-
-### Setup
-
-First-time setup requires configuring an AI provider. Reflex supports OpenAI, Anthropic, OpenRouter, and any **OpenAI-compatible endpoint** (LMStudio, Ollama, llama.cpp server, vLLM, litellm, etc.). This configuration is shared by `rfx ask` and `rfx pulse`.
-
-```bash
-# Interactive configuration wizard (recommended)
-rfx llm config
-
-# Check current configuration
-rfx llm status
-```
-
-This will guide you through:
-- Selecting an AI provider
-- Entering your API key (or base URL for self-hosted endpoints)
-- Choosing a model (optional)
-
-Configuration is saved to `~/.reflex/config.toml`:
-
-```toml
-[semantic]
-provider = "openai"  # or anthropic, openrouter, openai-compatible
-
-[credentials]
-openai_api_key = "sk-..."
-openai_model = "gpt-4o-mini"  # optional
-```
-
-#### Self-hosted / OpenAI-compatible endpoints
-
-Point Reflex at any server that implements the OpenAI Chat Completions schema — for example a local LMStudio, Ollama, llama.cpp, vLLM instance, or a litellm proxy. The API key is optional for keyless local servers.
-
-```toml
-[semantic]
-provider = "openai-compatible"
-
-[credentials]
-openai_compatible_base_url = "http://localhost:1234/v1"
-openai_compatible_model = "qwen2.5-coder-32b-instruct"
-# openai_compatible_api_key = "sk-..."   # optional; omit for local servers
-```
-
-The same settings can be supplied via env vars: `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`, `REFLEX_PROVIDER=openai-compatible`, `REFLEX_MODEL=…`.
-
-### Usage
-
-There are two ways to use `rfx ask`: 
-
-1) Interactive mode
-
-Interactive chat mode with conversation history. This mode uses `--agentic` and `--answer` under the hood.
-
-```bash
-rfx ask
-```
-
-2) CLI-only mode
-
-One-shot, non-conversational commands that return results directly via CLI.
-
-```bash
-# Ask a question (generates and executes rfx query commands, only returns query results)
-rfx ask "Find all TODOs in Rust files"
-
-# Use a specific provider
-rfx ask "Show me error handling code" --provider openrouter
-
-# Use a local OpenAI-compatible server (e.g. LMStudio)
-rfx ask "Show me error handling code" --provider openai-compatible
-
-# Agentic mode (multi-step reasoning with automatic context gathering)
-rfx ask "How does authentication work?" --agentic
-
-# Get a conversational answer based on search results
-rfx ask "What does the indexer module do?" --answer
-```
-
-**How it works:**
-1. Your natural language question is sent to an LLM
-2. The LLM generates one or more `rfx query` commands
-3. You review and confirm (or use `--execute` to auto-run)
-4. Results are displayed as normal search output
-
-**Agentic mode** (`--agentic`) enables multi-step reasoning where the LLM can:
-- Gather context by running multiple searches
-- Refine queries based on initial results
-- Iteratively explore the codebase
-- Generate comprehensive answers with `--answer`
-
-## 📋 Command Reference
-
-### `rfx index`
-
-Build or update the search index.
-
-```bash
-rfx index [OPTIONS]
-
-Options:
-  --force              Force full reindex (ignore incremental)
-  --languages <LANGS>  Limit to specific languages (comma-separated)
-
-Subcommands:
-  status               Show background symbol indexing status
-  compact              Compact cache (remove deleted files, reclaim space)
-```
-
-### `rfx query`
-
-Search the codebase with CLI or interactive TUI mode.
-
-**Interactive Mode (TUI):**
-```bash
-# Launch interactive mode (no pattern required)
-rfx query
-
-# Features:
-# - Live search with instant results
-# - Toggle filters: symbols-only, regex, language
-# - Navigate results with keyboard (j/k, arrows)
-# - Open files in $EDITOR (press 'o')
-# - Query history with Ctrl+P/Ctrl+N
-# - Press '?' for help, 'q' to quit
-```
-
-**CLI Mode:**
-
-Run `rfx query --help` for full options.
-
-**Key Options:**
-- `--symbols, -s` - Symbol-only search (definitions, not usage)
-- `--regex, -r` - Treat pattern as regex
-- `--lang <LANG>` - Filter by language
-- `--kind <KIND>` - Filter by symbol kind (function, class, struct, etc.)
-- `--dependencies` - Include dependency information (supports: Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin)
-- `--paths, -p` - Return only file paths (no content)
-- `--json` - Output as JSON
-- `--limit <N>` - Limit number of results
-- `--timeout <SECS>` - Query timeout (default: 30s)
-
-**Examples:**
-```bash
-# Find function definitions named "parse"
-rfx query "parse" --symbols --kind function
-
-# Find test functions using regex
-rfx query "fn test_\w+" --regex
-
-# Search Rust files only
-rfx query "unwrap" --lang rust
-
-# Get paths of files with TODOs
-rfx query "TODO" --paths
-
-# Include import information
-rfx query "Config" --symbols --dependencies
-```
-
-### `rfx mcp`
-
-Start as an MCP (Model Context Protocol) server for AI coding assistants.
+Add this to your Claude Code MCP configuration (`~/.claude/claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "reflex": {
       "command": "rfx",
-      "args": ["mcp"],
-      "env": {},
-      "disabled": false
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-**Error Handling:**
+Your AI assistant can now call `search_code`, `find_references`, `get_dependencies`, and more.
 
-If any MCP tool returns an error about a missing or stale index (e.g., "Index not found. Run 'rfx index' to build the cache first."), the AI agent should:
+> See [Claude Code + Reflex MCP Quickstart](docs/ai-agent-integration.md) for MCP setup, key tools, and troubleshooting.
 
-1. Call `index_project` to rebuild the index
-2. Wait for indexing to complete
-3. Retry the previously failed operation
+---
 
-This pattern ensures that queries always run against an up-to-date index.
+## Why Reflex vs. built-in search tools
 
-**Available MCP Tools:**
-1. **`list_locations`** - Fast location discovery (file + line only, minimal tokens)
-2. **`count_occurrences`** - Quick statistics (total count + file count)
-3. **`search_code`** - Full-text or symbol search with detailed results
-4. **`search_regex`** - Regex pattern matching
-5. **`search_ast`** - AST pattern matching (structure-aware, slow)
-6. **`index_project`** - Trigger reindexing
-7. **`get_dependencies`** - Get all dependencies of a specific file
-8. **`get_dependents`** - Get all files that depend on a file (reverse lookup)
-9. **`get_transitive_deps`** - Get transitive dependencies up to a specified depth
-10. **`find_hotspots`** - Find most-imported files (with pagination)
-11. **`find_circular`** - Detect circular dependencies (with pagination)
-12. **`find_unused`** - Find files with no incoming dependencies (with pagination)
-13. **`find_islands`** - Find disconnected components (with pagination)
-14. **`analyze_summary`** - Get dependency analysis summary (counts only)
+| Capability | grep / ripgrep | Built-in AI search | Sourcegraph | **Reflex** |
+|---|---|---|---|---|
+| Full-text search | ✅ | ✅ | ✅ | ✅ |
+| Symbol-aware filtering | ❌ | Partial | ✅ | ✅ |
+| Dependency analysis | ❌ | ❌ | Partial | ✅ |
+| Deterministic results | ✅ | ❌ | ✅ | ✅ |
+| Local-first / offline | ✅ | ❌ | ❌ | ✅ |
+| MCP server built-in | ❌ | — | ❌ | ✅ |
+| JSON output for agents | Manual | ✅ | ✅ | ✅ |
 
-### `rfx analyze`
+---
 
-Analyze codebase structure and dependencies. By default shows a summary; use specific flags for detailed results.
+## MCP tools
 
-**Subcommands:**
-- `--circular` - Detect circular dependencies (A → B → C → A)
-- `--hotspots` - Find most-imported files
-- `--unused` - Find files with no incoming dependencies
-- `--islands` - Find disconnected components
+When connected via MCP, your AI assistant gets these tools:
 
-**Pagination (default: 200 results per page):**
-- Use `--limit N` to specify results per page
-- Use `--offset N` to skip first N results
-- Use `--all` to return unlimited results
+| Tool | What it does |
+|---|---|
+| `search_code` | Full-text or symbol search with line numbers and context |
+| `list_locations` | Fast file+line discovery (minimal tokens) |
+| `count_occurrences` | Quick match statistics without full content |
+| `search_regex` | Regex pattern matching across the codebase |
+| `search_ast` | Structure-aware search via Tree-sitter AST queries |
+| `index_project` | Trigger or refresh the search index |
+| `get_dependencies` | All imports for a specific file |
+| `get_dependents` | All files that import a given file (reverse lookup) |
+| `get_transitive_deps` | Transitive dependency graph up to a configurable depth |
+| `find_hotspots` | Most-imported files (dependency hotspots) |
+| `find_circular` | Detect circular dependency chains |
+| `find_unused` | Files with no incoming dependencies |
+| `find_islands` | Disconnected components in the dependency graph |
+| `analyze_summary` | High-level dependency counts and metrics |
+| `gather_context` | Codebase structure and project-type summary |
 
-**Examples:**
-```bash
-# Show summary of all analyses
-rfx analyze
+**Index not found error?** If an MCP tool returns `"Index not found. Run 'rfx index' to build the cache first"`, call `index_project` first, then retry the failed tool.
 
-# Find circular dependencies
-rfx analyze --circular
+---
 
-# Find hotspots (most-imported files)
-rfx analyze --hotspots --min-dependents 5
+## CLI usage
 
-# Find unused files
-rfx analyze --unused
-
-# Find disconnected components (islands)
-rfx analyze --islands --min-island-size 3
-
-# Get JSON summary of all analyses
-rfx analyze --json
-
-# Get pretty-printed JSON summary
-rfx analyze --json --pretty
-
-# Paginate results
-rfx analyze --hotspots --limit 50 --offset 0  # First 50
-rfx analyze --hotspots --limit 50 --offset 50 # Next 50
-
-# Export as JSON with pagination metadata
-rfx analyze --circular --json
-```
-
-**JSON Output Format (specific analyses with pagination):**
-```json
-{
-  "pagination": {
-    "total": 347,
-    "count": 200,
-    "offset": 0,
-    "limit": 200,
-    "has_more": true
-  },
-  "results": [...]
-}
-```
-
-**Summary JSON Output Format (bare `rfx analyze --json`):**
-```json
-{
-  "circular_dependencies": 17,
-  "hotspots": 10,
-  "unused_files": 82,
-  "islands": 81,
-  "min_dependents": 2
-}
-```
-
-### `rfx deps`
-
-Analyze dependencies for a specific file. Shows what a file imports (dependencies) or what imports it (dependents).
-
-**Key Options:**
-- `--reverse` - Show files that depend on this file (reverse lookup)
-- `--depth N` - Traverse N levels deep for transitive dependencies (default: 1)
-- `--format` - Output format: tree, table, json (default: tree)
-- `--json` - Output as JSON
-- `--pretty` - Pretty-print JSON output
-
-**Examples:**
-```bash
-# Show direct dependencies
-rfx deps src/main.rs
-
-# Show files that import this file (reverse lookup)
-rfx deps src/config.rs --reverse
-
-# Show transitive dependencies (depth 3)
-rfx deps src/api.rs --depth 3
-
-# JSON output
-rfx deps src/main.rs --json
-
-# Pretty-printed JSON
-rfx deps src/main.rs --json --pretty
-
-# Table format
-rfx deps src/main.rs --format table
-```
-
-**Supported Languages:** Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin
-
-**Note:** Only static imports (string literals) are tracked. Dynamic imports are filtered by design.
-
-### `rfx context`
-
-Generate codebase context for AI prompts. Useful with `rfx ask --additional-context`.
-
-**Key Options:**
-- `--structure` - Show directory structure
-- `--file-types` - Show file type distribution
-- `--project-type` - Detect project type (CLI/library/webapp/monorepo)
-- `--framework` - Detect frameworks and conventions
-- `--entry-points` - Show entry point files
-- `--test-layout` - Show test organization pattern
-- `--config-files` - List important configuration files
-- `--path <PATH>` - Focus on specific directory
-- `--depth <N>` - Tree depth for structure (default: 1)
-
-By default (no flags), all context types are shown. Use individual flags to show specific types only.
-
-**Examples:**
-```bash
-# Full context (all types - default behavior)
-rfx context
-
-# Full context for monorepo subdirectory
-rfx context --path services/backend
-
-# Specific context types only
-rfx context --framework --entry-points
-
-# Use with semantic queries
-rfx ask "find auth code" --additional-context "$(rfx context --framework)"
-```
-
-### `rfx llm`
-
-Manage LLM provider configuration. This is the central place to set up API keys and model preferences used by both `rfx ask` and `rfx pulse`.
+Reflex also works as a standalone CLI for humans and shell scripts.
 
 ```bash
-rfx llm config                    # Launch interactive setup wizard
-rfx llm status                    # Show current provider, model, and API key status
+# Full-text search (finds every occurrence)
+rfx query "extract_symbols"
+
+# Symbol definitions only (faster, uses tree-sitter)
+rfx query "extract_symbols" --symbols
+
+# Filter by language and symbol kind
+rfx query "parse" --lang rust --kind function --symbols
+
+# Regex search
+rfx query "fn.*test" --regex
+
+# JSON output for programmatic use
+rfx query "unwrap" --json --limit 10
+
+# Pipe file paths to other tools
+vim $(rfx query "TODO" --paths)
 ```
 
-**Example output of `rfx llm status`:**
-```
-Provider: openrouter
-Model:    meta-llama/llama-4-maverick
-API key:  configured (sk-or-...****)
-```
+**Interactive TUI mode** — run `rfx query` with no pattern to launch live search with keyboard navigation.
 
-Configuration is stored in `~/.reflex/config.toml` and applies to all LLM-powered features.
-
-### `rfx pulse`
-
-Generate codebase intelligence surfaces from structural index data. Pulse turns the facts Reflex already extracts (symbols, dependencies, hotspots, file metrics) into browsable documentation.
-
-**Surfaces:**
-- **Digest** - A periodic change report comparing two snapshots, showing file changes, dependency shifts, hotspot movements, and threshold alerts
-- **Wiki** - Per-module documentation pages with structure breakdowns, dependency lists, metrics, and optional LLM-generated summaries
-- **Map** - An architecture diagram exported as Mermaid or D2
-- **Site** - A complete static HTML site combining all three surfaces
-
-**LLM narration** is optional. When an API key is configured (via `rfx llm config`), Pulse uses your LLM provider to generate concise narrative summaries for each section. Without an API key, all output is structural-only. Use `--no-llm` to explicitly skip narration even when a key is available.
-
-LLM responses are cached in `.reflex/pulse/llm-cache/` keyed by structural content hash, so repeated runs with the same data skip the LLM entirely.
-
-**Prerequisites:** Run `rfx index` and `rfx snapshot` before using Pulse. Digests compare two snapshots, so you need at least one snapshot (two for a diff).
+### Dependency analysis
 
 ```bash
-# Generate a structural-only digest (no LLM required)
-rfx pulse digest --no-llm
-
-# Generate a digest with LLM narration (requires configured API key)
-rfx pulse digest
-
-# Compare specific snapshots
-rfx pulse digest --baseline <ID> --current <ID>
-
-# Output as JSON
-rfx pulse digest --json --pretty
+rfx deps src/main.rs              # Show direct imports
+rfx deps src/config.rs --reverse  # What imports this file
+rfx deps src/api.rs --depth 3     # Transitive dependencies
+rfx analyze --circular            # Find circular dependency chains
+rfx analyze --hotspots            # Most-imported files
+rfx analyze --unused              # Files with no incoming dependencies
 ```
+
+### Natural language search
 
 ```bash
-# Generate wiki pages for all detected modules
-rfx pulse wiki --no-llm
-
-# Generate wiki with LLM summaries
-rfx pulse wiki
-
-# Write wiki pages to a directory as markdown files
-rfx pulse wiki --output docs/wiki
-
-# Output as JSON
-rfx pulse wiki --json
+rfx ask "Find all TODOs in Rust files"         # Translate to rfx query and run
+rfx ask "How does authentication work?" --agentic  # Multi-step codebase reasoning
+rfx ask                                        # Interactive chat mode
 ```
+
+Requires an AI provider configured via `rfx llm config` (OpenAI, Anthropic, OpenRouter, or any OpenAI-compatible endpoint).
+
+### Other commands
 
 ```bash
-# Export architecture map (Mermaid format, default)
-rfx pulse map
-
-# Export as D2 format
-rfx pulse map --format d2
-
-# Focus on a specific module
-rfx pulse map --zoom src/parsers
-
-# Write to file
-rfx pulse map --output architecture.mmd
+rfx index                 # Build / update the search index
+rfx index status          # Background indexing status
+rfx watch                 # Auto-reindex on file changes
+rfx stats                 # Index statistics
+rfx pulse digest          # Codebase change digest
+rfx pulse wiki            # Per-module documentation
+rfx pulse map             # Architecture diagram (Mermaid / D2)
+rfx serve --port 7878     # Local HTTP API server
 ```
+
+Run `rfx <command> --help` for full options.
+
+---
+
+## Installation
+
+### NPM (recommended)
 
 ```bash
-# Generate a complete static HTML site with all surfaces
-rfx pulse generate --output pulse-site
-
-# Structural-only site (no LLM)
-rfx pulse generate --no-llm
-
-# Select specific surfaces
-rfx pulse generate --include wiki,digest
-
-# Clean output directory before generating
-rfx pulse generate --clean
-
-# Custom title and base URL
-rfx pulse generate --title "My Project" --base-url /docs/
+npm install -g reflex-search
 ```
 
-### Other Commands
+### Cargo
 
-- `rfx stats` - Display index statistics
-- `rfx clear` - Clear the search index
-- `rfx list-files` - List all indexed files
-- `rfx watch` - Watch for file changes and auto-reindex
-
-Run `rfx <command> --help` for detailed options.
-
-## 🌳 AST Pattern Matching
-
-Reflex supports **structure-aware code search** using Tree-sitter AST queries.
-
-**⚠️ WARNING:** AST queries are **SLOW** and scan the entire codebase. **Use `--symbols` instead for 95% of cases** (much faster).
-
-**When to use AST queries:**
-- You need to match code structure, not just text
-- `--symbols` search is insufficient for your use case
-- You have a very specific structural pattern
-
-**Basic usage:**
 ```bash
-rfx query <PATTERN> --ast <AST_PATTERN> --lang <LANGUAGE>
-
-# Example: Find all Rust functions
-rfx query "fn" --ast "(function_item) @fn" --lang rust
-
-# Example: Find all TypeScript classes
-rfx query "class" --ast "(class_declaration) @class" --lang typescript
+cargo install reflex-search
 ```
 
-**Supported languages:** Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig
+**Setup note:** run `rfx` commands from your project root directory. Add `.reflex/` to your `.gitignore` to exclude the search index from version control.
 
-For detailed AST query syntax and examples, see the [Tree-sitter documentation](https://tree-sitter.github.io/tree-sitter/using-parsers#pattern-matching-with-queries).
+---
 
-## 🌐 Supported Languages/Dialects
+## Supported languages
 
-| Language | Extensions | Symbol Extraction |
-|----------|------------|-------------------|
-| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods |
-| **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, React components |
-| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods, React components |
-| **Vue** | `.vue` | Functions, constants, methods from `<script>` blocks |
-| **Svelte** | `.svelte` | Functions, variables, reactive declarations |
-| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, namespaces, enums |
-| **Python** | `.py` | Functions, classes, methods, decorators, lambdas |
-| **Go** | `.go` | Functions, types, interfaces, methods, constants |
-| **Java** | `.java` | Classes, interfaces, enums, methods, fields, constructors |
-| **C** | `.c`, `.h` | Functions, structs, enums, unions, typedefs |
-| **C++** | `.cpp`, `.hpp`, `.cxx` | Functions, classes, namespaces, templates, methods |
-| **C#** | `.cs` | Classes, interfaces, structs, enums, methods, properties |
-| **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, constants, variables |
-| **Kotlin** | `.kt`, `.kts` | Classes, functions, interfaces, objects, properties |
-| **Zig** | `.zig` | Functions, structs, enums, constants, variables |
+Full symbol extraction (functions, classes, methods, types, etc.) for 15 languages:
 
-**Note:** Full-text search works on **all file types** regardless of parser support. Symbol filtering requires a language parser.
+**Systems:** Rust, C, C++, Zig  
+**Backend:** Python, Go, Java, C#, PHP, Ruby, Kotlin  
+**Frontend:** TypeScript, JavaScript, Vue, Svelte
 
-## 🏗️ Architecture
+Full-text search works on **all file types** regardless of parser support.
 
-Reflex uses a **trigram-based inverted index** combined with **runtime symbol detection**:
+---
 
-### Indexing Phase
-1. Extract trigrams (3-character substrings) from all files
-2. Build inverted index: `trigram → [file_id, line_no]`
-3. Store full file contents in memory-mapped `content.bin`
-4. Start background symbol indexing (caches symbols for faster queries)
-
-### Query Phase
-1. **Full-text queries**: Intersect trigram posting lists → verify matches
-2. **Symbol queries**: Trigrams narrow to ~10-100 candidates → parse with tree-sitter → filter symbols
-3. Memory-mapped I/O for instant cache access
-
-### Cache Structure (`.reflex/`)
-```
-.reflex/
-  meta.db          # SQLite: file metadata, stats, config, hashes
-  trigrams.bin     # Inverted index (memory-mapped)
-  content.bin      # Full file contents (memory-mapped)
-  config.toml      # Index settings
-  indexing.status  # Background symbol indexer status
-```
-
-## ⚡ Performance
-
-Reflex is designed for speed at every level:
-
-**Query Performance:**
-- **Full-text & Regex**: Efficient queries via trigram indexing
-- **Symbol queries**: Slower due to runtime tree-sitter parsing, but still efficient
-- **Cached queries**: Repeated searches benefit from memory-mapped cache
-- Scales well from small projects to large codebases (10k+ files)
-
-**Indexing Performance:**
-- **Initial indexing**: Parallel processing using 80% of CPU cores
-- **Incremental updates**: Only reindexes changed files via blake3 hashing
-- **Memory-mapped I/O**: Zero-copy access for cache reads
-
-## 🔧 Configuration
-
-Reflex respects `.gitignore` files automatically. Additional configuration via `.reflex/config.toml`:
+## Configuration
 
 ```toml
+# .reflex/config.toml (project-level)
 [index]
-languages = []  # Empty = all supported languages
+languages = []          # Empty = all supported languages
 max_file_size = 10485760  # 10 MB
-follow_symlinks = false
 
 [search]
 default_limit = 100
 
 [performance]
-parallel_threads = 0  # 0 = auto (80% of available cores)
+parallel_threads = 0    # 0 = auto (80% of available cores)
 ```
 
-## 🤖 AI Integration
-
-Reflex provides clean JSON output for AI coding assistants and automation:
-
-```bash
-rfx query "parse_tree" --json --symbols
-```
-
-Output includes file paths, line numbers, symbol types, and code previews with pagination metadata.
-
-## 🔍 Use Cases
-
-- **Code Navigation**: Find all usages of functions, classes, and variables
-- **Refactoring**: Identify all call sites before making changes
-- **AI Assistants**: Retrieve relevant code snippets and context for LLMs
-- **Debugging**: Locate where variables and functions are used
-- **Documentation**: Find examples of API usage across the codebase
-- **Security**: Search for potential vulnerabilities or anti-patterns
-
-## 🧪 Testing
-
-Reflex has comprehensive test coverage including core modules, real-world code samples across all supported languages, and end-to-end workflows.
-
-```bash
-cargo test                    # Run all tests
-cargo test -- --nocapture     # Run with output
-cargo test indexer::tests     # Run specific module
-```
-
-## 🔒 Security / Threat Model
-
-### `rfx serve` HTTP API
-
-`rfx serve` starts a local HTTP API server. It is designed as a **local-only, single-user tool** with no authentication.
-
-| Setting | Default | Notes |
-|---------|---------|-------|
-| Bind address | `127.0.0.1` (loopback) | Accessible only from the local machine |
-| Port | `7878` | Configurable with `--port` |
-| Authentication | None | By design — local tool only |
-
-**To bind to a different address:**
-```bash
-rfx serve --host 0.0.0.0 --port 7878   # ⚠️ Exposes to the network
-```
-
-> **Warning:** Binding to `0.0.0.0` or any non-loopback address exposes your entire codebase index to the network without authentication. Do not do this on shared or internet-facing machines. If you need network-accessible search, place an authenticated reverse proxy in front of it.
-
-### JSON Output: Language Field
-
-The `language` field in search results serializes as an enum string (e.g. `"Rust"`, `"Python"`). For unrecognized file types it serializes as `"Unknown"`. **Do not exhaustively match on this field** — new languages may be added in minor releases. Always include an `"Unknown"` fallback in your client code.
-
-## 🤝 Contributing
-
-Contributions welcome! Reflex is built to be:
-- **Fast**: Efficient search using trigram indexing and memory-mapped I/O
-- **Accurate**: Complete coverage with deterministic results
-- **Extensible**: Easy to add new language parsers
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## 🙏 Acknowledgments
-
-Built with:
-- [tree-sitter](https://tree-sitter.github.io/tree-sitter/) - Incremental parsing
-- [rkyv](https://rkyv.org/) - Zero-copy deserialization
-- [memmap2](https://github.com/RazrFalcon/memmap2-rs) - Memory-mapped I/O
-- [rusqlite](https://github.com/rusqlite/rusqlite) - SQLite bindings
-- [blake3](https://github.com/BLAKE3-team/BLAKE3) - Fast hashing
-- [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) - gitignore support
-
-Inspired by:
-- [Zoekt](https://github.com/sourcegraph/zoekt) - Trigram-based code search
-- [Sourcegraph](https://sourcegraph.com/) - Code search for teams
-- [ripgrep](https://github.com/BurntSushi/ripgrep) - Fast text search
+For AI provider configuration (`rfx ask`, `rfx pulse`), run `rfx llm config`.
 
 ---
 
-**Made with ❤️ for developers and AI coding assistants**
+## Architecture
+
+Reflex uses a **trigram-based inverted index** with **runtime symbol detection**:
+
+- **Indexing**: extracts 3-character trigrams from all files; stores full content in memory-mapped `content.bin`; no tree-sitter parsing at index time
+- **Full-text queries**: intersect trigram posting lists → verify matches (instant)
+- **Symbol queries**: trigrams narrow candidates → parse only matching files with tree-sitter
+
+```
+.reflex/
+  meta.db          # SQLite: file metadata, stats, config
+  trigrams.bin     # Inverted index (memory-mapped)
+  content.bin      # Full file contents (memory-mapped)
+  config.toml      # Index settings
+```
+
+---
+
+## Security
+
+`rfx serve` binds to `127.0.0.1:7878` by default — loopback only, no authentication. Do not expose it to the network. See [CLAUDE.md](CLAUDE.md#security--threat-model) for the full threat model.
+
+---
+
+## Contributing
+
+```bash
+cargo build --release   # Build
+cargo test              # Test
+rfx index               # Refresh index after code changes
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+**Fast code search for developers — works standalone, in scripts, and with AI coding agents**

@@ -12,8 +12,12 @@ use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 use crate::indexer::Indexer;
-use crate::models::{IndexConfig, Language, SymbolKind};
+use crate::models::{IndexConfig, IndexStatus, Language, SymbolKind};
 use crate::query::{QueryEngine, QueryFilter};
+
+/// Default preview truncation length for MCP responses (characters).
+/// Raised from 100 so typical Rust/TS/Python function signatures fit without truncation.
+const DEFAULT_MCP_PREVIEW_LENGTH: usize = 180;
 
 /// JSON-RPC 2.0 request
 #[derive(Debug, Deserialize)]
@@ -258,6 +262,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "dependencies": {
                             "type": "boolean",
                             "description": "Include dependency information (imports) in results. **IMPORTANT:** Only extracts static imports (string literals). Dynamic imports (variables, template literals, expressions) are automatically filtered. See CLAUDE.md for details."
+                        },
+                        "preview_length": {
+                            "type": "integer",
+                            "description": "Maximum characters per preview line (default: 180). Use a smaller value (e.g. 60) for wide-result scans where short previews are sufficient."
                         }
                     },
                     "required": ["pattern"]
@@ -537,6 +545,50 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                 }
             },
             {
+                "name": "find_references",
+                "description": "Find a symbol's definition AND all usage sites in a single call.\n\n**Purpose:** Eliminates the two-step pattern of search_code(symbols=true) + search_code(). Returns both the definition and all usages atomically.\n\n**Returns:** {definition, references, total_references, pagination, status}\n\n**Use this when:**\n- \"Find all callers of X\" — the most common agent refactoring pattern\n- Code review: understand impact before changing a function or class\n- Rename planning: see every site that needs updating\n- Dead code detection: confirm nothing calls a function before removing it\n\n**definition:** First matching symbol definition {path, line, kind, symbol, span, preview}, or null if no symbol definition exists for the pattern.\n\n**references:** Flat array of {path, line, preview} — all textual occurrences including the definition site itself.\n\n**Pagination applies to references only.** Use limit and offset. Check pagination.has_more for more pages.\n\n**Error Handling:** If you receive an error message containing \"Index not found\" or \"stale\", immediately call the index_project tool, wait for it to complete, then retry this operation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Symbol name or text pattern to find references for (e.g., 'CacheManager', 'extract_symbols')"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Filter definition lookup by symbol kind (function, class, struct, trait, etc.)"
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Filter by language (rust, typescript, python, go, etc.)"
+                        },
+                        "glob": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Include files matching glob patterns (e.g., ['src/**/*.rs'])"
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'tests/**'])"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max references per page (default: 100). Pagination applies to references only."
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset for references (skip first N). Use with limit."
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            },
+            {
                 "name": "gather_context",
                 "description": "Collects comprehensive codebase information.\n\n**Parameters:**\n- `structure` (bool): Show directory tree\n- `file_types` (bool): Show file type distribution\n- `project_type` (bool): Detect project type (CLI/library/webapp)\n- `framework` (bool): Detect frameworks (React, Django, etc.)\n- `entry_points` (bool): Find main/index files\n- `test_layout` (bool): Show test organization\n- `config_files` (bool): List configuration files\n- `depth` (int): Tree depth for structure (default: 2)\n- `path` (string, optional): Focus on specific directory\n\n**When to use:**\n- Understanding project structure and organization\n- Finding which frameworks/languages are used\n- Locating entry points and test layouts\n- Getting file statistics and distribution\n\n**When NOT to use:**\n- Finding conceptual/architectural information (use search_documentation)\n- Understanding high-level how things work (use search_documentation)\n\n**Note:** By default (no parameters), all context types are gathered.",
                 "inputSchema": {
@@ -579,6 +631,14 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                             "description": "Focus on specific directory path"
                         }
                     }
+                }
+            },
+            {
+                "name": "check_index_status",
+                "description": "Check whether the Reflex search index is fresh, stale, or missing — without running any search.\n\n**CALL THIS FIRST** at the start of every session and before any significant search task. If the index is stale or missing, call index_project before searching.\n\n**Returns:**\n- `status`: `\"fresh\"` | `\"stale\"` | `\"missing\"`\n- `reason`: why the index is stale (branch not indexed, commit changed, files modified)\n- `action_required`: command to fix the issue (always `rfx index` when stale)\n- `files_modified`: number of recently modified files detected (only present for mtime-based staleness)\n\n**When to call:**\n- At the start of every agent session\n- Before any bulk search or refactoring task\n- After a git operation (checkout, merge, rebase, pull)\n\n**Example fresh response:** `{\"status\": \"fresh\"}`\n**Example stale response:** `{\"status\": \"stale\", \"reason\": \"Commit changed from abc1234 to def5678\", \"action_required\": \"rfx index\"}`",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         ]
@@ -765,6 +825,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
+            let preview_length = arguments["preview_length"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(DEFAULT_MCP_PREVIEW_LENGTH);
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -810,11 +874,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let engine = QueryEngine::new(cache);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
-            // Apply preview truncation for token efficiency (100 chars max)
-            const MAX_PREVIEW_LENGTH: usize = 100;
+            // Apply preview truncation for token efficiency
             for file_group in response.results.iter_mut() {
                 for m in file_group.matches.iter_mut() {
-                    m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
+                    m.preview = crate::cli::truncate_preview(&m.preview, preview_length);
                 }
             }
 
@@ -901,11 +964,10 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let engine = QueryEngine::new(cache);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
-            // Apply preview truncation for token efficiency (100 chars max)
-            const MAX_PREVIEW_LENGTH: usize = 100;
+            // Apply preview truncation for token efficiency
             for file_group in response.results.iter_mut() {
                 for m in file_group.matches.iter_mut() {
-                    m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
+                    m.preview = crate::cli::truncate_preview(&m.preview, DEFAULT_MCP_PREVIEW_LENGTH);
                 }
             }
 
@@ -1007,10 +1069,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             // Use the new search_ast_all_files method (no trigram filtering)
             let mut results = engine.search_ast_all_files(&ast_pattern, filter)?;
 
-            // Apply preview truncation for token efficiency (100 chars max)
-            const MAX_PREVIEW_LENGTH: usize = 100;
+            // Apply preview truncation for token efficiency
             for result in &mut results {
-                result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+                result.preview = crate::cli::truncate_preview(&result.preview, DEFAULT_MCP_PREVIEW_LENGTH);
             }
 
             Ok(json!({
@@ -1509,24 +1570,193 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 json: false,  // MCP always returns text format
             };
 
-            // If no context flags specified, enable all types (default behavior)
-            if opts.is_empty() {
-                opts.structure = true;
-                opts.file_types = true;
+            // If no context flags specified, return minimal orientation context only.
+            // Requesting all types by default floods agent context windows (2000-5000 tokens).
+            let no_flags_set = opts.is_empty();
+            if no_flags_set {
                 opts.project_type = true;
-                opts.framework = true;
                 opts.entry_points = true;
-                opts.test_layout = true;
-                opts.config_files = true;
             }
 
             let cache = CacheManager::new(".");
             let context = crate::context::generate_context(&cache, &opts)?;
 
+            let hint = if no_flags_set {
+                "\n\n---\nHint: this is the minimal orientation view. Pass any combination of these flags for more detail: structure, file_types, framework, test_layout, config_files."
+            } else {
+                ""
+            };
+
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": context
+                    "text": format!("{}{}", context, hint)
+                }]
+            }))
+        }
+        "check_index_status" => {
+            let cache = CacheManager::new(".");
+
+            if !cache.exists() {
+                let result = json!({
+                    "status": "missing",
+                    "action_required": "rfx index"
+                });
+                return Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": serde_json::to_string(&result)?
+                    }]
+                }));
+            }
+
+            let engine = QueryEngine::new(cache);
+            let (status, _can_trust, warning) = engine.get_index_status()?;
+
+            let status_str = match status {
+                IndexStatus::Fresh => "fresh",
+                IndexStatus::Stale => "stale",
+            };
+
+            let result = if let Some(w) = warning {
+                let mut obj = json!({
+                    "status": status_str,
+                    "reason": w.reason,
+                    "action_required": w.action_required
+                });
+                if let Some(fm) = w.files_modified {
+                    obj["files_modified"] = json!(fm);
+                }
+                obj
+            } else {
+                json!({ "status": status_str })
+            };
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&result)?
+                }]
+            }))
+        }
+        "find_references" => {
+            let pattern = arguments["pattern"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing pattern"))?
+                .to_string();
+
+            let lang = arguments["lang"].as_str().map(|s| s.to_string());
+            let kind = arguments["kind"].as_str().map(|s| s.to_string());
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let glob_patterns: Vec<String> = arguments["glob"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let exclude_patterns: Vec<String> = arguments["exclude"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let force = arguments["force"].as_bool().unwrap_or(false);
+
+            let language = parse_language(lang);
+            let parsed_kind = parse_symbol_kind(kind);
+
+            // Search 1: Find symbol definition (symbols_mode=true, small cap)
+            let def_filter = QueryFilter {
+                language,
+                kind: parsed_kind,
+                use_ast: false,
+                use_regex: false,
+                limit: Some(5),
+                symbols_mode: true,
+                expand: false,
+                file_pattern: None,
+                exact: false,
+                use_contains: false,
+                timeout_secs: 30,
+                glob_patterns: glob_patterns.clone(),
+                exclude_patterns: exclude_patterns.clone(),
+                paths_only: false,
+                offset: None,
+                force,
+                suppress_output: true,
+                include_dependencies: false,
+                ..Default::default()
+            };
+
+            let cache = CacheManager::new(".");
+            let engine = QueryEngine::new(cache);
+            let def_response = engine.search_with_metadata(&pattern, def_filter)?;
+
+            // Extract first definition as a compact object (reuse MatchResult's Serialize impl)
+            let definition: Option<serde_json::Value> = def_response.results.first().and_then(|fg| {
+                fg.matches.first().map(|m| {
+                    let mut def_obj = serde_json::to_value(m).unwrap_or(json!({}));
+                    if let serde_json::Value::Object(ref mut map) = def_obj {
+                        map.insert("path".to_string(), json!(fg.path.clone()));
+                        // Truncate preview if present
+                        if let Some(preview) = map.get("preview").and_then(|v| v.as_str()) {
+                            let truncated = crate::cli::truncate_preview(preview, DEFAULT_MCP_PREVIEW_LENGTH);
+                            map.insert("preview".to_string(), json!(truncated));
+                        }
+                    }
+                    def_obj
+                })
+            });
+
+            // Search 2: Find all textual references (symbols_mode=false)
+            let ref_filter = QueryFilter {
+                language,
+                kind: None,
+                use_ast: false,
+                use_regex: false,
+                limit: limit.or(Some(100)),
+                symbols_mode: false,
+                expand: false,
+                file_pattern: None,
+                exact: false,
+                use_contains: false,
+                timeout_secs: 30,
+                glob_patterns,
+                exclude_patterns,
+                paths_only: false,
+                offset,
+                force,
+                suppress_output: true,
+                include_dependencies: false,
+                ..Default::default()
+            };
+
+            let ref_response = engine.search_with_metadata(&pattern, ref_filter)?;
+
+            // Flatten references to compact {path, line, preview} array
+            let references: Vec<serde_json::Value> = ref_response.results.iter()
+                .flat_map(|fg| {
+                    fg.matches.iter().map(move |m| {
+                        json!({
+                            "path": fg.path,
+                            "line": m.span.start_line,
+                            "preview": crate::cli::truncate_preview(&m.preview, DEFAULT_MCP_PREVIEW_LENGTH)
+                        })
+                    })
+                })
+                .collect();
+
+            let total_references = ref_response.pagination.total;
+
+            let response = json!({
+                "status": ref_response.status,
+                "definition": definition,
+                "references": references,
+                "total_references": total_references,
+                "pagination": ref_response.pagination,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
                 }]
             }))
         }

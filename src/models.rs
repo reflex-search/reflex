@@ -386,6 +386,9 @@ pub struct IndexWarning {
     pub reason: String,
     /// Command to run to fix the issue
     pub action_required: String,
+    /// Number of files detected as modified (only set for mtime-based staleness)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_modified: Option<u32>,
     /// Additional context (git branch info, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<IndexWarningDetails>,
