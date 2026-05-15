@@ -1,4 +1,4 @@
-## [1.5.0] - 2026-05-15
+## [1.5.1] - 2026-05-15
 
 
 ### Fixed
@@ -7,6 +7,8 @@
 - Correct release.toml format for cargo-release
 
 - Restore git-cliff pre-release hook in correct format
+
+- Repair CI failures blocking release
 
 ## [1.4.0] - 2026-05-15
 
