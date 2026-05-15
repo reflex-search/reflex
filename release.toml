@@ -5,3 +5,5 @@ tag-name = "v{{version}}"
 pre-release-commit-message = "chore: bump version to {{version}}"
 # cargo-dist handles publishing to crates.io and npm; disable here
 publish = false
+# Update CHANGELOG.md from commit history before each release commit
+pre-release-hook = ["git-cliff", "--output", "CHANGELOG.md", "--tag", "{{version}}"]
