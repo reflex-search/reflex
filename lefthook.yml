@@ -1,0 +1,7 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all
+      stage_fixed: true

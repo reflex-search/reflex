@@ -47,7 +47,22 @@ cargo test
 RUST_LOG=debug cargo run -- query "pattern"
 ```
 
-5. **Generate documentation:**
+5. **Install git hooks (one-time setup):**
+
+```bash
+# Install lefthook (pick one):
+cargo install lefthook   # via Cargo
+# brew install lefthook  # via Homebrew (macOS)
+
+# Wire the hooks into .git/hooks/:
+lefthook install
+```
+
+After this, any commit that includes `.rs` files will automatically run
+`cargo fmt --all` and re-stage the formatted files — the commit proceeds
+without any extra steps.
+
+6. **Generate documentation:**
 
 ```bash
 cargo doc --open
@@ -130,7 +145,7 @@ cargo test
 5. **Run linters:**
 
 ```bash
-cargo fmt --check  # Check formatting
+cargo fmt --check  # Verify formatting (lefthook auto-fixes on commit)
 cargo clippy -- -D warnings  # Run linter
 ```
 
@@ -151,7 +166,7 @@ cargo clippy -- -D warnings  # Run linter
 **PR Checklist:**
 
 - [ ] Tests pass locally (`cargo test`)
-- [ ] Code is formatted (`cargo fmt`)
+- [ ] Code is formatted (`cargo fmt` — lefthook handles this automatically on commit)
 - [ ] No clippy warnings (`cargo clippy`)
 - [ ] Documentation updated (if applicable)
 - [ ] Commit messages follow Conventional Commits format
