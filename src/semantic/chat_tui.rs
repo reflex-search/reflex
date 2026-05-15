@@ -682,7 +682,7 @@ impl ChatApp {
                         lines.push(Line::from(vec![
                             Span::styled("│ ", Style::default().fg(Color::Yellow)),
                             Span::styled(
-                                format!("⚡ Found {} results{}", meta.results_count, time_str),
+                                format!("⚡ Found {} result{}{}", meta.results_count, if meta.results_count == 1 { "" } else { "s" }, time_str),
                                 Style::default().fg(Color::DarkGray)
                             ),
                         ]));
@@ -1044,7 +1044,7 @@ impl ChatApp {
                 self.scroll_offset = 0;
             }
             PhaseUpdate::Executing { results_count, execution_time_ms } => {
-                self.status_message = Some(format!("Found {} results...", results_count));
+                self.status_message = Some(format!("Found {} result{}...", results_count, if results_count == 1 { "" } else { "s" }));
                 self.session.add_execution_message(results_count, execution_time_ms);
                 self.scroll_offset = 0;
             }

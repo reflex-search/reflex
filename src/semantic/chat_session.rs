@@ -181,7 +181,7 @@ impl ChatSession {
 
     /// Add an execution status message
     pub fn add_execution_message(&mut self, results_count: usize, execution_time_ms: u64) {
-        let content = format!("Found {} results", results_count);
+        let content = format!("Found {} result{}", results_count, if results_count == 1 { "" } else { "s" });
         let metadata = MessageMetadata {
             queries: Vec::new(),
             tool_calls: Vec::new(),
