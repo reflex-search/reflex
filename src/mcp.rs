@@ -1784,19 +1784,32 @@ fn process_request(request: JsonRpcRequest) -> JsonRpcResponse {
         },
         Err(e) => {
             log::error!("MCP error: {}", e);
-            let (kind, message) = if let Some(re) = e.downcast_ref::<crate::errors::ReflexError>() {
-                (re.kind().to_string(), re.to_string())
+            let msg = e.to_string();
+            // REF-67: map to the correct JSON-RPC error code instead of always using -32603.
+            let (code, kind, message) = if let Some(re) = e.downcast_ref::<crate::errors::ReflexError>() {
+                let code = match re {
+                    crate::errors::ReflexError::QuerySyntaxError(_) => -32602, // Invalid params
+                    _ => -32603, // Internal error
+                };
+                (code, re.kind().to_string(), re.to_string())
+            } else if msg.starts_with("Unknown method:") {
+                (-32601, "MethodNotFound".to_string(), msg)
+            } else if msg.starts_with("Missing")
+                || msg.starts_with("Unknown tool:")
+                || msg.starts_with("Invalid or unsupported")
+            {
+                (-32602, "InvalidParams".to_string(), msg)
             } else {
-                ("IoError".to_string(), e.to_string())
+                (-32603, "InternalError".to_string(), msg)
             };
             JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
                 result: None,
                 error: Some(JsonRpcError {
-                    code: -32603,
+                    code,
                     message: message.clone(),
-                    data: Some(json!({ "kind": kind, "message": message })),
+                    data: Some(json!({ "kind": kind })),
                 }),
             }
         }
@@ -1842,6 +1855,21 @@ pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, mut writer: W) -> Resu
             Ok(req) => req,
             Err(e) => {
                 log::error!("Failed to parse JSON-RPC request: {}", e);
+                // REF-61: send -32700 Parse error instead of silently dropping.
+                // Per JSON-RPC 2.0, use null id when the id cannot be determined.
+                let error_response = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: Some(Value::Null),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32700,
+                        message: format!("Parse error: {}", e),
+                        data: None,
+                    }),
+                };
+                let response_json = serde_json::to_string(&error_response)?;
+                writeln!(writer, "{}", response_json)?;
+                writer.flush()?;
                 continue;
             }
         };
@@ -1863,4 +1891,60 @@ pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, mut writer: W) -> Resu
 
     log::info!("Reflex MCP server stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn call_server(input: &str) -> String {
+        let reader = Cursor::new(input.as_bytes());
+        let mut output = Vec::new();
+        run_mcp_server_io(reader, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    fn parse_first_response(raw: &str) -> serde_json::Value {
+        let line = raw.lines().next().expect("no response line");
+        serde_json::from_str(line).expect("invalid JSON response")
+    }
+
+    // REF-61: malformed JSON must return -32700 Parse error (not silence)
+    #[test]
+    fn test_parse_error_returns_32700() {
+        let raw = call_server("not-valid-json\n");
+        let resp = parse_first_response(&raw);
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["error"]["code"], -32700);
+        // Per JSON-RPC 2.0, id must be null when id cannot be determined
+        assert!(resp["id"].is_null(), "id must be null for parse errors");
+    }
+
+    // REF-67: unknown method returns -32601 (Method not found)
+    #[test]
+    fn test_unknown_method_returns_32601() {
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"no_such_method","params":null}"#;
+        let raw = call_server(&format!("{}\n", req));
+        let resp = parse_first_response(&raw);
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    // REF-67: missing required param returns -32602 (Invalid params), not -32603
+    #[test]
+    fn test_missing_param_returns_32602() {
+        // search_code requires "pattern" — omit it
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_code","arguments":{}}}"#;
+        let raw = call_server(&format!("{}\n", req));
+        let resp = parse_first_response(&raw);
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    // Notification (no id) must produce no response
+    #[test]
+    fn test_notification_produces_no_response() {
+        let notif = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":null}"#;
+        let raw = call_server(&format!("{}\n", notif));
+        assert!(raw.trim().is_empty(), "notification must not get a response");
+    }
 }

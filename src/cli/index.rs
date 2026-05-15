@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
-use crate::models::{IndexConfig, Language};
+use crate::models::Language;
 
 
 /// Handle the `index status` subcommand
@@ -42,8 +42,14 @@ pub(super) fn handle_index_status() -> Result<()> {
                 Ok(())
             }
             Ok(None) => {
-                println!("No background symbol indexing in progress.");
-                println!("\nRun 'rfx index' to start background symbol indexing.");
+                if !cache.exists() {
+                    println!("No index cache found in current directory.");
+                    println!("\nRun 'rfx index' to build the code search index first.");
+                } else {
+                    println!("No background symbol indexing in progress.");
+                    println!("\nBackground symbol indexing is idle.");
+                    println!("Run 'rfx index' to trigger a fresh index build.");
+                }
                 Ok(())
             }
             Err(e) => {
@@ -69,10 +75,15 @@ pub(super) fn handle_index_compact(json: &bool, pretty: &bool) -> Result<()> {
         };
         println!("{}", json_str);
     } else {
+        let space_str = if report.space_saved_bytes == 0 {
+            "< 1 KB".to_string()
+        } else {
+            super::format_bytes(report.space_saved_bytes)
+        };
         println!("Cache Compaction Complete");
         println!("=========================");
         println!("Files removed:    {}", report.files_removed);
-        println!("Space saved:      {:.2} MB", report.space_saved_bytes as f64 / 1_048_576.0);
+        println!("Space saved:      {}", space_str);
         println!("Duration:         {}ms", report.duration_ms);
     }
 
@@ -89,23 +100,28 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
     if *force {
         log::info!("Force rebuild requested, clearing existing cache");
         cache.clear()?;
+        if !quiet {
+            println!("Cleared existing cache.");
+        }
     }
 
-    // Parse language filters
-    let lang_filters: Vec<Language> = languages
-        .iter()
-        .filter_map(|s| {
-            Language::from_name(s).or_else(|| {
-                eprintln!("Warning: Unknown language: '{}'. Supported: {}", s, Language::supported_names_help());
-                None
-            })
-        })
-        .collect();
+    // Load base config from .reflex/config.toml (or defaults if file absent)
+    let mut config = cache.load_index_config()
+        .context("Failed to load .reflex/config.toml")?;
 
-    let config = IndexConfig {
-        languages: lang_filters,
-        ..Default::default()
-    };
+    // CLI --languages overrides the config-file value when explicitly provided (REF-98: error on unknown)
+    if !languages.is_empty() {
+        let lang_filters: Vec<Language> = languages
+            .iter()
+            .map(|s| {
+                Language::from_name(s).ok_or_else(|| anyhow::anyhow!(
+                    "Unknown language: '{}'\n\nSupported languages:\n  {}\n\nExample: rfx index --languages rust,python",
+                    s, Language::supported_names_help()
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        config.languages = lang_filters;
+    }
 
     let indexer = Indexer::new(cache, config);
     // Show progress by default, unless quiet mode is enabled
@@ -116,8 +132,22 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
     if !quiet {
         println!("Indexing complete!");
         println!("  Files indexed: {}", stats.total_files);
-        println!("  Cache size: {}", format_bytes(stats.index_size_bytes));
+        println!("  Cache size: {}", super::format_bytes(stats.index_size_bytes));
         println!("  Last updated: {}", stats.last_updated);
+
+        // Show incremental breakdown if available (REF-100)
+        let has_breakdown = stats.new_files > 0 || stats.modified_files > 0 || stats.unchanged_files > 0;
+        if has_breakdown {
+            println!("  Breakdown:     {} new, {} modified, {} unchanged",
+                stats.new_files, stats.modified_files, stats.unchanged_files);
+        }
+
+        // Warn about skipped large files (REF-99)
+        if stats.skipped_too_large > 0 {
+            eprintln!("[warn] {} file(s) skipped: exceeded max_file_size ({} total)",
+                stats.skipped_too_large,
+                super::format_bytes(stats.skipped_bytes_too_large));
+        }
 
         // Display language breakdown if we have indexed files
         if !stats.files_by_language.is_empty() {
@@ -193,27 +223,6 @@ pub(super) fn handle_index_build(path: &PathBuf, force: &bool, languages: &[Stri
     }
 
     Ok(())
-}
-
-
-/// Format bytes into human-readable size (KB, MB, GB, etc.)
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
-
-    if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
-    } else if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} bytes", bytes)
-    }
 }
 
 

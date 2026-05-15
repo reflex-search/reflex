@@ -99,13 +99,23 @@ fn handle_analyze_summary(
     let unused = deps_index.find_unused_files()?;
     let all_islands = deps_index.find_islands()?;
 
+    // Split islands into meaningful clusters (2+ files) vs isolated singletons.
+    // This matches what `--islands` shows by default (min_island_size=1 but with a
+    // max_island_size cap that trims the dominant cluster).
+    let multi_file_islands = all_islands.iter().filter(|i| i.len() >= 2).count();
+    let singleton_islands = all_islands.len() - multi_file_islands;
+
     if as_json {
         // JSON output
         let summary = serde_json::json!({
             "circular_dependencies": cycles.len(),
             "hotspots": hotspots.len(),
             "unused_files": unused.len(),
-            "islands": all_islands.len(),
+            "islands": {
+                "total_components": all_islands.len(),
+                "multi_file": multi_file_islands,
+                "singletons": singleton_islands,
+            },
             "min_dependents": min_dependents,
         });
 
@@ -120,7 +130,7 @@ fn handle_analyze_summary(
         println!("{} circular dependencies", cycles.len());
         println!("{} hotspots ({}+ dependents)", hotspots.len(), min_dependents);
         println!("{} unused files", unused.len());
-        println!("{} islands", all_islands.len());
+        println!("{} islands ({} multi-file, {} isolated)", all_islands.len(), multi_file_islands, singleton_islands);
     } else {
         // Full summary with headers and suggestions
         println!("Dependency Analysis Summary\n");
@@ -134,8 +144,13 @@ fn handle_analyze_summary(
         // Unused
         println!("Unused Files: {} file(s)", unused.len());
 
-        // Islands
-        println!("Islands: {} disconnected component(s)", all_islands.len());
+        // Islands — show both total and the multi-file breakdown so the count matches --islands
+        if singleton_islands > 0 {
+            println!("Islands: {} disconnected component(s) ({} clusters of 2+ files, {} isolated files)",
+                all_islands.len(), multi_file_islands, singleton_islands);
+        } else {
+            println!("Islands: {} disconnected component(s)", all_islands.len());
+        }
 
         println!("\nUse specific flags for detailed results:");
         println!("  rfx analyze --circular");
@@ -180,8 +195,25 @@ pub(super) fn handle_deps(
     // JSON mode overrides format
     let format = if as_json { "json" } else { &format };
 
-    // Convert file path to string
-    let file_str = file.to_string_lossy().to_string();
+    // Convert file path to string, normalizing absolute paths against the project root (REF-95).
+    let file_str = if file.is_absolute() {
+        let current_dir = std::env::current_dir()?;
+        match file.strip_prefix(&current_dir) {
+            Ok(relative) => relative.to_string_lossy().to_string(),
+            Err(_) => {
+                anyhow::bail!(
+                    "File '{}' is not within the indexed project root ({}).\n\
+                     The index only covers files under the current directory.\n\
+                     \n\
+                     Tip: Change to the project root that contains this file and re-run 'rfx index'.",
+                    file.display(),
+                    current_dir.display()
+                );
+            }
+        }
+    } else {
+        file.to_string_lossy().to_string()
+    };
 
     // Get file ID
     let file_id = deps_index.get_file_id_by_path(&file_str)?
@@ -194,11 +226,9 @@ pub(super) fn handle_deps(
 
         match format.as_ref() {
             "json" => {
+                // Expose only paths (file_id is an internal detail)
                 let output: Vec<_> = dependents.iter()
-                    .filter_map(|id| paths.get(id).map(|path| serde_json::json!({
-                        "file_id": id,
-                        "path": path,
-                    })))
+                    .filter_map(|id| paths.get(id))
                     .collect();
 
                 let json_str = if pretty_json {
@@ -207,7 +237,6 @@ pub(super) fn handle_deps(
                     serde_json::to_string(&output)?
                 };
                 println!("{}", json_str);
-                eprintln!("Found {} files that import {}", dependents.len(), file_str);
             }
             "tree" => {
                 println!("Files that import {}:", file_str);
@@ -242,12 +271,12 @@ pub(super) fn handle_deps(
                 "json" => {
                     let output: Vec<_> = deps.iter()
                         .map(|dep| serde_json::json!({
-                            "imported_path": dep.imported_path,
-                            "resolved_file_id": dep.resolved_file_id,
+                            "path": dep.imported_path,
                             "import_type": match dep.import_type {
                                 crate::models::ImportType::Internal => "internal",
                                 crate::models::ImportType::External => "external",
                                 crate::models::ImportType::Stdlib => "stdlib",
+                                crate::models::ImportType::ModDecl => "mod_decl",
                             },
                             "line": dep.line_number,
                             "symbols": dep.imported_symbols,
@@ -260,7 +289,6 @@ pub(super) fn handle_deps(
                         serde_json::to_string(&output)?
                     };
                     println!("{}", json_str);
-                    eprintln!("Found {} dependencies for {}", deps.len(), file_str);
                 }
                 "tree" => {
                     println!("Dependencies of {}:", file_str);
@@ -269,6 +297,7 @@ pub(super) fn handle_deps(
                             crate::models::ImportType::Internal => "[internal]",
                             crate::models::ImportType::External => "[external]",
                             crate::models::ImportType::Stdlib => "[stdlib]",
+                            crate::models::ImportType::ModDecl => "[mod_decl]",
                         };
                         println!("  └─ {} {} (line {})", dep.imported_path, type_label, dep.line_number);
                     }
@@ -282,6 +311,7 @@ pub(super) fn handle_deps(
                             crate::models::ImportType::Internal => "internal",
                             crate::models::ImportType::External => "external",
                             crate::models::ImportType::Stdlib => "stdlib",
+                            crate::models::ImportType::ModDecl => "mod_decl",
                         };
                         println!("{:<28}  {:<9}  {}", dep.imported_path, type_str, dep.line_number);
                     }
@@ -302,7 +332,6 @@ pub(super) fn handle_deps(
                     let output: Vec<_> = transitive.iter()
                         .filter_map(|(id, d)| {
                             paths.get(id).map(|path| serde_json::json!({
-                                "file_id": id,
                                 "path": path,
                                 "depth": d,
                             }))
@@ -315,27 +344,24 @@ pub(super) fn handle_deps(
                         serde_json::to_string(&output)?
                     };
                     println!("{}", json_str);
-                    eprintln!("Found {} transitive dependencies (depth {})", transitive.len(), depth);
                 }
                 "tree" => {
-                    println!("Transitive dependencies of {} (depth {}):", file_str, depth);
-                    // Group by depth for tree display
-                    let mut by_depth: std::collections::HashMap<usize, Vec<i64>> = std::collections::HashMap::new();
+                    println!("Dependencies of {} (depth {}):", file_str, depth);
+                    // Group by depth for tree display; skip depth 0 (the file itself)
+                    let mut by_depth: std::collections::BTreeMap<usize, Vec<i64>> = std::collections::BTreeMap::new();
                     for (id, d) in &transitive {
-                        by_depth.entry(*d).or_insert_with(Vec::new).push(*id);
+                        if *d > 0 {
+                            by_depth.entry(*d).or_insert_with(Vec::new).push(*id);
+                        }
                     }
 
-                    for depth_level in 0..=depth {
-                        if let Some(ids) = by_depth.get(&depth_level) {
-                            let indent = "  ".repeat(depth_level);
-                            for id in ids {
-                                if let Some(path) = paths.get(id) {
-                                    if depth_level == 0 {
-                                        println!("{}{} (self)", indent, path);
-                                    } else {
-                                        println!("{}└─ {}", indent, path);
-                                    }
-                                }
+                    for (depth_level, ids) in &by_depth {
+                        let indent = "  ".repeat(*depth_level - 1);
+                        let mut sorted_ids = ids.clone();
+                        sorted_ids.sort_unstable();
+                        for id in sorted_ids {
+                            if let Some(path) = paths.get(&id) {
+                                println!("{}└─ {}", indent, path);
                             }
                         }
                     }
@@ -394,14 +420,23 @@ fn handle_deps_circular(
     }
 
     let total_count = all_cycles.len();
+    let as_json = format == "json";
 
     if count_only {
-        println!("Found {} circular dependencies", total_count);
+        if as_json {
+            println!("{}", serde_json::json!({"count": total_count}));
+        } else {
+            println!("Found {} circular dependencies", total_count);
+        }
         return Ok(());
     }
 
     if all_cycles.is_empty() {
-        println!("No circular dependencies found.");
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}));
+        } else {
+            println!("No circular dependencies found.");
+        }
         return Ok(());
     }
 
@@ -415,7 +450,11 @@ fn handle_deps_circular(
     }
 
     if cycles.is_empty() {
-        println!("No circular dependencies found at offset {}.", offset_val);
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+        } else {
+            println!("No circular dependencies found at offset {}.", offset_val);
+        }
         return Ok(());
     }
 
@@ -455,11 +494,6 @@ fn handle_deps_circular(
                 serde_json::to_string(&output)?
             };
             println!("{}", json_str);
-            if total_count > count {
-                eprintln!("Found {} circular dependencies ({} total)", count, total_count);
-            } else {
-                eprintln!("Found {} circular dependencies", count);
-            }
         }
         "tree" => {
             println!("Circular Dependencies Found:");
@@ -552,14 +586,23 @@ fn handle_deps_hotspots(
     }
 
     let total_count = all_hotspots.len();
+    let as_json = format == "json";
 
     if count_only {
-        println!("Found {} hotspots with {}+ dependents", total_count, min_dependents);
+        if as_json {
+            println!("{}", serde_json::json!({"count": total_count}));
+        } else {
+            println!("Found {} hotspots with {}+ dependents", total_count, min_dependents);
+        }
         return Ok(());
     }
 
     if all_hotspots.is_empty() {
-        println!("No hotspots found.");
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}));
+        } else {
+            println!("No hotspots found.");
+        }
         return Ok(());
     }
 
@@ -573,7 +616,11 @@ fn handle_deps_hotspots(
     }
 
     if hotspots.is_empty() {
-        println!("No hotspots found at offset {}.", offset_val);
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+        } else {
+            println!("No hotspots found at offset {}.", offset_val);
+        }
         return Ok(());
     }
 
@@ -611,11 +658,6 @@ fn handle_deps_hotspots(
                 serde_json::to_string(&output)?
             };
             println!("{}", json_str);
-            if total_count > count {
-                eprintln!("Found {} hotspots ({} total)", count, total_count);
-            } else {
-                eprintln!("Found {} hotspots", count);
-            }
         }
         "tree" => {
             println!("Hotspots (Most-Imported Files):");
@@ -671,14 +713,23 @@ fn handle_deps_unused(
 ) -> Result<()> {
     let all_unused = deps_index.find_unused_files()?;
     let total_count = all_unused.len();
+    let as_json = format == "json";
 
     if count_only {
-        println!("Found {} unused files", total_count);
+        if as_json {
+            println!("{}", serde_json::json!({"count": total_count}));
+        } else {
+            println!("Found {} unused files", total_count);
+        }
         return Ok(());
     }
 
     if all_unused.is_empty() {
-        println!("No unused files found (all files have incoming dependencies).");
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}));
+        } else {
+            println!("No unused files found (all files have incoming dependencies).");
+        }
         return Ok(());
     }
 
@@ -687,7 +738,11 @@ fn handle_deps_unused(
     let mut unused: Vec<_> = all_unused.into_iter().skip(offset_val).collect();
 
     if unused.is_empty() {
-        println!("No unused files found at offset {}.", offset_val);
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+        } else {
+            println!("No unused files found at offset {}.", offset_val);
+        }
         return Ok(());
     }
 
@@ -725,11 +780,6 @@ fn handle_deps_unused(
                 serde_json::to_string(&output)?
             };
             println!("{}", json_str);
-            if total_count > count {
-                eprintln!("Found {} unused files ({} total)", count, total_count);
-            } else {
-                eprintln!("Found {} unused files", count);
-            }
         }
         "tree" => {
             println!("Unused Files (No Incoming Dependencies):");
@@ -824,11 +874,23 @@ fn handle_deps_islands(
     }
 
     let filtered_count = total_components - islands.len();
+    let as_json = format == "json";
+
+    // Build a human-readable filter note for non-JSON output
+    let filter_note = if filtered_count > 0 {
+        format!(
+            " ({} component(s) excluded by size filter {}-{}; use --min-island-size/--max-island-size to adjust)",
+            filtered_count, min_island_size, max_size
+        )
+    } else {
+        String::new()
+    };
 
     if count_only {
-        if filtered_count > 0 {
-            println!("Found {} islands (filtered {} of {} total components by size: {}-{})",
-                islands.len(), filtered_count, total_components, min_island_size, max_size);
+        if as_json {
+            println!("{}", serde_json::json!({"count": islands.len()}));
+        } else if filtered_count > 0 {
+            println!("Found {} islands{}", islands.len(), filter_note);
         } else {
             println!("Found {} islands", islands.len());
         }
@@ -840,9 +902,10 @@ fn handle_deps_islands(
     if offset_val > 0 && offset_val < islands.len() {
         islands = islands.into_iter().skip(offset_val).collect();
     } else if offset_val >= islands.len() {
-        if filtered_count > 0 {
-            println!("No islands found at offset {} (filtered {} of {} total components by size: {}-{}).",
-                offset_val, filtered_count, total_components, min_island_size, max_size);
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": islands.len(), "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+        } else if filtered_count > 0 {
+            println!("No islands at offset {}{}", offset_val, filter_note);
         } else {
             println!("No islands found at offset {}.", offset_val);
         }
@@ -855,9 +918,10 @@ fn handle_deps_islands(
     }
 
     if islands.is_empty() {
-        if filtered_count > 0 {
-            println!("No islands found matching criteria (filtered {} of {} total components by size: {}-{}).",
-                filtered_count, total_components, min_island_size, max_size);
+        if as_json {
+            println!("{}", serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": offset_val, "has_more": false}, "results": []}));
+        } else if filtered_count > 0 {
+            println!("No islands found{}", filter_note);
         } else {
             println!("No islands found.");
         }
@@ -865,8 +929,9 @@ fn handle_deps_islands(
     }
 
     // Get all file IDs from all islands and track pagination
+    let visible_total = total_components - filtered_count;
     let count = islands.len();
-    let has_more = offset_val + count < total_components - filtered_count;
+    let has_more = offset_val + count < visible_total;
 
     let file_ids: Vec<i64> = islands.iter().flat_map(|island| island.iter()).copied().collect();
     let paths = deps_index.get_file_paths(&file_ids)?;
@@ -880,16 +945,16 @@ fn handle_deps_islands(
                         .filter_map(|id| paths.get(id).cloned())
                         .collect();
                     serde_json::json!({
-                        "island_id": idx + 1,
+                        "island_id": idx + offset_val + 1,
                         "size": island.len(),
                         "paths": island_paths,
                     })
                 })
                 .collect();
 
-            let output = serde_json::json!({
+            let mut output = serde_json::json!({
                 "pagination": {
-                    "total": total_components - filtered_count,
+                    "total": visible_total,
                     "count": count,
                     "offset": offset_val,
                     "limit": limit,
@@ -898,44 +963,40 @@ fn handle_deps_islands(
                 "results": results,
             });
 
+            // Include filter info in JSON when size filtering is active
+            if filtered_count > 0 {
+                output["filter"] = serde_json::json!({
+                    "min_size": min_island_size,
+                    "max_size": max_size,
+                    "excluded_count": filtered_count,
+                    "total_components": total_components,
+                });
+            }
+
             let json_str = if pretty_json {
                 serde_json::to_string_pretty(&output)?
             } else {
                 serde_json::to_string(&output)?
             };
             println!("{}", json_str);
-            if filtered_count > 0 {
-                eprintln!("Found {} islands (filtered {} of {} total components by size: {}-{})",
-                    count, filtered_count, total_components, min_island_size, max_size);
-            } else if total_components - filtered_count > count {
-                eprintln!("Found {} islands ({} total)", count, total_components - filtered_count);
-            } else {
-                eprintln!("Found {} islands (disconnected components)", count);
-            }
         }
         "tree" => {
             println!("Islands (Disconnected Components):");
             for (idx, island) in islands.iter().enumerate() {
-                println!("\nIsland {} ({} files):", idx + 1, island.len());
+                println!("\nIsland {} ({} files):", idx + offset_val + 1, island.len());
                 for id in island {
                     if let Some(path) = paths.get(id) {
                         println!("  ├─ {}", path);
                     }
                 }
             }
-            if filtered_count > 0 {
-                eprintln!("\nFound {} islands (filtered {} of {} total components by size: {}-{})",
-                    count, filtered_count, total_components, min_island_size, max_size);
-                if has_more {
-                    eprintln!("Use --limit and --offset to paginate");
-                }
-            } else if total_components - filtered_count > count {
-                eprintln!("\nFound {} islands ({} total)", count, total_components - filtered_count);
+            if visible_total > count {
+                eprintln!("\nShowing {}/{} islands{}", count, visible_total, filter_note);
                 if has_more {
                     eprintln!("Use --limit and --offset to paginate");
                 }
             } else {
-                eprintln!("\nFound {} islands", count);
+                eprintln!("\nFound {} island(s){}", count, filter_note);
             }
         }
         "table" => {
@@ -946,21 +1007,15 @@ fn handle_deps_islands(
                     .filter_map(|id| paths.get(id).map(|p| p.as_str()))
                     .collect::<Vec<_>>()
                     .join(", ");
-                println!("{:<6}  {:<4}  {}", idx + 1, island.len(), island_files);
+                println!("{:<6}  {:<4}  {}", idx + offset_val + 1, island.len(), island_files);
             }
-            if filtered_count > 0 {
-                eprintln!("\nFound {} islands (filtered {} of {} total components by size: {}-{})",
-                    count, filtered_count, total_components, min_island_size, max_size);
-                if has_more {
-                    eprintln!("Use --limit and --offset to paginate");
-                }
-            } else if total_components - filtered_count > count {
-                eprintln!("\nFound {} islands ({} total)", count, total_components - filtered_count);
+            if visible_total > count {
+                eprintln!("\nShowing {}/{} islands{}", count, visible_total, filter_note);
                 if has_more {
                     eprintln!("Use --limit and --offset to paginate");
                 }
             } else {
-                eprintln!("\nFound {} islands", count);
+                eprintln!("\nFound {} island(s){}", count, filter_note);
             }
         }
         _ => {

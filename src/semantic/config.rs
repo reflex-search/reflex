@@ -164,6 +164,28 @@ pub fn load_config(_cache_dir: &Path) -> Result<SemanticConfig> {
     let toml_value: toml::Value = toml::from_str(&config_str)
         .context("Failed to parse ~/.reflex/config.toml")?;
 
+    // REF-90: Warn about unknown top-level sections
+    let known_sections = ["semantic", "credentials", "index", "search", "performance"];
+    if let Some(table) = toml_value.as_table() {
+        for key in table.keys() {
+            if !known_sections.contains(&key.as_str()) {
+                eprintln!("[warn] ~/.reflex/config.toml: unknown section '[{}]' — ignored", key);
+            }
+        }
+    }
+
+    // REF-90: Warn about unknown keys within the [semantic] section
+    let known_semantic_keys = [
+        "provider", "model", "auto_execute",
+    ];
+    if let Some(toml::Value::Table(sem_table)) = toml_value.get("semantic") {
+        for key in sem_table.keys() {
+            if !known_semantic_keys.contains(&key.as_str()) {
+                eprintln!("[warn] ~/.reflex/config.toml: unknown key '[semantic].{}' — ignored", key);
+            }
+        }
+    }
+
     // Extract [semantic] section
     if let Some(semantic_table) = toml_value.get("semantic") {
         let config: SemanticConfig = semantic_table.clone().try_into()
@@ -383,6 +405,17 @@ pub fn get_user_model(provider: &str) -> Option<String> {
             if let Some(model_name) = model {
                 log::debug!("Using {} model from ~/.reflex/config.toml: {}", provider, model_name);
                 return Some(model_name.clone());
+            }
+        }
+    }
+
+    // Fall back to OPENAI_COMPATIBLE_MODEL env var for the openai-compatible provider
+    let provider_lc = provider.to_lowercase();
+    if provider_lc == "openai-compatible" || provider_lc == "openai_compatible" {
+        if let Ok(model) = env::var("OPENAI_COMPATIBLE_MODEL") {
+            if !model.is_empty() {
+                log::debug!("Using openai-compatible model from OPENAI_COMPATIBLE_MODEL env var: {}", model);
+                return Some(model);
             }
         }
     }

@@ -454,9 +454,68 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             .to_path_buf()
     }
 
+    /// Load IndexConfig from `.reflex/config.toml` if it exists.
+    ///
+    /// Returns `IndexConfig::default()` when the file is absent or a section
+    /// is missing.  Parse errors are surfaced so the user gets a clear message
+    /// rather than silently falling back to defaults.
+    pub fn load_index_config(&self) -> Result<crate::models::IndexConfig> {
+        use crate::models::{IndexConfig, Language};
+
+        let config_path = self.cache_path.join(CONFIG_TOML);
+        if !config_path.exists() {
+            return Ok(IndexConfig::default());
+        }
+
+        let raw = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
+
+        let toml_val: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("Failed to parse {}", config_path.display()))?;
+
+        let mut cfg = IndexConfig::default();
+
+        if let Some(index_tbl) = toml_val.get("index") {
+            if let Some(langs) = index_tbl.get("languages").and_then(|v| v.as_array()) {
+                let parsed: Vec<Language> = langs
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| Language::from_name(s).or_else(|| {
+                        log::warn!("Unknown language '{}' in config.toml [index] section — ignoring", s);
+                        None
+                    }))
+                    .collect();
+                if !parsed.is_empty() {
+                    cfg.languages = parsed;
+                }
+            }
+            if let Some(max_size) = index_tbl.get("max_file_size").and_then(|v| v.as_integer()) {
+                cfg.max_file_size = max_size as usize;
+            }
+            if let Some(follow) = index_tbl.get("follow_symlinks").and_then(|v| v.as_bool()) {
+                cfg.follow_symlinks = follow;
+            }
+            if let Some(include) = index_tbl.get("include").and_then(|v| v.get("patterns")).and_then(|v| v.as_array()) {
+                cfg.include_patterns = include.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            }
+            if let Some(exclude) = index_tbl.get("exclude").and_then(|v| v.get("patterns")).and_then(|v| v.as_array()) {
+                cfg.exclude_patterns = exclude.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            }
+        }
+
+        if let Some(perf) = toml_val.get("performance") {
+            if let Some(threads) = perf.get("parallel_threads").and_then(|v| v.as_integer()) {
+                cfg.parallel_threads = threads as usize;
+            }
+        }
+
+        log::debug!("Loaded IndexConfig from config.toml: {:?}", cfg);
+        Ok(cfg)
+    }
+
     /// Clear the entire cache
     pub fn clear(&self) -> Result<()> {
-        log::warn!("Clearing cache at {:?}", self.cache_path);
+        log::info!("Clearing cache at {:?}", self.cache_path);
 
         if self.cache_path.exists() {
             std::fs::remove_dir_all(&self.cache_path)?;
@@ -848,6 +907,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                 last_updated: chrono::Utc::now().to_rfc3339(),
                 files_by_language: std::collections::HashMap::new(),
                 lines_by_language: std::collections::HashMap::new(),
+                ..Default::default()
             });
         }
 
@@ -1022,6 +1082,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             last_updated,
             files_by_language,
             lines_by_language,
+            ..Default::default()
         })
     }
 

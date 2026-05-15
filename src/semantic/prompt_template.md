@@ -379,3 +379,9 @@ query "User" --symbols --kind struct --lang rust
 
 query "User" --lang rust
 ```
+
+**Out-of-scope questions:** If the question cannot be answered by searching code (e.g., general knowledge, non-code questions), return an empty queries array with a helpful message:
+
+```json
+{"queries": [], "message": "This question is outside rfx scope. Try asking about specific code patterns, functions, files, or symbols in your codebase."}
+```

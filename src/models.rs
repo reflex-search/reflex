@@ -170,10 +170,12 @@ pub enum ImportType {
     External,
     /// Standard library
     Stdlib,
+    /// Rust `mod foo;` declaration (parent→child ownership, not a usage edge)
+    #[serde(rename = "mod_decl")]
+    ModDecl,
 }
 
 /// Dependency information for API output (simplified, path-based)
-/// Note: Only internal dependencies are indexed (external/stdlib filtered during indexing)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyInfo {
     /// Import path as written in source (or resolved path for internal deps)
@@ -275,6 +277,8 @@ pub struct MatchResult {
 pub struct FileGroupedResult {
     /// Absolute or relative path to the file
     pub path: String,
+    /// Detected programming language of this file (e.g. "rust", "python", "unknown")
+    pub language: Language,
     /// File dependencies (only populated when --dependencies flag is used)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<DependencyInfo>>,
@@ -343,8 +347,11 @@ impl Default for IndexConfig {
     }
 }
 
+fn is_zero(v: &usize) -> bool { *v == 0 }
+fn is_zero_u64(v: &u64) -> bool { *v == 0 }
+
 /// Statistics about the index
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexStats {
     /// Total files indexed
     pub total_files: usize,
@@ -356,6 +363,21 @@ pub struct IndexStats {
     pub files_by_language: std::collections::HashMap<String, usize>,
     /// Line count breakdown by language
     pub lines_by_language: std::collections::HashMap<String, usize>,
+    /// New files added since last index run (0 if not an incremental run)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub new_files: usize,
+    /// Modified files re-indexed since last run (0 if not an incremental run)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub modified_files: usize,
+    /// Unchanged files (same hash as last run, still re-indexed due to other changes)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unchanged_files: usize,
+    /// Files skipped because they exceeded max_file_size
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped_too_large: usize,
+    /// Total bytes of files skipped due to max_file_size
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub skipped_bytes_too_large: u64,
 }
 
 /// Information about an indexed file

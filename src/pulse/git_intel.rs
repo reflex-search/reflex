@@ -415,31 +415,27 @@ pub fn render_timeline_markdown(data: &GitIntel) -> String {
         md.push_str("\n\n");
     }
 
-    // Activity chart (simple text-based bar chart using mermaid)
+    // Activity chart — plain ASCII bar chart (terminal-safe, no Zola template syntax)
     if !data.weekly_summaries.is_empty() {
         md.push_str("## Weekly Activity\n\n");
-        md.push_str("{% mermaid() %}\nxychart-beta\n");
-        md.push_str("    title \"Commits per Week\"\n");
-        md.push_str("    x-axis [");
         let weeks: Vec<&WeekSummary> = data.weekly_summaries.iter().rev().collect();
-        let labels: Vec<String> = weeks.iter()
-            .map(|w| {
-                // Just use MM-DD for compact labels
-                if w.week_start.len() >= 10 {
-                    format!("\"{}\"", &w.week_start[5..10])
-                } else {
-                    format!("\"{}\"", w.week_start)
-                }
-            })
-            .collect();
-        md.push_str(&labels.join(", "));
-        md.push_str("]\n");
-        md.push_str("    y-axis \"Commits\"\n");
-        md.push_str("    bar [");
-        let counts: Vec<String> = weeks.iter().map(|w| w.commit_count.to_string()).collect();
-        md.push_str(&counts.join(", "));
-        md.push_str("]\n");
-        md.push_str("{% end %}\n\n");
+        let max_commits = weeks.iter().map(|w| w.commit_count).max().unwrap_or(1).max(1);
+        const BAR_WIDTH: usize = 24;
+        for w in &weeks {
+            let label = if w.week_start.len() >= 10 {
+                &w.week_start[5..10]
+            } else {
+                &w.week_start
+            };
+            let bar_len = if w.commit_count == 0 {
+                0
+            } else {
+                (w.commit_count * BAR_WIDTH / max_commits).max(1)
+            };
+            let bar = "█".repeat(bar_len);
+            md.push_str(&format!("{} {:>3}  {}\n", label, w.commit_count, bar));
+        }
+        md.push('\n');
     }
 
     // Contributors table

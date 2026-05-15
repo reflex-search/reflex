@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use crate::cache::CacheManager;
-use crate::output;
 
 
 /// Handle the `stats` subcommand
@@ -23,7 +21,37 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         );
     }
 
-    let stats = cache.stats()?;
+    let stats = cache.stats().with_context(|| {
+        "Failed to read index statistics.\n\
+         The cache may be corrupted. To recover:\n\
+         $ rfx index              # Rebuild the index\n\
+         $ rfx clear && rfx index # Clear and rebuild from scratch"
+    })?;
+
+    // Read trigram count from trigrams.bin header (magic + version + num_trigrams + num_files = 24 bytes)
+    let trigram_count = {
+        let trigrams_path = cache.path().join("trigrams.bin");
+        if trigrams_path.exists() {
+            use std::io::Read;
+            std::fs::File::open(&trigrams_path)
+                .ok()
+                .and_then(|mut f| {
+                    let mut header = [0u8; 24];
+                    f.read_exact(&mut header).ok()?;
+                    if &header[..4] == b"RFTG" {
+                        Some(u64::from_le_bytes([
+                            header[8], header[9], header[10], header[11],
+                            header[12], header[13], header[14], header[15],
+                        ]))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    };
 
     if as_json {
         let json_output = if pretty_json {
@@ -73,7 +101,10 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         }
 
         println!("Files indexed:  {}", stats.total_files);
-        println!("Index size:     {} bytes", stats.index_size_bytes);
+        println!("Index size:     {}", super::format_bytes(stats.index_size_bytes));
+        if trigram_count > 0 {
+            println!("Trigrams:       {}", trigram_count);
+        }
         println!("Last updated:   {}", stats.last_updated);
 
         // Display language breakdown if we have indexed files
@@ -138,7 +169,14 @@ pub(super) fn handle_clear(skip_confirm: bool) -> Result<()> {
 
 
 /// Handle the `list-files` subcommand
-pub(super) fn handle_list_files(as_json: bool, pretty_json: bool) -> Result<()> {
+pub(super) fn handle_list_files(
+    as_json: bool,
+    pretty_json: bool,
+    lang_filter: Option<String>,
+    glob_patterns: Vec<String>,
+) -> Result<()> {
+    use crate::models::Language;
+
     let cache = CacheManager::new(".");
 
     if !cache.exists() {
@@ -154,13 +192,57 @@ pub(super) fn handle_list_files(as_json: bool, pretty_json: bool) -> Result<()> 
         );
     }
 
-    let files = cache.list_files()?;
+    // Validate --lang if provided (REF-94)
+    let lang_name_filter: Option<String> = if let Some(ref lang_str) = lang_filter {
+        if Language::from_name(lang_str).is_none() {
+            anyhow::bail!(
+                "Unknown language: '{}'\n\nSupported languages:\n  {}\n\nExample: rfx list-files --lang rust",
+                lang_str, Language::supported_names_help()
+            );
+        }
+        // Normalise to the canonical lowercase name stored in the DB
+        Some(lang_str.to_lowercase())
+    } else {
+        None
+    };
+
+    // Build globset for --glob filtering
+    let glob_set = if !glob_patterns.is_empty() {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pat in &glob_patterns {
+            builder.add(globset::Glob::new(pat).with_context(|| format!("Invalid glob pattern: {}", pat))?);
+        }
+        Some(builder.build().context("Failed to build glob set")?)
+    } else {
+        None
+    };
+
+    let all_files = cache.list_files()?;
+
+    let files: Vec<_> = all_files.into_iter().filter(|f| {
+        // Language filter: compare lowercase language name
+        if let Some(ref wanted_lang) = lang_name_filter {
+            if !f.language.to_lowercase().starts_with(wanted_lang.as_str()) &&
+               f.language.to_lowercase() != *wanted_lang {
+                return false;
+            }
+        }
+        // Glob filter
+        if let Some(ref gs) = glob_set {
+            if !gs.is_match(&f.path) {
+                return false;
+            }
+        }
+        true
+    }).collect();
 
     if as_json {
+        let total = files.len();
+        let envelope = serde_json::json!({ "files": files, "total": total });
         let json_output = if pretty_json {
-            serde_json::to_string_pretty(&files)?
+            serde_json::to_string_pretty(&envelope)?
         } else {
-            serde_json::to_string(&files)?
+            serde_json::to_string(&envelope)?
         };
         println!("{}", json_output);
     } else if files.is_empty() {
@@ -168,10 +250,8 @@ pub(super) fn handle_list_files(as_json: bool, pretty_json: bool) -> Result<()> 
     } else {
         println!("Indexed Files ({} total):", files.len());
         println!();
-        for file in files {
-            println!("  {} ({})",
-                     file.path,
-                     file.language);
+        for file in &files {
+            println!("  {} ({})", file.path, file.language);
         }
     }
 

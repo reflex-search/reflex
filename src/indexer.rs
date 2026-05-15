@@ -161,9 +161,9 @@ impl Indexer {
         log::debug!("Loaded {} existing file hashes for branch '{}'", existing_hashes.len(), branch);
 
         // Step 1: Walk directory tree and collect files
-        let files = self.discover_files(root)?;
+        let (files, skipped_too_large, skipped_bytes_too_large) = self.discover_files(root)?;
         let total_files = files.len();
-        log::info!("Discovered {} files to index", total_files);
+        log::info!("Discovered {} files to index ({} skipped: too large)", total_files, skipped_too_large);
 
         // Step 1.4: Parse tsconfig.json files for TypeScript/Vue path alias resolution
         // Must be done before parallel processing so it's available during dependency extraction
@@ -235,7 +235,11 @@ impl Indexer {
                     if let Ok(reader) = ContentReader::open(&content_path) {
                         if reader.file_count() > 0 {
                             log::info!("No files changed - skipping index rebuild");
-                            return Ok(self.cache.stats()?);
+                            let mut stats = self.cache.stats()?;
+                            stats.unchanged_files = total_files;
+                            stats.skipped_too_large = skipped_too_large;
+                            stats.skipped_bytes_too_large = skipped_bytes_too_large;
+                            return Ok(stats);
                         }
                     }
                     log::warn!("content.bin invalid despite hashes matching - forcing rebuild");
@@ -253,6 +257,9 @@ impl Indexer {
         // Step 2: Build trigram index + content store
         let mut new_hashes = HashMap::new();
         let mut files_indexed = 0;
+        let mut new_file_count = 0usize;
+        let mut modified_file_count = 0usize;
+        let mut unchanged_file_count = 0usize;
         let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
         let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
         let mut all_exports: Vec<(String, Vec<ExportInfo>)> = Vec::new(); // For batch export insertion
@@ -575,6 +582,13 @@ impl Indexer {
                 content_writer.add_file(result.path.clone(), &result.content);
 
                 files_indexed += 1;
+
+                // Track new / modified / unchanged for the incremental summary
+                match existing_hashes.get(&result.path_str) {
+                    None => new_file_count += 1,
+                    Some(old_hash) if old_hash != &result.hash => modified_file_count += 1,
+                    _ => unchanged_file_count += 1,
+                }
 
                 // Prepare file metadata for batch database update
                 file_metadata.push((
@@ -935,8 +949,18 @@ impl Indexer {
                         }
                     }
 
-                    // ONLY insert Internal dependencies - skip External and Stdlib
-                    if !matches!(import_info.import_type, ImportType::Internal) {
+                    // External and Stdlib imports: store with resolved_file_id = None.
+                    // Graph-analysis queries all filter WHERE resolved_file_id IS NOT NULL,
+                    // so storing these here only affects the `rfx deps` display path (REF-78).
+                    if matches!(import_info.import_type, ImportType::External | ImportType::Stdlib) {
+                        resolved_deps.push(Dependency {
+                            file_id,
+                            imported_path: import_info.imported_path.clone(),
+                            resolved_file_id: None,
+                            import_type: import_info.import_type.clone(),
+                            line_number: import_info.line_number,
+                            imported_symbols: import_info.imported_symbols.clone(),
+                        });
                         continue;
                     }
 
@@ -1529,17 +1553,26 @@ impl Indexer {
 
         pb.finish_with_message("Indexing complete");
 
-        // Return stats
-        let stats = self.cache.stats()?;
-        log::info!("Indexing complete: {} files",
-                   stats.total_files);
+        // Return stats with incremental breakdown
+        let mut stats = self.cache.stats()?;
+        stats.new_files = new_file_count;
+        stats.modified_files = modified_file_count;
+        stats.unchanged_files = unchanged_file_count;
+        stats.skipped_too_large = skipped_too_large;
+        stats.skipped_bytes_too_large = skipped_bytes_too_large;
+        log::info!("Indexing complete: {} files (new={}, modified={}, unchanged={})",
+                   stats.total_files, new_file_count, modified_file_count, unchanged_file_count);
 
         Ok(stats)
     }
 
-    /// Discover all indexable files in the directory tree
-    fn discover_files(&self, root: &Path) -> Result<Vec<PathBuf>> {
+    /// Discover all indexable files in the directory tree.
+    ///
+    /// Returns `(files, skipped_too_large_count, skipped_too_large_bytes)`.
+    fn discover_files(&self, root: &Path) -> Result<(Vec<PathBuf>, usize, u64)> {
         let mut files = Vec::new();
+        let mut skipped_count = 0usize;
+        let mut skipped_bytes = 0u64;
 
         // WalkBuilder from ignore crate automatically respects:
         // - .gitignore (when in a git repo)
@@ -1561,18 +1594,30 @@ impl Indexer {
                 continue;
             }
 
-            // Check if should be indexed
-            if self.should_index(path) {
-                files.push(path.to_path_buf());
+            // Check extension / language eligibility first (cheap)
+            if !self.should_index_lang(path) {
+                continue;
             }
+
+            // Check file size separately so we can report skipped counts
+            if let Ok(metadata) = std::fs::metadata(path) {
+                let size = metadata.len();
+                if size > self.config.max_file_size as u64 {
+                    log::debug!("Skipping {} (too large: {} bytes)", path.display(), size);
+                    skipped_count += 1;
+                    skipped_bytes += size;
+                    continue;
+                }
+            }
+
+            files.push(path.to_path_buf());
         }
 
-        Ok(files)
+        Ok((files, skipped_count, skipped_bytes))
     }
 
-    /// Check if a file should be indexed based on config
-    fn should_index(&self, path: &Path) -> bool {
-        // Check file extension for supported languages
+    /// Check if a file's language/extension is eligible for indexing (without size check).
+    fn should_index_lang(&self, path: &Path) -> bool {
         let ext = match path.extension() {
             Some(ext) => ext.to_string_lossy(),
             None => return false,
@@ -1580,18 +1625,24 @@ impl Indexer {
 
         let lang = Language::from_extension(&ext);
 
-        // Only index files for languages with parser implementations
         if !lang.is_supported() {
             if !matches!(lang, Language::Unknown) {
-                log::debug!("Skipping {} ({:?} parser not yet implemented)",
-                           path.display(), lang);
+                log::debug!("Skipping {} ({:?} parser not yet implemented)", path.display(), lang);
             }
             return false;
         }
 
-        // If specific languages are configured, only index those
         if !self.config.languages.is_empty() && !self.config.languages.contains(&lang) {
             log::debug!("Skipping {} ({:?} not in configured languages)", path.display(), lang);
+            return false;
+        }
+
+        true
+    }
+
+    /// Check if a file should be indexed based on config (language + size).
+    fn should_index(&self, path: &Path) -> bool {
+        if !self.should_index_lang(path) {
             return false;
         }
 
@@ -1812,7 +1863,7 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let files = indexer.discover_files(temp.path()).unwrap();
+        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
         assert_eq!(files.len(), 0);
     }
 
@@ -1827,7 +1878,7 @@ mod tests {
         let rust_file = temp.path().join("main.rs");
         fs::write(&rust_file, "fn main() {}").unwrap();
 
-        let files = indexer.discover_files(temp.path()).unwrap();
+        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("main.rs"));
     }
@@ -1845,7 +1896,7 @@ mod tests {
         fs::write(temp.path().join("app.js"), "console.log('hi')").unwrap();
         fs::write(temp.path().join("README.md"), "# Project").unwrap(); // Should be skipped
 
-        let files = indexer.discover_files(temp.path()).unwrap();
+        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
         assert_eq!(files.len(), 3); // Only supported languages
     }
 
@@ -1866,7 +1917,7 @@ mod tests {
         fs::create_dir(&tests_dir).unwrap();
         fs::write(tests_dir.join("test.rs"), "#[test] fn test() {}").unwrap();
 
-        let files = indexer.discover_files(temp.path()).unwrap();
+        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
         assert_eq!(files.len(), 3);
     }
 
@@ -1897,7 +1948,7 @@ mod tests {
         fs::create_dir(&ignored_dir).unwrap();
         fs::write(ignored_dir.join("excluded.rs"), "fn test() {}").unwrap();
 
-        let files = indexer.discover_files(temp.path()).unwrap();
+        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
 
         // Verify the expected files are found
         assert!(files.iter().any(|f| f.ends_with("included.rs")), "Should find included.rs");

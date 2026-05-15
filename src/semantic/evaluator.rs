@@ -342,6 +342,7 @@ mod tests {
     fn create_test_result(path: &str, line: usize) -> FileGroupedResult {
         FileGroupedResult {
             path: path.to_string(),
+            language: crate::models::Language::Unknown,
             dependencies: None,
             matches: vec![MatchResult {
                 kind: crate::models::SymbolKind::Unknown("test".to_string()),

@@ -43,6 +43,8 @@ pub struct QueryFilter {
     pub suppress_output: bool,
     /// Include dependency information in results
     pub include_dependencies: bool,
+    /// Number of context lines to show before and after each match (default: 0 = disabled)
+    pub context_lines: usize,
     /// Test-only: Override large index threshold (None = use default of 20,000)
     #[doc(hidden)]
     pub test_large_index_threshold: Option<usize>,
@@ -72,6 +74,7 @@ impl Default for QueryFilter {
             force: false,  // Default: enable broad query detection
             suppress_output: false,  // Default: show warnings/info
             include_dependencies: false,  // Default: don't load dependencies for performance
+            context_lines: 0,  // Default: no context lines shown
             test_large_index_threshold: None,  // Default: use production threshold (20,000)
             test_short_pattern_threshold: None,  // Default: use production threshold (4)
         }

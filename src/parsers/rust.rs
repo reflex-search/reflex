@@ -589,7 +589,8 @@ fn extract_mod_items(source: &str, root: &tree_sitter::Node) -> Result<Vec<Impor
 
                 imports.push(ImportInfo {
                     imported_path: name,
-                    import_type: crate::models::ImportType::Internal,
+                    // ModDecl marks parent→child ownership; excluded from cycle detection (REF-88)
+                    import_type: crate::models::ImportType::ModDecl,
                     line_number,
                     imported_symbols: None,
                 });
@@ -1081,7 +1082,7 @@ mod tests {
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.imported_path == "parser"));
         assert!(deps.iter().any(|d| d.imported_path == "utils"));
-        assert!(deps.iter().all(|d| matches!(d.import_type, crate::models::ImportType::Internal)));
+        assert!(deps.iter().all(|d| matches!(d.import_type, crate::models::ImportType::ModDecl)));
     }
 
     #[test]

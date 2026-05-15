@@ -268,8 +268,12 @@ pub enum Command {
         #[arg(long)]
         no_truncate: bool,
 
+        /// Number of context lines to show before and after each match (max: 10)
+        /// Example: -C 3 shows 3 lines before and after each match
+        #[arg(short = 'C', long, value_name = "N")]
+        context: Option<usize>,
+
         /// Return all results (no limit)
-        /// Equivalent to --limit 0, convenience flag for getting unlimited results
         #[arg(short = 'a', long)]
         all: bool,
 
@@ -325,6 +329,15 @@ pub enum Command {
         /// Pretty-print JSON output (only with --json)
         #[arg(long)]
         pretty: bool,
+
+        /// Filter by language (e.g. rust, python, typescript)
+        #[arg(short, long)]
+        lang: Option<String>,
+
+        /// Include files matching glob pattern (can be repeated)
+        /// Example: --glob "src/**/*.rs"
+        #[arg(short = 'g', long)]
+        glob: Vec<String>,
     },
 
     /// Watch for file changes and auto-reindex
@@ -892,6 +905,28 @@ pub enum LlmSubcommand {
     Status,
 }
 
+/// Format a byte count into a human-readable string (B, KB, MB, GB, TB).
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+
+    if bytes >= TB {
+        format!("{:.2} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else if bytes > 0 {
+        format!("{} bytes", bytes)
+    } else {
+        "< 1 KB".to_string()
+    }
+}
+
 /// Try to run background cache compaction if needed
 ///
 /// Checks if 24+ hours have passed since last compaction.
@@ -1011,11 +1046,19 @@ impl Cli {
                     }
                 }
             }
-            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies }) => {
-                // If no pattern provided, launch interactive mode
+            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, context, all, force, dependencies }) => {
+                // If no pattern provided, launch interactive mode (REF-68: require TTY)
                 match pattern {
-                    None => query::handle_interactive(),
-                    Some(pattern) => query::handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
+                    None => {
+                        use crossterm::tty::IsTty;
+                        if !std::io::stdin().is_tty() {
+                            eprintln!("error: interactive mode requires a terminal (TTY).");
+                            eprintln!("Use 'rfx query <pattern>' for non-interactive search.");
+                            std::process::exit(1);
+                        }
+                        query::handle_interactive()
+                    }
+                    Some(pattern) => query::handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, context, all, force, dependencies)
                 }
             }
             Some(Command::Serve { port, host }) => {
@@ -1027,8 +1070,8 @@ impl Cli {
             Some(Command::Clear { yes }) => {
                 misc::handle_clear(yes)
             }
-            Some(Command::ListFiles { json, pretty }) => {
-                misc::handle_list_files(json, pretty)
+            Some(Command::ListFiles { json, pretty, lang, glob }) => {
+                misc::handle_list_files(json, pretty, lang, glob)
             }
             Some(Command::Watch { path, debounce, quiet }) => {
                 watch::handle_watch(path, debounce, quiet)

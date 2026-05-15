@@ -8,7 +8,7 @@ use crate::cache::CacheManager;
 /// Handle the `ask` command
 pub(super) fn handle_ask(
     question: Option<String>,
-    _auto_execute: bool,
+    auto_execute: bool,
     provider_override: Option<String>,
     as_json: bool,
     pretty_json: bool,
@@ -179,6 +179,28 @@ pub(super) fn handle_ask(
         }
         log::info!("LLM generated {} queries", semantic_response.queries.len());
 
+        // --execute: show queries and require y/N confirmation before running them
+        if auto_execute && !as_json {
+            println!("\n{}", "Generated Queries:".bold().cyan());
+            println!("{}", "==================".cyan());
+            for (idx, query_cmd) in semantic_response.queries.iter().enumerate() {
+                println!(
+                    "{}. {} {}",
+                    (idx + 1).to_string().bright_white().bold(),
+                    "rfx".bright_green().bold(),
+                    query_cmd.command.bright_white()
+                );
+            }
+            println!();
+            eprint!("{}", "⚠  Run these queries against your codebase? [y/N] ".yellow());
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).context("Failed to read confirmation")?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                eprintln!("Aborted.");
+                return Ok(());
+            }
+        }
+
         // Execute queries for standard mode
         let (exec_results, exec_total, exec_count_only) = runtime.block_on(async {
             crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
@@ -318,7 +340,7 @@ pub(super) fn handle_ask(
         // Standard mode: show raw results
         if count_only {
             // Count-only mode: just show the total count (matching direct CLI behavior)
-            println!("{} {}", "Found".bright_green().bold(), format!("{} results", total_count).bright_white().bold());
+            println!("{} {}", "Found".bright_green().bold(), format!("{} result{}", total_count, if total_count == 1 { "" } else { "s" }).bright_white().bold());
         } else if results.is_empty() {
             println!("{}", "No results found.".yellow());
         } else {

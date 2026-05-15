@@ -93,7 +93,11 @@ pub async fn ask_question(
 
     // Validate response
     if response.queries.is_empty() {
-        anyhow::bail!("LLM returned no queries");
+        let msg = response.message.as_deref().unwrap_or(
+            "This question is outside rfx scope. \
+             Try asking about specific code patterns, functions, files, or symbols in your codebase."
+        );
+        anyhow::bail!("{}", msg);
     }
 
     log::info!("Generated {} quer{}", response.queries.len(), if response.queries.len() == 1 { "y" } else { "ies" });

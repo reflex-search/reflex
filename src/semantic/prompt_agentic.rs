@@ -357,6 +357,7 @@ mod tests {
                 order: 1,
                 merge: true,
             }],
+            message: None,
         };
 
         let eval = EvaluationReport {

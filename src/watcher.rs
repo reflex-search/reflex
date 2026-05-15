@@ -83,6 +83,10 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
 
     // Track pending file changes
     let mut pending_files: HashSet<PathBuf> = HashSet::new();
+    // Deleted file paths that need to be removed from the index.
+    // Tracked separately because the file no longer exists on disk and
+    // should_watch_file() cannot reliably inspect it.
+    let mut pending_deletions: HashSet<PathBuf> = HashSet::new();
     let mut last_event_time: Option<Instant> = None;
     let debounce_duration = Duration::from_millis(config.debounce_ms);
 
@@ -92,9 +96,22 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 // Process the file system event
-                if let Some(changed_path) = process_event(&event) {
-                    // Filter to only supported file types
-                    if should_watch_file(&changed_path) {
+                if let Some((changed_path, is_removal)) = process_event_typed(&event) {
+                    if is_removal {
+                        // File is gone — we can no longer call should_watch_file() on it,
+                        // but we must still reindex so the deleted entry is removed.
+                        // Accept any path whose extension suggests a code file OR has no
+                        // extension at all (e.g. a deleted directory triggers a broad Remove).
+                        let ext = changed_path.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+                        let is_code = ext.is_empty() || crate::models::Language::from_extension(ext).is_supported();
+                        if is_code {
+                            log::debug!("Detected removal: {:?}", changed_path);
+                            pending_deletions.insert(changed_path);
+                            last_event_time = Some(Instant::now());
+                        }
+                    } else if should_watch_file(&changed_path) {
                         log::debug!("Detected change: {:?}", changed_path);
                         pending_files.insert(changed_path);
                         last_event_time = Some(Instant::now());
@@ -106,14 +123,24 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
             }
             Err(RecvTimeoutError::Timeout) => {
                 // Check if debounce period has elapsed
+                let has_pending = !pending_files.is_empty() || !pending_deletions.is_empty();
                 if let Some(last_time) = last_event_time {
-                    if !pending_files.is_empty() && last_time.elapsed() >= debounce_duration {
+                    if has_pending && last_time.elapsed() >= debounce_duration {
                         // Trigger reindex
+                        let total_changes = pending_files.len() + pending_deletions.len();
                         if !config.quiet {
-                            println!(
-                                "\nDetected {} changed file(s), reindexing...",
-                                pending_files.len()
-                            );
+                            if pending_deletions.is_empty() {
+                                println!(
+                                    "\nDetected {} changed file(s), reindexing...",
+                                    pending_files.len()
+                                );
+                            } else {
+                                println!(
+                                    "\nDetected {} change(s) ({} deleted), reindexing...",
+                                    total_changes,
+                                    pending_deletions.len()
+                                );
+                            }
                         }
 
                         let start = Instant::now();
@@ -141,6 +168,7 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
 
                         // Clear pending changes
                         pending_files.clear();
+                        pending_deletions.clear();
                         last_event_time = None;
                     }
                 }
@@ -159,18 +187,26 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
     Ok(())
 }
 
+/// Process a file system event and extract the changed path together with a
+/// flag indicating whether this is a deletion (Remove) event.
+///
+/// Returns `Some((path, is_removal))`, or `None` for events that should be
+/// ignored (metadata-only changes, etc.).
+fn process_event_typed(event: &Event) -> Option<(PathBuf, bool)> {
+    match event.kind {
+        EventKind::Remove(_) => event.paths.first().cloned().map(|p| (p, true)),
+        EventKind::Create(_) | EventKind::Modify(_) => {
+            event.paths.first().cloned().map(|p| (p, false))
+        }
+        _ => None,
+    }
+}
+
 /// Process a file system event and extract the changed path
 ///
 /// Returns None if the event should be ignored (e.g., metadata changes, directory events)
 fn process_event(event: &Event) -> Option<PathBuf> {
-    // Only care about Create, Modify, and Remove events
-    match event.kind {
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-            // Take the first path (usually only one)
-            event.paths.first().cloned()
-        }
-        _ => None,
-    }
+    process_event_typed(event).map(|(p, _)| p)
 }
 
 /// Check if a file should trigger a reindex

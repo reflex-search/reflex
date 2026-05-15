@@ -1151,6 +1151,19 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
 
 /// Run the configuration wizard
 pub fn run_configure_wizard() -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "The configuration wizard requires an interactive terminal.\n\
+             \n\
+             Run `rfx llm config` in an interactive terminal session, or configure\n\
+             via environment variables instead:\n\
+             \n\
+             For OpenAI:     export OPENAI_API_KEY=sk-...\n\
+             For Anthropic:  export ANTHROPIC_API_KEY=sk-ant-...\n\
+             For OpenRouter: export OPENROUTER_API_KEY=sk-or-..."
+        );
+    }
     let mut terminal = setup_terminal()?;
     let mut wizard = ConfigWizard::new();
 

@@ -79,7 +79,12 @@ fn generate_tree_recursive(
         let connector = if is_last { "└──" } else { "├──" };
         let extension = if is_last { "    " } else { "│   " };
 
-        if path.is_dir() {
+        // Use symlink_metadata to avoid following symlinks when checking is_dir.
+        let is_real_dir = fs::symlink_metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+
+        if is_real_dir {
             // Directory: show name with slash and possibly recurse
             let dir_info = get_dir_info(&path);
             output.push(format!("{}{} {}/ {}", prefix, connector, name_str, dir_info));
@@ -90,7 +95,7 @@ fn generate_tree_recursive(
                 generate_tree_recursive(&path, &new_prefix, max_depth, current_depth + 1, output)?;
             }
         } else {
-            // File: show name with metadata
+            // File or symlink: show name with metadata
             let file_info = get_file_info(&path);
             output.push(format!("{}{} {} {}", prefix, connector, name_str, file_info));
         }
@@ -122,27 +127,36 @@ fn get_dir_info(dir: &Path) -> String {
 
 /// Get file information (size, line count)
 fn get_file_info(file: &Path) -> String {
-    if let Ok(metadata) = fs::metadata(file) {
-        let size = metadata.len();
+    // Use symlink_metadata so we see the symlink itself, not its target.
+    let Ok(meta) = fs::symlink_metadata(file) else {
+        return String::new();
+    };
 
-        // Try to count lines for text files
-        if let Ok(content) = fs::read_to_string(file) {
-            let lines = content.lines().count();
-            if lines > 0 {
-                return format!("({} lines)", lines);
-            }
+    if meta.file_type().is_symlink() {
+        // Show the link target instead of resolving the target's size.
+        if let Ok(target) = fs::read_link(file) {
+            return format!("→ {}", target.display());
         }
+        return "(symlink)".to_string();
+    }
 
-        // Fallback to size
-        if size < 1024 {
-            format!("({} bytes)", size)
-        } else if size < 1024 * 1024 {
-            format!("({} KB)", size / 1024)
-        } else {
-            format!("({} MB)", size / (1024 * 1024))
+    let size = meta.len();
+
+    // Try to count lines for text files (use the real file content).
+    if let Ok(content) = fs::read_to_string(file) {
+        let lines = content.lines().count();
+        if lines > 0 {
+            return format!("({} lines)", lines);
         }
+    }
+
+    // Fallback to size
+    if size < 1024 {
+        format!("({} bytes)", size)
+    } else if size < 1024 * 1024 {
+        format!("({} KB)", size / 1024)
     } else {
-        String::new()
+        format!("({} MB)", size / (1024 * 1024))
     }
 }
 
@@ -203,17 +217,25 @@ fn generate_tree_json_recursive(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 
-        if path.is_dir() {
+        let is_real_dir = fs::symlink_metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+
+        if is_real_dir {
             if current_depth + 1 < max_depth {
                 let subtree = generate_tree_json_recursive(&path, max_depth, current_depth + 1)?;
                 tree.insert(name.clone(), subtree);
             }
             subdirs.push(name);
         } else {
+            let is_symlink = fs::symlink_metadata(&path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
             files.push(json!({
                 "name": name,
-                "size": fs::metadata(&path).ok().map(|m| m.len()),
-                "lines": count_lines(&path).ok(),
+                "size": if is_symlink { None } else { fs::metadata(&path).ok().map(|m| m.len()) },
+                "lines": if is_symlink { None } else { count_lines(&path).ok() },
+                "symlink_target": if is_symlink { fs::read_link(&path).ok().map(|t| t.display().to_string()) } else { None },
             }));
         }
     }

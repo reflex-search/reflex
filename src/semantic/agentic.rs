@@ -420,6 +420,7 @@ async fn phase_3_generate(
             return Ok((
                 QueryResponse {
                     queries: agentic_response.queries,
+                    message: None,
                 },
                 confidence,
             ));

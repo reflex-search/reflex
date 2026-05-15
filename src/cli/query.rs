@@ -52,6 +52,7 @@ pub(super) fn handle_query(
     exclude_patterns: Vec<String>,
     paths_only: bool,
     no_truncate: bool,
+    context_arg: Option<usize>,
     all: bool,
     force: bool,
     include_dependencies: bool,
@@ -77,9 +78,8 @@ pub(super) fn handle_query(
         None
     };
 
-    // Parse symbol kind - try exact match first (case-insensitive), then treat as Unknown
-    let kind = kind_str.as_deref().and_then(|s| {
-        // Try parsing with proper case (PascalCase for SymbolKind)
+    // Parse and validate symbol kind — error on unrecognised values (REF-60)
+    let kind = if let Some(s) = kind_str.as_deref() {
         let capitalized = {
             let mut chars = s.chars();
             match chars.next() {
@@ -87,32 +87,42 @@ pub(super) fn handle_query(
                 Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
             }
         };
-
-        capitalized.parse::<crate::models::SymbolKind>()
-            .ok()
-            .or_else(|| {
-                // If not a known kind, treat as Unknown for flexibility
-                log::debug!("Treating '{}' as unknown symbol kind for filtering", s);
-                Some(crate::models::SymbolKind::Unknown(s.to_string()))
-            })
-    });
+        let parsed = capitalized.parse::<crate::models::SymbolKind>()
+            .unwrap_or(crate::models::SymbolKind::Unknown(s.to_string()));
+        if let crate::models::SymbolKind::Unknown(_) = &parsed {
+            anyhow::bail!(
+                "Unknown symbol kind: '{}'\n\nSupported kinds:\n  function, class, struct, enum, interface, trait, \
+                constant, variable, method, module, namespace, type, macro, property, event, import, export, attribute\n\n\
+                Example: rfx query \"parse\" --kind function",
+                s
+            );
+        }
+        Some(parsed)
+    } else {
+        None
+    };
 
     // Smart behavior: --kind implies --symbols
     let symbols_mode = symbols_flag || kind.is_some();
 
+    // --limit 0 is rejected; use --all for unlimited results
+    if limit == Some(0) {
+        anyhow::bail!(
+            "--limit 0 is not valid. To return all results use --all (or -a).\n\
+             To return exactly 0 results is meaningless; omit --limit to use the default of 100."
+        );
+    }
+
     // Smart limit handling:
     // 1. If --count is set: no limit (count should always show total)
     // 2. If --all is set: no limit (None)
-    // 3. If --limit 0 is set: no limit (None) - treat 0 as "unlimited"
-    // 4. If --paths is set and user didn't specify --limit: no limit (None)
-    // 5. If user specified --limit: use that value
-    // 6. Otherwise: use default limit of 100
+    // 3. If --paths is set and user didn't specify --limit: no limit (None)
+    // 4. If user specified --limit: use that value
+    // 5. Otherwise: use default limit of 100
     let final_limit = if count_only {
         None  // --count always shows total count, no pagination
     } else if all {
         None  // --all means no limit
-    } else if limit == Some(0) {
-        None  // --limit 0 means no limit (unlimited results)
     } else if paths_only && limit.is_none() {
         None  // --paths without explicit --limit means no limit
     } else if let Some(user_limit) = limit {
@@ -203,7 +213,21 @@ pub(super) fn handle_query(
         if has_errors {
             anyhow::bail!("Invalid flag combination. Fix the errors above and try again.");
         }
+
+        // REF-58: Warn when --file looks like a concrete path that doesn't exist on disk
+        if let Some(ref fp) = file_pattern {
+            // Only warn when it looks like a literal path (no glob wildcards, has extension or slash)
+            let looks_like_path = !fp.contains('*') && !fp.contains('?') &&
+                (fp.contains('/') || fp.contains('.'));
+            if looks_like_path && !std::path::Path::new(fp).exists() {
+                eprintln!("{}", format!("[warn] --file path not found on disk: {}", fp).yellow());
+                eprintln!("  Continuing with substring match — results will be empty if no indexed path contains '{}'.", fp);
+            }
+        }
     }
+
+    // Clamp context lines to a sane max (10) to avoid huge output
+    let context_lines = context_arg.map(|n| n.min(10)).unwrap_or(0);
 
     let filter = QueryFilter {
         language,
@@ -224,6 +248,7 @@ pub(super) fn handle_query(
         force,
         suppress_output: as_json,  // Suppress warnings in JSON mode
         include_dependencies,
+        context_lines,
         ..Default::default()
     };
 
@@ -336,20 +361,42 @@ pub(super) fn handle_query(
             };
             println!("{}", json_output);
         } else if paths_only {
-            // Paths-only JSON mode: output array of {path, line} objects
-            let locations: Vec<serde_json::Value> = flat_results.iter()
-                .map(|r| serde_json::json!({
-                    "path": r.path,
-                    "line": r.span.start_line
-                }))
+            // Paths-only JSON mode: output deduplicated array of path strings (REF-62)
+            let mut seen = std::collections::HashSet::new();
+            let unique_paths: Vec<String> = flat_results.iter()
+                .filter_map(|r| {
+                    if seen.insert(r.path.clone()) { Some(r.path.clone()) } else { None }
+                })
                 .collect();
-            let json_output = if pretty_json {
-                serde_json::to_string_pretty(&locations)?
+
+            let json_output = if ai_mode {
+                // REF-59: wrap with ai_instruction when --ai flag is used
+                let ai_instruction = crate::query::generate_ai_instruction(
+                    unique_paths.len(),
+                    total_results,
+                    has_more,
+                    symbols_mode,
+                    true,
+                    use_ast,
+                    use_regex,
+                    language.is_some(),
+                    !glob_patterns.is_empty(),
+                    exact,
+                );
+                let wrapper = serde_json::json!({
+                    "ai_instruction": ai_instruction,
+                    "count": unique_paths.len(),
+                    "results": unique_paths,
+                });
+                if pretty_json { serde_json::to_string_pretty(&wrapper)? } else { serde_json::to_string(&wrapper)? }
             } else {
-                serde_json::to_string(&locations)?
+                if pretty_json {
+                    serde_json::to_string_pretty(&unique_paths)?
+                } else {
+                    serde_json::to_string(&unique_paths)?
+                }
             };
             println!("{}", json_output);
-            eprintln!("Found {} unique files in {}", locations.len(), timing_str);
         } else {
             // Get or build QueryResponse for JSON output
             let mut response = if let Some(resp) = query_response {
@@ -401,6 +448,7 @@ pub(super) fn handle_query(
                             None
                         };
 
+                        let language = file_matches.first().map(|r| r.lang).unwrap_or_default();
                         let matches: Vec<MatchResult> = file_matches
                             .into_iter()
                             .map(|r| {
@@ -424,6 +472,7 @@ pub(super) fn handle_query(
                             .collect();
                         FileGroupedResult {
                             path,
+                            language,
                             dependencies: None,
                             matches,
                         }
@@ -475,12 +524,13 @@ pub(super) fn handle_query(
             println!("{}", json_output);
 
             let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
-            eprintln!("Found {} results in {}", result_count, timing_str);
+            eprintln!("Found {} result{} in {}", result_count, if result_count == 1 { "" } else { "s" }, timing_str);
         }
     } else {
         // Standard output with formatting
         if count_only {
-            println!("Found {} results in {}", flat_results.len(), timing_str);
+            let n = flat_results.len();
+            println!("Found {} result{} in {}", n, if n == 1 { "" } else { "s" }, timing_str);
             return Ok(());
         }
 
@@ -492,7 +542,8 @@ pub(super) fn handle_query(
                 for result in &flat_results {
                     println!("{}", result.path);
                 }
-                eprintln!("Found {} unique files in {}", flat_results.len(), timing_str);
+                let n = flat_results.len();
+                eprintln!("Found {} unique file{} in {}", n, if n == 1 { "" } else { "s" }, timing_str);
             }
         } else {
             // Standard result formatting
@@ -504,16 +555,17 @@ pub(super) fn handle_query(
                 formatter.format_results(&flat_results, &pattern)?;
 
                 // Print summary at the bottom with pagination details
-                if total_results > flat_results.len() {
+                let n = flat_results.len();
+                if total_results > n {
                     // Results were paginated - show detailed count
-                    println!("\nFound {} results ({} total) in {}", flat_results.len(), total_results, timing_str);
+                    println!("\nFound {} result{} ({} total) in {}", n, if n == 1 { "" } else { "s" }, total_results, timing_str);
                     // Show pagination hint if there are more results available
                     if has_more {
                         println!("Use --limit and --offset to paginate");
                     }
                 } else {
                     // All results shown - simple count
-                    println!("\nFound {} results in {}", flat_results.len(), timing_str);
+                    println!("\nFound {} result{} in {}", n, if n == 1 { "" } else { "s" }, timing_str);
                 }
             }
         }

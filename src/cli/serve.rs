@@ -15,6 +15,7 @@ pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("\nEndpoints:");
     println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true");
     println!("  GET  /stats");
+    println!("  GET  /health");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
 
@@ -88,7 +89,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     }
 
     // Request body for POST /index
-    #[derive(Debug, serde::Deserialize)]
+    #[derive(Debug, serde::Deserialize, Default)]
     struct IndexRequest {
         #[serde(default)]
         force: bool,
@@ -102,6 +103,14 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         AxumQuery(params): AxumQuery<QueryParams>,
     ) -> Result<Json<crate::models::QueryResponse>, (StatusCode, Json<serde_json::Value>)> {
         log::info!("Query request: pattern={}", params.q);
+
+        // REF-63: reject empty queries with 400 instead of passing them to the engine
+        if params.q.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": { "kind": "QuerySyntaxError", "message": "Query parameter 'q' cannot be empty" } })),
+            ));
+        }
 
         let cache = CacheManager::new(&state.cache_path);
         let engine = QueryEngine::new(cache);
@@ -204,10 +213,34 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     }
 
     // POST /index endpoint
+    // REF-72: accept requests with no Content-Type header (treat as empty/default request).
     async fn handle_index_endpoint(
         State(state): State<Arc<AppState>>,
-        Json(req): Json<IndexRequest>,
+        request: axum::extract::Request,
     ) -> Result<Json<crate::models::IndexStats>, (StatusCode, Json<serde_json::Value>)> {
+        let has_content_type = request
+            .headers()
+            .contains_key(axum::http::header::CONTENT_TYPE);
+
+        let req = if !has_content_type {
+            IndexRequest::default()
+        } else {
+            let body_bytes = axum::body::to_bytes(request.into_body(), 1 << 20)
+                .await
+                .map_err(|e| (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": { "kind": "IoError", "message": format!("{}", e) } })),
+                ))?;
+            if body_bytes.is_empty() {
+                IndexRequest::default()
+            } else {
+                serde_json::from_slice::<IndexRequest>(&body_bytes).map_err(|e| (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": { "kind": "ParseError", "message": format!("Invalid JSON body: {}", e) } })),
+                ))?
+            }
+        };
+
         log::info!("Index request: force={}, languages={:?}", req.force, req.languages);
 
         let cache = CacheManager::new(&state.cache_path);
@@ -274,9 +307,17 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         }
     }
 
-    // Health check endpoint
+    // Health check endpoint — REF-70: returns JSON for consistency with other endpoints
     async fn handle_health() -> impl IntoResponse {
-        (StatusCode::OK, "Reflex is running")
+        (StatusCode::OK, Json(json!({ "status": "ok", "service": "reflex" })))
+    }
+
+    // 404 fallback — REF-71: unknown routes return JSON error body
+    async fn handle_not_found() -> impl IntoResponse {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": { "kind": "NotFound", "message": "Endpoint not found" } })),
+        )
     }
 
     // Create shared state
@@ -296,6 +337,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         .route("/stats", get(handle_stats_endpoint))
         .route("/index", post(handle_index_endpoint))
         .route("/health", get(handle_health))
+        .fallback(handle_not_found)  // REF-71: JSON 404 for unknown routes
         .layer(cors)
         .with_state(state);
 
@@ -303,6 +345,16 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await
         .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
+
+    // REF-64: warn conspicuously when bound to a non-loopback address (no auth)
+    let is_loopback = host == "127.0.0.1" || host == "::1" || host.to_lowercase() == "localhost";
+    if !is_loopback {
+        eprintln!();
+        eprintln!("WARNING: Reflex server exposed on {} — NO authentication.", addr);
+        eprintln!("WARNING: Any client on this network can read your codebase index.");
+        eprintln!("WARNING: Do not expose this on shared or internet-facing machines.");
+        eprintln!();
+    }
 
     log::info!("Server listening on {}", addr);
 

@@ -95,6 +95,7 @@ impl DependencyIndex {
             ImportType::Internal => "internal",
             ImportType::External => "external",
             ImportType::Stdlib => "stdlib",
+            ImportType::ModDecl => "mod_decl",
         };
 
         let symbols_json = imported_symbols
@@ -168,6 +169,7 @@ impl DependencyIndex {
                 ImportType::Internal => "internal",
                 ImportType::External => "external",
                 ImportType::Stdlib => "stdlib",
+                ImportType::ModDecl => "mod_decl",
             };
 
             let symbols_json = dep
@@ -214,6 +216,7 @@ impl DependencyIndex {
                     "internal" => ImportType::Internal,
                     "external" => ImportType::External,
                     "stdlib" => ImportType::Stdlib,
+                    "mod_decl" => ImportType::ModDecl,
                     _ => ImportType::External,
                 };
 
@@ -345,10 +348,13 @@ impl DependencyIndex {
         // Build in-memory dependency graph using resolved_file_id (instant)
         let mut graph: HashMap<i64, Vec<i64>> = HashMap::new();
 
+        // Exclude mod_decl edges: `mod foo;` is parent→child ownership, not a usage dependency.
+        // Including them creates false positives when a child module uses `use crate::` (REF-88).
         let mut stmt = conn.prepare(
             "SELECT file_id, resolved_file_id
              FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL"
+             WHERE resolved_file_id IS NOT NULL
+               AND import_type != 'mod_decl'"
         )?;
 
         let dependencies: Vec<(i64, i64)> = stmt
@@ -543,15 +549,17 @@ impl DependencyIndex {
             used_files.extend(barrel_chain);
         }
 
-        // Step 3: Get all files NOT in the used set
-        let mut stmt = conn.prepare("SELECT id FROM files ORDER BY id")?;
-        let all_files: Vec<i64> = stmt
-            .query_map([], |row| row.get(0))?
+        // Step 3: Get all files NOT in the used set, excluding known entry points.
+        // Entry points are always reachable by definition (they are the roots of the dep graph).
+        let mut stmt = conn.prepare("SELECT id, path FROM files ORDER BY id")?;
+        let all_files: Vec<(i64, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
 
         let unused: Vec<i64> = all_files
             .into_iter()
-            .filter(|id| !used_files.contains(id))
+            .filter(|(id, path)| !used_files.contains(id) && !is_entry_point(path))
+            .map(|(id, _)| id)
             .collect();
 
         Ok(unused)
@@ -984,6 +992,36 @@ impl DependencyIndex {
 
         Ok(counts)
     }
+}
+
+/// Return true if the given file path is a well-known project entry point.
+///
+/// Entry points are always reachable by definition and should never appear in the
+/// "unused files" list even when nothing else imports them (REF-89).
+fn is_entry_point(path: &str) -> bool {
+    let p = path.replace('\\', "/");
+    let p = p.as_str();
+
+    // Exact well-known Rust/generic entry points
+    if matches!(p, "src/lib.rs" | "src/main.rs" | "build.rs" | "lib.rs" | "main.rs") {
+        return true;
+    }
+
+    // Standard test / bench / example directories
+    if p.starts_with("tests/") || p.starts_with("benches/") || p.starts_with("examples/") {
+        return true;
+    }
+
+    // Files whose names follow common test/spec conventions
+    let filename = p.rsplit('/').next().unwrap_or(p);
+    if filename.starts_with("test_")
+        || filename.ends_with("_test.rs")
+        || filename.ends_with("_spec.rs")
+    {
+        return true;
+    }
+
+    false
 }
 
 /// Generate path variants for an import path

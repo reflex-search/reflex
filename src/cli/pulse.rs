@@ -385,13 +385,39 @@ pub(super) fn handle_pulse_glossary(json: bool) -> Result<()> {
         anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
     }
 
-    // The glossary is now LLM-generated. For the CLI, we only surface the
-    // structural evidence that would be handed to the LLM (modules + anchor
-    // symbol names). Full product-concept generation lives in the pulse
-    // narration pipeline — run `rfx pulse generate` to produce the site.
     let evidence = glossary::collect_glossary_evidence(&cache)?;
 
-    let data = glossary::GlossaryData::default();
+    // Try to generate concepts via LLM if configured; fall back to structural-only output.
+    let data: glossary::GlossaryData = if let Some(ev) = evidence.as_ref() {
+        match pulse::narrate::create_pulse_provider() {
+            Ok(provider) => {
+                let llm_cache = pulse::llm_cache::LlmCache::new(cache.path());
+                let project_name = std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "project".to_string());
+                let context = glossary::build_concepts_context(ev, &project_name);
+                let raw = pulse::narrate::narrate_section(
+                    provider.as_ref(),
+                    pulse::narrate::concepts_system_prompt(),
+                    &context,
+                    &llm_cache,
+                    "cli-glossary",
+                    "glossary",
+                );
+                if let Some(raw_text) = raw {
+                    glossary::parse_concepts_response(&raw_text)
+                        .map(glossary::GlossaryData::from)
+                        .unwrap_or_default()
+                } else {
+                    glossary::GlossaryData::default()
+                }
+            }
+            Err(_) => glossary::GlossaryData::default(),
+        }
+    } else {
+        glossary::GlossaryData::default()
+    };
 
     if json {
         let module_summaries = evidence
@@ -417,13 +443,19 @@ pub(super) fn handle_pulse_glossary(json: bool) -> Result<()> {
                 "concepts": data.concepts.iter().map(|c| serde_json::json!({
                     "name": c.name,
                     "category": c.category,
+                    "definition": c.definition,
                 })).collect::<Vec<_>>(),
                 "evidence_modules": module_summaries,
             }))?
         );
     } else {
-        let md = if let Some(ev) = evidence.as_ref() {
-            glossary::render_glossary_no_llm(ev)
+        let md = if data.concepts.is_empty() {
+            // No LLM or LLM failed — show structural evidence with hint
+            if let Some(ev) = evidence.as_ref() {
+                glossary::render_glossary_no_llm(ev)
+            } else {
+                glossary::render_glossary_markdown(&data)
+            }
         } else {
             glossary::render_glossary_markdown(&data)
         };

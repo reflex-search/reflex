@@ -8,6 +8,10 @@ pub struct QueryResponse {
     /// Array of rfx commands to execute. Most queries should have 1 command.
     /// Only use multiple commands when absolutely necessary (e.g., cross-language search).
     pub queries: Vec<QueryCommand>,
+    /// Optional human-readable message. Set when queries is empty to explain why
+    /// (e.g., question is outside rfx scope).
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Enhanced response for agentic mode containing both queries and results
