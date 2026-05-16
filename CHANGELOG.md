@@ -1,3 +1,27 @@
+## [1.5.2] - 2026-05-16
+
+
+### Documentation
+
+
+- Fix rfx pulse digest → rfx pulse changelog in README
+
+- Remove stale hardcoded test count badge from README
+
+
+### Fixed
+
+
+- Move performance tests to separate release-mode CI step
+
+- Resolve all clippy warnings and enable -D warnings in CI
+
+- Commit insta snapshots and fix Windows clippy errors (REF-172)
+
+- Normalize path separators to fix 21 Windows-only test failures (REF-173)
+
+- Make path/home overrides reach storage and dirs lookups (REF-173)
+
 ## [1.5.1] - 2026-05-15
 
 
