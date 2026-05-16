@@ -1216,11 +1216,12 @@ pub fn resolve_rust_import(
         }
     }
 
-    // Convert to string and make relative to project root
+    // Convert to string and make relative to project root.
+    // Normalize to forward slashes so paths are deterministic across platforms.
     resolved_path.and_then(|p| {
         p.strip_prefix(project_root)
             .ok()
-            .map(|rel| rel.to_string_lossy().to_string())
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
     })
 }
 
@@ -1290,13 +1291,13 @@ pub fn resolve_rust_mod_declaration(
     // Try sibling file
     let sibling = current_dir.join(format!("{}.rs", mod_name));
     if sibling.exists() {
-        return Some(sibling.to_string_lossy().to_string());
+        return Some(sibling.to_string_lossy().replace('\\', "/"));
     }
 
     // Try directory module
     let dir_mod = current_dir.join(mod_name).join("mod.rs");
     if dir_mod.exists() {
-        return Some(dir_mod.to_string_lossy().to_string());
+        return Some(dir_mod.to_string_lossy().replace('\\', "/"));
     }
 
     None

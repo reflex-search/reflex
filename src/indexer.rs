@@ -203,14 +203,17 @@ impl Indexer {
             let mut any_changed = false;
 
             for file_path in &files {
-                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
+                // Always use forward slashes so the on-disk index is deterministic across OSes
+                // and downstream string lookups (file_pattern filters, dependency resolvers)
+                // work regardless of the host separator.
                 let path_str = file_path.to_string_lossy().to_string();
                 let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
                     // Convert absolute path to relative
-                    rel_path.to_string_lossy().to_string()
+                    rel_path.to_string_lossy().replace('\\', "/")
                 } else {
                     // Already relative, just strip ./ prefix
-                    path_str.trim_start_matches("./").to_string()
+                    path_str.trim_start_matches("./").replace('\\', "/")
                 };
 
                 // Check if file exists in cache
@@ -405,14 +408,15 @@ impl Indexer {
                 batch_files
                     .par_iter()
                     .map(|file_path| {
-                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
+                // Always emit forward slashes so the persisted path is deterministic across OSes.
                 let path_str = file_path.to_string_lossy().to_string();
                 let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
                     // Convert absolute path to relative
-                    rel_path.to_string_lossy().to_string()
+                    rel_path.to_string_lossy().replace('\\', "/")
                 } else {
                     // Already relative, just strip ./ prefix
-                    path_str.trim_start_matches("./").to_string()
+                    path_str.trim_start_matches("./").replace('\\', "/")
                 };
 
                 // Read file content once (used for hashing, trigrams, and parsing)
@@ -1207,10 +1211,11 @@ impl Indexer {
                                 let normalized_candidate = if let Ok(rel_path) =
                                     std::path::Path::new(candidate_path).strip_prefix(root)
                                 {
-                                    rel_path.to_string_lossy().to_string()
+                                    rel_path.to_string_lossy().replace('\\', "/")
                                 } else {
                                     // Not an absolute path or not under root - use as-is
-                                    candidate_path.to_string()
+                                    // (still normalize separators so DB lookups match).
+                                    candidate_path.replace('\\', "/")
                                 };
 
                                 log::debug!(
@@ -1646,10 +1651,11 @@ impl Indexer {
                                 let normalized_candidate = if let Ok(rel_path) =
                                     std::path::Path::new(candidate_path).strip_prefix(root)
                                 {
-                                    rel_path.to_string_lossy().to_string()
+                                    rel_path.to_string_lossy().replace('\\', "/")
                                 } else {
                                     // Not an absolute path or not under root - use as-is
-                                    candidate_path.to_string()
+                                    // (still normalize separators so DB lookups match).
+                                    candidate_path.replace('\\', "/")
                                 };
 
                                 match dep_index.get_file_id_by_path(&normalized_candidate) {

@@ -1496,7 +1496,8 @@ pub fn resolve_ts_import_to_path(
             log::debug!("  Alias matched! {} => {}", import_path, resolved_alias);
             // Alias matched! Now resolve relative to the tsconfig directory
             let resolved_path = map.resolve_relative_to_config(&resolved_alias);
-            let path_str = resolved_path.to_string_lossy().to_string();
+            // Normalize to forward slashes for deterministic, cross-platform output.
+            let path_str = resolved_path.to_string_lossy().replace('\\', "/");
             log::debug!("  After resolve_relative_to_config: {}", path_str);
 
             // Check if resolved path has an extension
@@ -1576,7 +1577,10 @@ pub fn resolve_ts_import_to_path(
         },
     );
 
-    let normalized = normalized_path.to_string_lossy().to_string();
+    // Normalize to forward slashes so the resolved path is deterministic
+    // across platforms. `join`/`components` on Windows produces backslashes
+    // which would otherwise break downstream string lookups.
+    let normalized = normalized_path.to_string_lossy().replace('\\', "/");
 
     // Check if the import already has a known extension
     // Vue/Svelte files are imported with their extension: import Foo from './Foo.vue'

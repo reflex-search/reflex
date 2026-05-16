@@ -591,6 +591,29 @@ mod tests {
         ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Point `dirs::home_dir()` at the given path. On Unix that means
+    /// `HOME`; on Windows the resolver reads `USERPROFILE` instead, so we
+    /// must set the platform-appropriate variable for the override to take
+    /// effect.
+    fn set_home(path: &std::path::Path) {
+        unsafe {
+            env::set_var("HOME", path);
+            if cfg!(windows) {
+                env::set_var("USERPROFILE", path);
+            }
+        }
+    }
+
+    /// Reset the home override applied by [`set_home`].
+    fn unset_home() {
+        unsafe {
+            env::remove_var("HOME");
+            if cfg!(windows) {
+                env::remove_var("USERPROFILE");
+            }
+        }
+    }
+
     #[test]
     fn test_default_config() {
         let config = SemanticConfig::default();
@@ -640,13 +663,9 @@ auto_execute = true
         .unwrap();
 
         // Set HOME to temp directory to load test config
-        unsafe {
-            env::set_var("HOME", temp.path());
-        }
+        set_home(temp.path());
         let config = load_config(temp.path()).unwrap();
-        unsafe {
-            env::remove_var("HOME");
-        }
+        unset_home();
 
         assert!(config.enabled);
         assert_eq!(config.provider, "anthropic");
@@ -839,16 +858,14 @@ openai_compatible_model = "qwen2.5-coder"
         .unwrap();
 
         unsafe {
-            env::set_var("HOME", temp.path());
             env::remove_var("OPENAI_COMPATIBLE_BASE_URL");
         }
+        set_home(temp.path());
 
         let opts = get_provider_options("openai-compatible");
         let model = get_user_model("openai-compatible");
 
-        unsafe {
-            env::remove_var("HOME");
-        }
+        unset_home();
 
         let opts = opts.expect("base_url should be discovered from config");
         assert_eq!(
@@ -942,15 +959,11 @@ openai_compatible_model = "gpt-oss:20b-cloud"
         )
         .unwrap();
 
-        unsafe {
-            env::set_var("HOME", temp.path());
-        }
+        set_home(temp.path());
 
         let resolved = resolve_model_for("openai-compatible", None, None);
 
-        unsafe {
-            env::remove_var("HOME");
-        }
+        unset_home();
 
         assert_eq!(resolved.as_deref(), Some("gpt-oss:20b-cloud"));
     }

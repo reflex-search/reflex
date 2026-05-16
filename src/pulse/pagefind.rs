@@ -225,10 +225,17 @@ mod tests {
     #[test]
     fn test_get_asset_name() {
         let result = get_asset_name();
-        assert!(result.is_ok(), "Should detect platform: {:?}", result.err());
-        let name = result.unwrap();
-        assert!(name.contains(PAGEFIND_VERSION));
-        assert!(name.ends_with(".tar.gz"));
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert!(result.is_ok(), "Should detect platform: {:?}", result.err());
+            let name = result.unwrap();
+            assert!(name.contains(PAGEFIND_VERSION));
+            assert!(name.ends_with(".tar.gz"));
+        } else {
+            // Pagefind has no Windows release asset; the helper should
+            // explicitly report the platform as unsupported.
+            let err = result.expect_err("expected unsupported platform error");
+            assert!(err.to_string().contains("Unsupported platform"));
+        }
     }
 
     #[test]

@@ -1026,8 +1026,9 @@ pub fn find_all_python_configs(index_root: &std::path::Path) -> Result<Vec<std::
 
         // Look for Python config files
         if filename == "pyproject.toml" || filename == "setup.py" || filename == "setup.cfg" {
-            // Skip virtual environments and build directories
-            let path_str = path.to_string_lossy();
+            // Skip virtual environments and build directories. Normalize
+            // separators so these filters fire on Windows (`\venv\`) too.
+            let path_str = path.to_string_lossy().replace('\\', "/");
             if path_str.contains("/venv/")
                 || path_str.contains("/.venv/")
                 || path_str.contains("/site-packages/")
@@ -1069,11 +1070,14 @@ pub fn parse_all_python_packages(index_root: &std::path::Path) -> Result<Vec<Pyt
 
         // Try to extract package name from this config
         if let Some(package_name) = find_python_package_name(project_root) {
+            // Normalize to forward slashes so `starts_with("services/")`
+            // style assertions and downstream import resolution behave the
+            // same on every OS.
             let relative_project_root = project_root
                 .strip_prefix(index_root)
                 .unwrap_or(project_root)
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
 
             log::debug!(
                 "Found Python package '{}' at {:?}",

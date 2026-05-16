@@ -1285,8 +1285,9 @@ pub fn find_all_go_mods(index_root: &std::path::Path) -> Result<Vec<std::path::P
 
         // Look for go.mod files
         if filename == "go.mod" {
-            // Skip vendor directories
-            let path_str = path.to_string_lossy();
+            // Skip vendor directories. Normalize separators so the check
+            // works on Windows (`\vendor\`) as well as Unix (`/vendor/`).
+            let path_str = path.to_string_lossy().replace('\\', "/");
             if path_str.contains("/vendor/") {
                 log::trace!("Skipping go.mod in vendor directory: {:?}", path);
                 continue;
@@ -1328,11 +1329,13 @@ pub fn parse_all_go_modules(index_root: &std::path::Path) -> Result<Vec<GoModule
                         .trim()
                         .to_string();
 
+                    // Normalize to forward slashes so import resolution and
+                    // assertions on project_root behave the same on every OS.
                     let relative_project_root = project_root
                         .strip_prefix(index_root)
                         .unwrap_or(project_root)
                         .to_string_lossy()
-                        .to_string();
+                        .replace('\\', "/");
 
                     log::debug!(
                         "Found Go module '{}' at {:?}",
