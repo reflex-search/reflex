@@ -154,7 +154,7 @@ rfx index                 # Build / update the search index
 rfx index status          # Background indexing status
 rfx watch                 # Auto-reindex on file changes
 rfx stats                 # Index statistics
-rfx pulse digest          # Codebase change digest
+rfx pulse changelog       # Codebase change digest
 rfx pulse wiki            # Per-module documentation
 rfx pulse map             # Architecture diagram (Mermaid / D2)
 rfx serve --port 7878     # Local HTTP API server
