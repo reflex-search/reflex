@@ -34,5 +34,6 @@ reflex
 *.jpeg
 *.gif
 
-
-*.snap
+# Insta pending-snapshot files — committed `.snap` files are the baseline
+*.snap.new
+*.pending-snap

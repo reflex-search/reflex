@@ -17,6 +17,7 @@ use crate::cache::CacheManager;
 use crate::content_store::{ContentReader, ContentWriter};
 use crate::dependency::DependencyIndex;
 use crate::models::{Dependency, ImportType, IndexConfig, IndexStats, Language};
+#[cfg(unix)]
 use crate::output;
 use crate::parsers::c::CDependencyExtractor;
 use crate::parsers::cpp::CppDependencyExtractor;
@@ -41,7 +42,6 @@ pub type ProgressCallback = Arc<dyn Fn(usize, usize, String) + Send + Sync>;
 
 /// Result of processing a single file (used for parallel processing)
 struct FileProcessingResult {
-    path: PathBuf,
     path_str: String,
     hash: String,
     content: String,
@@ -202,14 +202,17 @@ impl Indexer {
             let mut any_changed = false;
 
             for file_path in &files {
-                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
+                // Always use forward slashes so the on-disk index is deterministic across OSes
+                // and downstream string lookups (file_pattern filters, dependency resolvers)
+                // work regardless of the host separator.
                 let path_str = file_path.to_string_lossy().to_string();
                 let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
                     // Convert absolute path to relative
-                    rel_path.to_string_lossy().to_string()
+                    rel_path.to_string_lossy().replace('\\', "/")
                 } else {
                     // Already relative, just strip ./ prefix
-                    path_str.trim_start_matches("./").to_string()
+                    path_str.trim_start_matches("./").replace('\\', "/")
                 };
 
                 // Check if file exists in cache
@@ -404,14 +407,15 @@ impl Indexer {
                 batch_files
                     .par_iter()
                     .map(|file_path| {
-                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
+                // Always emit forward slashes so the persisted path is deterministic across OSes.
                 let path_str = file_path.to_string_lossy().to_string();
                 let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
                     // Convert absolute path to relative
-                    rel_path.to_string_lossy().to_string()
+                    rel_path.to_string_lossy().replace('\\', "/")
                 } else {
                     // Already relative, just strip ./ prefix
-                    path_str.trim_start_matches("./").to_string()
+                    path_str.trim_start_matches("./").replace('\\', "/")
                 };
 
                 // Read file content once (used for hashing, trigrams, and parsing)
@@ -605,7 +609,6 @@ impl Indexer {
                 counter_clone.fetch_add(1, Ordering::Relaxed);
 
                 Some(FileProcessingResult {
-                    path: file_path.clone(),
                     path_str: normalized_path.to_string(),
                     hash,
                     content,
@@ -620,14 +623,19 @@ impl Indexer {
 
             // Process batch results immediately (streaming approach to minimize memory)
             for result in results.into_iter().flatten() {
+                // Use the normalized (forward-slash, relative) path everywhere so
+                // the trigram index and content store agree with what the database
+                // and downstream filters expect, regardless of host separator.
+                let normalized_pathbuf = PathBuf::from(&result.path_str);
+
                 // Add file to trigram index (get file_id)
-                let file_id = trigram_index.add_file(result.path.clone());
+                let file_id = trigram_index.add_file(normalized_pathbuf.clone());
 
                 // Index file content directly (avoid accumulating all trigrams)
                 trigram_index.index_file(file_id, &result.content);
 
                 // Add to content store
-                content_writer.add_file(result.path.clone(), &result.content);
+                content_writer.add_file(normalized_pathbuf, &result.content);
 
                 files_indexed += 1;
 
@@ -1206,10 +1214,11 @@ impl Indexer {
                                 let normalized_candidate = if let Ok(rel_path) =
                                     std::path::Path::new(candidate_path).strip_prefix(root)
                                 {
-                                    rel_path.to_string_lossy().to_string()
+                                    rel_path.to_string_lossy().replace('\\', "/")
                                 } else {
                                     // Not an absolute path or not under root - use as-is
-                                    candidate_path.to_string()
+                                    // (still normalize separators so DB lookups match).
+                                    candidate_path.replace('\\', "/")
                                 };
 
                                 log::debug!(
@@ -1645,10 +1654,11 @@ impl Indexer {
                                 let normalized_candidate = if let Ok(rel_path) =
                                     std::path::Path::new(candidate_path).strip_prefix(root)
                                 {
-                                    rel_path.to_string_lossy().to_string()
+                                    rel_path.to_string_lossy().replace('\\', "/")
                                 } else {
                                     // Not an absolute path or not under root - use as-is
-                                    candidate_path.to_string()
+                                    // (still normalize separators so DB lookups match).
+                                    candidate_path.replace('\\', "/")
                                 };
 
                                 match dep_index.get_file_id_by_path(&normalized_candidate) {
@@ -2039,6 +2049,7 @@ impl Indexer {
     ///
     /// Ensures there's enough free space to create the index. Warns if disk space is low.
     /// This prevents partial index writes and confusing error messages.
+    #[cfg_attr(not(unix), allow(unused_variables))]
     fn check_disk_space(&self, root: &Path) -> Result<()> {
         // Get available space on the filesystem containing the cache directory
         let cache_path = self.cache.path();

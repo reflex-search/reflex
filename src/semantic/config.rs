@@ -4,7 +4,26 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Locate the user's home directory.
+///
+/// `dirs::home_dir()` queries `SHGetKnownFolderPath(FOLDERID_Profile)` on
+/// Windows and therefore ignores `HOME` / `USERPROFILE` env vars. That makes
+/// it impossible to redirect to a temp directory in tests. Honour those env
+/// vars (and `REFLEX_HOME` for an explicit override) before falling back to
+/// the OS-native lookup so test code can point us at a temp directory on
+/// every platform.
+fn user_home_dir() -> Option<PathBuf> {
+    for var in ["REFLEX_HOME", "HOME", "USERPROFILE"] {
+        if let Some(val) = env::var_os(var)
+            && !val.is_empty()
+        {
+            return Some(PathBuf::from(val));
+        }
+    }
+    dirs::home_dir()
+}
 
 /// Semantic query configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +171,7 @@ fn apply_env_overrides(mut config: SemanticConfig) -> SemanticConfig {
 /// Note: The cache_dir parameter is ignored - kept for API compatibility but will be removed in future.
 pub fn load_config(_cache_dir: &Path) -> Result<SemanticConfig> {
     // Semantic config is always in user home directory, not project directory
-    let home = match dirs::home_dir() {
+    let home = match user_home_dir() {
         Some(h) => h,
         None => {
             log::debug!("Could not determine home directory, using defaults");
@@ -249,7 +268,7 @@ struct Credentials {
 
 /// Load user configuration from ~/.reflex/config.toml
 fn load_user_config() -> Result<Option<UserConfig>> {
-    let home = match dirs::home_dir() {
+    let home = match user_home_dir() {
         Some(h) => h,
         None => {
             log::debug!("Could not determine home directory");
@@ -491,7 +510,7 @@ pub fn resolve_model_for(
 /// Updates the [credentials] section with the new model for the specified provider.
 /// Creates the config file and directory if they don't exist.
 pub fn save_user_provider(provider: &str, model: Option<&str>) -> Result<()> {
-    let home = dirs::home_dir().context("Cannot find home directory")?;
+    let home = user_home_dir().context("Cannot find home directory")?;
     let config_dir = home.join(".reflex");
     let config_path = config_dir.join("config.toml");
 
@@ -591,6 +610,29 @@ mod tests {
         ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Point `dirs::home_dir()` at the given path. On Unix that means
+    /// `HOME`; on Windows the resolver reads `USERPROFILE` instead, so we
+    /// must set the platform-appropriate variable for the override to take
+    /// effect.
+    fn set_home(path: &std::path::Path) {
+        unsafe {
+            env::set_var("HOME", path);
+            if cfg!(windows) {
+                env::set_var("USERPROFILE", path);
+            }
+        }
+    }
+
+    /// Reset the home override applied by [`set_home`].
+    fn unset_home() {
+        unsafe {
+            env::remove_var("HOME");
+            if cfg!(windows) {
+                env::remove_var("USERPROFILE");
+            }
+        }
+    }
+
     #[test]
     fn test_default_config() {
         let config = SemanticConfig::default();
@@ -640,13 +682,9 @@ auto_execute = true
         .unwrap();
 
         // Set HOME to temp directory to load test config
-        unsafe {
-            env::set_var("HOME", temp.path());
-        }
+        set_home(temp.path());
         let config = load_config(temp.path()).unwrap();
-        unsafe {
-            env::remove_var("HOME");
-        }
+        unset_home();
 
         assert!(config.enabled);
         assert_eq!(config.provider, "anthropic");
@@ -839,16 +877,14 @@ openai_compatible_model = "qwen2.5-coder"
         .unwrap();
 
         unsafe {
-            env::set_var("HOME", temp.path());
             env::remove_var("OPENAI_COMPATIBLE_BASE_URL");
         }
+        set_home(temp.path());
 
         let opts = get_provider_options("openai-compatible");
         let model = get_user_model("openai-compatible");
 
-        unsafe {
-            env::remove_var("HOME");
-        }
+        unset_home();
 
         let opts = opts.expect("base_url should be discovered from config");
         assert_eq!(
@@ -942,15 +978,11 @@ openai_compatible_model = "gpt-oss:20b-cloud"
         )
         .unwrap();
 
-        unsafe {
-            env::set_var("HOME", temp.path());
-        }
+        set_home(temp.path());
 
         let resolved = resolve_model_for("openai-compatible", None, None);
 
-        unsafe {
-            env::remove_var("HOME");
-        }
+        unset_home();
 
         assert_eq!(resolved.as_deref(), Some("gpt-oss:20b-cloud"));
     }

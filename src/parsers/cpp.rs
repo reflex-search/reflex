@@ -1228,12 +1228,13 @@ pub fn resolve_cpp_include_to_path(
     // Resolve the include path relative to current file
     let resolved = current_dir.join(include_path);
 
-    // Normalize the path
+    // Normalize the path. Always emit forward slashes so resolved paths are
+    // deterministic across platforms.
     match resolved.canonicalize() {
-        Ok(normalized) => Some(normalized.display().to_string()),
+        Ok(normalized) => Some(normalized.to_string_lossy().replace('\\', "/")),
         Err(_) => {
             // If canonicalize fails (file doesn't exist yet), return the joined path
-            Some(resolved.display().to_string())
+            Some(resolved.to_string_lossy().replace('\\', "/"))
         }
     }
 }
@@ -1252,7 +1253,7 @@ mod resolution_tests {
 
         assert!(result.is_some());
         let path = result.unwrap();
-        assert!(path.ends_with("src/helper.hpp") || path.ends_with("src\\helper.hpp"));
+        assert!(path.ends_with("src/helper.hpp"));
     }
 
     #[test]
@@ -1261,7 +1262,7 @@ mod resolution_tests {
 
         assert!(result.is_some());
         let path = result.unwrap();
-        assert!(path.ends_with("src/utils/helper.hpp") || path.ends_with("src\\utils\\helper.hpp"));
+        assert!(path.ends_with("src/utils/helper.hpp"));
     }
 
     #[test]
@@ -1280,7 +1281,7 @@ mod resolution_tests {
 
         assert!(result.is_some());
         let path = result.unwrap();
-        assert!(path.ends_with("src/legacy.h") || path.ends_with("src\\legacy.h"));
+        assert!(path.ends_with("src/legacy.h"));
     }
 
     #[test]

@@ -231,10 +231,25 @@ mod tests {
     #[test]
     fn test_get_asset_name() {
         let result = get_asset_name();
-        assert!(result.is_ok(), "Should detect platform: {:?}", result.err());
-        let name = result.unwrap();
-        assert!(name.contains(ZOLA_VERSION));
-        assert!(name.ends_with(".tar.gz"));
+        // Zola only ships binaries for linux-x86_64 and both macOS arches.
+        // On other platforms the helper should explicitly bail.
+        let supported = matches!(
+            (std::env::consts::OS, std::env::consts::ARCH),
+            ("linux", "x86_64") | ("macos", "x86_64") | ("macos", "aarch64")
+        );
+        if supported {
+            assert!(result.is_ok(), "Should detect platform: {:?}", result.err());
+            let name = result.unwrap();
+            assert!(name.contains(ZOLA_VERSION));
+            assert!(name.ends_with(".tar.gz"));
+        } else {
+            let err = result.expect_err("expected unsupported-platform error");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Unsupported platform") || msg.contains("does not have"),
+                "unexpected error: {msg}"
+            );
+        }
     }
 
     #[test]

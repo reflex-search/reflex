@@ -1,0 +1,92 @@
+---
+source: src/pulse/site.rs
+expression: content
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M4 16 Q8 8 12 16 Q16 24 20 16 Q24 8 28 16' fill='none' stroke='%237aa2f7' stroke-width='3' stroke-linecap='round'/></svg>">
+    <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+    <link rel="stylesheet" href="{{ get_url(path='pagefind/pagefind-component-ui.css') }}">
+    <script src="{{ get_url(path='pagefind/pagefind-component-ui.js') }}" type="module"></script>
+</head>
+<body data-pf-theme="dark">
+    <button class="mobile-menu-toggle" aria-label="Toggle menu" onclick="document.body.classList.toggle('sidebar-open')">
+        <span></span><span></span><span></span>
+    </button>
+    <div class="layout">
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <a href="{{ get_url(path='/') }}"><h2>{{ config.title }}</h2></a>
+                <pagefind-modal-trigger>Search</pagefind-modal-trigger>
+                <pagefind-modal bundle-path="{{ get_url(path='pagefind/') }}"></pagefind-modal>
+            </div>
+            <ul class="nav-list">
+                <li><a href="{{ get_url(path='/') }}" {% if current_path == "/" %}class="active"{% endif %}>Home</a></li>
+                {% set wiki_section = get_section(path="wiki/_index.md") %}
+                <li class="nav-section">
+                    <a href="{{ get_url(path='wiki') }}" {% if current_path is starting_with("wiki") %}class="active"{% endif %}>Reference</a>
+                    <ul class="nav-wiki-tree">
+                        {# Build hierarchical sidebar: Tier 1 modules #}
+                        {% for page in wiki_section.pages %}
+                            {% if page.extra.tier is defined and page.extra.tier == 1 %}
+                                {% set parent_name = page.title | trim_end_matches(pat="/") %}
+                                {% set children = wiki_section.pages | filter(attribute="extra.parent_path", value=parent_name) %}
+                                {% if children | length > 0 %}
+                                {# Tier 1 WITH children: collapsible #}
+                                <li class="nav-tier1">
+                                    <details {% if current_path is starting_with(page.path) %}open{% endif %}>
+                                        <summary>
+                                            <a href="{{ page.permalink }}" {% if current_path == page.path %}class="active"{% endif %}>{{ page.title }}</a>
+                                        </summary>
+                                        <ul>
+                                            {% for child in children %}
+                                            <li><a href="{{ child.permalink }}" {% if current_path == child.path %}class="active"{% endif %}>{{ child.title }}</a></li>
+                                            {% endfor %}
+                                        </ul>
+                                    </details>
+                                </li>
+                                {% else %}
+                                {# Tier 1 WITHOUT children: plain link #}
+                                <li class="nav-tier1"><a href="{{ page.permalink }}" {% if current_path == page.path %}class="active"{% endif %}>{{ page.title }}</a></li>
+                                {% endif %}
+                            {% endif %}
+                        {% endfor %}
+                        {# Orphan Tier 2 pages (no parent_path set in front matter) #}
+                        {% for page in wiki_section.pages %}
+                            {% if page.extra.tier is defined and page.extra.tier == 2 and page.extra.parent_path is undefined %}
+                            <li><a href="{{ page.permalink }}" {% if current_path == page.path %}class="active"{% endif %}>{{ page.title }}</a></li>
+                            {% endif %}
+                        {% endfor %}
+                    </ul>
+                </li>
+                {% if config.extra.has_onboard %}
+                <li><a href="{{ get_url(path='onboard') }}" {% if current_path is starting_with("onboard") %}class="active"{% endif %}>Onboard</a></li>
+                {% endif %}
+                {% if config.extra.has_glossary %}
+                <li><a href="{{ get_url(path='glossary') }}" {% if current_path is starting_with("glossary") %}class="active"{% endif %}>Glossary</a></li>
+                {% endif %}
+                {% if config.extra.has_changelog %}
+                <li><a href="{{ get_url(path='changelog') }}" {% if current_path is starting_with("changelog") %}class="active"{% endif %}>Changelog</a></li>
+                {% endif %}
+                {% if config.extra.has_timeline %}
+                <li><a href="{{ get_url(path='timeline') }}" {% if current_path is starting_with("timeline") %}class="active"{% endif %}>Timeline</a></li>
+                {% endif %}
+                {% if config.extra.has_map %}
+                <li><a href="{{ get_url(path='map') }}" {% if current_path is starting_with("map") %}class="active"{% endif %}>Map</a></li>
+                {% endif %}
+                {% if config.extra.has_explorer %}
+                <li><a href="{{ get_url(path='explorer') }}" {% if current_path is starting_with("explorer") %}class="active"{% endif %}>Explorer</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+        <main class="content">
+            {% block content %}{% endblock content %}
+        </main>
+    </div>
+    {% block scripts %}{% endblock scripts %}
+</body>
+</html>

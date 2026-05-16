@@ -1,0 +1,8 @@
+---
+source: src/pulse/site.rs
+expression: pagefind_section
+---
+    <link rel="stylesheet" href="{{ get_url(path='pagefind/pagefind-component-ui.css') }}">
+    <script src="{{ get_url(path='pagefind/pagefind-component-ui.js') }}" type="module"></script>
+                <pagefind-modal-trigger>Search</pagefind-modal-trigger>
+                <pagefind-modal bundle-path="{{ get_url(path='pagefind/') }}"></pagefind-modal>

@@ -1,0 +1,24 @@
+---
+source: src/pulse/site.rs
+expression: content
+---
++++
+title = "My Project"
+sort_by = "weight"
++++
+
+# My Project
+
+Auto-generated codebase documentation powered by [Reflex](https://github.com/reflex-search/reflex).
+
+## Explore
+
+<div class="quick-links">
+<a href="/onboard/" class="quick-link"><strong>Onboard</strong><br>Getting started guide</a>
+<a href="/wiki/" class="quick-link"><strong>Reference</strong><br>Per-module documentation</a>
+<a href="/glossary/" class="quick-link"><strong>Glossary</strong><br>Domain concepts &amp; vocabulary</a>
+<a href="/changelog/" class="quick-link"><strong>Changelog</strong><br>Recent changes</a>
+<a href="/timeline/" class="quick-link"><strong>Timeline</strong><br>Development activity</a>
+<a href="/map/" class="quick-link"><strong>Map</strong><br>Dependency graph</a>
+<a href="/explorer/" class="quick-link"><strong>Explorer</strong><br>Visual treemap</a>
+</div>

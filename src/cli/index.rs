@@ -228,7 +228,7 @@ pub(super) fn handle_index_build(
 
             std::process::Command::new(&current_exe)
                 .arg("index-symbols-internal")
-                .arg(&path)
+                .arg(path)
                 .creation_flags(CREATE_NO_WINDOW)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
