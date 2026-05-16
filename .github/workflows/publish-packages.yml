@@ -3,6 +3,9 @@ name: Publish Packages
 on:
   release:
     types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -17,18 +20,39 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    if: ${{ !github.event.release.prerelease }}
+    if: |
+      (github.event_name == 'release' && !github.event.release.prerelease) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
+      - name: Check prerelease tag
+        id: prerelease_check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            TAG="${{ github.event.workflow_run.head_branch }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          if [[ "$TAG" =~ -[a-zA-Z] ]]; then
+            echo "Skipping prerelease tag: $TAG"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Rust
+        if: steps.prerelease_check.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
 
       - name: Authenticate with crates.io (Trusted Publishing)
+        if: steps.prerelease_check.outputs.skip != 'true'
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe  # v1.0.4
         id: auth
 
       - name: Publish to crates.io
+        if: steps.prerelease_check.outputs.skip != 'true'
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
@@ -36,7 +60,10 @@ jobs:
   publish-npm:
     name: Publish to NPM
     runs-on: ubuntu-latest
-    if: ${{ !github.event.release.prerelease }}
+    if: |
+      (github.event_name == 'release' && !github.event.release.prerelease) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -45,8 +72,16 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            TAG="${{ github.event.workflow_run.head_branch }}"
           else
             TAG="${{ github.event.release.tag_name }}"
+          fi
+
+          # Skip prerelease tags (e.g. v1.5.1-beta.1)
+          if [[ "$TAG" =~ -[a-zA-Z] ]]; then
+            echo "Skipping prerelease tag: $TAG"
+            exit 0
           fi
 
           # Ensure tag has 'v' prefix if it's a bare version number
