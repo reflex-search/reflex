@@ -13,6 +13,7 @@ use tempfile::TempDir;
 // ==================== Indexing Performance Tests ====================
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_index_small_codebase_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -49,6 +50,7 @@ fn test_index_small_codebase_performance() {
 }
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_index_medium_codebase_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -88,6 +90,7 @@ fn test_index_medium_codebase_performance() {
 }
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_incremental_reindex_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -140,6 +143,7 @@ fn test_incremental_reindex_performance() {
 // ==================== Query Performance Tests ====================
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_fulltext_query_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -185,6 +189,7 @@ fn test_fulltext_query_performance() {
 }
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_symbol_query_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -238,6 +243,7 @@ fn test_symbol_query_performance() {
 }
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_regex_query_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -283,6 +289,7 @@ fn test_regex_query_performance() {
 }
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_filtered_query_performance() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -330,6 +337,7 @@ fn test_filtered_query_performance() {
 // ==================== Memory-mapped I/O Performance Tests ====================
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_repeated_queries_use_cached_index() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -371,6 +379,7 @@ fn test_repeated_queries_use_cached_index() {
 // ==================== Scalability Tests ====================
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_large_file_handling() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
@@ -402,6 +411,7 @@ fn test_large_file_handling() {
 }
 
 #[test]
+#[ignore = "performance tests run separately with --release to avoid CI timing variance"]
 fn test_many_small_files_handling() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();

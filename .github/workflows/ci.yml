@@ -45,3 +45,7 @@ jobs:
 
       - name: Run tests
         run: cargo test --all
+
+      - name: Run performance tests (release build)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test --release -- --ignored --test performance_test
