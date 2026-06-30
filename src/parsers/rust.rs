@@ -1379,7 +1379,7 @@ fn find_crate_root(start_path: &str) -> Option<String> {
 pub fn resolve_rust_use_to_path(
     import_path: &str,
     current_file_path: Option<&str>,
-    _project_root: Option<&str>,
+    project_root: Option<&str>,
 ) -> Option<String> {
     // Only handle internal imports (crate::, super::, self::, or bare module names)
     if !import_path.starts_with("crate::")
@@ -1394,20 +1394,37 @@ pub fn resolve_rust_use_to_path(
     }
 
     let current_file = current_file_path?;
-    let current_path = std::path::Path::new(current_file);
+
+    // Resolve the current file to an absolute path (against project_root when it is
+    // relative) so that all `.exists()` checks below are independent of the process's
+    // current working directory. The resolved path is converted back to a
+    // workspace-relative path before returning (see `relativize_to_project_root`), so it
+    // matches the paths stored in the dependency index.
+    let abs_current = match project_root {
+        Some(root) if !root.is_empty() && std::path::Path::new(current_file).is_relative() => {
+            std::path::Path::new(root).join(current_file)
+        }
+        _ => std::path::PathBuf::from(current_file),
+    };
+    let current_file = abs_current.to_string_lossy().to_string();
+    let current_path = abs_current.as_path();
 
     // Find the crate root
-    let crate_root = find_crate_root(current_file)?;
+    let crate_root = find_crate_root(&current_file)?;
     let crate_root_path = std::path::Path::new(&crate_root);
 
-    if import_path.starts_with("crate::") {
+    let resolved = if import_path.starts_with("crate::") {
         // Resolve from crate root (typically src/)
         let module_path = import_path.strip_prefix("crate::").unwrap();
         let parts: Vec<&str> = module_path.split("::").collect();
 
         // Try src/ first (standard Rust project structure)
         let src_root = crate_root_path.join("src");
-        resolve_rust_module_path(&src_root, &parts)
+        // Resolve the longest prefix of `parts` that names a real module file, popping
+        // trailing item segments (a type/fn/const/trait is not a module). Fall back to a
+        // best-guess path so the indexer can still attempt a lookup.
+        resolve_longest_module_prefix(&src_root, &parts)
+            .or_else(|| resolve_rust_module_path(&src_root, &parts))
     } else if import_path.starts_with("super::") {
         // Resolve relative to parent module
         let module_path = import_path.strip_prefix("super::").unwrap();
@@ -1422,7 +1439,8 @@ pub fn resolve_rust_use_to_path(
             current_path.parent()?
         };
 
-        resolve_rust_module_path(current_dir, &parts)
+        resolve_longest_module_prefix(current_dir, &parts)
+            .or_else(|| resolve_rust_module_path(current_dir, &parts))
     } else if import_path.starts_with("self::") {
         // Resolve relative to current module
         let module_path = import_path.strip_prefix("self::").unwrap();
@@ -1437,7 +1455,8 @@ pub fn resolve_rust_use_to_path(
             current_path.parent()?
         };
 
-        resolve_rust_module_path(current_dir, &parts)
+        resolve_longest_module_prefix(current_dir, &parts)
+            .or_else(|| resolve_rust_module_path(current_dir, &parts))
     } else {
         // Simple module name (e.g., "parser" in "mod parser;")
         // Look for parser.rs or parser/mod.rs in the current directory
@@ -1454,7 +1473,45 @@ pub fn resolve_rust_use_to_path(
             // The indexer will check if the file is actually in the index
             Some(module_file.to_string_lossy().to_string())
         }
+    };
+
+    // Convert the resolved absolute path back to a workspace-relative path so it matches
+    // the paths stored in the dependency index (see `abs_current` above).
+    resolved.map(|path| relativize_to_project_root(&path, project_root))
+}
+
+/// Resolve the longest prefix of `parts` that names a real module file under `base_dir`.
+///
+/// Pops trailing item segments (a type/fn/const/trait is not a module) until a prefix
+/// resolves to a file that actually exists. Returns `None` if even the one-segment prefix
+/// has no backing file, leaving the caller to fall back to a best guess or cross-crate
+/// resolution. Unlike `resolve_rust_module_path`, every returned candidate is checked for
+/// existence, so that function's best-guess return is harmless here.
+fn resolve_longest_module_prefix(base_dir: &std::path::Path, parts: &[&str]) -> Option<String> {
+    let mut k = parts.len();
+    while k >= 1 {
+        if let Some(path) = resolve_rust_module_path(base_dir, &parts[..k])
+            && std::path::Path::new(&path).exists()
+        {
+            return Some(path);
+        }
+        k -= 1;
     }
+    None
+}
+
+/// Strip `project_root` from an absolute resolved path to yield a workspace-relative path.
+///
+/// Returns the path unchanged when `project_root` is absent/empty or is not a prefix of
+/// `path` (e.g. the input was already relative).
+fn relativize_to_project_root(path: &str, project_root: Option<&str>) -> String {
+    if let Some(root) = project_root
+        && !root.is_empty()
+        && let Ok(rel) = std::path::Path::new(path).strip_prefix(root)
+    {
+        return rel.to_string_lossy().to_string();
+    }
+    path.to_string()
 }
 
 /// Resolve a Rust module path (list of components) to a file path
@@ -1611,6 +1668,100 @@ mod path_resolution_tests {
 
         // Should return None if no current file provided
         assert!(result.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Filesystem-backed tests for trailing-item resolution (P1) and
+    // CWD-independence (P2). These build a real temp workspace because the
+    // resolver gates candidates on `.exists()`; string-only fixtures (above)
+    // cannot exercise the prefix-popping path.
+    // ------------------------------------------------------------------
+
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn write_file(root: &std::path::Path, rel: &str, contents: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(contents.as_bytes()).unwrap();
+    }
+
+    /// Build a single-crate workspace `<tmp>/crates/a` with a few modules.
+    fn make_workspace() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_file(root, "crates/a/Cargo.toml", "[package]\nname = \"a\"\n");
+        write_file(root, "crates/a/src/lib.rs", "pub mod thing;\npub mod user;\n");
+        write_file(root, "crates/a/src/thing.rs", "pub struct Thing;\n");
+        write_file(root, "crates/a/src/thing/inner.rs", "pub struct Deep;\n");
+        write_file(root, "crates/a/src/user.rs", "use crate::thing::Thing;\n");
+        tmp
+    }
+
+    #[test]
+    fn test_trailing_item_single_module() {
+        // crate::thing::Thing  ->  crates/a/src/thing.rs  (Thing is an item, not a module)
+        let tmp = make_workspace();
+        let root = tmp.path().to_str().unwrap();
+        let result = resolve_rust_use_to_path(
+            "crate::thing::Thing",
+            Some("crates/a/src/user.rs"), // workspace-RELATIVE, as the indexer passes it
+            Some(root),
+        );
+        assert_eq!(result.as_deref(), Some("crates/a/src/thing.rs"));
+    }
+
+    #[test]
+    fn test_trailing_item_nested_module() {
+        // crate::thing::inner::Deep  ->  crates/a/src/thing/inner.rs
+        let tmp = make_workspace();
+        let root = tmp.path().to_str().unwrap();
+        let result = resolve_rust_use_to_path(
+            "crate::thing::inner::Deep",
+            Some("crates/a/src/user.rs"),
+            Some(root),
+        );
+        assert_eq!(result.as_deref(), Some("crates/a/src/thing/inner.rs"));
+    }
+
+    #[test]
+    fn test_module_only_import_still_resolves() {
+        // Regression guard: crate::thing (no trailing item) -> crates/a/src/thing.rs
+        let tmp = make_workspace();
+        let root = tmp.path().to_str().unwrap();
+        let result =
+            resolve_rust_use_to_path("crate::thing", Some("crates/a/src/user.rs"), Some(root));
+        assert_eq!(result.as_deref(), Some("crates/a/src/thing.rs"));
+    }
+
+    #[test]
+    fn test_super_trailing_item() {
+        // From crates/a/src/sub/mod.rs, super::thing::Thing -> crates/a/src/thing.rs
+        let tmp = make_workspace();
+        write_file(tmp.path(), "crates/a/src/sub/mod.rs", "use super::thing::Thing;\n");
+        let root = tmp.path().to_str().unwrap();
+        let result = resolve_rust_use_to_path(
+            "super::thing::Thing",
+            Some("crates/a/src/sub/mod.rs"),
+            Some(root),
+        );
+        assert_eq!(result.as_deref(), Some("crates/a/src/thing.rs"));
+    }
+
+    #[test]
+    fn test_resolution_is_cwd_independent() {
+        // P2: with a relative current_file and an absolute project_root, resolution must
+        // not depend on the process CWD. The test process CWD is the repo root, never the
+        // temp dir, so a correct result here proves CWD-independence.
+        let tmp = make_workspace();
+        let root = tmp.path().to_str().unwrap();
+        let result = resolve_rust_use_to_path(
+            "crate::thing::Thing",
+            Some("crates/a/src/user.rs"),
+            Some(root),
+        );
+        assert_eq!(result.as_deref(), Some("crates/a/src/thing.rs"));
     }
 }
 
