@@ -47,4 +47,8 @@ jobs:
 
       - name: Run performance tests (release build)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo test --release -- --ignored --test performance_test
+        run: cargo test --release --test performance_test -- --ignored
+
+      - name: Run latency budget harness (release build)
+        if: matrix.os == 'ubuntu-latest'
+        run: REFLEX_LATENCY_BUDGET=1 cargo test --release --test latency_budget -- --ignored --nocapture --test-threads=1
