@@ -34,7 +34,7 @@ Based on [rust_serialization_benchmark](https://github.com/djkoloski/rust_serial
 | **serde_json** | ⭐⭐ Slow | ⭐⭐ Slow | ❌ No | ✅ Yes | ✅ Easy |
 
 **Decision:** Use **rkyv** for symbols.bin because:
-- Zero-copy deserialization is critical for sub-100ms query latency
+- Zero-copy deserialization is critical for low query latency
 - Memory-mapped files can be directly cast to Rust types
 - No deserialization overhead on query path
 - Excellent for read-heavy workloads (queries >> indexing)

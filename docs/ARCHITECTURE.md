@@ -25,7 +25,7 @@ This document provides a comprehensive overview of Reflex's architecture, data f
 
 Reflex is a **trigram-based full-text code search engine** with optional symbol-aware filtering. The architecture prioritizes:
 
-1. **Speed**: Sub-100ms queries via trigram indexing + memory-mapped I/O
+1. **Speed**: Instant queries via trigram indexing + memory-mapped I/O
 2. **Completeness**: Find every occurrence (not just definitions)
 3. **Simplicity**: No daemon required, per-request invocation
 4. **Determinism**: Same query → same results (sorted by file:line)
@@ -1021,7 +1021,7 @@ let matches = ast_search(pattern)?;
 Reflex follows these core principles:
 
 1. **Performance First**
-   - Sub-100ms queries via trigram indexing
+   - Instant queries via trigram indexing
    - Memory-mapped I/O for zero-copy access
    - Lazy evaluation (runtime symbol detection)
 

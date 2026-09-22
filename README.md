@@ -1,6 +1,6 @@
 # Reflex
 
-**Sub-100ms local code search — CLI, scripts, and AI agents**
+**Instant local code search — CLI, scripts, and AI agents**
 
 Reflex is a local-first, full-text code search engine. Use it from the command line, pipe it into scripts, or connect it to AI coding assistants (Claude Code, Cursor, and any MCP-compatible tool) for instant symbol lookup, dependency analysis, and codebase exploration — fully offline, fully deterministic, no cloud required.
 

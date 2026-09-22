@@ -3,7 +3,7 @@
 ## Project Overview
 **Reflex** is a local-first, full-text code search engine written in Rust. It's a fast, deterministic replacement for Sourcegraph Code Search, designed specifically for AI coding workflows and automation.
 
-Reflex uses **trigram-based indexing** to enable sub-100ms full-text search across large codebases (10k+ files). Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—not just definitions. Results include file paths, line numbers, and surrounding context, with optional symbol-aware filtering.
+Reflex uses **trigram-based indexing** to enable instant full-text search across large codebases (10k+ files). Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—not just definitions. Results include file paths, line numbers, and surrounding context, with optional symbol-aware filtering.
 
 ---
 
@@ -11,7 +11,7 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 1. **Local-first**: Runs fully offline; all data stays on the developer's machine
 2. **Complete coverage**: Finds every occurrence, not just symbol definitions
 3. **Deterministic results**: Same query → same answer; no probabilistic ranking
-4. **Instant access**: Trigram index + memory-mapping enables sub-100ms queries
+4. **Instant access**: Trigram index + memory-mapping enables instant queries
 5. **Agent-oriented**: Clean JSON output built for AI coding agents and automation
 6. **Regex support**: Extract trigrams from patterns for fast regex search
 
