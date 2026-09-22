@@ -326,13 +326,9 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
 
 /// Extract a preview (7 lines) around the symbol
 fn extract_preview(source: &str, span: &Span) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-
-    // Extract 7 lines: the start line and 6 following lines
-    let start_idx = span.start_line - 1; // Convert back to 0-indexed
-    let end_idx = (start_idx + 7).min(lines.len());
-
-    lines[start_idx..end_idx].join("\n")
+    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
+    // line-only bound cost 34 GiB on a minified bundle.
+    crate::parsers::preview::extract_preview(source, span)
 }
 
 #[cfg(test)]

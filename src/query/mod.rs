@@ -822,7 +822,11 @@ impl QueryEngine {
 
                                 if start_idx < end_idx {
                                     let full_body = lines[start_idx..end_idx].join("\n");
-                                    result.preview = full_body;
+                                    // Expand shows more than a preview, but not an
+                                    // unbounded amount: on a minified file this is
+                                    // the entire bundle.
+                                    result.preview =
+                                        crate::parsers::preview::expand_preview(&full_body);
                                 }
                             }
                         }
@@ -1108,7 +1112,8 @@ impl QueryEngine {
 
                         if start_idx < end_idx {
                             let full_body = lines[start_idx..end_idx].join("\n");
-                            result.preview = full_body;
+                            // Bounded: on a minified file this body is the whole bundle.
+                            result.preview = crate::parsers::preview::expand_preview(&full_body);
                         }
                     }
                 }
@@ -1297,7 +1302,8 @@ impl QueryEngine {
 
                         if start_idx < end_idx {
                             let full_body = lines[start_idx..end_idx].join("\n");
-                            result.preview = full_body;
+                            // Bounded: on a minified file this body is the whole bundle.
+                            result.preview = crate::parsers::preview::expand_preview(&full_body);
                         }
                     }
                 }
@@ -2192,7 +2198,13 @@ impl QueryEngine {
                             start_line: line_no,
                             end_line: line_no,
                         },
-                        preview: line.to_string(),
+                        // Bounded, and WINDOWED on the match: on a minified bundle
+                        // this line is the whole 1.45 MB file, and the first 512
+                        // bytes of it would tell the caller nothing.
+                        preview: crate::parsers::preview::line_preview(
+                            line,
+                            line.find(pattern_owned.as_str()).unwrap_or(0),
+                        ),
                         dependencies: None,
                     });
                 }
@@ -2281,7 +2293,13 @@ impl QueryEngine {
                             start_line: line_no,
                             end_line: line_no,
                         },
-                        preview: line.to_string(),
+                        // Bounded, and WINDOWED on the match: on a minified bundle
+                        // this line is the whole 1.45 MB file, and the first 512
+                        // bytes of it would tell the caller nothing.
+                        preview: crate::parsers::preview::line_preview(
+                            line,
+                            line.find(pattern_owned.as_str()).unwrap_or(0),
+                        ),
                         dependencies: None,
                     });
                 }
@@ -2464,7 +2482,8 @@ impl QueryEngine {
 
         // Find all regex matches line by line
         for (line_idx, line) in content.lines().enumerate() {
-            if regex.is_match(line) {
+            // find(), not is_match(): the offset is needed to window the preview.
+            if let Some(m) = regex.find(line) {
                 let line_no = line_idx + 1;
 
                 // Create text match result
@@ -2482,7 +2501,7 @@ impl QueryEngine {
                         start_line: line_no,
                         end_line: line_no,
                     },
-                    preview: line.to_string(),
+                    preview: crate::parsers::preview::line_preview(line, m.start()),
                     dependencies: None,
                 });
             }

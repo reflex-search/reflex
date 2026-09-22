@@ -19,7 +19,17 @@ pub fn truncate_preview(preview: &str, max_length: usize) -> String {
         .filter(|(_, c)| c.is_whitespace())
         .last()
         .map(|(i, _)| i)
-        .unwrap_or(max_length.min(preview.len()));
+        // No whitespace in the first `max_length` chars — i.e. minified code. The
+        // fallback used to be a raw BYTE index, and slicing there panics whenever it
+        // lands mid-codepoint. Minified bundles carry emoji and CJK in embedded i18n
+        // tables, so this was a live crash in `rfx query` and the MCP server.
+        .unwrap_or_else(|| {
+            let cap = max_length.min(preview.len());
+            (0..=cap)
+                .rev()
+                .find(|&i| preview.is_char_boundary(i))
+                .unwrap_or(0)
+        });
 
     let mut truncated = preview[..truncate_at].to_string();
     truncated.push('…');
@@ -702,4 +712,36 @@ No dependency data will be included for {} files.",
 pub(super) fn handle_interactive() -> Result<()> {
     log::info!("Launching interactive mode");
     crate::interactive::run_interactive()
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate_preview;
+
+    /// Regression: the whitespace-search fallback returned a raw BYTE index, and
+    /// `preview[..byte]` panics mid-codepoint. It fires exactly on minified code —
+    /// no whitespace in the first `max_length` chars — which is also where non-ASCII
+    /// i18n tables live. This panicked `rfx query` and the MCP server.
+    #[test]
+    fn a_whitespace_free_multibyte_line_does_not_panic() {
+        for filler in ["日", "😀", "é", "\u{a0}"] {
+            let line = filler.repeat(500);
+            let out = truncate_preview(&line, 100);
+            assert!(out.ends_with('…'), "{filler}: {out}");
+            // Round-tripping proves the slice is well-formed UTF-8.
+            assert_eq!(String::from_utf8(out.clone().into_bytes()).unwrap(), out);
+        }
+    }
+
+    #[test]
+    fn short_previews_are_returned_verbatim() {
+        assert_eq!(truncate_preview("fn main() {}", 100), "fn main() {}");
+    }
+
+    #[test]
+    fn a_word_boundary_is_still_preferred_when_one_exists() {
+        let out = truncate_preview("alpha beta gamma delta epsilon zeta", 20);
+        assert!(out.ends_with('…'));
+        assert!(!out.contains("epsilon"), "should cut early: {out}");
+    }
 }

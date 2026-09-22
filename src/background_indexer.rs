@@ -175,6 +175,18 @@ pub struct IndexingStatus {
     /// File currently being parsed, when known.
     #[serde(default)]
     pub current_file: Option<String>,
+    /// Files parsed successfully but NOT persisted, because the batch write failed.
+    ///
+    /// Distinct from `failed_files`, which counts files that failed to PARSE. Merging
+    /// the two made a single SQLite write error read as 27 broken files.
+    #[serde(default)]
+    pub write_failed_files: usize,
+    /// Files skipped because they look minified, so symbol extraction was declined.
+    ///
+    /// These are still fully text-searchable. Counted so an empty `--symbols` result
+    /// for a bundle is visible rather than mysterious.
+    #[serde(default)]
+    pub skipped_minified: usize,
 }
 
 /// Indexer state
@@ -219,6 +231,16 @@ fn is_lock_stale_by(lock_path: &Path, max_age: std::time::Duration) -> bool {
     }
 }
 
+/// What happened when a file was offered to the symbol parser.
+///
+/// A skipped file must be distinguishable from a parsed file that had no symbols —
+/// conflating the two is the same class of error that made `failed_files` unreadable.
+enum ParseOutcome {
+    Parsed(Vec<crate::models::SearchResult>),
+    /// Declined: the file looks minified. Still fully text-searchable.
+    SkippedMinified,
+}
+
 /// Background symbol indexer
 pub struct BackgroundIndexer {
     workspace_path: PathBuf,
@@ -256,6 +278,8 @@ impl BackgroundIndexer {
                 pid: std::process::id(),
                 phase: "starting".to_string(),
                 current_file: None,
+                write_failed_files: 0,
+                skipped_minified: 0,
             },
             // 128, not 500: a chunk is the unit of both progress reporting and
             // cancellation, so a wide chunk means a status frozen for minutes and a
@@ -594,7 +618,8 @@ impl BackgroundIndexer {
         self.write_status()?;
 
         // Shared state for status tracking
-        let status_mutex = Arc::new(Mutex::new((0usize, 0usize, 0usize))); // (cached, parsed, failed)
+        // (cached, parsed, failed-to-parse, skipped-minified)
+        let status_mutex = Arc::new(Mutex::new((0usize, 0usize, 0usize, 0usize)));
 
         // Process files in batches
         let batch_size = self.batch_size;
@@ -681,11 +706,16 @@ impl BackgroundIndexer {
                     .par_iter()
                     .map(|(file_id, path_str, file_hash)| {
                         match self.parse_symbols(&content_reader, *file_id, path_str) {
-                            Ok(symbols) => {
+                            Ok(ParseOutcome::Parsed(symbols)) => {
                                 // Update parsed count
                                 let mut status = status_mutex.lock().unwrap();
                                 status.1 += 1;
                                 Some((path_str.clone(), file_hash.clone(), symbols))
+                            }
+                            Ok(ParseOutcome::SkippedMinified) => {
+                                let mut status = status_mutex.lock().unwrap();
+                                status.3 += 1;
+                                None
                             }
                             Err(e) => {
                                 log::warn!("Failed to parse symbols from {}: {}", path_str, e);
@@ -712,9 +742,31 @@ impl BackgroundIndexer {
             if !parsed_results.is_empty()
                 && let Err(e) = symbol_cache.batch_set(&parsed_results)
             {
-                log::error!("Failed to write symbol batch: {}", e);
-                let mut status = status_mutex.lock().unwrap();
-                status.2 += parsed_results.len();
+                // A WRITE failure is not a PARSE failure. This used to do
+                // `status.2 += parsed_results.len()` without decrementing the parsed
+                // count, so 27 successful parses plus one failed batch write reported
+                // `parsed_files: 27, failed_files: 27` — a reading that looks like
+                // every file failed, and which hid a 34 GiB memory bug from an earlier
+                // investigation. Count it separately, and name a file.
+                self.status.write_failed_files += parsed_results.len();
+                self.status.error = Some(format!(
+                    "{} file(s) parsed but not persisted (first: {}): {}",
+                    parsed_results.len(),
+                    parsed_results
+                        .first()
+                        .map(|(p, _, _)| p.as_str())
+                        .unwrap_or("unknown"),
+                    e
+                ));
+                log::error!(
+                    "Failed to write symbol batch of {} file(s), first {}: {}",
+                    parsed_results.len(),
+                    parsed_results
+                        .first()
+                        .map(|(p, _, _)| p.as_str())
+                        .unwrap_or("unknown"),
+                    e
+                );
             }
 
             // Update status counters
@@ -724,6 +776,7 @@ impl BackgroundIndexer {
                 self.status.cached_files = status.0;
                 self.status.parsed_files = status.1;
                 self.status.failed_files = status.2;
+                self.status.skipped_minified = status.3;
                 self.status.processed_files = processed;
             }
 
@@ -790,7 +843,7 @@ impl BackgroundIndexer {
         content_reader: &ContentReader,
         file_id: u32,
         path: &str,
-    ) -> Result<Vec<crate::models::SearchResult>> {
+    ) -> Result<ParseOutcome> {
         // Read file contents from content.bin (memory-mapped, zero-copy)
         let source = content_reader
             .get_file_content(file_id)
@@ -804,11 +857,18 @@ impl BackgroundIndexer {
 
         let language = crate::models::Language::from_extension(extension);
 
-        // Parse with appropriate parser
+        // Ask before parsing, so a declined file can be COUNTED rather than looking
+        // like a parser that found nothing. `ParserFactory::parse` checks this too and
+        // remains the universal guard for the query and wiki call sites; the scan
+        // early-exits on a normal file, so asking twice is close to free.
+        if crate::parsers::is_minified(source) {
+            return Ok(ParseOutcome::SkippedMinified);
+        }
+
         let symbols = ParserFactory::parse(path, source, language)
             .with_context(|| format!("Failed to parse symbols from: {}", path))?;
 
-        Ok(symbols)
+        Ok(ParseOutcome::Parsed(symbols))
     }
 }
 

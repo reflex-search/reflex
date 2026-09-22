@@ -2060,6 +2060,22 @@ answer** with `status: "fresh"` and `can_trust_results: true`.
 - Reflex indexed its own `.reflex/config.toml` once the text tier claimed `.toml`.
 - `test_depth_limiting` was flaky ~1 run in 60 (temp dir names ending in `c`).
 
+### Follow-up bug found, NOT fixed here
+
+**`find_references` silently drops call sites on any line containing a URL.**
+`src/line_filter.rs:77-83` does `line.find("//")` and treats anything after it as a
+comment. `https://` contains `//`, so:
+
+```rust
+let url = "https://example.com/api"; call_the_target();
+//                  ^ first "//" at byte 21      ^ pattern at byte 41
+// 21 <= 41  =>  treated as commented  =>  dropped
+```
+
+Verified by hand. Same class as the 1.7.2 defects: a silently wrong answer. Affects
+every language filter using the `//` rule, and is far worse on minified JS, where one
+early URL hides every later match on that 1.4 MB line.
+
 ### Still open
 
 - **REF-219-style hybrid columnar format** — optional backlog, unchanged.

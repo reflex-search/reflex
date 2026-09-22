@@ -368,13 +368,9 @@ fn node_to_span(node: &tree_sitter::Node, line_offset: usize) -> Span {
 
 /// Extract a preview (7 lines) around the symbol
 fn extract_preview(source: &str, span: &Span, line_offset: usize) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-
-    // Adjust for the line offset - we're working with the script block content
-    let start_idx = span.start_line - 1 - line_offset;
-    let end_idx = (start_idx + 7).min(lines.len());
-
-    lines[start_idx..end_idx].join("\n")
+    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
+    // line-only bound cost 34 GiB on a minified bundle.
+    crate::parsers::preview::extract_preview_offset(source, span, line_offset)
 }
 
 /// Vue dependency extractor

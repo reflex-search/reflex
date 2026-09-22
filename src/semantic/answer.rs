@@ -157,7 +157,10 @@ fn build_answer_prompt(
                     .saturating_sub(match_result.context_before.len() - idx);
                 // Truncate long lines
                 let truncated = if line.len() > MAX_PREVIEW_LENGTH {
-                    format!("{}...", &line[..MAX_PREVIEW_LENGTH])
+                    format!(
+                        "{}...",
+                        crate::parsers::preview::truncate_bytes(line, MAX_PREVIEW_LENGTH)
+                    )
                 } else {
                     line.clone()
                 };
@@ -166,7 +169,13 @@ fn build_answer_prompt(
 
             // Show the match line itself
             let preview = if match_result.preview.len() > MAX_PREVIEW_LENGTH {
-                format!("{}...", &match_result.preview[..MAX_PREVIEW_LENGTH])
+                format!(
+                    "{}...",
+                    crate::parsers::preview::truncate_bytes(
+                        &match_result.preview,
+                        MAX_PREVIEW_LENGTH
+                    )
+                )
             } else {
                 match_result.preview.clone()
             };
@@ -183,7 +192,10 @@ fn build_answer_prompt(
                 let line_num = match_result.span.start_line + idx + 1;
                 // Truncate long lines
                 let truncated = if line.len() > MAX_PREVIEW_LENGTH {
-                    format!("{}...", &line[..MAX_PREVIEW_LENGTH])
+                    format!(
+                        "{}...",
+                        crate::parsers::preview::truncate_bytes(line, MAX_PREVIEW_LENGTH)
+                    )
                 } else {
                     line.clone()
                 };

@@ -19,6 +19,16 @@ pub struct SymbolCache {
     db_path: std::path::PathBuf,
 }
 
+/// Version of the cached symbol payload format.
+///
+/// Bump whenever the SHAPE or SIZE of a cached `SearchResult` changes, so existing
+/// caches are dropped rather than served stale.
+///
+/// * v1 — pre-1.7.2: previews bounded in lines only, so a minified file cached
+///   multi-megabyte previews.
+/// * v2 — 1.7.2: previews bounded at `parsers::preview::PREVIEW_MAX_BYTES`.
+const SYMBOL_FORMAT_VERSION: i64 = 2;
+
 impl SymbolCache {
     /// Open a symbol cache at the given cache directory
     pub fn open(cache_dir: &Path) -> Result<Self> {
@@ -87,6 +97,45 @@ impl SymbolCache {
             "CREATE INDEX IF NOT EXISTS idx_symbols_hash ON symbols(file_hash)",
             [],
         )?;
+
+        // Invalidate caches written in an older PREVIEW format.
+        //
+        // `src/parsers/` is not in `CACHE_CRITICAL_FILES` (build.rs), so changing
+        // preview extraction does not move `CACHE_SCHEMA_HASH` — and the symbol cache
+        // keys on file CONTENT hash, which does not change either. Without this, every
+        // cache written before 1.7.2 would keep its multi-megabyte previews forever.
+        //
+        // Deliberately NOT solved by adding the parsers to CACHE_CRITICAL_FILES: that
+        // would invalidate content.bin and the trigram index for a preview-format
+        // change, forcing a full reindex on every user — and since the version guard
+        // landed, a hash mismatch makes writers refuse outright.
+        let stored_format: Option<i64> = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM statistics WHERE key = 'symbol_format_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if stored_format != Some(SYMBOL_FORMAT_VERSION) {
+            let dropped = conn.execute("DELETE FROM symbols", []).unwrap_or(0);
+            if dropped > 0 {
+                log::info!(
+                    "Symbol preview format changed (cache v{:?} -> v{}); cleared {} cached entries",
+                    stored_format,
+                    SYMBOL_FORMAT_VERSION,
+                    dropped
+                );
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+                rusqlite::params![
+                    "symbol_format_version",
+                    SYMBOL_FORMAT_VERSION.to_string(),
+                    chrono::Utc::now().timestamp()
+                ],
+            )?;
+        }
 
         log::debug!("Symbol cache schema initialized (file_id-based)");
         Ok(())
@@ -407,18 +456,18 @@ impl SymbolCache {
                 )
                 .context(format!("File not found in index: {}", file_path))?;
 
-            // Serialize symbols WITHOUT path
-            let symbols_without_path: Vec<_> = symbols
-                .iter()
-                .map(|s| {
-                    let mut s = s.clone();
-                    s.path = String::new();
-                    s
-                })
-                .collect();
-
-            let symbols_json = serde_json::to_string(&symbols_without_path)
-                .context("Failed to serialize symbols")?;
+            // Serialize symbols directly.
+            //
+            // This used to clone every SearchResult to blank its `path` — doubling
+            // peak memory for a batch, which on a minified bundle meant 18.7 GiB
+            // became 37.4 GiB. The clone was a no-op: all 55 construction sites in
+            // `src/parsers/` already pass `String::new()` as the path, and `get()`
+            // overwrites `path` unconditionally on read regardless.
+            // A caller that does set `path` costs a few bytes per symbol in the blob
+            // and nothing else, since `get()` replaces it with the real path on read.
+            // That is a far better trade than cloning the whole batch to save them.
+            let symbols_json =
+                serde_json::to_string(symbols).context("Failed to serialize symbols")?;
 
             // Insert into symbols table
             tx.execute(
