@@ -385,6 +385,24 @@ impl Indexer {
                     } else if let Ok(reader) = ContentReader::open(&content_path) {
                         if reader.file_count() > 0 {
                             log::info!("No files changed - skipping index rebuild");
+
+                            // The CONTENT is current, but the recorded commit may not
+                            // be: committing already-indexed files moves HEAD without
+                            // changing a single hash. Skipping the metadata update
+                            // left `commit_sha` behind forever, so freshness reported
+                            // `stale` on a perfectly current index until some
+                            // unrelated edit happened to force a rebuild.
+                            if let Some(ref state) = git_state
+                                && let Err(e) = self.cache.update_branch_metadata(
+                                    &branch,
+                                    Some(state.commit.as_str()),
+                                    existing_hashes.len(),
+                                    state.dirty,
+                                )
+                            {
+                                log::warn!("Failed to refresh branch metadata: {}", e);
+                            }
+
                             let mut stats = self.cache.stats()?;
                             stats.unchanged_files = total_files;
                             stats.skipped_too_large = skipped_too_large;
@@ -2096,6 +2114,22 @@ impl Indexer {
         }
 
         Ok((files, skipped_count, skipped_bytes))
+    }
+
+    /// Whether a path is one Reflex would index, judged by extension alone.
+    ///
+    /// Public so freshness checking can ask the same question the walker asks. If the
+    /// two ever disagree, editing a file Reflex does not index (a README, anything
+    /// under `target/`) would mark the index permanently stale — a cure worse than
+    /// the disease.
+    ///
+    /// Judges extension only: no filesystem access, no size check, no `.gitignore`
+    /// (git's own output is already filtered by that). Cheap enough to call per path
+    /// in a `git status` listing.
+    pub fn is_indexable_path(path: &Path) -> bool {
+        path.extension()
+            .map(|ext| Language::from_extension(&ext.to_string_lossy()).is_supported())
+            .unwrap_or(false)
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).

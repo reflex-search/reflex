@@ -117,6 +117,136 @@ pub fn has_uncommitted_changes(root: impl AsRef<Path>) -> Result<bool> {
     Ok(has_changes)
 }
 
+/// Files that differ between the working tree and the last commit.
+///
+/// Lists are capped (see [`MAX_REPORTED_PATHS`]) so a fresh checkout cannot produce a
+/// megabyte of JSON in an MCP response; `truncated` says when that happened and the
+/// `*_count` fields carry the real totals.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorktreeChanges {
+    /// Tracked files with edits.
+    pub modified: Vec<String>,
+    /// Untracked files, and files staged as new.
+    pub added: Vec<String>,
+    /// Files removed from disk.
+    pub deleted: Vec<String>,
+    pub modified_count: usize,
+    pub added_count: usize,
+    pub deleted_count: usize,
+    /// Whether any list was cut short.
+    pub truncated: bool,
+}
+
+impl WorktreeChanges {
+    /// Whether the working tree differs from the commit the index was built at.
+    pub fn is_empty(&self) -> bool {
+        self.modified_count == 0 && self.added_count == 0 && self.deleted_count == 0
+    }
+
+    /// Total changed paths, counting every category.
+    pub fn total(&self) -> usize {
+        self.modified_count + self.added_count + self.deleted_count
+    }
+
+    /// Whether any changed path is one the caller cares about.
+    pub fn any<F: Fn(&str) -> bool>(&self, pred: F) -> bool {
+        self.modified
+            .iter()
+            .chain(&self.added)
+            .chain(&self.deleted)
+            .any(|p| pred(p))
+    }
+}
+
+/// How many paths per category a [`WorktreeChanges`] will name.
+const MAX_REPORTED_PATHS: usize = 100;
+
+/// List working-tree changes against HEAD.
+///
+/// This is what makes freshness honest. Before 1.7.2 the check compared
+/// `git rev-parse HEAD` to the indexed commit and then sampled the mtimes of the
+/// first TEN indexed files — so an edit to any other file, any untracked file, and
+/// any deletion all reported `fresh` with `can_trust_results: true`. That is the
+/// primary agent workflow: edit, then search, before committing.
+///
+/// Flags, each load-bearing:
+/// * `-z` — porcelain v1 C-quotes paths containing spaces, non-ASCII or backslashes.
+///   `-z` emits raw NUL-separated paths and never quotes, so no unescaping is needed.
+/// * `--untracked-files=all` — list new files individually rather than just their
+///   directory, otherwise a new file inside an existing directory is invisible.
+/// * `--no-renames` — decompose `R old -> new` into a delete plus an add, which is
+///   exactly what an index must do with a rename, and removes all rename parsing.
+/// * `--ignored=no` — `.gitignore`d paths are not indexed, so they cannot make the
+///   index stale.
+///
+/// `keep` filters paths down to those the indexer would actually index. Without it,
+/// editing `README.md` or anything under `target/` would mark the index permanently
+/// stale, and the cure would be worse than the disease.
+pub fn get_worktree_changes<F>(root: impl AsRef<Path>, keep: F) -> Result<WorktreeChanges>
+where
+    F: Fn(&str) -> bool,
+{
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root.as_ref())
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+            "--ignored=no",
+        ])
+        .output()
+        .context("Failed to execute git status")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let mut changes = WorktreeChanges::default();
+
+    // Records are NUL-terminated: "XY <path>\0". With --no-renames there is never a
+    // second path in a record, so a plain split is safe.
+    for record in output.stdout.split(|b| *b == 0) {
+        if record.len() < 4 {
+            continue;
+        }
+        let text = String::from_utf8_lossy(record);
+        let (status, path) = text.split_at(3);
+        let path = path.trim();
+        if path.is_empty() || !keep(path) {
+            continue;
+        }
+
+        let mut bytes = status.bytes();
+        let x = bytes.next().unwrap_or(b' ');
+        let y = bytes.next().unwrap_or(b' ');
+
+        // A delete in either column wins: the indexed row must go regardless of
+        // whatever else the file did on the way there.
+        let (bucket, count) = if x == b'D' || y == b'D' {
+            (&mut changes.deleted, &mut changes.deleted_count)
+        } else if x == b'?' || x == b'A' {
+            (&mut changes.added, &mut changes.added_count)
+        } else {
+            (&mut changes.modified, &mut changes.modified_count)
+        };
+
+        *count += 1;
+        if bucket.len() < MAX_REPORTED_PATHS {
+            bucket.push(path.to_string());
+        } else {
+            changes.truncated = true;
+        }
+    }
+
+    Ok(changes)
+}
+
 /// Get complete git state for the current repository
 ///
 /// This is a convenience function that captures branch, commit, and dirty state

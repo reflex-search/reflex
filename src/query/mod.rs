@@ -279,11 +279,19 @@ impl QueryEngine {
             return Err(crate::errors::ReflexError::CacheCorrupted(e.to_string()).into());
         }
 
-        // Get index status and warning (without printing warnings to stderr)
-        let (status, can_trust_results, warning) = self.get_index_status()?;
-
-        // Execute the search
+        // Execute the search first, so freshness can be judged against the files this
+        // answer actually came from.
         let (results, total) = self.search_internal(pattern, filter.clone())?;
+
+        // Get index status and warning (without printing warnings to stderr).
+        //
+        // Scoped to the result paths: the index being behind is reported honestly as
+        // `stale` either way, but `can_trust_results` only goes false when a changed
+        // file could have affected THIS answer. Without that, every search in an
+        // ordinary edit-then-search loop would be flagged untrustworthy, and an agent
+        // told to treat that as fatal could not use Reflex at all.
+        let scope: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
+        let (status, can_trust_results, warning) = self.index_status_for(Some(&scope))?;
 
         // Build pagination metadata
         use crate::models::PaginationInfo;
@@ -2483,102 +2491,163 @@ impl QueryEngine {
     /// Returns (status, can_trust_results, warning) tuple for JSON output.
     /// This is optimized for AI agents to detect staleness and auto-reindex.
     pub fn get_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
+        self.index_status_for(None)
+    }
+
+    /// Index status read from the filesystem, never from the freshness memo.
+    ///
+    /// For `check_index_status`: an agent asking whether the index is current is
+    /// exactly the caller that must not be told what was true a second ago.
+    pub fn fresh_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
+        freshness_cache::invalidate(&self.cache.workspace_root());
+        self.index_status_for(None)
+    }
+
+    /// Index status, with `scope` naming the files a caller's answer came from.
+    ///
+    /// `scope` does NOT soften `can_trust_results`. A stale index always yields
+    /// `can_trust_results: false`, because the changes that matter most are the ones
+    /// scoping cannot see: a newly created file produces no results to intersect
+    /// with, and an empty result set has no scope at all — which is exactly the case
+    /// where an agent concludes "no callers" and acts on it.
+    ///
+    /// Scope is used only to describe the impact, via
+    /// [`IndexWarning::reason`], so a caller can tell "your results may be missing a
+    /// file you just edited" from "a file in these results has changed".
+    pub fn index_status_for(
+        &self,
+        scope: Option<&[String]>,
+    ) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
         let root = self.cache.workspace_root();
 
-        // Check git state if in a git repo
-        if crate::git::is_git_repo(&root)
-            && let Ok(current_branch) = crate::git::get_current_branch(&root)
-        {
-            // Check if we're on a different branch than what was indexed
-            if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
-                let warning = IndexWarning {
-                    reason: format!("Branch '{}' has not been indexed", current_branch),
-                    action_required: "rfx index".to_string(),
-                    files_modified: None,
-                    details: Some(IndexWarningDetails {
-                        current_branch: Some(current_branch),
-                        indexed_branch: None,
-                        current_commit: None,
-                        indexed_commit: None,
-                    }),
-                };
-                return Ok((IndexStatus::Stale, false, Some(warning)));
-            }
-
-            // Branch exists - check if commit changed
-            if let (Ok(current_commit), Ok(branch_info)) = (
-                crate::git::get_current_commit(&root),
-                self.cache.get_branch_info(&current_branch),
-            ) {
-                if branch_info.commit_sha != current_commit {
-                    let warning = IndexWarning {
-                        reason: format!(
-                            "Commit changed from {} to {}",
-                            &branch_info.commit_sha[..7],
-                            &current_commit[..7]
-                        ),
-                        action_required: "rfx index".to_string(),
-                        files_modified: None,
-                        details: Some(IndexWarningDetails {
-                            current_branch: Some(current_branch.clone()),
-                            indexed_branch: Some(current_branch.clone()),
-                            current_commit: Some(current_commit.clone()),
-                            indexed_commit: Some(branch_info.commit_sha.clone()),
-                        }),
-                    };
-                    return Ok((IndexStatus::Stale, false, Some(warning)));
-                }
-
-                // If commits match, do a quick file freshness check
-                if let Ok(branch_files) = self.cache.get_branch_files(&current_branch) {
-                    let mut checked = 0;
-                    let mut changed = 0;
-                    const SAMPLE_SIZE: usize = 10;
-
-                    for (path, _indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
-                        checked += 1;
-                        let file_path = std::path::Path::new(path);
-
-                        if let Ok(metadata) = std::fs::metadata(file_path)
-                            && let Ok(modified) = metadata.modified()
-                        {
-                            let indexed_time = branch_info.last_indexed;
-                            let file_time = modified
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as i64;
-
-                            if file_time > indexed_time {
-                                // File modified after indexing - likely stale
-                                // Note: We skip hash verification for performance (mtime check is sufficient)
-                                changed += 1;
-                            }
-                        }
-                    }
-
-                    if changed > 0 {
-                        let warning = IndexWarning {
-                            reason: format!("{} of {} sampled files modified", changed, checked),
-                            action_required: "rfx index".to_string(),
-                            files_modified: Some(changed as u32),
-                            details: Some(IndexWarningDetails {
-                                current_branch: Some(current_branch.clone()),
-                                indexed_branch: Some(branch_info.branch.clone()),
-                                current_commit: Some(current_commit.clone()),
-                                indexed_commit: Some(branch_info.commit_sha.clone()),
-                            }),
-                        };
-                        return Ok((IndexStatus::Stale, false, Some(warning)));
-                    }
-                }
-
-                // All checks passed - index is fresh
-                return Ok((IndexStatus::Fresh, true, None));
-            }
+        if !crate::git::is_git_repo(&root) || !crate::git::is_git_available() {
+            // Outside git there is no cheap way to find changes, and walking the tree
+            // on every query costs more than the staleness it would detect. Documented
+            // as a known limitation in the tool descriptions.
+            return Ok((IndexStatus::Fresh, true, None));
         }
 
-        // Not in a git repo or couldn't get git info - assume fresh
-        Ok((IndexStatus::Fresh, true, None))
+        let Ok(current_branch) = crate::git::get_current_branch(&root) else {
+            return Ok((IndexStatus::Fresh, true, None));
+        };
+
+        // 1. A branch we have never indexed: nothing here is trustworthy.
+        if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
+            let warning = IndexWarning::new(
+                format!("Branch '{}' has not been indexed", current_branch),
+                "index_project",
+            )
+            .with_details(IndexWarningDetails {
+                current_branch: Some(current_branch),
+                indexed_branch: None,
+                current_commit: None,
+                indexed_commit: None,
+            });
+            return Ok((IndexStatus::Stale, false, Some(warning)));
+        }
+
+        let (Ok(current_commit), Ok(branch_info)) = (
+            crate::git::get_current_commit(&root),
+            self.cache.get_branch_info(&current_branch),
+        ) else {
+            return Ok((IndexStatus::Fresh, true, None));
+        };
+
+        let details = IndexWarningDetails {
+            current_branch: Some(current_branch.clone()),
+            indexed_branch: Some(branch_info.branch.clone()),
+            current_commit: Some(current_commit.clone()),
+            indexed_commit: Some(branch_info.commit_sha.clone()),
+        };
+
+        // 2. HEAD moved. Potentially every file differs, so nothing is trustworthy.
+        if branch_info.commit_sha != current_commit {
+            let short = |s: &str| s.chars().take(7).collect::<String>();
+            let warning = IndexWarning::new(
+                format!(
+                    "Commit changed from {} to {}",
+                    short(&branch_info.commit_sha),
+                    short(&current_commit)
+                ),
+                "index_project",
+            )
+            .with_details(details);
+            return Ok((IndexStatus::Stale, false, Some(warning)));
+        }
+
+        // 3. The working tree. This is the case 1.7.1 missed entirely: it sampled the
+        // mtimes of the first TEN indexed files, which never included an untracked
+        // file (absent from the list) or a deleted one (metadata() fails, skipped
+        // silently). Edit-then-search is the primary agent workflow, and every one of
+        // those searches was served stale and labelled fresh.
+        let changes = match freshness_cache::worktree_changes(&root) {
+            Ok(c) => c,
+            // git unavailable mid-session, or a broken repo. Don't claim staleness we
+            // cannot demonstrate.
+            Err(e) => {
+                log::debug!("Could not read working tree state: {}", e);
+                return Ok((IndexStatus::Fresh, true, None));
+            }
+        };
+
+        if changes.is_empty() {
+            return Ok((IndexStatus::Fresh, true, None));
+        }
+
+        // Whether a changed file is among the ones this answer came from. Used only
+        // to sharpen the message — never to upgrade trust.
+        let hits_results = match scope {
+            None | Some([]) => false,
+            Some(paths) => changes.any(|changed| {
+                paths
+                    .iter()
+                    .any(|p| p == changed || p.ends_with(changed) || changed.ends_with(p.as_str()))
+            }),
+        };
+
+        let reason = {
+            let mut parts = Vec::new();
+            if changes.modified_count > 0 {
+                parts.push(format!("{} modified", changes.modified_count));
+            }
+            if changes.added_count > 0 {
+                parts.push(format!("{} added", changes.added_count));
+            }
+            if changes.deleted_count > 0 {
+                parts.push(format!("{} deleted", changes.deleted_count));
+            }
+            let impact = if hits_results {
+                " — including a file these results came from"
+            } else if changes.deleted_count > 0 {
+                " — deleted files still produce hits at their old lines"
+            } else {
+                " — these results may not reflect them"
+            };
+            format!(
+                "Working tree has uncommitted changes since indexing ({}){}",
+                parts.join(", "),
+                impact
+            )
+        };
+
+        let some_if_any = |v: Vec<String>| if v.is_empty() { None } else { Some(v) };
+        let warning = IndexWarning {
+            reason,
+            action_required: "index_project".to_string(),
+            files_modified: some_if_any(changes.modified),
+            files_added: some_if_any(changes.added),
+            files_deleted: some_if_any(changes.deleted),
+            changed_count: Some(
+                changes.modified_count + changes.added_count + changes.deleted_count,
+            ),
+            truncated: changes.truncated,
+            details: Some(details),
+        };
+
+        // Stale means untrusted, with no exception. A search served from an index
+        // that does not know about the caller's own edits cannot promise completeness,
+        // and a silently-confident wrong answer is the failure this release fixes.
+        Ok((IndexStatus::Stale, false, Some(warning)))
     }
 
     /// Check index freshness and show non-blocking warnings
@@ -3443,5 +3512,96 @@ mod tests {
         assert!(results.iter().any(|r| r.lang == Language::Rust));
         assert!(results.iter().any(|r| r.lang == Language::TypeScript));
         assert!(results.iter().any(|r| r.lang == Language::Python));
+    }
+}
+
+/// Process-local memo for working-tree state.
+///
+/// `search_with_metadata` runs the freshness check on EVERY query, and
+/// `find_references` calls it two or three times per MCP request. A `git status`
+/// subprocess each time would be a real cost on a large monorepo, so results are
+/// memoised briefly, keyed by workspace root.
+///
+/// What this trades away: an edit landing less than the TTL before a search can be
+/// reported fresh. Agent tool round-trips are seconds apart, and `check_index_status`
+/// — the explicit probe an agent uses when it cares — always bypasses the cache.
+///
+/// `REFLEX_FRESHNESS_TTL_MS` overrides the window; `0` disables caching entirely.
+mod freshness_cache {
+    use crate::git::WorktreeChanges;
+    use anyhow::Result;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const DEFAULT_TTL_MS: u64 = 1_000;
+
+    struct Entry {
+        computed_at: Instant,
+        changes: WorktreeChanges,
+    }
+
+    fn ttl() -> Duration {
+        static TTL: OnceLock<Duration> = OnceLock::new();
+        *TTL.get_or_init(|| {
+            let ms = std::env::var("REFLEX_FRESHNESS_TTL_MS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(DEFAULT_TTL_MS);
+            Duration::from_millis(ms)
+        })
+    }
+
+    fn store() -> &'static Mutex<HashMap<std::path::PathBuf, Entry>> {
+        static STORE: OnceLock<Mutex<HashMap<std::path::PathBuf, Entry>>> = OnceLock::new();
+        STORE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Only paths Reflex would index can make the index stale. Editing a README or
+    /// anything under `target/` must not mark it permanently behind.
+    fn indexable(path: &str) -> bool {
+        crate::indexer::Indexer::is_indexable_path(Path::new(path))
+    }
+
+    /// Working-tree changes for `root`, memoised for the TTL.
+    pub fn worktree_changes(root: &Path) -> Result<WorktreeChanges> {
+        let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let ttl = ttl();
+
+        if !ttl.is_zero()
+            && let Ok(map) = store().lock()
+            && let Some(entry) = map.get(&key)
+            && entry.computed_at.elapsed() < ttl
+        {
+            return Ok(entry.changes.clone());
+        }
+
+        let changes = crate::git::get_worktree_changes(root, indexable)?;
+
+        if !ttl.is_zero()
+            && let Ok(mut map) = store().lock()
+        {
+            map.insert(
+                key,
+                Entry {
+                    computed_at: Instant::now(),
+                    changes: changes.clone(),
+                },
+            );
+        }
+
+        Ok(changes)
+    }
+
+    /// Drop any memo for `root`, so the next read is fresh.
+    ///
+    /// Used by `check_index_status`, the explicit probe: an agent that asks whether
+    /// the index is current must never be answered from a cache.
+    pub fn invalidate(root: &Path) {
+        let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if let Ok(mut map) = store().lock() {
+            map.remove(&key);
+        }
     }
 }

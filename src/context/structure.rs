@@ -337,12 +337,23 @@ mod tests {
         fs::create_dir_all(temp.path().join("a/b/c/d")).unwrap();
         File::create(temp.path().join("a/b/c/d/deep.txt")).unwrap();
 
-        // Depth 2 should not show d/
+        // Depth 2 should not show d/.
+        //
+        // Match on entry names, not on a raw substring of the whole output: the tree
+        // includes the temp directory path, and a randomly generated name ending in
+        // `c` made `!result.contains("c/")` fail roughly one run in sixty.
         let result = generate_tree(temp.path(), 2).unwrap();
-        assert!(result.contains("a/"));
-        assert!(result.contains("b/"));
-        assert!(!result.contains("c/"));
-        assert!(!result.contains("deep.txt"));
+        let names: Vec<&str> = result
+            .lines()
+            .filter_map(|l| l.rsplit(['/', ' ', '\t']).find(|s| !s.is_empty()))
+            .collect();
+        assert!(result.contains("a/"), "{result}");
+        assert!(result.contains("b/"), "{result}");
+        assert!(
+            !result.lines().any(|l| l.trim_end().ends_with("c/")),
+            "depth 2 must not reach c/: {result}"
+        );
+        assert!(!names.contains(&"deep.txt"), "{result}");
     }
 
     #[test]
