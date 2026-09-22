@@ -76,7 +76,60 @@ pub enum Language {
     Kotlin,
     Swift,
     Zig,
+    /// Plain-text tier: documentation, config and templates.
+    ///
+    /// Trigram-indexed only — no tree-sitter grammar, no symbol extraction, no
+    /// import extraction. Added because agents do not partition searches by file
+    /// type: a config key lives in the YAML, the Rust struct AND the spec paragraph,
+    /// and Reflex used to return the struct and a confident 0 for the rest.
+    ///
+    /// Serialises as `"text"` (the enum is `rename_all = "lowercase"`).
+    Text,
     Unknown,
+}
+
+/// Extensions in the plain-text tier.
+///
+/// A fixed allowlist, not "everything unrecognised": an index that swallowed every
+/// binary blob and generated artefact in a repo would be slower and less useful.
+const TEXT_EXTENSIONS: &[&str] = &[
+    "md", "mdx", "txt", "yaml", "yml", "toml", "json", "proto", "html", "htm", "sh", "bash", "ini",
+    "cfg", "sql", "graphql",
+];
+
+/// Filenames excluded from the text tier despite a matching extension.
+///
+/// Lock files are the reason the tier needs an exclusion list at all: a
+/// `package-lock.json` is 100k+ lines of near-random trigrams, which bloats posting
+/// lists without ever being something a person searches for.
+const TEXT_FILENAME_EXCLUSIONS: &[&str] = &[
+    "package-lock.json",
+    "composer.lock",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Cargo.lock",
+    "poetry.lock",
+    "Gemfile.lock",
+];
+
+/// Whether a file belongs in the text tier, judged by its full name.
+///
+/// Takes the file NAME, not just the extension, so lock files can be excluded.
+pub fn is_text_tier_file(file_name: &str) -> bool {
+    if TEXT_FILENAME_EXCLUSIONS
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(file_name))
+    {
+        return false;
+    }
+    // `*-lock.json` and friends, beyond the names listed above.
+    if file_name.ends_with("-lock.json") || file_name.ends_with(".lock") {
+        return false;
+    }
+    match file_name.rsplit_once('.') {
+        Some((_, ext)) => TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
+        None => false,
+    }
 }
 
 impl Language {
@@ -98,6 +151,9 @@ impl Language {
             "kt" | "kts" => Language::Kotlin,
             "swift" => Language::Swift,
             "zig" => Language::Zig,
+            // The text tier. Note this maps by EXTENSION only; `is_text_tier_file`
+            // additionally excludes lock files by name, and the indexer uses that.
+            ext if TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) => Language::Text,
             _ => Language::Unknown,
         }
     }
@@ -123,6 +179,7 @@ impl Language {
             "ruby" | "rb" => Some(Language::Ruby),
             "kotlin" | "kt" => Some(Language::Kotlin),
             "zig" => Some(Language::Zig),
+            "text" | "txt" | "plaintext" | "plain" => Some(Language::Text),
             _ => None,
         }
     }
@@ -130,7 +187,8 @@ impl Language {
     /// Human-readable list of all supported language names (for error messages)
     pub fn supported_names_help() -> &'static str {
         "rust (rs), python (py), javascript (js), typescript (ts), vue, svelte, \
-         go, java, php, c, cpp (c++), csharp (cs, c#), ruby (rb), kotlin (kt), zig"
+         go, java, php, c, cpp (c++), csharp (cs, c#), ruby (rb), kotlin (kt), zig, \
+         text (docs and config: md, yaml, toml, json, proto, html, sh, sql, graphql)"
     }
 
     /// Check if this language has a parser implementation
@@ -155,8 +213,24 @@ impl Language {
             Language::Kotlin => true,
             Language::Swift => false, // Temporarily disabled - parser queries out of date with tree-sitter-swift 0.7.x grammar
             Language::Zig => true,
+            // No tree-sitter grammar, by design.
+            Language::Text => false,
             Language::Unknown => false,
         }
+    }
+
+    /// Whether this is the plain-text tier.
+    pub fn is_text(&self) -> bool {
+        matches!(self, Language::Text)
+    }
+
+    /// Whether files of this language are indexed at all.
+    ///
+    /// Distinct from [`Self::is_supported`], which means "has a tree-sitter parser".
+    /// The text tier is indexed but never parsed, so symbol search, AST queries and
+    /// dependency analysis skip it while full-text search covers it.
+    pub fn is_indexable(&self) -> bool {
+        self.is_supported() || self.is_text()
     }
 }
 
@@ -335,6 +409,24 @@ pub struct IndexConfig {
     /// The `rfx index` CLI waits; MCP, watcher and HTTP callers fail fast.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub lock_wait_secs: u64,
+    /// Index documentation, config and template files alongside code.
+    ///
+    /// On by default. Covers md, mdx, txt, yaml, yml, toml, json, proto, html, htm,
+    /// sh, bash, ini, cfg, sql and graphql, trigram-indexed only — no symbols, no
+    /// AST, no dependency analysis. Lock files are always excluded.
+    ///
+    /// Set `[index] text_tier = false` for a repo with large generated JSON or
+    /// vendored documentation where the index growth is not worth it.
+    ///
+    /// `#[serde(default = ...)]` so a config file written before 1.7.2 still parses
+    /// and gets the new default.
+    #[serde(default = "default_true")]
+    pub text_tier: bool,
+}
+
+/// Serde default for boolean options that are on unless explicitly disabled.
+fn default_true() -> bool {
+    true
 }
 
 impl Default for IndexConfig {
@@ -348,6 +440,7 @@ impl Default for IndexConfig {
             parallel_threads: 0,               // 0 = auto (80% of available cores)
             query_timeout_secs: 30,            // 30 seconds default timeout
             max_posting_list_entries: 500_000, // cap at 500k to bound query latency
+            text_tier: true,                   // docs and config are searchable by default
             lock_wait_secs: 0,                 // fail fast when another indexer runs
         }
     }

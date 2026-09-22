@@ -2134,9 +2134,30 @@ impl Indexer {
     /// (git's own output is already filtered by that). Cheap enough to call per path
     /// in a `git status` listing.
     pub fn is_indexable_path(path: &Path) -> bool {
-        path.extension()
-            .map(|ext| Language::from_extension(&ext.to_string_lossy()).is_supported())
-            .unwrap_or(false)
+        // Mirror the walker, which uses `ignore::WalkBuilder`'s `hidden(true)`
+        // default and so never descends into a dot-directory. Without this, Reflex's
+        // OWN `.reflex/config.toml` counts as an indexable change the moment the text
+        // tier claims `.toml`, and the index reports itself permanently stale.
+        if path
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .any(|seg| seg.starts_with('.') && seg != "." && seg != "..")
+        {
+            return false;
+        }
+
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else {
+            return false;
+        };
+        let Some(ext) = path.extension().map(|e| e.to_string_lossy()) else {
+            return false;
+        };
+        let lang = Language::from_extension(&ext);
+        // The text tier is judged by full NAME, so lock files stay out.
+        if lang.is_text() {
+            return crate::models::is_text_tier_file(&name);
+        }
+        lang.is_supported()
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).
@@ -2147,6 +2168,23 @@ impl Indexer {
         };
 
         let lang = Language::from_extension(&ext);
+
+        // The plain-text tier: docs, config and templates. Judged by full filename so
+        // lock files (100k+ lines of near-random trigrams) stay out.
+        if lang.is_text() {
+            if !self.config.text_tier {
+                return false;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
+            // Deliberately NOT subject to `config.languages`. That option means "which
+            // PARSERS do I care about"; a user with languages = ["rust"] would
+            // otherwise lose the text tier silently, which is the very bug this tier
+            // exists to fix. `text_tier = false` is the way to turn it off.
+            return crate::models::is_text_tier_file(&name);
+        }
 
         if !lang.is_supported() {
             if !matches!(lang, Language::Unknown) {
@@ -2365,10 +2403,59 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let unsupported_file = temp.path().join("test.txt");
-        fs::write(&unsupported_file, "plain text").unwrap();
-
+        // .txt joined the plain-text tier in 1.7.2, so pick a genuinely unknown
+        // extension for this case.
+        let unsupported_file = temp.path().join("test.xyz");
+        fs::write(&unsupported_file, "mystery format").unwrap();
         assert!(!indexer.should_index(&unsupported_file));
+
+        // A binary-ish extension stays out too.
+        let binary_file = temp.path().join("logo.png");
+        fs::write(&binary_file, "not really a png").unwrap();
+        assert!(!indexer.should_index(&binary_file));
+    }
+
+    #[test]
+    fn test_should_index_text_tier() {
+        let temp = TempDir::new().unwrap();
+        let indexer = Indexer::new(CacheManager::new(temp.path()), IndexConfig::default());
+
+        for name in [
+            "notes.md",
+            "config.yaml",
+            "data.json",
+            "api.proto",
+            "run.sh",
+        ] {
+            let path = temp.path().join(name);
+            fs::write(&path, "realm_marker").unwrap();
+            assert!(indexer.should_index(&path), "{name} should be indexed");
+        }
+
+        // Lock files match a text extension but are excluded by name.
+        let lock = temp.path().join("package-lock.json");
+        fs::write(&lock, "{}").unwrap();
+        assert!(!indexer.should_index(&lock));
+    }
+
+    #[test]
+    fn test_text_tier_can_be_disabled() {
+        let temp = TempDir::new().unwrap();
+        let indexer = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                text_tier: false,
+                ..Default::default()
+            },
+        );
+
+        let md = temp.path().join("notes.md");
+        fs::write(&md, "text").unwrap();
+        assert!(!indexer.should_index(&md));
+
+        let rs = temp.path().join("main.rs");
+        fs::write(&rs, "fn main() {}").unwrap();
+        assert!(indexer.should_index(&rs), "code is unaffected");
     }
 
     #[test]
@@ -2447,10 +2534,13 @@ mod tests {
         fs::write(temp.path().join("main.rs"), "fn main() {}").unwrap();
         fs::write(temp.path().join("script.py"), "print('hello')").unwrap();
         fs::write(temp.path().join("app.js"), "console.log('hi')").unwrap();
-        fs::write(temp.path().join("README.md"), "# Project").unwrap(); // Should be skipped
+        // Since 1.7.2 markdown IS indexed, in the plain-text tier.
+        fs::write(temp.path().join("README.md"), "# Project").unwrap();
+        // Still skipped: no tier claims it.
+        fs::write(temp.path().join("mystery.xyz"), "?").unwrap();
 
         let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
-        assert_eq!(files.len(), 3); // Only supported languages
+        assert_eq!(files.len(), 4, "3 code files plus the markdown");
     }
 
     #[test]

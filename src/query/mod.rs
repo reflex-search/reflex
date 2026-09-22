@@ -838,6 +838,13 @@ impl QueryEngine {
             results.retain(|r| seen_paths.insert(r.path.clone()));
         }
 
+        // Drop text-tier results when the caller asked for code only. Applied BEFORE
+        // the total is captured, so pagination counts what the caller will actually
+        // receive rather than what was found and then discarded.
+        if filter.exclude_text {
+            results.retain(|r| !r.lang.is_text());
+        }
+
         // Step 5: Sort results deterministically (by path, then line number)
         results.sort_by(|a, b| {
             a.path
@@ -1115,6 +1122,13 @@ impl QueryEngine {
             results.retain(|r| seen_paths.insert(r.path.clone()));
         }
 
+        // Drop text-tier results when the caller asked for code only. Applied BEFORE
+        // the total is captured, so pagination counts what the caller will actually
+        // receive rather than what was found and then discarded.
+        if filter.exclude_text {
+            results.retain(|r| !r.lang.is_text());
+        }
+
         // Sort results deterministically
         results.sort_by(|a, b| {
             a.path
@@ -1288,6 +1302,13 @@ impl QueryEngine {
                     }
                 }
             }
+        }
+
+        // Drop text-tier results when the caller asked for code only. Applied BEFORE
+        // the total is captured, so pagination counts what the caller will actually
+        // receive rather than what was found and then discarded.
+        if filter.exclude_text {
+            results.retain(|r| !r.lang.is_text());
         }
 
         // Sort results deterministically

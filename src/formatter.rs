@@ -54,6 +54,9 @@ impl SyntaxHighlighter {
             Language::Zig => ("zig", None),
             Language::Vue => ("vue", Some("html")), // Fallback to HTML
             Language::Svelte => ("svelte", Some("html")), // Fallback to HTML
+            // The text tier spans markdown, YAML, shell and more, so no single
+            // syntax fits. Render it plain, as Unknown already is.
+            Language::Text => return None,
             Language::Unknown => return None,
         };
 

@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2025-11-16
+**Last Updated:** 2026-09-22
 **Project Status:** Testing & Quality Phase Complete - Production Ready
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
@@ -1997,6 +1997,78 @@ Yes, but we can minimize the impact:
    - Cache format versioning allows migration between Reflex versions
    - Older caches can be rebuilt with newer Reflex versions
    - Breaking changes will be clearly documented with migration guides
+
+---
+
+---
+
+## 🔄 1.7.2 — MCP correctness release (2026-09-22)
+
+**Trigger:** a field test of `rfx mcp` 1.7.0 inside Claude Code, against ripgrep on a
+480k-line, 1027-file Rust monorepo. Four defects, three of which returned a **wrong
+answer** with `status: "fresh"` and `can_trust_results: true`.
+
+### What was wrong, and why
+
+| # | Symptom | Root cause | Status |
+| --- | --- | --- | --- |
+| 1 | `verify_csrf` → 0 (rg: 89) | MCP hardcoded `use_contains: false` at 10 sites; the CLI `--contains` and HTTP `contains=` both plumbed it | ✅ done |
+| 2 | Edited / added / deleted files reported `fresh` | Freshness sampled the mtimes of the **first ten** indexed files; untracked files are absent from that list and deleted ones fail `metadata()` | ✅ done |
+| 3 | Raw `database is locked: Error code 5` for ~4 min | TWO locks: the symbol pass takes `.reflex/indexing.lock`, the indexer takes `.reflex/index.lock`. Neither knew about the other. No `busy_timeout` anywhere either. | ✅ done |
+| 4 | `*.md` → 0 (rg: 3425) | `Language::Unknown.is_supported()` is false, and that gate decides what gets indexed | ✅ done |
+
+### Decisions made
+
+1. **Honest staleness over auto-refresh.** The handoff preferred auto-indexing before
+   answering "if it stays under ~1s". It cannot: the indexer has no partial-update
+   path, so one changed hash triggers a full rebuild (minutes, 110→425 MB). It would
+   also need `IndexLock` on the query path. Gated behind `REFLEX_MCP_AUTO_INDEX=1`
+   instead. **Revisit only after a genuinely incremental index path exists.**
+2. **Stale always means `can_trust_results: false`.** An earlier draft scoped the flag
+   to whether a changed file appeared in the result set — which returns `true` for a
+   zero-result search, precisely where an agent concludes "no callers". Scope is used
+   only to sharpen the warning text.
+3. **Readers degrade, writers refuse.** `validate()` runs on every search and bailed on
+   a schema-hash mismatch → `CacheCorrupted` → MCP force-rebuild. Several versions
+   sharing one `.reflex/` therefore rebuilt it concurrently; that is the origin of
+   `content.bin is too small`. The refusal is scoped narrowly to "a different released
+   version owns this cache" — refusing on the schema hash alone breaks every upgrade,
+   since that hash flips on any change to cache-critical sources.
+4. **The symbol pass yields rather than holding the lock.** Giving it `IndexLock` would
+   block every `index_project` for the whole multi-minute pass — the reported complaint,
+   made mandatory. It now stops at its next batch on a cancel sentinel.
+5. **Text tier on by default, with `[index] text_tier = false` to opt out**, and exempt
+   from `[index] languages` — that option means "which parsers do I care about", and a
+   user narrowing to Rust should not silently lose their documentation.
+
+### Corrections to the original handoff
+
+- The status cadence guard (`processed % 500 < batch_size`) was **already a no-op**:
+  `batch_size` was itself 500. The freeze at 1000/1027 was inside the final chunk, so
+  the tail needed instrumentation, not a cadence change.
+- `validate()` **is** called on every search (`query/mod.rs`), which the handoff did not
+  know. That is what made a version skew into a rebuild stampede.
+- `list_locations` looked per-match in the code; `paths_only: true` upstream collapsed
+  each file to one match. The field report was right.
+
+### Found while fixing, not in the report
+
+- Committing already-indexed content left the index permanently stale: the fast path
+  skipped the rebuild and so never refreshed the recorded commit.
+- No `busy_timeout`, `journal_mode` or `foreign_keys` pragma was set on any meta.db
+  connection, so `ON DELETE CASCADE` was almost certainly never firing.
+- Reflex indexed its own `.reflex/config.toml` once the text tier claimed `.toml`.
+- `test_depth_limiting` was flaky ~1 run in 60 (temp dir names ending in `c`).
+
+### Still open
+
+- **REF-219-style hybrid columnar format** — optional backlog, unchanged.
+- **Incremental index path** (prerequisite for auto-refresh, decision 1 above).
+- **Text tier v2**: extension-less names (`Dockerfile`, `Makefile`) were deliberately
+  deferred; `should_index_lang` early-returns on a missing extension, so they need a
+  second lookup path, and both plausibly want real parsers later.
+- **`cleanup_stale` tail profiling**: instrumented and logged, but not yet measured on
+  a large repo now that the meta.db lock contention is gone.
 
 ---
 

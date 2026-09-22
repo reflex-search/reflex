@@ -324,7 +324,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
         "tools": [
             {
                 "name": "list_locations",
-                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns an array of `{path, line}` objects — one per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. INDEXES CODE FILES ONLY (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig). Markdown, YAML, JSON, TOML, HTML, shell and proto files are NOT indexed and always return 0 — use Grep for those. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns an array of `{path, line}` objects — one per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -338,7 +338,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         },
                         "lang": {
                             "type": "string",
-                            "description": "Filter by language (php, rust, typescript, python, etc.)"
+                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the docs/config tier (md, yaml, toml, json, proto, html, sh, sql, graphql)."
                         },
                         "file": {
                             "type": "string",
@@ -368,7 +368,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "count_occurrences",
-                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. INDEXES CODE FILES ONLY (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig). Markdown, YAML, JSON, TOML, HTML, shell and proto files are NOT indexed and always return 0 — use Grep for those. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -420,7 +420,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "search_code",
-                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. INDEXES CODE FILES ONLY (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig). Markdown, YAML, JSON, TOML, HTML, shell and proto files are NOT indexed and always return 0 — use Grep for those. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -439,7 +439,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         },
                         "lang": {
                             "type": "string",
-                            "description": "Filter by language (rust, typescript, python, etc.)"
+                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the docs/config tier (md, yaml, toml, json, proto, html, sh, sql, graphql)."
                         },
                         "kind": {
                             "type": "string",
@@ -779,7 +779,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "find_references",
-                "description": "Atomic symbol definition + every usage in one call. Prefer this over the two-step Grep-based find-all-callers pattern (search, then filter to call sites by eye) and over chaining `search_code(symbols=true) + search_code()` — `find_references` returns both the definition and all call sites in a single call, complete with no follow-up searches needed. \n\nUse this for: \"find all callers of X\" (the most common agent refactoring task); impact analysis before changing a function or class; rename planning; dead-code detection before deleting a function. \n\nBy default, matches inside string literals and comments are excluded (so test fixtures and doc comments don't drown out real call sites); pass `include_strings: true` to restore all occurrences. Returns `{definition, references, total_references, returned_count, filtered_out, pagination, status}`. `pagination.total` and `total_references` are the RAW totals before string/comment filtering (that is the space `offset` indexes into); `returned_count` is what this page actually returns after filtering, and `filtered_out` is the difference — they are not expected to be equal. `definition` is the first symbol definition (`{path, line, kind, symbol, span, preview}`) or null, and `references` is a flat array of `{path, line, preview}` covering every textual occurrence including the definition site itself. Pagination applies to `references` only; if `pagination.has_more` is true, fetch the next page with `offset`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Atomic symbol definition + every usage in one call. Prefer this over the two-step Grep-based find-all-callers pattern (search, then filter to call sites by eye) and over chaining `search_code(symbols=true) + search_code()` — `find_references` returns both the definition and all call sites in a single call, complete with no follow-up searches needed. \n\nUse this for: \"find all callers of X\" (the most common agent refactoring task); impact analysis before changing a function or class; rename planning; dead-code detection before deleting a function. \n\nBy default, matches inside string literals and comments are excluded (so test fixtures and doc comments don't drown out real call sites); pass `include_strings: true` to restore all occurrences. CODE FILES ONLY: the docs/config tier (md, yaml, json, toml, html, sh, proto) is never searched here, because a name mentioned in a changelog is not a call site — use search_code with `lang: \"text\"` for those. Returns `{definition, references, total_references, returned_count, filtered_out, pagination, status}`. `pagination.total` and `total_references` are the RAW totals before string/comment filtering (that is the space `offset` indexes into); `returned_count` is what this page actually returns after filtering, and `filtered_out` is the difference — they are not expected to be equal. `definition` is the first symbol definition (`{path, line, kind, symbol, span, preview}`) or null, and `references` is a flat array of `{path, line, preview}` covering every textual occurrence including the definition site itself. Pagination applies to `references` only; if `pagination.has_more` is true, fetch the next page with `offset`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2125,9 +2125,20 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
 
-            let language = parse_language(Some(lang_str)).ok_or_else(|| {
+            let language = parse_language(Some(lang_str.clone())).ok_or_else(|| {
                 anyhow::anyhow!("Invalid or unsupported language for AST queries")
             })?;
+
+            // Reject the text tier explicitly rather than letting it fall through to
+            // the grammar loader's generic error. There is no grammar, by design.
+            if language.is_text() {
+                anyhow::bail!(
+                    "lang \"{}\" is the plain-text tier (markdown, YAML, JSON, TOML, HTML, \
+                     shell, proto). These files are trigram-indexed only and have no AST. \
+                     Use search_code or search_regex on them instead.",
+                    lang_str
+                );
+            }
 
             // Warn if glob patterns are not provided (performance issue)
             if glob_patterns.is_empty() && exclude_patterns.is_empty() {
@@ -2760,6 +2771,11 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     file_pattern: None,
                     exact: false,
                     use_contains: contains,
+                    // Code only. The reference search is a plain trigram scan, and
+                    // `is_in_string_or_comment` returns false for the text tier (no line
+                    // filter exists for markdown), so a mention in a changelog would
+                    // otherwise be reported as a call site.
+                    exclude_text: true,
                     timeout_secs: 30,
                     glob_patterns,
                     exclude_patterns,
@@ -2811,6 +2827,11 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 file_pattern: None,
                 exact: false,
                 use_contains: contains,
+                // Code only. The reference search is a plain trigram scan, and
+                // `is_in_string_or_comment` returns false for the text tier (no line
+                // filter exists for markdown), so a mention in a changelog would
+                // otherwise be reported as a call site.
+                exclude_text: true,
                 timeout_secs: 30,
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns: exclude_patterns.clone(),
@@ -2860,6 +2881,11 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 file_pattern: None,
                 exact: false,
                 use_contains: contains,
+                // Code only. The reference search is a plain trigram scan, and
+                // `is_in_string_or_comment` returns false for the text tier (no line
+                // filter exists for markdown), so a mention in a changelog would
+                // otherwise be reported as a call site.
+                exclude_text: true,
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,

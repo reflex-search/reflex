@@ -1,0 +1,3 @@
+[service]
+realm_marker = "default"
+jwks_rps_limit = 40
