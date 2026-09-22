@@ -18,7 +18,6 @@ use crate::models::{
 };
 use crate::output;
 use crate::parsers::ParserFactory;
-use crate::regex_trigrams::extract_trigrams_from_regex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -36,8 +35,14 @@ pub fn invalidate_caches(workspace_root: &std::path::Path) {
 /// wrappers turn into pagination, hints and timings.
 struct Internal {
     results: Vec<SearchResult>,
-    /// Matches before offset/limit.
+    /// Matches before offset/limit. Exact when `total_is_exact`; otherwise the
+    /// number verified before the page filled.
     total_count: usize,
+    /// False when verification stopped early (list mode with a limit).
+    total_is_exact: bool,
+    /// Upper bound on the total when it is not exact: candidate lines from the
+    /// trigram intersection in files that pass the file filters.
+    approx_total: Option<usize>,
     /// Candidate lines that contained the pattern only as a substring
     /// (whole-identifier searches only), for the zero-result hint.
     substring_only: Option<usize>,
@@ -45,11 +50,122 @@ struct Internal {
     candidates_us: u64,
 }
 
-/// Bookkeeping from the trigram candidate pass.
-#[derive(Debug, Default, Clone, Copy)]
+/// Bookkeeping from a candidate pass (trigram or regex).
+#[derive(Debug, Clone, Copy)]
 struct CandidateStats {
     candidates_us: u64,
     substring_only: Option<usize>,
+    /// Every candidate was verified.
+    exhausted: bool,
+    /// Candidate lines in files that passed the file filters, when known.
+    approx_total: Option<usize>,
+}
+
+impl Default for CandidateStats {
+    fn default() -> Self {
+        Self {
+            candidates_us: 0,
+            substring_only: None,
+            exhausted: true,
+            approx_total: None,
+        }
+    }
+}
+
+/// Which lines of a candidate file to verify.
+enum LineSet {
+    /// Only these 1-based lines (from the trigram intersection), ascending.
+    Only(Vec<u32>),
+    /// Every line: the pattern gave the index nothing to narrow on.
+    All,
+}
+
+/// Per-file filters, applied INSIDE the verification loop so that early
+/// termination counts only files the caller will actually receive.
+struct FileFilter {
+    language: Option<Language>,
+    include: Option<globset::GlobSet>,
+    exclude: Option<globset::GlobSet>,
+    file_pattern: Option<String>,
+    exclude_text: bool,
+}
+
+impl FileFilter {
+    fn from_filter(filter: &QueryFilter) -> Self {
+        use globset::{Glob, GlobSetBuilder};
+
+        let build = |patterns: &[String], what: &str| -> Option<globset::GlobSet> {
+            if patterns.is_empty() {
+                return None;
+            }
+            let mut builder = GlobSetBuilder::new();
+            for pattern in patterns {
+                // Normalize pattern to ensure LLM-generated patterns work correctly
+                let normalized = result::normalize_glob_pattern(pattern);
+                match Glob::new(&normalized) {
+                    Ok(glob) => {
+                        builder.add(glob);
+                    }
+                    Err(e) => log::warn!("Invalid {} pattern '{}': {}", what, pattern, e),
+                }
+            }
+            match builder.build() {
+                Ok(set) => Some(set),
+                Err(e) => {
+                    log::warn!("Failed to build {} matcher: {}", what, e);
+                    None
+                }
+            }
+        };
+
+        Self {
+            language: filter.language,
+            include: build(&filter.glob_patterns, "glob"),
+            exclude: build(&filter.exclude_patterns, "exclude"),
+            file_pattern: filter.file_pattern.clone(),
+            exclude_text: filter.exclude_text,
+        }
+    }
+
+    fn accept(&self, path: &str, lang: Language) -> bool {
+        if let Some(want) = self.language
+            && lang != want
+        {
+            return false;
+        }
+        if self.exclude_text && lang.is_text() {
+            return false;
+        }
+        if let Some(set) = &self.include
+            && !set.is_match(path)
+        {
+            return false;
+        }
+        if let Some(set) = &self.exclude
+            && set.is_match(path)
+        {
+            return false;
+        }
+        if let Some(needle) = &self.file_pattern
+            && !path.contains(needle.as_str())
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// What a streaming verification pass produced.
+struct VerifyOutcome {
+    /// In `(path, line)` order.
+    results: Vec<SearchResult>,
+    /// Every candidate file was verified.
+    exhausted: bool,
+    /// Candidate lines in accepted files; `None` when a file had `LineSet::All`.
+    candidate_lines: Option<usize>,
+    /// Whole-identifier searches only: candidate lines holding the pattern as a
+    /// substring but not as a whole identifier.
+    substring_only: usize,
 }
 
 /// The per-line predicate for one query, built once.
@@ -57,8 +173,9 @@ struct CandidateStats {
 /// The whole-identifier check used to compile `\b…\b` for every candidate line;
 /// on a common word that compile cost more than the match itself.
 enum LineMatcher {
-    /// Whole-identifier match (`\b…\b`), the default.
-    WordBoundary(Regex),
+    /// Whole-identifier match (`\b…\b`), the default. Keeps the literal so the
+    /// zero-result hint can count substring-only lines.
+    WordBoundary(Regex, String),
     /// Substring match (`contains: true`), also the fallback when the
     /// word-boundary regex cannot be built.
     Contains(String),
@@ -81,7 +198,7 @@ impl LineMatcher {
             return Ok(Self::Contains(pattern.to_string()));
         }
         match Regex::new(&format!(r"\b{}\b", regex::escape(pattern))) {
-            Ok(re) => Ok(Self::WordBoundary(re)),
+            Ok(re) => Ok(Self::WordBoundary(re, pattern.to_string())),
             Err(_) => {
                 log::debug!(
                     "Word boundary regex failed for pattern '{}', falling back to substring",
@@ -93,15 +210,190 @@ impl LineMatcher {
     }
 
     fn is_word_boundary(&self) -> bool {
-        matches!(self, Self::WordBoundary(_))
+        matches!(self, Self::WordBoundary(..))
     }
 
     #[inline]
     fn is_match(&self, line: &str) -> bool {
         match self {
-            Self::WordBoundary(re) | Self::Regex(re) => re.is_match(line),
+            Self::WordBoundary(re, _) | Self::Regex(re) => re.is_match(line),
             Self::Contains(p) => line.contains(p.as_str()),
         }
+    }
+
+    /// Byte offset of the first match, to window the preview on it.
+    #[inline]
+    fn find(&self, line: &str) -> Option<usize> {
+        match self {
+            Self::WordBoundary(re, _) | Self::Regex(re) => re.find(line).map(|m| m.start()),
+            Self::Contains(p) => line.find(p.as_str()),
+        }
+    }
+
+    /// The literal text of a whole-identifier or substring matcher (regex: none).
+    fn literal(&self) -> Option<&str> {
+        match self {
+            Self::WordBoundary(_, p) | Self::Contains(p) => Some(p.as_str()),
+            Self::Regex(_) => None,
+        }
+    }
+
+    /// The `kind` label a text match carries in results.
+    fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Regex(_) => "regex_match",
+            _ => "text_match",
+        }
+    }
+}
+
+/// Verify candidate files in path order, in parallel, stopping once `budget`
+/// results exist.
+///
+/// Files are processed in rounds of growing chunks (16, 32, … 1024). Inside a
+/// round rayon's indexed `map().collect()` keeps file order, and lines within a
+/// file are ascending, so the concatenation is already in `(path, line)` order:
+/// the first page is complete and correctly ordered the moment the budget is met,
+/// without verifying the rest. With `budget: None` every file is verified.
+fn verify_files_streaming(
+    open: &OpenIndex,
+    files: Vec<(u32, LineSet)>,
+    matcher: &LineMatcher,
+    file_filter: &FileFilter,
+    paths_only: bool,
+    budget: Option<usize>,
+) -> VerifyOutcome {
+    use rayon::prelude::*;
+
+    let content = &open.content;
+
+    // Resolve path + language once per file, drop files the filters reject, and
+    // sort by the path string the results will carry.
+    let mut accepted: Vec<(u32, String, Language, LineSet)> = files
+        .into_iter()
+        .filter_map(|(file_id, lines)| {
+            let path = content.get_file_path(file_id)?;
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang = Language::from_extension(ext);
+            let path_str = path.to_string_lossy().into_owned();
+            file_filter
+                .accept(&path_str, lang)
+                .then_some((file_id, path_str, lang, lines))
+        })
+        .collect();
+    accepted.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let candidate_lines = accepted
+        .iter()
+        .try_fold(0usize, |acc, (_, _, _, lines)| match lines {
+            LineSet::Only(v) => Some(acc + v.len()),
+            LineSet::All => None,
+        });
+
+    let count_substring_only = matcher.is_word_boundary();
+    let substring_only = AtomicUsize::new(0);
+    let kind_label = matcher.kind_label();
+
+    let verify_one = |file_id: u32, path: &str, lang: Language, lines: &LineSet| {
+        let Ok(text) = content.get_file_content(file_id) else {
+            return Vec::new();
+        };
+        let all_lines: Vec<&str> = text.lines().collect();
+        let mut out = Vec::new();
+
+        let mut check = |line_no: usize, line: &str| -> bool {
+            let Some(offset) = matcher.find(line) else {
+                if count_substring_only
+                    && let Some(p) = matcher.literal()
+                    && line.contains(p)
+                {
+                    substring_only.fetch_add(1, Ordering::Relaxed);
+                }
+                return false;
+            };
+            out.push(SearchResult {
+                path: path.to_string(),
+                lang,
+                kind: SymbolKind::Unknown(kind_label.to_string()),
+                symbol: None,
+                span: Span {
+                    start_line: line_no,
+                    end_line: line_no,
+                },
+                // Bounded, and WINDOWED on the match: on a minified bundle this
+                // line is the whole 1.45 MB file, and the first 512 bytes of it
+                // would tell the caller nothing.
+                preview: crate::parsers::preview::line_preview(line, offset),
+                dependencies: None,
+            });
+            true
+        };
+
+        match lines {
+            LineSet::Only(nos) => {
+                let mut last = 0u32;
+                for &line_no in nos {
+                    if line_no == last {
+                        continue;
+                    }
+                    last = line_no;
+                    let idx = line_no as usize;
+                    if idx == 0 || idx > all_lines.len() {
+                        log::debug!(
+                            "Line {} out of bounds (file has {} lines)",
+                            line_no,
+                            all_lines.len()
+                        );
+                        continue;
+                    }
+                    if check(idx, all_lines[idx - 1]) && paths_only {
+                        break;
+                    }
+                }
+            }
+            LineSet::All => {
+                for (i, line) in all_lines.iter().enumerate() {
+                    if check(i + 1, line) && paths_only {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    };
+
+    let mut results: Vec<SearchResult> = Vec::new();
+    let mut next = 0usize;
+    let mut chunk = 16usize;
+    let mut exhausted = true;
+
+    while next < accepted.len() {
+        if let Some(b) = budget
+            && results.len() >= b
+        {
+            exhausted = false;
+            break;
+        }
+        let end = (next + chunk).min(accepted.len());
+        let slice = &accepted[next..end];
+        let round: Vec<Vec<SearchResult>> = open.pool().install(|| {
+            slice
+                .par_iter()
+                .map(|(file_id, path, lang, lines)| verify_one(*file_id, path, *lang, lines))
+                .collect()
+        });
+        for r in round {
+            results.extend(r);
+        }
+        next = end;
+        chunk = (chunk * 2).min(1024);
+    }
+
+    VerifyOutcome {
+        results,
+        exhausted,
+        candidate_lines,
+        substring_only: substring_only.into_inner(),
     }
 }
 
@@ -382,6 +674,8 @@ impl QueryEngine {
         let Internal {
             results,
             total_count: total,
+            total_is_exact,
+            approx_total,
             substring_only,
             candidates_us,
         } = self.search_internal(pattern, filter.clone())?;
@@ -405,7 +699,9 @@ impl QueryEngine {
             count: results.len(),
             offset: filter.offset.unwrap_or(0),
             limit: filter.limit,
-            has_more: total > filter.offset.unwrap_or(0) + results.len(),
+            has_more: !total_is_exact || total > filter.offset.unwrap_or(0) + results.len(),
+            total_is_exact,
+            approx_total,
         };
 
         // Always use grouped format (group results by file)
@@ -571,9 +867,29 @@ impl QueryEngine {
             }
         }
 
+        // Early termination applies to plain list-mode text/regex searches: the
+        // page is complete once `offset + limit` results exist, in order, and the
+        // total is reported as inexact. Symbol and AST searches dedup and filter
+        // after enrichment, so they verify everything; count and no-limit callers
+        // (`mode:"count"`, `list_locations`, `--count`) pass no limit and also do.
+        let budget = if filter.symbols_mode
+            || filter.kind.is_some()
+            || filter.use_ast
+            || is_keyword_query
+            || filter.require_exact_total
+        {
+            None
+        } else {
+            filter
+                .limit
+                .map(|limit| filter.offset.unwrap_or(0).saturating_add(limit))
+        };
+
         // PHASE 1: Get initial candidates (choose search strategy)
         let mut substring_only = None;
         let mut candidates_us = 0u64;
+        let mut total_is_exact = true;
+        let mut approx_total = None;
         let mut results = if is_keyword_query {
             // KEYWORD QUERY MODE: Scan all files (or files of target language if --lang specified)
             // This ensures we find ALL classes/functions/etc, not just those in the first 100 trigram matches
@@ -590,19 +906,18 @@ impl QueryEngine {
                 );
             }
             self.get_all_language_files(&filter)?
-        } else if filter.use_regex {
-            // Regex pattern search with trigram optimization
-            self.get_regex_candidates(
-                pattern,
-                timeout.as_ref(),
-                &start_time,
-                filter.suppress_output,
-            )?
         } else {
-            // Standard trigram-based full-text search
-            let (candidates, stats) = self.get_trigram_candidates(pattern, &filter)?;
+            let (candidates, stats) = if filter.use_regex {
+                // Regex pattern search with trigram optimization
+                self.get_regex_candidates(pattern, &filter, timeout.as_ref(), &start_time, budget)?
+            } else {
+                // Standard trigram-based full-text search
+                self.get_trigram_candidates(pattern, &filter, budget)?
+            };
             substring_only = stats.substring_only;
             candidates_us = stats.candidates_us;
+            total_is_exact = stats.exhausted;
+            approx_total = (!stats.exhausted).then_some(stats.approx_total).flatten();
             candidates
         };
 
@@ -1001,6 +1316,8 @@ impl QueryEngine {
         Ok(Internal {
             results,
             total_count,
+            total_is_exact,
+            approx_total,
             substring_only,
             candidates_us,
         })
@@ -1329,14 +1646,10 @@ impl QueryEngine {
 
         // PHASE 1: Get initial candidates using text pattern (trigram search)
         let candidates = if filter.use_regex {
-            self.get_regex_candidates(
-                text_pattern,
-                timeout.as_ref(),
-                &start_time,
-                filter.suppress_output,
-            )?
+            self.get_regex_candidates(text_pattern, &filter, timeout.as_ref(), &start_time, None)?
+                .0
         } else {
-            self.get_trigram_candidates(text_pattern, &filter)?.0
+            self.get_trigram_candidates(text_pattern, &filter, None)?.0
         };
 
         log::debug!("Phase 1 found {} candidate locations", candidates.len());
@@ -2079,13 +2392,17 @@ impl QueryEngine {
     }
 
     /// Get candidate results using trigram-based full-text search
+    ///
+    /// The trigram intersection yields exact candidate `(file, line)` pairs; only
+    /// those lines are verified, in path order, in parallel, and — in list mode —
+    /// only until `budget` results exist (see [`verify_files_streaming`]).
     fn get_trigram_candidates(
         &self,
         pattern: &str,
         filter: &QueryFilter,
+        budget: Option<usize>,
     ) -> Result<(Vec<SearchResult>, CandidateStats)> {
         let open = self.open_index()?;
-        let content_reader = &open.content;
         let trigram_index = &open.trigrams;
 
         // Patterns shorter than 3 chars have no trigrams, so the trigram index always
@@ -2111,126 +2428,37 @@ impl QueryEngine {
             candidates_us
         );
 
-        // Clone pattern to owned String for thread safety
-        let pattern_owned = pattern.to_string();
+        // Group candidate lines by file. The intersection is sorted by
+        // (file_id, line_no), so each file's lines arrive ascending.
+        let mut files: Vec<(u32, LineSet)> = Vec::new();
+        for loc in candidates {
+            match files.last_mut() {
+                Some((id, LineSet::Only(lines))) if *id == loc.file_id => lines.push(loc.line_no),
+                _ => files.push((loc.file_id, LineSet::Only(vec![loc.line_no]))),
+            }
+        }
+        log::debug!("Scanning {} files with trigram matches", files.len());
 
         // One matcher for the whole query (see `LineMatcher`).
         let matcher = LineMatcher::new(pattern, filter)?;
-        // For a whole-identifier search, count the candidate lines that only
-        // contain the pattern as a substring: that is the zero-result hint.
-        let count_substring_only = matcher.is_word_boundary();
-        let substring_only = AtomicUsize::new(0);
+        let file_filter = FileFilter::from_filter(filter);
 
-        // Group candidates by file for efficient processing
-        use std::collections::HashMap;
-        let mut candidates_by_file: HashMap<u32, Vec<crate::trigram::FileLocation>> =
-            HashMap::new();
-        for loc in candidates {
-            candidates_by_file.entry(loc.file_id).or_default().push(loc);
-        }
-
-        log::debug!(
-            "Scanning {} files with trigram matches",
-            candidates_by_file.len()
+        let outcome = verify_files_streaming(
+            &open,
+            files,
+            &matcher,
+            &file_filter,
+            filter.paths_only,
+            budget,
         );
-
-        // Process files in parallel using rayon
-        use rayon::prelude::*;
-
-        let results: Vec<SearchResult> = open.pool().install(|| {
-            candidates_by_file
-                .par_iter()
-                .flat_map(|(file_id, locations)| {
-                    // Get file metadata
-                    let file_path = match trigram_index.get_file(*file_id) {
-                        Some(p) => p,
-                        None => return Vec::new(),
-                    };
-
-                    let content = match content_reader.get_file_content(*file_id) {
-                        Ok(c) => c,
-                        Err(_) => return Vec::new(),
-                    };
-
-                    let file_path_str = file_path.to_string_lossy().to_string();
-
-                    // Detect language once per file
-                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    let lang = Language::from_extension(ext);
-
-                    // Split content into lines once
-                    let lines: Vec<&str> = content.lines().collect();
-
-                    // Use a HashSet to deduplicate results by line number
-                    let mut seen_lines: std::collections::HashSet<usize> =
-                        std::collections::HashSet::new();
-                    let mut file_results = Vec::new();
-
-                    // Only check the specific lines indicated by trigram posting lists
-                    for loc in locations {
-                        let line_no = loc.line_no as usize;
-
-                        // Skip if we've already processed this line
-                        if seen_lines.contains(&line_no) {
-                            continue;
-                        }
-
-                        // Bounds check
-                        if line_no == 0 || line_no > lines.len() {
-                            log::debug!(
-                                "Line {} out of bounds (file has {} lines)",
-                                line_no,
-                                lines.len()
-                            );
-                            continue;
-                        }
-
-                        let line = lines[line_no - 1];
-
-                        // Apply matching strategy based on filter mode:
-                        // - Default: Word-boundary matching (restrictive - finds whole identifiers)
-                        // - --contains: Substring matching (expansive - finds pattern anywhere)
-                        // - --regex: Actual regex matching (controlled by pattern itself)
-                        if !matcher.is_match(line) {
-                            if count_substring_only && line.contains(pattern_owned.as_str()) {
-                                substring_only.fetch_add(1, Ordering::Relaxed);
-                            }
-                            continue;
-                        }
-
-                        seen_lines.insert(line_no);
-
-                        // Create a text match result (no symbol lookup for performance)
-                        file_results.push(SearchResult {
-                            path: file_path_str.clone(),
-                            lang,
-                            kind: SymbolKind::Unknown("text_match".to_string()),
-                            symbol: None, // No symbol name for text matches (avoid duplication)
-                            span: Span {
-                                start_line: line_no,
-                                end_line: line_no,
-                            },
-                            // Bounded, and WINDOWED on the match: on a minified bundle
-                            // this line is the whole 1.45 MB file, and the first 512
-                            // bytes of it would tell the caller nothing.
-                            preview: crate::parsers::preview::line_preview(
-                                line,
-                                line.find(pattern_owned.as_str()).unwrap_or(0),
-                            ),
-                            dependencies: None,
-                        });
-                    }
-
-                    file_results
-                })
-                .collect()
-        });
 
         let stats = CandidateStats {
             candidates_us,
-            substring_only: count_substring_only.then(|| substring_only.into_inner()),
+            substring_only: matcher.is_word_boundary().then_some(outcome.substring_only),
+            exhausted: outcome.exhausted,
+            approx_total: outcome.candidate_lines,
         };
-        Ok((results, stats))
+        Ok((outcome.results, stats))
     }
 
     /// Linear scan fallback for patterns shorter than 3 characters.
@@ -2322,35 +2550,39 @@ impl QueryEngine {
     ///
     /// # Algorithm
     ///
-    /// 1. Extract literal sequences from the regex pattern (≥3 chars)
-    /// 2. If literals found: search for files containing ANY of the literals (UNION)
-    /// 3. If no literals: fall back to full content scan
-    /// 4. Compile regex and verify matches in candidate files
-    /// 5. Return matching results with context
+    /// 1. Extract literal sequences (≥3 chars) from the regex pattern
+    /// 2. For each literal, take the exact candidate `(file, line)` pairs from the
+    ///    trigram index and UNION them
+    /// 3. Verify the regex on those lines only, in path order, in parallel, with the
+    ///    same early termination as literal search
+    /// 4. With no usable literal (none ≥3 chars, or a case-insensitive flag), verify
+    ///    every line of every file
     ///
-    /// # File Selection Strategy
+    /// # Why candidate lines are sufficient
     ///
-    /// Uses UNION of files containing any literal (conservative approach):
-    /// - For alternation patterns `(a|b)`: Correctly searches files with a OR b
-    /// - For sequential patterns `a.*b`: Searches files with a OR b (may include extra files)
-    /// - Trade-off: Ensures correctness at the cost of scanning 2-3x more files for sequential patterns
-    /// - Performance impact is minimal due to memory-mapped I/O (<5ms overhead typically)
-    ///
-    /// # Performance
-    ///
-    /// - Best case (pattern with literals): <20ms (trigram optimization)
-    /// - Typical case (alternation/sequential): 5-15ms on small codebases (<100 files)
-    /// - Worst case (no literals like `.*`): ~100ms (full scan)
+    /// Matching is per line, and every literal the extractor emits must appear
+    /// verbatim in any match (the extractor drops the atom before a `?`, `*` or
+    /// `{0,n}`). A matching line therefore contains at least one emitted literal
+    /// in full, and the union over literals of their exact candidate lines is a
+    /// superset of the matching lines. This is the same assumption the literal
+    /// path makes; a capped posting list loses a file in both paths alike.
     fn get_regex_candidates(
         &self,
         pattern: &str,
+        filter: &QueryFilter,
         timeout: Option<&std::time::Duration>,
         start_time: &std::time::Instant,
-        suppress_output: bool,
-    ) -> Result<Vec<SearchResult>> {
+        budget: Option<usize>,
+    ) -> Result<(Vec<SearchResult>, CandidateStats)> {
         // Step 1: Compile the regex
-        let regex =
-            Regex::new(pattern).with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+        let matcher = LineMatcher::new(
+            pattern,
+            &QueryFilter {
+                use_regex: true,
+                ..QueryFilter::default()
+            },
+        )
+        .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
 
         // Check timeout before expensive operations
         if let Some(timeout_duration) = timeout
@@ -2362,145 +2594,82 @@ impl QueryEngine {
             );
         }
 
-        // Step 2: Extract trigrams from regex
-        let trigrams = extract_trigrams_from_regex(pattern);
+        // Step 2: Extract literals from the regex
+        use crate::regex_trigrams::extract_literal_sequences;
+        let literals = extract_literal_sequences(pattern);
 
-        // The shared index handle
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let candidates_started = std::time::Instant::now();
 
-        let mut results = Vec::new();
-
-        if trigrams.is_empty() {
-            // No trigrams - fall back to full scan
-            if !suppress_output {
+        let files: Vec<(u32, LineSet)> = if literals.is_empty() {
+            // No literals - fall back to a full scan of every line
+            if !filter.suppress_output {
                 output::warn(&format!(
                     "Regex pattern '{}' has no literals (≥3 chars), falling back to full content scan. This may be slow on large codebases. Consider using patterns with literal text.",
                     pattern
                 ));
             }
-
-            // Scan all files
-            for file_id in 0..content_reader.file_count() {
-                let file_path = content_reader
-                    .get_file_path(file_id as u32)
-                    .context("Invalid file_id")?;
-                let content = content_reader.get_file_content(file_id as u32)?;
-
-                self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
-            }
+            (0..open.content.file_count() as u32)
+                .map(|id| (id, LineSet::All))
+                .collect()
         } else {
-            // Use trigrams to narrow down candidates
             log::debug!(
-                "Using {} trigrams to narrow regex search candidates",
-                trigrams.len()
+                "Using {} literals to narrow regex search candidates",
+                literals.len()
             );
 
-            let trigram_index = &open.trigrams;
-
-            // Extract the literal sequences from the regex pattern
-            use crate::regex_trigrams::extract_literal_sequences;
-            let literals = extract_literal_sequences(pattern);
-
-            if literals.is_empty() {
-                log::warn!(
-                    "Regex extraction found trigrams but no literal sequences - this shouldn't happen"
-                );
-                // Fall back to full scan
-                for file_id in 0..content_reader.file_count() {
-                    let file_path = content_reader
-                        .get_file_path(file_id as u32)
-                        .context("Invalid file_id")?;
-                    let content = content_reader.get_file_content(file_id as u32)?;
-                    self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
-                }
-            } else {
-                // Search for each literal sequence and union the results
-                // This ensures we find matches for ANY literal (important for alternation patterns like (a|b))
-                // Trade-off: May scan more files than necessary for sequential patterns (a.*b),
-                // but ensures correctness for all regex patterns
-                use std::collections::HashSet;
-                let mut candidate_files: HashSet<u32> = HashSet::new();
-
-                for literal in &literals {
-                    // Search for this literal in the trigram index (distinct file IDs)
-                    let file_ids = trigram_index.search_files(literal);
-
-                    log::debug!("Literal '{}' found in {} files", literal, file_ids.len());
-
-                    // Union with existing candidate files (not intersection)
-                    // This ensures we search files containing ANY of the literals
-                    candidate_files.extend(file_ids);
-                }
-
-                let final_candidates = candidate_files;
+            // Union of each literal's exact candidate lines (alternation-safe).
+            use std::collections::BTreeMap;
+            let mut by_file: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+            for literal in &literals {
+                let locations = open.trigrams.search(literal);
                 log::debug!(
-                    "After union: searching {} files that contain any literal",
-                    final_candidates.len()
+                    "Literal '{}' found on {} candidate lines",
+                    literal,
+                    locations.len()
                 );
-
-                // Verify regex matches in candidate files only
-                for &file_id in &final_candidates {
-                    let file_path = trigram_index
-                        .get_file(file_id)
-                        .context("Invalid file_id from trigram search")?;
-                    let content = content_reader.get_file_content(file_id)?;
-
-                    self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
+                for loc in locations {
+                    by_file.entry(loc.file_id).or_default().push(loc.line_no);
                 }
             }
-        }
+            by_file
+                .into_iter()
+                .map(|(id, mut lines)| {
+                    lines.sort_unstable();
+                    lines.dedup();
+                    (id, LineSet::Only(lines))
+                })
+                .collect()
+        };
+        let candidates_us = candidates_started.elapsed().as_micros() as u64;
+        log::debug!(
+            "Regex candidates: {} files in {} us",
+            files.len(),
+            candidates_us
+        );
+
+        let file_filter = FileFilter::from_filter(filter);
+        let outcome = verify_files_streaming(
+            &open,
+            files,
+            &matcher,
+            &file_filter,
+            filter.paths_only,
+            budget,
+        );
 
         log::info!(
             "Regex search found {} matches for pattern '{}'",
-            results.len(),
+            outcome.results.len(),
             pattern
         );
-        Ok(results)
-    }
-
-    /// Find all regex matches in a single file
-    fn find_regex_matches_in_file(
-        &self,
-        regex: &Regex,
-        file_path: &std::path::Path,
-        content: &str,
-        results: &mut Vec<SearchResult>,
-    ) -> Result<()> {
-        let file_path_str = file_path.to_string_lossy().to_string();
-
-        // Detect language from file extension
-        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = Language::from_extension(ext);
-
-        // Find all regex matches line by line
-        for (line_idx, line) in content.lines().enumerate() {
-            // find(), not is_match(): the offset is needed to window the preview.
-            if let Some(m) = regex.find(line) {
-                let line_no = line_idx + 1;
-
-                // Create text match result
-                // Note: We don't extract symbol names from regex matches because:
-                // 1. Regex might match partial identifiers (e.g., "UserController" in "ListUserController")
-                // 2. Regex might match across language-specific delimiters (namespaces, scopes, etc.)
-                // 3. Accurate symbol extraction requires tree-sitter parsing (expensive)
-                // The user can see the full context in the 'preview' field
-                results.push(SearchResult {
-                    path: file_path_str.clone(),
-                    lang,
-                    kind: SymbolKind::Unknown("regex_match".to_string()),
-                    symbol: None, // No symbol name for regex matches
-                    span: Span {
-                        start_line: line_no,
-                        end_line: line_no,
-                    },
-                    preview: crate::parsers::preview::line_preview(line, m.start()),
-                    dependencies: None,
-                });
-            }
-        }
-
-        Ok(())
+        let stats = CandidateStats {
+            candidates_us,
+            substring_only: None,
+            exhausted: outcome.exhausted,
+            approx_total: outcome.candidate_lines,
+        };
+        Ok((outcome.results, stats))
     }
 
     fn normalize_glob_pattern(pattern: &str) -> String {

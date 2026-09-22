@@ -178,7 +178,7 @@ get_dependents(path: "src/auth.rs")
 | `symbols` | bool | `true` = definitions only |
 | `kind` | string | `"function"`, `"class"`, `"struct"` |
 | `expand` | bool | `true` = show full symbol body |
-| `limit` / `offset` | int | Pagination (check `has_more` in response) |
+| `limit` / `offset` | int | Pagination (check `has_more`). List mode stops verifying once the page is full: when `total_is_exact` is `false`, `total_count` is a lower bound and `approx_total` an upper bound — use `mode: "count"` for the exact number |
 
 ---
 

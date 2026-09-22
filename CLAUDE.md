@@ -186,8 +186,9 @@ repeats `path`/`language` per row):
   "rows": [
     ["src/mcp.rs", "rust", 955, 957, "fn make_tool_result", "Function", "make_tool_result"]
   ],
-  "pagination": { "total": 1, "has_more": false },
-  "status": "fresh", "total_count": 1, "returned_count": 1, "has_more": false
+  "pagination": { "total": 1, "has_more": false, "total_is_exact": true },
+  "status": "fresh", "total_count": 1, "returned_count": 1, "has_more": false,
+  "total_is_exact": true
 }
 ```
 
@@ -197,6 +198,36 @@ columns (`path`, `language`, `start_line`, `end_line`, `preview`) are always pre
 a match carries them. Top-level metadata (`status`, `pagination`, `total_count`, …) is
 unchanged. Set env `REFLEX_MCP_COLUMNAR=0` to restore the legacy `results[]` object
 shape. `count` mode (`{count, pattern}`) and the other tools are unaffected.
+
+### Early termination and totals (1.8.0)
+
+A list-mode `search_code` / `search_regex` call verifies candidates in path order
+and **stops once the page is full** (`offset + limit` results). The page is identical
+to the same slice of a full run, but the total is not always exact:
+
+| field | meaning |
+| --- | --- |
+| `total_is_exact: true` | `total_count` counts every match (count mode, no `limit`, symbol/AST searches, `find_references`) |
+| `total_is_exact: false` | verification stopped early: `total_count` is a **lower bound**, `approx_total` (candidate lines from the index in files that pass the filters) an **upper bound**, and `has_more` is `true` |
+
+`mode: "count"`, `list_locations` and `find_references` always verify everything.
+The CLI prints an inexact total as `(1234+ total)`.
+
+### Latency diagnostics
+
+- `rfx query <pattern> --timing` prints per-phase timings (open, candidates, verify,
+  status, group) to stderr; with `--json` they appear as a `timings` object.
+- `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` /
+  `search_regex` responses from `rfx mcp`.
+- `rfx mcp` and `rfx serve` keep the index open across calls (memory maps, path map,
+  thread pool) and reopen only when the index files change on disk or after
+  `index_project`. The freshness verdict is memoised for `REFLEX_FRESHNESS_TTL_MS`.
+- Query-time verification runs on a pool sized by `[performance] parallel_threads`
+  (`0` = 80% of cores, up to 32).
+- `tests/latency_budget.rs` (`cargo test --release --test latency_budget -- --ignored
+  --nocapture --test-threads=1`) measures the field-test query shapes in-process and
+  through a real `rfx mcp` stdio round-trip; CI asserts budgets with
+  `REFLEX_LATENCY_BUDGET=1`.
 
 **MCP efficiency — measured A/B results:**
 - **Columnar format saves 16–24% per-call bytes** on `search_code`/`search_regex` payloads.

@@ -152,3 +152,38 @@ So the CI budget step is expected to fail until WP1–WP4 land; that is the poin
 - **Both `#[ignore]` tests must run with `--test-threads=1`.** In the first (parallel)
   run the in-process medians were 5–15 % higher because the MCP child competed for
   the same cores. The CI step pins `--test-threads=1`.
+
+## Latency harness after WP1–WP3 (2026-09-22, same box, warm cache, `--test-threads=1`)
+
+Commits: WP0 harness `2a20431`, WP2 open-index handle `b18ae06`, WP1 intersection
+`da731e0`, WP3 early termination + parallel line-restricted regex (this commit).
+`hits` with a `+` is a lower bound: the search stopped once the page was full.
+
+### in_process
+
+| shape | hits | first | median | p90 | baseline median |
+|---|---:|---:|---:|---:|---:|
+| zero_hit | 0 | 1.73 | 0.03 | 0.05 | 3.77 |
+| rare_ident | 3 | 0.18 | 0.15 | 0.18 | 4.89 |
+| common_ident_limit1 | 216+ | 50.43 | 48.23 | 50.43 | 3689.56 |
+| common_word_limit1 | 461+ | 2.95 | 2.67 | 2.98 | 742.91 |
+| common_word_count | 52010 | 24.96 | 24.51 | 25.03 | 796.68 |
+| regex_getset | 4000 | 9.15 | 9.84 | 10.60 | 483.88 |
+
+### mcp (real `rfx mcp` child over stdio) — initialize 2.99 ms, first call 1.62 ms
+
+| shape | hits | first | median | p90 | baseline median |
+|---|---:|---:|---:|---:|---:|
+| zero_hit | 0 | 0.09 | 0.07 | 0.09 | 10.10 |
+| rare_ident | 3 | 0.25 | 0.16 | 0.18 | 6.59 |
+| common_ident_limit1 | 216+ | 48.91 | 47.57 | 49.41 | 3599.60 |
+| common_word_limit1 | 461+ | 2.82 | 2.82 | 2.94 | 672.41 |
+| common_word_count | 52010 | 35.88 | 25.99 | 29.97 | 730.03 |
+| regex_getset | 4000 | 11.92 | 10.78 | 11.92 | 438.57 |
+
+Where the remaining time goes (`rfx query ident_7 --limit 1 --timing`):
+`open 1.3 ms | candidates 45.2 ms | verify 1.1 ms | status 0.6 ms`. The intersection
+streams four ~700k-posting lists (`ide`, `den`, `ent`, `nt_`) that do not narrow the
+candidate set beyond what `t_7` already gave (105k candidate lines). Next step: stop
+intersecting when the candidate set is small relative to the next list, and let the
+(exact) line verification absorb the difference — planned on top of the V4 format.

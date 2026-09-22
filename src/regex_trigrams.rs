@@ -142,8 +142,21 @@ pub fn extract_literal_sequences(pattern: &str) -> Vec<String> {
 
     while let Some(ch) = chars.next() {
         match ch {
-            // Regex metacharacters - break the literal sequence
-            '.' | '*' | '+' | '?' | '|' | '[' | ']' | '^' | '$' => {
+            // A quantifier that allows ZERO repetitions binds only the atom before
+            // it: in `foobar?` the `r` is optional, so the literal a match must
+            // contain is `fooba`, not `foobar`. Emitting `foobar` would skip a file
+            // (or, with line-level candidates, a line) that matches as `fooba`.
+            '*' | '?' => {
+                current.pop();
+                if current.len() >= 3 {
+                    sequences.push(current.clone());
+                }
+                current.clear();
+            }
+
+            // Regex metacharacters - break the literal sequence. `+` needs at least
+            // one repetition, so the atom before it stays part of the literal.
+            '.' | '+' | '|' | '[' | ']' | '^' | '$' => {
                 if current.len() >= 3 {
                     sequences.push(current.clone());
                 }
@@ -214,18 +227,28 @@ pub fn extract_literal_sequences(pattern: &str) -> Vec<String> {
 
             // Opening brace - quantifier, consume until closing brace
             '{' => {
-                if current.len() >= 3 {
-                    sequences.push(current.clone());
-                }
-                current.clear();
-
-                // Consume quantifier contents to avoid treating "2,3" as a literal
+                // `{0,n}` / `{0}` make the preceding atom optional, exactly like `?`;
+                // any other lower bound keeps it required.
+                let mut body = String::new();
                 while let Some(&next_ch) = chars.peek() {
                     chars.next();
                     if next_ch == '}' {
                         break;
                     }
+                    body.push(next_ch);
                 }
+                let min_repeats = body
+                    .split(',')
+                    .next()
+                    .and_then(|n| n.trim().parse::<u32>().ok());
+                if min_repeats == Some(0) {
+                    current.pop();
+                }
+
+                if current.len() >= 3 {
+                    sequences.push(current.clone());
+                }
+                current.clear();
             }
 
             // Closing brace
@@ -411,6 +434,30 @@ mod tests {
         // Non-capturing group (?:...) should not extract flag chars
         let sequences = extract_literal_sequences("(?:test|func)");
         assert_eq!(sequences, vec!["test", "func"]);
+    }
+
+    /// `?` and `*` make the atom before them optional: the required literal ends
+    /// one character earlier. `+` keeps it. Line-level regex candidates rely on
+    /// every emitted literal being present verbatim in every match.
+    #[test]
+    fn test_extract_literal_sequences_optional_last_atom() {
+        assert_eq!(extract_literal_sequences("foobar?"), vec!["fooba"]);
+        assert_eq!(extract_literal_sequences("abcd*"), vec!["abc"]);
+        assert_eq!(extract_literal_sequences("abcd+"), vec!["abcd"]);
+        assert_eq!(extract_literal_sequences("ab{0,2}c"), Vec::<String>::new());
+        assert_eq!(
+            extract_literal_sequences("test{0}word"),
+            vec!["tes", "word"]
+        );
+        assert_eq!(
+            extract_literal_sequences("test{1,5}word"),
+            vec!["test", "word"]
+        );
+        // The optional atom is a group, not a character: nothing to pop.
+        assert_eq!(
+            extract_literal_sequences("foobar(baz)?"),
+            vec!["foobar", "baz"]
+        );
     }
 
     #[test]

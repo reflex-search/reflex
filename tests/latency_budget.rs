@@ -103,14 +103,52 @@ const RUNS: usize = 11;
 
 // ==================== Measurement ====================
 
+/// A reported hit count. A list-mode search with a `limit` stops verifying once
+/// the page is full, so its `total` is a lower bound and `upper` (candidate lines
+/// from the index) an upper bound; count mode and no-limit searches are exact.
+#[derive(Clone, Copy, Debug)]
+struct Hits {
+    total: usize,
+    exact: bool,
+    upper: Option<usize>,
+}
+
+impl Hits {
+    fn exact(total: usize) -> Self {
+        Self {
+            total,
+            exact: true,
+            upper: None,
+        }
+    }
+
+    /// The count to show in a table: `1234` or `216+`.
+    fn label(&self) -> String {
+        if self.exact {
+            self.total.to_string()
+        } else {
+            format!("{}+", self.total)
+        }
+    }
+
+    /// Whether `want` is consistent with this report.
+    fn admits(&self, want: usize) -> bool {
+        if self.exact {
+            self.total == want
+        } else {
+            self.total <= want && self.upper.is_none_or(|u| u >= want)
+        }
+    }
+}
+
 struct Stats {
-    hits: usize,
+    hits: Hits,
     first_ms: f64,
     median_ms: f64,
     p90_ms: f64,
 }
 
-fn summarise(hits: usize, samples_ms: &[f64]) -> Stats {
+fn summarise(hits: Hits, samples_ms: &[f64]) -> Stats {
     let first_ms = samples_ms[0];
     let mut sorted = samples_ms.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -145,7 +183,10 @@ fn print_table(harness: &str, rows: &[(&str, Stats)]) {
     for (name, s) in rows {
         println!(
             "| {name} | {} | {:.2} | {:.2} | {:.2} |",
-            s.hits, s.first_ms, s.median_ms, s.p90_ms
+            s.hits.label(),
+            s.first_ms,
+            s.median_ms,
+            s.p90_ms
         );
     }
     if env_flag("REFLEX_LATENCY_JSON") {
@@ -155,7 +196,9 @@ fn print_table(harness: &str, rows: &[(&str, Stats)]) {
                 json!({
                     "harness": harness,
                     "shape": name,
-                    "hits": s.hits,
+                    "hits": s.hits.total,
+                    "hits_exact": s.hits.exact,
+                    "hits_upper": s.hits.upper,
                     "first_ms": s.first_ms,
                     "median_ms": s.median_ms,
                     "p90_ms": s.p90_ms,
@@ -237,23 +280,32 @@ fn count_files(root: &Path) -> usize {
 fn assert_sanity(harness: &str, root: &Path, rows: &[(&str, Stats)], expected: &[usize]) {
     let files = count_files(root);
     for ((shape, (name, s)), &want) in SHAPES.iter().zip(rows).zip(expected) {
-        assert_eq!(
-            s.hits, want,
-            "{harness}/{name}: Reflex reported {} hits, scan of generated files found {want}",
+        assert!(
+            s.hits.admits(want),
+            "{harness}/{name}: Reflex reported {:?}, scan of generated files found {want}",
             s.hits
         );
-        match shape.name {
-            "zero_hit" => assert_eq!(s.hits, 0, "{harness}/{name}"),
-            "rare_ident" => assert_eq!(s.hits, corpus::RARE_MARKER_LINES, "{harness}/{name}"),
-            "regex_getset" => assert!(
-                s.hits >= files,
-                "{harness}/{name}: {} hits < {files} files",
+        // Shapes without a limit (or with nothing to find) must be exact.
+        if shape.limit.is_none() || want == 0 {
+            assert!(
+                s.hits.exact,
+                "{harness}/{name}: {:?} should be exact",
                 s.hits
+            );
+        }
+        match shape.name {
+            "zero_hit" => assert_eq!(s.hits.total, 0, "{harness}/{name}"),
+            "rare_ident" => {
+                assert_eq!(s.hits.total, corpus::RARE_MARKER_LINES, "{harness}/{name}")
+            }
+            "regex_getset" => assert!(
+                s.hits.total >= files,
+                "{harness}/{name}: {} hits < {files} files",
+                s.hits.total
             ),
             _ => assert!(
-                s.hits > 1000,
-                "{harness}/{name}: common shape hit only {} lines",
-                s.hits
+                want > 1000,
+                "{harness}/{name}: common shape hit only {want} lines"
             ),
         }
     }
@@ -272,13 +324,19 @@ fn filter_for(shape: &Shape) -> QueryFilter {
 
 /// Run one shape once; returns (hits, elapsed ms). Builds a fresh engine per
 /// call to mirror the MCP handler.
-fn run_in_process(root: &Path, shape: &Shape) -> (usize, f64) {
+fn run_in_process(root: &Path, shape: &Shape) -> (Hits, f64) {
     let start = Instant::now();
     let engine = QueryEngine::new(CacheManager::new(root));
     let response = engine
         .search_with_metadata(shape.pattern, filter_for(shape))
         .expect("query failed");
-    (response.pagination.total, ms(start))
+    let p = &response.pagination;
+    let hits = Hits {
+        total: p.total,
+        exact: p.total_is_exact,
+        upper: p.approx_total,
+    };
+    (hits, ms(start))
 }
 
 #[test]
@@ -290,7 +348,7 @@ fn latency_in_process() {
     let rows: Vec<(&str, Stats)> = SHAPES
         .iter()
         .map(|shape| {
-            let mut hits = 0;
+            let mut hits = Hits::exact(0);
             let samples: Vec<f64> = (0..RUNS)
                 .map(|_| {
                     let (h, t) = run_in_process(&root, shape);
@@ -376,7 +434,7 @@ impl McpChild {
     }
 
     /// Call the tool for `shape`; returns (hits, elapsed ms).
-    fn call_shape(&mut self, shape: &Shape) -> (usize, f64) {
+    fn call_shape(&mut self, shape: &Shape) -> (Hits, f64) {
         let (tool, args) = mcp_call_for(shape);
         let start = Instant::now();
         let result = self.request("tools/call", json!({"name": tool, "arguments": args}));
@@ -387,12 +445,18 @@ impl McpChild {
             .as_str()
             .unwrap_or_else(|| panic!("{}: no content[0].text in {result}", shape.name));
         let body: Value = serde_json::from_str(text).expect("tool result text is JSON");
-        let hits = body["count"]
-            .as_u64()
-            .or_else(|| body["pagination"]["total"].as_u64())
-            .or_else(|| body["total_count"].as_u64())
-            .unwrap_or_else(|| panic!("{}: no hit count in {body}", shape.name))
-            as usize;
+        let hits = match body["count"].as_u64() {
+            Some(n) => Hits::exact(n as usize),
+            None => Hits {
+                total: body["pagination"]["total"]
+                    .as_u64()
+                    .or_else(|| body["total_count"].as_u64())
+                    .unwrap_or_else(|| panic!("{}: no hit count in {body}", shape.name))
+                    as usize,
+                exact: body["total_is_exact"].as_bool().unwrap_or(true),
+                upper: body["approx_total"].as_u64().map(|n| n as usize),
+            },
+        };
         (hits, elapsed)
     }
 }
@@ -433,7 +497,7 @@ fn latency_mcp_stdio() {
     let rows: Vec<(&str, Stats)> = SHAPES
         .iter()
         .map(|shape| {
-            let mut hits = 0;
+            let mut hits = Hits::exact(0);
             let samples: Vec<f64> = (0..RUNS)
                 .map(|_| {
                     let (h, t) = mcp.call_shape(shape);

@@ -2089,11 +2089,11 @@ posting format carrying an unused `byte_offset`.
 
 | WP | Scope | Status |
 |---|---|---|
-| WP0 | `tests/latency_budget.rs` + synthetic 30 MB corpus generator + MCP stdio round-trip; fix CI perf step (`--test` was after `--`, ran nothing) | in_progress |
-| WP1 | Linear-time sorted-merge intersection + streaming posting cursor (`src/trigram.rs`) | in_progress |
-| WP2 | `OpenIndex` shared handle (registry keyed by cache dir, fingerprint invalidation), drop `quick_check`/`stats()`/git spawns from the query path, `--timing` | in_progress |
-| WP3 | Early termination for list mode (`total_is_exact` / `approx_total`), chunked parallel verify honouring `[performance] parallel_threads`, line-restricted parallel regex, quantifier fix in `regex_trigrams.rs` | pending |
-| WP4 | `trigrams.bin` V4: drop `byte_offset`, per-line dedup, per-file blocks, zero-copy directory, `Index/corpus ratio` line | pending |
+| WP0 | `tests/latency_budget.rs` + synthetic 30 MB corpus generator + MCP stdio round-trip; fix CI perf step (`--test` was after `--`, ran nothing) | completed (2a20431) |
+| WP1 | Linear-time sorted-merge intersection + streaming posting cursor (`src/trigram.rs`) | completed (da731e0): 23–90x on Criterion intersection cases |
+| WP2 | `OpenIndex` shared handle (registry keyed by cache dir, fingerprint invalidation), drop `quick_check`/`stats()`/git spawns from the query path, `--timing`; also: whole-identifier regex compiled once per query (was once per candidate line), zero-result hint counted in-search | completed (b18ae06) |
+| WP3 | Early termination for list mode (`total_is_exact` / `approx_total`), chunked parallel verify honouring `[performance] parallel_threads`, line-restricted parallel regex, quantifier fix in `regex_trigrams.rs` | completed |
+| WP4 | `trigrams.bin` V4: drop `byte_offset`, per-line dedup, per-file blocks, zero-copy directory, `Index/corpus ratio` line | in_progress |
 
 Acceptance (same box): MCP zero-hit < 5 ms, CLI zero-hit < 15 ms, `RealmId` first
 page < 15 ms, `realm --limit 1` < 20 ms, `realm --count` < 100 ms, `trigrams.bin` < 40 MB.

@@ -620,6 +620,8 @@ No dependency data will be included for {} files.",
                         offset: offset.unwrap_or(0),
                         limit,
                         has_more: false, // AST already applied pagination
+                        total_is_exact: true,
+                        approx_total: None,
                     },
                     results: file_results,
                     substring_hint_count: None,
@@ -700,13 +702,18 @@ No dependency data will be included for {} files.",
 
                 // Print summary at the bottom with pagination details
                 let n = flat_results.len();
-                if total_results > n {
-                    // Results were paginated - show detailed count
+                let total_is_exact = query_response
+                    .as_ref()
+                    .is_none_or(|r| r.pagination.total_is_exact);
+                if total_results > n || !total_is_exact {
+                    // Results were paginated - show detailed count. An inexact total
+                    // (verification stopped once the page was full) is a lower bound.
                     println!(
-                        "\nFound {} result{} ({} total) in {}",
+                        "\nFound {} result{} ({}{} total) in {}",
                         n,
                         if n == 1 { "" } else { "s" },
                         total_results,
+                        if total_is_exact { "" } else { "+" },
                         timing_str
                     );
                     // Show pagination hint if there are more results available

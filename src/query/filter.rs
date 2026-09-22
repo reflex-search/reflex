@@ -55,6 +55,11 @@ pub struct QueryFilter {
     pub context_lines: usize,
     /// Record per-phase timings into `QueryResponse.timings`.
     pub collect_timings: bool,
+    /// Verify every candidate even with a `limit`, so `pagination.total` is exact.
+    /// Set by callers whose contract promises an exact total for a page
+    /// (`find_references`). Without it, a list-mode search stops once the page is
+    /// full and reports `total_is_exact: false`.
+    pub require_exact_total: bool,
     /// Test-only: Override large index threshold (None = use default of 20,000)
     #[doc(hidden)]
     pub test_large_index_threshold: Option<usize>,
@@ -87,6 +92,7 @@ impl Default for QueryFilter {
             include_dependencies: false,        // Default: don't load dependencies for performance
             context_lines: 0,                   // Default: no context lines shown
             collect_timings: false,             // Default: no per-phase timings
+            require_exact_total: false,         // Default: list mode may stop early
             test_large_index_threshold: None,   // Default: use production threshold (20,000)
             test_short_pattern_threshold: None, // Default: use production threshold (4)
         }

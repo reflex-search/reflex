@@ -624,6 +624,16 @@ pub struct PaginationInfo {
     pub limit: Option<usize>,
     /// Whether there are more results after this page
     pub has_more: bool,
+    /// `true` when `total` counts every match. `false` when a list-mode search
+    /// stopped verifying once the page was full: `total` is then the number
+    /// verified so far (a lower bound) and `approx_total` an upper bound. Count
+    /// mode and no-limit searches are always exact.
+    #[serde(default = "default_true")]
+    pub total_is_exact: bool,
+    /// Upper bound on the total when `total_is_exact` is false: candidate lines
+    /// from the index in files that pass the query's file filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approx_total: Option<usize>,
 }
 
 /// Query response with results and index status
