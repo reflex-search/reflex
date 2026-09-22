@@ -78,7 +78,7 @@ pub struct ProjectStats {
 /// Detect entry points by matching well-known file patterns and names
 pub fn detect_entry_points(cache: &CacheManager) -> Result<Vec<EntryPoint>> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+    let conn = crate::cache::open_meta_db(&db_path).context("Failed to open meta.db")?;
 
     // Get all file paths
     let mut stmt = conn.prepare("SELECT path FROM files ORDER BY path")?;
@@ -273,7 +273,7 @@ pub fn compute_reading_order(
     entry_points: &[EntryPoint],
 ) -> Result<ReadingOrder> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
 
     // Build adjacency list: file_id -> [dependent file_ids]
     // We traverse in the direction entry_point -> its dependencies
@@ -359,7 +359,7 @@ pub fn compute_reading_order(
 /// Gather project stats for the onboard page
 pub fn gather_project_stats(cache: &CacheManager, module_count: usize) -> Result<ProjectStats> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
 
     let total_files: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
     let total_lines: usize =

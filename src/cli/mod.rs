@@ -945,10 +945,6 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
             log::debug!("Skipping compaction for Clear command");
             return;
         }
-        Command::Mcp => {
-            log::debug!("Skipping compaction for Mcp command");
-            return;
-        }
         Command::Watch { .. } => {
             log::debug!("Skipping compaction for Watch command");
             return;

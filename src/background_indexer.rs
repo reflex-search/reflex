@@ -21,11 +21,122 @@ use crate::symbol_cache::SymbolCache;
 /// Lock file name to prevent concurrent indexing
 const LOCK_FILE: &str = "indexing.lock";
 
-/// Maximum age of a lock file before it's considered stale (1 hour)
-const LOCK_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+/// Maximum age of a lock file before it's considered stale.
+///
+/// Lowered from 1 hour to 15 minutes in 1.7.2, because liveness is now decided by
+/// checking whether the recorded pid is actually alive. Age is only the last-resort
+/// fallback for platforms where that check is unavailable.
+const LOCK_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(900);
 
 /// Status file name for progress tracking
 const STATUS_FILE: &str = "indexing.status";
+
+/// How long a pass may go without updating `indexing.status` before it is presumed
+/// dead, on platforms where pid liveness cannot be checked.
+///
+/// A healthy pass writes its status once per 128-file chunk — seconds apart. 60s is
+/// generous enough to survive a very slow batch while turning a crash into an
+/// immediate recovery rather than a 15-minute wait.
+const HEARTBEAT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Sentinel file asking a running symbol pass to stop at the next batch.
+///
+/// A symbol pass over a large repo runs for minutes. Making `rfx index` wait that
+/// long is the complaint this fixes, so instead the indexer asks the pass to yield.
+/// `rfx index` re-spawns it when it finishes, so no work is lost.
+const CANCEL_FILE: &str = "indexing.cancel";
+
+/// Who holds `indexing.lock`.
+///
+/// 1.7.1 and earlier wrote a bare pid. This is read back as JSON, falling back to
+/// the bare-integer form so an upgrade does not orphan an in-flight lock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockHolder {
+    pub pid: u32,
+    /// RFC3339 start time, absent for a legacy bare-pid lock.
+    #[serde(default)]
+    pub started_at: Option<String>,
+}
+
+impl LockHolder {
+    /// Start time as `HH:MM:SS` for human- and agent-facing messages.
+    pub fn started_clock(&self) -> String {
+        self.started_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+/// Whether a pid belongs to a live `rfx index-symbols-internal` process.
+///
+/// Checked before honouring a lock, because the previous mtime-only rule kept a
+/// crashed pass's lock for a full hour. No new dependency:
+///
+/// * Linux — `/proc/<pid>` exists AND its cmdline names the subcommand. The cmdline
+///   check also defeats pid reuse, which a bare `kill(pid, 0)` cannot.
+/// * macOS — one `ps -o command= -p <pid>`, only on this path.
+/// * elsewhere — unknown, so fall back to the age rule rather than reap a live pass.
+fn pid_is_live_symbol_pass(pid: u32) -> Option<bool> {
+    // We hold our own lock, so we are alive by definition — no need to inspect argv.
+    // This also covers `rfx index` running the pass in-process rather than detached.
+    if pid == std::process::id() {
+        return Some(true);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let proc_dir = std::path::PathBuf::from(format!("/proc/{}", pid));
+        if !proc_dir.exists() {
+            return Some(false);
+        }
+        // NUL-separated argv. A recycled pid running something else is not our pass.
+        match std::fs::read(proc_dir.join("cmdline")) {
+            Ok(raw) => Some(String::from_utf8_lossy(&raw).contains("index-symbols-internal")),
+            // The process exists but we cannot read its argv (different user).
+            // Treat it as live: reaping a live pass is far worse than keeping a
+            // stale lock, which the age rule will clear anyway.
+            Err(_) => Some(true),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return Some(false);
+        }
+        Some(String::from_utf8_lossy(&out.stdout).contains("index-symbols-internal"))
+    }
+
+    // Windows and everything else: liveness is not determinable without either a
+    // new dependency or an untested `tasklist` shell-out. `None` means "fall back to
+    // the age rule", so a crashed pass holds its lock for at most LOCK_MAX_AGE
+    // (15 minutes) instead of being reaped at once. Degraded, not broken: `rfx index`
+    // still asks the pass to yield and reports `SymbolIndexingInProgress` with the
+    // pid, rather than a raw SQLite error.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Whether this platform can tell a live symbol pass from a dead one.
+///
+/// Exposed so tests assert the behaviour the platform actually guarantees, rather
+/// than the behaviour Linux happens to have.
+pub const fn pid_liveness_supported() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
 
 /// Indexing progress status
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +161,20 @@ pub struct IndexingStatus {
     pub completed_at: Option<String>,
     /// Error message if failed
     pub error: Option<String>,
+    /// PID of the process doing the work.
+    ///
+    /// Previously this lived only in `indexing.lock`, so a caller reading the status
+    /// could not name the process it was waiting for.
+    #[serde(default)]
+    pub pid: u32,
+    /// Which stage of the pass is running: `filtering`, `parsing`, `writing`,
+    /// `cleanup`. In 1.7.1 a pass that had finished its files still held the database
+    /// for minutes inside `cleanup_stale()`, and looked identical to a hang.
+    #[serde(default)]
+    pub phase: String,
+    /// File currently being parsed, when known.
+    #[serde(default)]
+    pub current_file: Option<String>,
 }
 
 /// Indexer state
@@ -62,6 +187,11 @@ pub enum IndexerState {
     Completed,
     /// Indexer failed with error
     Failed,
+    /// Indexer yielded because an `rfx index` asked for the database.
+    ///
+    /// Not a failure: the remaining files are re-queued when `rfx index` re-spawns
+    /// the pass after it finishes.
+    Cancelled,
 }
 
 /// Check if a lock file is stale based on its modification time
@@ -70,6 +200,11 @@ pub enum IndexerState {
 /// This allows recovery from crashed indexer processes that didn't clean up
 /// their lock file (SIGKILL, OOM, power loss, etc.).
 fn is_lock_stale(lock_path: &Path) -> bool {
+    is_lock_stale_by(lock_path, LOCK_MAX_AGE)
+}
+
+/// As [`is_lock_stale`], with an explicit age limit.
+fn is_lock_stale_by(lock_path: &Path, max_age: std::time::Duration) -> bool {
     let metadata = match std::fs::metadata(lock_path) {
         Ok(m) => m,
         Err(_) => return false, // Can't read => not stale, let caller handle
@@ -79,7 +214,7 @@ fn is_lock_stale(lock_path: &Path) -> bool {
         Err(_) => return false,
     };
     match modified.elapsed() {
-        Ok(age) => age > LOCK_MAX_AGE,
+        Ok(age) => age > max_age,
         Err(_) => false, // Clock skew — don't remove
     }
 }
@@ -118,29 +253,127 @@ impl BackgroundIndexer {
                 updated_at: now,
                 completed_at: None,
                 error: None,
+                pid: std::process::id(),
+                phase: "starting".to_string(),
+                current_file: None,
             },
-            batch_size: 500, // Batch symbol writes for performance (increased for better throughput)
+            // 128, not 500: a chunk is the unit of both progress reporting and
+            // cancellation, so a wide chunk means a status frozen for minutes and a
+            // slow yield to a waiting `rfx index`.
+            batch_size: 128,
         })
     }
 
-    /// Check if an indexing process is already running
+    /// Who currently holds `indexing.lock`, if anyone.
     ///
-    /// If the lock file exists but is older than `LOCK_MAX_AGE`, it's treated
-    /// as stale (left behind by a crashed process) and removed automatically.
-    pub fn is_running(cache_dir: &Path) -> bool {
+    /// Returns `None` when there is no lock, or when the lock is stale and has been
+    /// reaped. A lock is stale when its recorded pid is not a live
+    /// `rfx index-symbols-internal`, or (where liveness is unknowable) when its mtime
+    /// is older than `LOCK_MAX_AGE`.
+    pub fn lock_holder(cache_dir: &Path) -> Option<LockHolder> {
         let lock_path = cache_dir.join(LOCK_FILE);
-        if !lock_path.exists() {
-            return false;
-        }
-        if is_lock_stale(&lock_path) {
-            log::warn!(
-                "Removing stale indexing lock file (older than {:?})",
-                LOCK_MAX_AGE
-            );
+        let raw = std::fs::read_to_string(&lock_path).ok()?;
+
+        // JSON since 1.7.2; bare pid before that.
+        let holder: LockHolder = serde_json::from_str(raw.trim()).unwrap_or_else(|_| LockHolder {
+            pid: raw.trim().parse().unwrap_or(0),
+            started_at: None,
+        });
+
+        let stale = match pid_is_live_symbol_pass(holder.pid) {
+            Some(true) => false,
+            Some(false) => {
+                log::warn!(
+                    "Reaping indexing lock: pid {} is not a live symbol pass",
+                    holder.pid
+                );
+                true
+            }
+            // Liveness unknown on this platform (Windows). Use the pass's own
+            // HEARTBEAT instead of the one-hour-ish age rule.
+            //
+            // A running pass rewrites `indexing.status` every chunk, so a frozen
+            // `updated_at` means it died. Without this, a killed `rfx index` left a
+            // lock that Windows could not attribute, the next run treated it as live,
+            // and indexing was blocked until LOCK_MAX_AGE — turning a crash into a
+            // 15-minute outage. Caught by `killed_indexer_never_leaves_truncated_index`
+            // on the Windows runner.
+            None => {
+                if is_lock_stale(&lock_path) {
+                    // Absolute ceiling, independent of any heartbeat: nothing should
+                    // hold this lock for a quarter of an hour.
+                    log::warn!("Removing indexing lock older than {:?}", LOCK_MAX_AGE);
+                    true
+                } else if !Self::heartbeat_is_fresh(cache_dir)
+                    && is_lock_stale_by(&lock_path, HEARTBEAT_MAX_AGE)
+                {
+                    // The lock has existed longer than a heartbeat interval and the
+                    // status has not moved: the pass died.
+                    log::warn!(
+                        "Removing indexing lock: no heartbeat within {:?} and liveness \
+                         is not determinable on this platform",
+                        HEARTBEAT_MAX_AGE
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+
+        if stale {
             let _ = std::fs::remove_file(&lock_path);
+            return None;
+        }
+
+        Some(holder)
+    }
+
+    /// Whether `indexing.status` was written recently enough to imply a live pass.
+    ///
+    /// The pass rewrites its status once per chunk (128 files), so on any healthy run
+    /// `updated_at` moves every few seconds. A crashed pass leaves it frozen.
+    ///
+    /// Conservative: an unreadable, unparseable or already-finished status counts as
+    /// NO heartbeat, so the caller falls back to the file-age check rather than
+    /// honouring a lock nothing is behind.
+    pub fn heartbeat_is_fresh(cache_dir: &Path) -> bool {
+        let Ok(Some(status)) = Self::get_status(cache_dir) else {
+            return false;
+        };
+        if status.state != IndexerState::Running {
             return false;
         }
-        true
+        let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&status.updated_at) else {
+            return false;
+        };
+        let age = chrono::Utc::now().signed_duration_since(updated.with_timezone(&chrono::Utc));
+        // Negative age means clock skew; treat it as fresh rather than reaping a pass
+        // that may well be alive.
+        age < chrono::Duration::from_std(HEARTBEAT_MAX_AGE).unwrap_or(chrono::Duration::zero())
+    }
+
+    /// Check if an indexing process is already running.
+    pub fn is_running(cache_dir: &Path) -> bool {
+        Self::lock_holder(cache_dir).is_some()
+    }
+
+    /// Ask a running symbol pass to stop at its next batch.
+    ///
+    /// Cooperative, not a kill: the pass finishes the batch it is on, writes its
+    /// status and releases the lock, so `meta.db` is never left mid-write.
+    pub fn request_cancel(cache_dir: &Path) -> std::io::Result<()> {
+        std::fs::write(cache_dir.join(CANCEL_FILE), b"")
+    }
+
+    /// Whether a cancel has been requested.
+    pub fn cancel_requested(cache_dir: &Path) -> bool {
+        cache_dir.join(CANCEL_FILE).exists()
+    }
+
+    /// Clear any outstanding cancel request.
+    pub fn clear_cancel(cache_dir: &Path) {
+        let _ = std::fs::remove_file(cache_dir.join(CANCEL_FILE));
     }
 
     /// Get the current indexing status (if available)
@@ -167,22 +400,23 @@ impl BackgroundIndexer {
     fn acquire_lock(&self) -> Result<File> {
         let lock_path = self.cache_path.join(LOCK_FILE);
 
-        if lock_path.exists() {
-            if is_lock_stale(&lock_path) {
-                log::warn!(
-                    "Removing stale indexing lock file (older than {:?})",
-                    LOCK_MAX_AGE
-                );
-                let _ = std::fs::remove_file(&lock_path);
-            } else {
-                anyhow::bail!("Indexing already in progress (lock file exists)");
-            }
+        // Same liveness rule as `is_running`, so the two can never disagree about
+        // who holds the lock. `lock_holder` reaps a dead holder as a side effect.
+        if Self::lock_holder(&self.cache_path).is_some() {
+            anyhow::bail!("Indexing already in progress (lock file exists)");
         }
 
         let mut lock_file = File::create(&lock_path).context("Failed to create lock file")?;
 
         let pid = std::process::id();
-        writeln!(lock_file, "{}", pid)?;
+        let holder = LockHolder {
+            pid,
+            started_at: Some(self.status.started_at.clone()),
+        };
+        // JSON so a waiting indexer can report "pid N, started HH:MM:SS" instead of a
+        // bare number. Readers accept the old bare-pid form too.
+        writeln!(lock_file, "{}", serde_json::to_string(&holder)?)?;
+        lock_file.flush()?;
 
         log::debug!("Acquired indexing lock (PID: {})", pid);
         Ok(lock_file)
@@ -220,6 +454,11 @@ impl BackgroundIndexer {
     pub fn run(&mut self) -> Result<()> {
         let start_time = Instant::now();
 
+        // Clear any cancel left over from a previous run. An indexer that died
+        // between requesting a cancel and clearing it would otherwise stop this pass
+        // before it began.
+        Self::clear_cancel(&self.cache_path);
+
         // Acquire lock (fails if already running)
         let _lock_file = self
             .acquire_lock()
@@ -236,8 +475,21 @@ impl BackgroundIndexer {
 
         // Update status based on result
         match result {
+            // A cancelled pass also returns Ok — it stopped cleanly, it did not fail.
+            // Don't relabel it Completed, or a caller cannot tell a finished index
+            // from one that yielded with files still to parse.
+            Ok(()) if self.status.state == IndexerState::Cancelled => {
+                self.status.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                log::info!(
+                    "Symbol indexing cancelled after {} of {} files in {:.2}s",
+                    self.status.processed_files,
+                    self.status.total_files,
+                    start_time.elapsed().as_secs_f64()
+                );
+            }
             Ok(()) => {
                 self.status.state = IndexerState::Completed;
+                self.status.phase = "done".to_string();
                 self.status.completed_at = Some(chrono::Utc::now().to_rfc3339());
                 log::info!(
                     "Symbol indexing completed: {} files processed ({} cached, {} parsed, {} failed) in {:.2}s",
@@ -373,6 +625,23 @@ impl BackgroundIndexer {
         }
 
         for chunk in file_ids.chunks(batch_size) {
+            // Yield the database if an `rfx index` is waiting. Cooperative, so the
+            // batch just written stays consistent and the lock is released cleanly.
+            if Self::cancel_requested(&self.cache_path) {
+                log::info!(
+                    "Symbol indexing cancelled at {}/{} files (an indexer asked for the database)",
+                    processed,
+                    total_files
+                );
+                self.status.state = IndexerState::Cancelled;
+                self.status.phase = "cancelled".to_string();
+                self.write_status()?;
+                return Ok(());
+            }
+
+            let chunk_start = Instant::now();
+            self.status.phase = "filtering".to_string();
+
             // Build list of files to parse (with cache check)
             let files_to_parse: Vec<_> = chunk
                 .iter()
@@ -432,6 +701,14 @@ impl BackgroundIndexer {
             });
 
             // Write batch to cache (sequential - SQLite limitation)
+            let parse_done = Instant::now();
+
+            // Announce the write BEFORE it starts. This is the step that blocks on a
+            // meta.db write lock, so a status frozen in "writing" says where the time
+            // is going instead of looking like a hang.
+            self.status.phase = "writing".to_string();
+            let _ = self.write_status();
+
             if !parsed_results.is_empty()
                 && let Err(e) = symbol_cache.batch_set(&parsed_results)
             {
@@ -450,25 +727,58 @@ impl BackgroundIndexer {
                 self.status.processed_files = processed;
             }
 
-            // Write status every batch
-            if processed % 500 < batch_size
-                && let Err(e) = self.write_status()
-            {
+            // Unconditionally, once per chunk. The old `processed % 500 < batch_size`
+            // guard was a no-op (batch_size was itself 500, so it was always true),
+            // and the real staleness came from the chunk being 500 files wide.
+            self.status.phase = "parsing".to_string();
+            self.status.current_file = None;
+            if let Err(e) = self.write_status() {
                 log::warn!("Failed to write status: {}", e);
             }
+
+            let total_ms = chunk_start.elapsed().as_millis();
+            log::info!(
+                "Symbol batch {}/{}: {}ms total ({}ms parse, {}ms write), {} files parsed",
+                processed,
+                total_files,
+                total_ms,
+                parse_done.duration_since(chunk_start).as_millis(),
+                parse_done.elapsed().as_millis(),
+                parsed_results.len()
+            );
         }
 
         // Final status update
         self.status.processed_files = total_files;
         self.write_status()?;
 
-        // Cleanup stale entries
+        // Cleanup stale entries.
+        //
+        // This runs AFTER the final status write, so in 1.7.1 a pass spending minutes
+        // here showed 1027/1027 and a frozen `updated_at` — indistinguishable from a
+        // hang. Name the phase and time it.
+        self.status.phase = "cleanup".to_string();
+        let _ = self.write_status();
+        let cleanup_start = Instant::now();
+
         let removed = symbol_cache
             .cleanup_stale()
             .context("Failed to cleanup stale symbols")?;
 
+        let cleanup_ms = cleanup_start.elapsed().as_millis();
+        if cleanup_ms > 1000 {
+            log::warn!(
+                "cleanup_stale took {}ms for {} removed entries \u{2014} check the index on symbols(file_id)",
+                cleanup_ms,
+                removed
+            );
+        }
         if removed > 0 {
-            log::info!("Cleaned up {} stale symbol entries", removed);
+            log::info!(
+                "Cleaned up {} stale symbol entries in {}ms",
+                removed,
+                cleanup_ms
+            );
         }
 
         Ok(())

@@ -92,8 +92,23 @@ fn killed_indexer_never_leaves_truncated_index() {
     }
 
     // A full run afterwards must produce a valid, queryable index.
-    let status = rfx_index(root).wait().unwrap();
-    assert!(status.success(), "final rfx index must succeed");
+    //
+    // Capture stderr here: the spawned runs above deliberately discard it, but when
+    // THIS one fails the reason is the whole point. A bare `must succeed` told a CI
+    // reader nothing.
+    let out = Command::new(RFX)
+        .arg("index")
+        .arg(root)
+        .arg("--quiet")
+        .output()
+        .expect("spawn rfx index");
+    assert!(
+        out.status.success(),
+        "final rfx index must succeed (exit {:?})\nstderr:\n{}\nstdout:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout),
+    );
     assert!(
         CacheManager::new(root).validate().is_ok(),
         "final index must validate"
@@ -141,6 +156,10 @@ fn reindex_replaces_binaries_atomically_and_keeps_old_readable() {
         .index(root, false)
         .unwrap();
 
+    // Only the Unix assertion below reads this, but it must be captured BEFORE the
+    // reindex lands. Bound under cfg so Windows does not see an unused variable —
+    // CI runs clippy with -D warnings.
+    #[cfg(unix)]
     let before = fs::read(root.join(".reflex/content.bin")).unwrap();
     let held = fs::File::open(root.join(".reflex/content.bin")).unwrap();
 

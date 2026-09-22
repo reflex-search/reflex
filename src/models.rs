@@ -418,12 +418,51 @@ pub struct IndexWarning {
     pub reason: String,
     /// Command to run to fix the issue
     pub action_required: String,
-    /// Number of files detected as modified (only set for mtime-based staleness)
+    /// Tracked files edited since the index was built.
+    ///
+    /// BREAKING in 1.7.2: this was a `u32` count. It is now the paths themselves,
+    /// because a count told an agent something was wrong without telling it what, so
+    /// the only safe reaction was to distrust the whole result. The list is capped;
+    /// `truncated` says when.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub files_modified: Option<u32>,
+    pub files_modified: Option<Vec<String>>,
+    /// Files present on disk but absent from the index (new or untracked).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_added: Option<Vec<String>>,
+    /// Files in the index but no longer on disk. These produce ghost hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_deleted: Option<Vec<String>>,
+    /// Total changed paths, which may exceed the lengths of the lists above.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_count: Option<usize>,
+    /// Whether the lists were cut short. Set on a fresh checkout or a huge rebase.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     /// Additional context (git branch info, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<IndexWarningDetails>,
+}
+
+impl IndexWarning {
+    /// A warning with only a reason and an action, no file lists.
+    pub fn new(reason: impl Into<String>, action_required: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            action_required: action_required.into(),
+            files_modified: None,
+            files_added: None,
+            files_deleted: None,
+            changed_count: None,
+            truncated: false,
+            details: None,
+        }
+    }
+
+    /// Attach git branch/commit context.
+    pub fn with_details(mut self, details: IndexWarningDetails) -> Self {
+        self.details = Some(details);
+        self
+    }
 }
 
 /// Detailed information about index staleness

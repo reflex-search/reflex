@@ -105,6 +105,60 @@ impl Indexer {
         self.index_with_callback(root, show_progress, None)
     }
 
+    /// How long to wait for a running symbol pass to yield the database.
+    ///
+    /// One batch is 128 files, so a pass normally yields in well under a second.
+    /// 10s covers a slow batch without making the caller wait out a whole pass.
+    const SYMBOL_PASS_YIELD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Wait for the detached background symbol pass to release `meta.db`.
+    ///
+    /// The pass (`rfx index-symbols-internal`) runs for minutes on a large repo and
+    /// holds a SQLite write lock the whole time, but takes its own `indexing.lock`
+    /// rather than the workspace `index.lock`. In 1.7.0 that meant every
+    /// `index_project` and `rfx index` during the window failed with a raw
+    /// `Failed to begin meta.db schema transaction: database is locked`.
+    ///
+    /// Asks the pass to stop at its next batch, then waits briefly. If it does not
+    /// yield, returns [`ReflexError::SymbolIndexingInProgress`], which names the pid
+    /// and the progress — never SQLite's error text.
+    fn yield_to_symbol_pass(&self, cache_dir: &Path) -> Result<()> {
+        use crate::background_indexer::BackgroundIndexer;
+
+        let Some(holder) = BackgroundIndexer::lock_holder(cache_dir) else {
+            // Nothing running (or the lock was stale and has just been reaped).
+            BackgroundIndexer::clear_cancel(cache_dir);
+            return Ok(());
+        };
+
+        log::info!(
+            "Symbol indexing is running (pid {}); asking it to yield",
+            holder.pid
+        );
+        let _ = BackgroundIndexer::request_cancel(cache_dir);
+
+        let deadline = std::time::Instant::now() + Self::SYMBOL_PASS_YIELD_TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            if !BackgroundIndexer::is_running(cache_dir) {
+                BackgroundIndexer::clear_cancel(cache_dir);
+                log::info!("Symbol indexing yielded; continuing");
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        // It did not yield. Report what it is doing, then leave it alone.
+        BackgroundIndexer::clear_cancel(cache_dir);
+        let status = BackgroundIndexer::get_status(cache_dir).ok().flatten();
+        Err(crate::errors::ReflexError::SymbolIndexingInProgress {
+            pid: holder.pid,
+            started_at: holder.started_clock(),
+            processed: status.as_ref().map(|s| s.processed_files).unwrap_or(0),
+            total: status.as_ref().map(|s| s.total_files).unwrap_or(0),
+        }
+        .into())
+    }
+
     /// Build or update the index with progress callback support
     pub fn index_with_callback(
         &self,
@@ -125,6 +179,12 @@ impl Indexer {
         )?;
         // A previous indexer that died mid-write leaves `*.tmp` behind.
         crate::atomic_write::remove_stale_tmp(&cache_dir);
+
+        // The detached symbol pass holds meta.db but NOT this lock, so acquiring
+        // `index.lock` above proves nothing about SQLite. Yield to it here, before
+        // `cache.init()` runs `BEGIN IMMEDIATE`, so a waiting agent sees progress
+        // instead of `database is locked: Error code 5`.
+        self.yield_to_symbol_pass(&cache_dir)?;
 
         // Get git state (if in git repo)
         let git_state = crate::git::get_git_state_optional(root)?;
@@ -165,8 +225,39 @@ impl Indexer {
                 .unwrap_or(4)
         );
 
+        // Refuse to write a cache another Reflex build owns.
+        //
+        // A `force` rebuild clears `.reflex/` first, so there is no meta.db left to
+        // conflict with and this passes — taking ownership is exactly what force
+        // means. Checked before `init()`, which is itself a write.
+        self.cache.assert_writable(false)?;
+
         // Ensure cache is initialized
         self.cache.init()?;
+
+        // Drop rows for files that no longer exist on disk, before anything reads
+        // them. `batch_update_files_and_branch` prunes too, but only on a path that
+        // actually rebuilds; this covers the skip path, where every surviving hash
+        // matches and nothing else would notice the deletion. One `exists()` per row.
+        //
+        // Note the flag: this prune SHRINKS `existing_hashes` below, which would
+        // otherwise make the incremental check see a matching file count and skip
+        // the rebuild — leaving the deleted file in content.bin as a ghost hit. A
+        // deletion always requires the binary stores to be rewritten.
+        let had_deletions = match self.cache.identify_deleted_files() {
+            Ok(gone) if !gone.is_empty() => {
+                log::info!("Removing {} deleted files from meta.db", gone.len());
+                if let Err(e) = self.cache.delete_files_from_db(&gone) {
+                    log::warn!("Failed to prune deleted files: {}", e);
+                }
+                true
+            }
+            Ok(_) => false,
+            Err(e) => {
+                log::warn!("Could not identify deleted files: {}", e);
+                false
+            }
+        };
 
         // Check available disk space after cache is initialized
         self.check_disk_space(root)?;
@@ -209,8 +300,12 @@ impl Indexer {
         // Step 1.5: Quick incremental check - are all files unchanged?
         // If yes, skip expensive rebuild entirely and return cached stats
         if !existing_hashes.is_empty() && total_files == existing_hashes.len() {
-            // Same number of files - check if any changed by comparing hashes
-            let mut any_changed = false;
+            // Same number of files - check if any changed by comparing hashes.
+            // A deletion pruned above already means the binary stores are stale.
+            let mut any_changed = had_deletions;
+            // Every path we saw on disk this pass. Needed for the deletion check
+            // below, which the hash loop alone cannot make.
+            let mut current_paths = std::collections::HashSet::<String>::with_capacity(files.len());
 
             for file_path in &files {
                 // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
@@ -225,6 +320,8 @@ impl Indexer {
                     // Already relative, just strip ./ prefix
                     path_str.trim_start_matches("./").replace('\\', "/")
                 };
+
+                current_paths.insert(normalized_path.clone());
 
                 // Check if file exists in cache
                 if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
@@ -248,6 +345,21 @@ impl Indexer {
                     any_changed = true;
                     break;
                 }
+            }
+
+            // The loop above catches an ADDED path (not in existing_hashes) but never
+            // a cached path with no file on disk. Delete one file and add another and
+            // the count is unchanged, every surviving hash matches, and the rebuild is
+            // skipped — leaving the deleted file searchable as a ghost hit. Close it
+            // with a set difference, which costs nothing extra: the paths are already
+            // collected and no file is re-read.
+            if !any_changed
+                && let Some(gone) = existing_hashes
+                    .keys()
+                    .find(|indexed| !current_paths.contains(*indexed))
+            {
+                log::debug!("File deleted since last index: {}", gone);
+                any_changed = true;
             }
 
             if !any_changed {
@@ -280,6 +392,24 @@ impl Indexer {
                     } else if let Ok(reader) = ContentReader::open(&content_path) {
                         if reader.file_count() > 0 {
                             log::info!("No files changed - skipping index rebuild");
+
+                            // The CONTENT is current, but the recorded commit may not
+                            // be: committing already-indexed files moves HEAD without
+                            // changing a single hash. Skipping the metadata update
+                            // left `commit_sha` behind forever, so freshness reported
+                            // `stale` on a perfectly current index until some
+                            // unrelated edit happened to force a rebuild.
+                            if let Some(ref state) = git_state
+                                && let Err(e) = self.cache.update_branch_metadata(
+                                    &branch,
+                                    Some(state.commit.as_str()),
+                                    existing_hashes.len(),
+                                    state.dirty,
+                                )
+                            {
+                                log::warn!("Failed to refresh branch metadata: {}", e);
+                            }
+
                             let mut stats = self.cache.stats()?;
                             stats.unchanged_files = total_files;
                             stats.skipped_too_large = skipped_too_large;
@@ -1991,6 +2121,22 @@ impl Indexer {
         }
 
         Ok((files, skipped_count, skipped_bytes))
+    }
+
+    /// Whether a path is one Reflex would index, judged by extension alone.
+    ///
+    /// Public so freshness checking can ask the same question the walker asks. If the
+    /// two ever disagree, editing a file Reflex does not index (a README, anything
+    /// under `target/`) would mark the index permanently stale — a cure worse than
+    /// the disease.
+    ///
+    /// Judges extension only: no filesystem access, no size check, no `.gitignore`
+    /// (git's own output is already filtered by that). Cheap enough to call per path
+    /// in a `git status` listing.
+    pub fn is_indexable_path(path: &Path) -> bool {
+        path.extension()
+            .map(|ext| Language::from_extension(&ext.to_string_lossy()).is_supported())
+            .unwrap_or(false)
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).

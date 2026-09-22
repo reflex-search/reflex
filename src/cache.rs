@@ -24,6 +24,70 @@ pub const TOKENS_BIN: &str = "tokens.bin";
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
 
+/// Open a SQLite database with Reflex's standard pragmas.
+///
+/// Every connection to `meta.db` (and to the symbol cache, which lives in the same
+/// file) MUST go through this helper. Plain `Connection::open` leaves SQLite at its
+/// defaults, which caused three separate production failures:
+///
+/// 1. **No `busy_timeout`** — the default is 0, so `BEGIN IMMEDIATE` returned
+///    `database is locked` *instantly* whenever the background symbol indexer held a
+///    write. Agents saw a raw SQLite error instead of a retry.
+/// 2. **No `journal_mode=WAL`** — readers blocked writers and vice versa, and
+///    [`CacheManager::checkpoint_wal`] was issuing `wal_checkpoint(TRUNCATE)` against a
+///    rollback-journal database, where it does nothing.
+/// 3. **No `foreign_keys=ON`** — SQLite disables foreign keys per connection by
+///    default, so the `ON DELETE CASCADE` clauses in the schema never fired and
+///    deleting a row from `files` orphaned its `file_branches` / `file_dependencies` /
+///    `file_exports` rows.
+///
+/// Pragma order is load-bearing: `journal_mode=WAL` itself can return `SQLITE_BUSY`
+/// when another connection is attached, so `busy_timeout` must be set first.
+///
+/// Set `REFLEX_SQLITE_JOURNAL=delete` to opt out of WAL on network filesystems, where
+/// WAL requires shared-memory support that NFS/SMB do not reliably provide.
+pub fn open_meta_db(db_path: impl AsRef<Path>) -> Result<Connection> {
+    let db_path = db_path.as_ref();
+    let conn = Connection::open(db_path)
+        .with_context(|| format!("Failed to open {}", db_path.display()))?;
+
+    // Must come first: the journal_mode change below can itself hit a busy database.
+    conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
+        .context("Failed to set busy_timeout")?;
+
+    let journal_mode = std::env::var("REFLEX_SQLITE_JOURNAL")
+        .unwrap_or_else(|_| "WAL".to_string())
+        .to_uppercase();
+
+    // query_row, not execute: `PRAGMA journal_mode` returns the resulting mode as a row.
+    if let Err(e) = conn.query_row(
+        &format!("PRAGMA journal_mode={}", journal_mode),
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        // A read-only or network filesystem can refuse WAL. Degrading to the default
+        // journal is correct here — losing concurrency beats failing to open the cache.
+        log::warn!(
+            "Could not set journal_mode={} on {}: {} (continuing with the default journal)",
+            journal_mode,
+            db_path.display(),
+            e
+        );
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .context("Failed to enable foreign keys")?;
+
+    Ok(conn)
+}
+
+/// How long a SQLite connection waits for a competing writer before giving up.
+///
+/// The background symbol indexer writes in batches; 5s comfortably covers one batch.
+/// A pass that holds the database for longer than this is caught earlier and more
+/// clearly by the `BackgroundIndexer::is_running` gate in `Indexer::index`.
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+
 /// Manages the Reflex cache directory
 #[derive(Clone)]
 pub struct CacheManager {
@@ -68,7 +132,7 @@ impl CacheManager {
         // missing; the old "skip if the file exists" check then made every later
         // run fail with `no such table: file_branches`.) One transaction so a
         // kill mid-way leaves either the old state or the full schema.
-        let conn = Connection::open(&db_path).context("Failed to create meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to create meta.db")?;
         conn.execute_batch("BEGIN IMMEDIATE")
             .context("Failed to begin meta.db schema transaction")?;
 
@@ -106,10 +170,23 @@ impl CacheManager {
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["total_files", "0", &now.to_string()],
         )?;
+        // Who wrote this cache. The old `cache_version = "1"` row was never read by
+        // anything; this replaces it with something actionable, so a refusal can name
+        // the version that owns the cache instead of just a hash.
         conn.execute(
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
-            ["cache_version", "1", &now.to_string()],
+            [
+                "writer_version",
+                env!("CARGO_PKG_VERSION"),
+                &now.to_string(),
+            ],
         )?;
+        if let Some(sha) = option_env!("REFLEX_GIT_SHA") {
+            conn.execute(
+                "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+                ["writer_git_sha", sha, &now.to_string()],
+            )?;
+        }
 
         // Store cache schema hash for automatic invalidation detection
         // This hash is computed at build time from cache-critical source files
@@ -311,8 +388,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         // Try to open database
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db - database may be corrupted")?;
+        let conn =
+            open_meta_db(&db_path).context("Failed to open meta.db - database may be corrupted")?;
 
         // Verify schema exists
         let tables: Result<Vec<String>, _> = conn
@@ -422,54 +499,22 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             }
         }
 
-        // Check schema hash for automatic invalidation
-        let current_schema_hash = env!("CACHE_SCHEMA_HASH");
+        // NOT checked here any more: the schema hash.
+        //
+        // `validate()` runs on EVERY search (query/mod.rs), and a bail here becomes
+        // ReflexError::CacheCorrupted, which the MCP layer answers by force-rebuilding
+        // the index. With several Reflex versions sharing one `.reflex/` — three
+        // `rfx mcp` servers from three Claude Code sessions, in the field report —
+        // each one saw a mismatch, each force-rebuilt, and they streamed into
+        // content.bin concurrently. That is what produced `content.bin is too small`.
+        //
+        // A version mismatch is not corruption. Readers are now allowed through and
+        // the mismatch surfaces via `get_index_status` as stale with
+        // can_trust_results: false, naming the owner version. WRITERS refuse — see
+        // `assert_writable`. Structural checks above (magic bytes, short files,
+        // quick_check) still bail, because those really are corruption.
 
-        let stored_schema_hash: Option<String> = conn
-            .query_row(
-                "SELECT value FROM statistics WHERE key = 'schema_hash'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        if let Some(stored_hash) = stored_schema_hash {
-            if stored_hash != current_schema_hash {
-                log::warn!(
-                    "Cache schema hash mismatch! Stored: {}, Current: {}",
-                    stored_hash,
-                    current_schema_hash
-                );
-                anyhow::bail!(
-                    "Cache schema version mismatch.\n\
-                     \n\
-                     - Cache was built with version {}\n\
-                     - Current binary expects version {}\n\
-                     \n\
-                     The cache format may be incompatible with this version of Reflex.\n\
-                     Please rebuild the index by running:\n\
-                     \n\
-                       rfx index\n\
-                     \n\
-                     This usually happens after upgrading Reflex or making code changes.",
-                    stored_hash,
-                    current_schema_hash
-                );
-            }
-        } else {
-            log::debug!(
-                "No schema_hash found in cache - this cache was created before automatic invalidation was implemented"
-            );
-            // Don't fail for backward compatibility with old caches
-            // They will get the hash on next rebuild
-        }
-
-        let elapsed = start.elapsed();
-        log::debug!(
-            "Cache validation passed (schema hash: {}, took {:?})",
-            current_schema_hash,
-            elapsed
-        );
+        log::debug!("Cache validation passed (took {:?})", start.elapsed());
         Ok(())
     }
 
@@ -624,8 +669,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(());
         }
 
-        let conn =
-            Connection::open(&db_path).context("Failed to open meta.db for WAL checkpoint")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for WAL checkpoint")?;
 
         // PRAGMA wal_checkpoint(TRUNCATE) forces a full checkpoint and truncates the WAL
         // This ensures background processes see all committed data
@@ -659,7 +703,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // Get all hashes from file_branches, joined with files to get paths
         // If a file appears in multiple branches, we'll get multiple entries
@@ -691,7 +735,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // Get hashes for specific branch only
         let mut stmt = conn.prepare(
@@ -729,7 +773,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// via record_branch_file() or batch_record_branch_files().
     pub fn update_file(&self, path: &str, language: &str, line_count: usize) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path).context("Failed to open meta.db for file update")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for file update")?;
 
         let now = chrono::Utc::now().timestamp();
 
@@ -748,8 +792,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// via batch_update_files_and_branch().
     pub fn batch_update_files(&self, files: &[(String, String, usize)]) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let mut conn =
-            Connection::open(&db_path).context("Failed to open meta.db for batch update")?;
+        let mut conn = open_meta_db(&db_path).context("Failed to open meta.db for batch update")?;
 
         let now = chrono::Utc::now().timestamp();
         let now_str = now.to_string();
@@ -792,7 +835,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         );
 
         let db_path = self.cache_path.join(META_DB);
-        let mut conn = Connection::open(&db_path)
+        let mut conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for batch update and branch recording")?;
 
         let now = chrono::Utc::now().timestamp();
@@ -842,6 +885,56 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
         log::info!("Inserted {} file_branches entries", inserted);
 
+        // Step 4: Drop rows for files that are no longer on disk.
+        //
+        // Until 1.7.2 this method was INSERT OR REPLACE only, so `meta.db` never
+        // shrank. A deleted file kept its `files` and `file_branches` rows forever,
+        // `stats()` counts `file_branches`, and so `total_files` still reported 1027
+        // after a deletion. Pruning lived only in `compact()`, which is throttled to
+        // once a day AND skipped entirely for the `mcp`, `watch` and `serve` commands
+        // — so an MCP-only session never pruned at all.
+        //
+        // A temp table rather than a bound IN-list: SQLite caps a statement at 999
+        // parameters, and a workspace has far more files than that.
+        let pruned = {
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT PRIMARY KEY);
+                 DELETE FROM current_paths;",
+            )?;
+            {
+                let mut stmt =
+                    tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
+                for (path, _) in branch_files {
+                    stmt.execute([path.as_str()])?;
+                }
+            }
+
+            // Detach this branch from files it no longer contains.
+            let unlinked = tx.execute(
+                "DELETE FROM file_branches
+                 WHERE branch_id = ?
+                   AND file_id NOT IN (SELECT id FROM files WHERE path IN (SELECT path FROM current_paths))",
+                rusqlite::params![branch_id],
+            )?;
+
+            // Then sweep files no branch references any more. Scoped this way so a
+            // file that still exists on another branch is never dropped.
+            let orphaned = tx.execute(
+                "DELETE FROM files WHERE id NOT IN (SELECT file_id FROM file_branches)",
+                [],
+            )?;
+
+            tx.execute_batch("DROP TABLE IF EXISTS current_paths;")?;
+            (unlinked, orphaned)
+        };
+        if pruned.0 > 0 || pruned.1 > 0 {
+            log::info!(
+                "Pruned {} stale file_branches rows and {} orphaned files rows",
+                pruned.0,
+                pruned.1
+            );
+        }
+
         // Commit the entire transaction atomically
         tx.commit()?;
         log::info!("Transaction committed successfully (files + file_branches)");
@@ -849,7 +942,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         // DIAGNOSTIC: Verify data was actually persisted after commit
         // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
         let verify_conn =
-            Connection::open(&db_path).context("Failed to open meta.db for verification")?;
+            open_meta_db(&db_path).context("Failed to open meta.db for verification")?;
 
         // Count actual files in database
         let actual_file_count: i64 = verify_conn.query_row(
@@ -903,7 +996,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Counts only files indexed for the given branch, not all files across all branches.
     pub fn update_stats(&self, branch: &str) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path).context("Failed to open meta.db for stats update")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for stats update")?;
 
         // Count files for specific branch only (branch-aware statistics)
         let total_files: usize = conn
@@ -939,7 +1032,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         if !db_path.exists() {
             return Ok(false);
         }
-        let conn = Connection::open(&db_path)?;
+        let conn = open_meta_db(&db_path)?;
         let current = env!("CACHE_SCHEMA_HASH");
         let stored: Option<String> = conn
             .query_row(
@@ -951,6 +1044,75 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         Ok(stored.as_deref() == Some(current))
     }
 
+    /// Who wrote this cache: `(version, git_sha)`, when the cache records it.
+    ///
+    /// `None` for a cache written before 1.7.2, or none at all.
+    pub fn cache_owner(&self) -> Option<(String, Option<String>)> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return None;
+        }
+        let conn = open_meta_db(&db_path).ok()?;
+        let get = |key: &str| -> Option<String> {
+            conn.query_row("SELECT value FROM statistics WHERE key = ?", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+        };
+        get("writer_version").map(|v| (v, get("writer_git_sha")))
+    }
+
+    /// Refuse to write a cache a DIFFERENT RELEASED VERSION owns.
+    ///
+    /// Cross-version writers into one `.reflex/` is a corruption vector: the field
+    /// report had three `rfx mcp` servers at two versions sharing a cache, and 1.6.0
+    /// had already produced `content.bin is too small`.
+    ///
+    /// Scoped deliberately narrowly, to the one case that is actually unsafe and
+    /// actually detectable:
+    ///
+    /// * A differing SCHEMA HASH alone is NOT refused. It flips on any change to
+    ///   cache-critical sources, so it fires for every user on every upgrade and for
+    ///   every developer on every branch switch. A full rebuild is what it already
+    ///   triggers, it happens under the workspace `IndexLock`, and it truncates the
+    ///   binary stores — which is safe.
+    /// * An UNSTAMPED cache is adopted, not refused. Everything written before 1.7.2
+    ///   is unstamped, so refusing would break every upgrade.
+    /// * A cache stamped by a different released version IS refused, because that is
+    ///   the multi-version-sharing case, and only there can the error name who owns it.
+    ///
+    /// `force` (which clears the cache first) and `REFLEX_ALLOW_SCHEMA_REBUILD=1`
+    /// always pass — taking ownership is what force means.
+    pub fn assert_writable(&self, force: bool) -> Result<()> {
+        if force || std::env::var("REFLEX_ALLOW_SCHEMA_REBUILD").is_ok() {
+            return Ok(());
+        }
+
+        if !self.cache_path.join(META_DB).exists() {
+            return Ok(());
+        }
+
+        let Some((owner_version, owner_sha)) = self.cache_owner() else {
+            // Unstamped: written before 1.7.2. Adopt it.
+            return Ok(());
+        };
+
+        if owner_version == env!("CARGO_PKG_VERSION") {
+            return Ok(());
+        }
+
+        Err(crate::errors::ReflexError::CacheVersionMismatch {
+            owner_version,
+            owner_sha: owner_sha
+                .map(|s| format!(" (sha {})", &s[..s.len().min(7)]))
+                .unwrap_or_default(),
+            this_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+        .into())
+    }
+
     /// Update cache schema hash in statistics table
     ///
     /// This should be called after every index operation to ensure the cache
@@ -958,7 +1120,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     pub fn update_schema_hash(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn =
-            Connection::open(&db_path).context("Failed to open meta.db for schema hash update")?;
+            open_meta_db(&db_path).context("Failed to open meta.db for schema hash update")?;
 
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         let now = chrono::Utc::now().timestamp();
@@ -967,6 +1129,21 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["schema_hash", schema_hash, &now.to_string()],
         )?;
+        // Keep ownership in step with the hash, so a refusal can always name a version.
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            [
+                "writer_version",
+                env!("CARGO_PKG_VERSION"),
+                &now.to_string(),
+            ],
+        )?;
+        if let Some(sha) = option_env!("REFLEX_GIT_SHA") {
+            conn.execute(
+                "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+                ["writer_git_sha", sha, &now.to_string()],
+            )?;
+        }
 
         log::debug!("Updated schema hash to: {}", schema_hash);
         Ok(())
@@ -980,7 +1157,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(Vec::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let mut stmt =
             conn.prepare("SELECT path, language, last_indexed FROM files ORDER BY path")?;
@@ -1023,7 +1200,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             });
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // Determine current branch for branch-aware statistics
         let workspace_root = self.workspace_root();
@@ -1268,8 +1445,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         commit_sha: Option<&str>,
     ) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for branch file recording")?;
+        let conn =
+            open_meta_db(&db_path).context("Failed to open meta.db for branch file recording")?;
 
         // Lookup file_id from path
         let file_id: i64 = conn
@@ -1310,8 +1487,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         );
 
         let db_path = self.cache_path.join(META_DB);
-        let mut conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for batch branch recording")?;
+        let mut conn =
+            open_meta_db(&db_path).context("Failed to open meta.db for batch branch recording")?;
 
         let now = chrono::Utc::now().timestamp();
 
@@ -1360,7 +1537,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let mut stmt = conn.prepare(
             "SELECT f.path, fb.hash
@@ -1391,7 +1568,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let count: i64 = conn
             .query_row(
@@ -1416,7 +1593,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             anyhow::bail!("Database not initialized");
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let info = conn.query_row(
             "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE name = ?",
@@ -1447,8 +1624,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         is_dirty: bool,
     ) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for branch metadata update")?;
+        let conn =
+            open_meta_db(&db_path).context("Failed to open meta.db for branch metadata update")?;
 
         let now = chrono::Utc::now().timestamp();
         let is_dirty_int = if is_dirty { 1 } else { 0 };
@@ -1503,7 +1680,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(None);
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let result = conn
             .query_row(
@@ -1531,7 +1708,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(None);
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let result = conn
             .query_row("SELECT id FROM files WHERE path = ?", [path], |row| {
@@ -1555,7 +1732,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // SQLite has a limit of 999 parameters by default
         // Chunk requests to stay well under that limit
@@ -1607,8 +1784,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
 
-        let conn =
-            Connection::open(&db_path).context("Failed to open meta.db for compaction check")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for compaction check")?;
 
         // Get last_compaction timestamp (defaults to "0" if not found)
         let last_compaction: i64 = conn
@@ -1647,7 +1823,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Called after successful compaction to record when it ran.
     pub fn update_compaction_timestamp(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
+        let conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for compaction timestamp update")?;
 
         let now = chrono::Utc::now().timestamp();
@@ -1732,9 +1908,9 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Identify files in database that no longer exist on filesystem
     ///
     /// Returns a Vec of file IDs for files that should be removed from the cache.
-    fn identify_deleted_files(&self) -> Result<Vec<i64>> {
+    pub(crate) fn identify_deleted_files(&self) -> Result<Vec<i64>> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
+        let conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for deleted file identification")?;
 
         let workspace_root = self.workspace_root();
@@ -1768,14 +1944,14 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// - file_branches entries
     /// - file_dependencies entries
     /// - file_exports entries
-    fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
+    pub(crate) fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
         if file_ids.is_empty() {
             return Ok(());
         }
 
         let db_path = self.cache_path.join(META_DB);
         let mut conn =
-            Connection::open(&db_path).context("Failed to open meta.db for file deletion")?;
+            open_meta_db(&db_path).context("Failed to open meta.db for file deletion")?;
 
         let tx = conn.transaction()?;
 
@@ -1805,7 +1981,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// This can take several seconds on large databases but significantly reduces disk usage.
     fn vacuum_database(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path).context("Failed to open meta.db for VACUUM")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for VACUUM")?;
 
         // VACUUM cannot run inside a transaction
         // It rebuilds the entire database file
@@ -2288,7 +2464,7 @@ mod tests {
         cache.init().unwrap();
 
         let db_path = cache.path().join(META_DB);
-        let conn = Connection::open(&db_path).unwrap();
+        let conn = open_meta_db(&db_path).unwrap();
 
         // Verify tables exist
         let tables: Vec<String> = conn
@@ -2415,7 +2591,7 @@ mod tests {
 
         // Drop a required table to simulate schema corruption
         let db_path = cache.path().join(META_DB);
-        let conn = Connection::open(&db_path).unwrap();
+        let conn = open_meta_db(&db_path).unwrap();
         conn.execute("DROP TABLE files", []).unwrap();
 
         // Validation should fail due to missing required table

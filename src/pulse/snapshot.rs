@@ -76,7 +76,8 @@ pub fn compute_index_fingerprint(cache: &CacheManager) -> Result<String> {
         anyhow::bail!("No index found. Run `rfx index` first.");
     }
 
-    let conn = Connection::open(&meta_db_path).context("Failed to open meta.db for fingerprint")?;
+    let conn = crate::cache::open_meta_db(&meta_db_path)
+        .context("Failed to open meta.db for fingerprint")?;
 
     let mut stmt = conn.prepare(
         "SELECT f.path, fb.hash

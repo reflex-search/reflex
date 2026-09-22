@@ -5,7 +5,6 @@
 //! client-side rendering. No LLM needed.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -37,7 +36,7 @@ pub struct ExplorerData {
 /// Generate treemap data from the index
 pub fn generate_explorer(cache: &CacheManager) -> Result<ExplorerData> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+    let conn = crate::cache::open_meta_db(&db_path).context("Failed to open meta.db")?;
 
     // Query all files with line counts and languages
     let mut stmt = conn
