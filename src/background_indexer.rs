@@ -31,6 +31,14 @@ const LOCK_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(900);
 /// Status file name for progress tracking
 const STATUS_FILE: &str = "indexing.status";
 
+/// How long a pass may go without updating `indexing.status` before it is presumed
+/// dead, on platforms where pid liveness cannot be checked.
+///
+/// A healthy pass writes its status once per 128-file chunk — seconds apart. 60s is
+/// generous enough to survive a very slow batch while turning a crash into an
+/// immediate recovery rather than a 15-minute wait.
+const HEARTBEAT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Sentinel file asking a running symbol pass to stop at the next batch.
 ///
 /// A symbol pass over a large repo runs for minutes. Making `rfx index` wait that
@@ -192,6 +200,11 @@ pub enum IndexerState {
 /// This allows recovery from crashed indexer processes that didn't clean up
 /// their lock file (SIGKILL, OOM, power loss, etc.).
 fn is_lock_stale(lock_path: &Path) -> bool {
+    is_lock_stale_by(lock_path, LOCK_MAX_AGE)
+}
+
+/// As [`is_lock_stale`], with an explicit age limit.
+fn is_lock_stale_by(lock_path: &Path, max_age: std::time::Duration) -> bool {
     let metadata = match std::fs::metadata(lock_path) {
         Ok(m) => m,
         Err(_) => return false, // Can't read => not stale, let caller handle
@@ -201,7 +214,7 @@ fn is_lock_stale(lock_path: &Path) -> bool {
         Err(_) => return false,
     };
     match modified.elapsed() {
-        Ok(age) => age > LOCK_MAX_AGE,
+        Ok(age) => age > max_age,
         Err(_) => false, // Clock skew — don't remove
     }
 }
@@ -276,16 +289,35 @@ impl BackgroundIndexer {
                 );
                 true
             }
-            // Liveness unknown on this platform — fall back to the age rule.
+            // Liveness unknown on this platform (Windows). Use the pass's own
+            // HEARTBEAT instead of the one-hour-ish age rule.
+            //
+            // A running pass rewrites `indexing.status` every chunk, so a frozen
+            // `updated_at` means it died. Without this, a killed `rfx index` left a
+            // lock that Windows could not attribute, the next run treated it as live,
+            // and indexing was blocked until LOCK_MAX_AGE — turning a crash into a
+            // 15-minute outage. Caught by `killed_indexer_never_leaves_truncated_index`
+            // on the Windows runner.
             None => {
-                let old = is_lock_stale(&lock_path);
-                if old {
+                if is_lock_stale(&lock_path) {
+                    // Absolute ceiling, independent of any heartbeat: nothing should
+                    // hold this lock for a quarter of an hour.
+                    log::warn!("Removing indexing lock older than {:?}", LOCK_MAX_AGE);
+                    true
+                } else if !Self::heartbeat_is_fresh(cache_dir)
+                    && is_lock_stale_by(&lock_path, HEARTBEAT_MAX_AGE)
+                {
+                    // The lock has existed longer than a heartbeat interval and the
+                    // status has not moved: the pass died.
                     log::warn!(
-                        "Removing stale indexing lock file (older than {:?})",
-                        LOCK_MAX_AGE
+                        "Removing indexing lock: no heartbeat within {:?} and liveness \
+                         is not determinable on this platform",
+                        HEARTBEAT_MAX_AGE
                     );
+                    true
+                } else {
+                    false
                 }
-                old
             }
         };
 
@@ -295,6 +327,30 @@ impl BackgroundIndexer {
         }
 
         Some(holder)
+    }
+
+    /// Whether `indexing.status` was written recently enough to imply a live pass.
+    ///
+    /// The pass rewrites its status once per chunk (128 files), so on any healthy run
+    /// `updated_at` moves every few seconds. A crashed pass leaves it frozen.
+    ///
+    /// Conservative: an unreadable, unparseable or already-finished status counts as
+    /// NO heartbeat, so the caller falls back to the file-age check rather than
+    /// honouring a lock nothing is behind.
+    pub fn heartbeat_is_fresh(cache_dir: &Path) -> bool {
+        let Ok(Some(status)) = Self::get_status(cache_dir) else {
+            return false;
+        };
+        if status.state != IndexerState::Running {
+            return false;
+        }
+        let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&status.updated_at) else {
+            return false;
+        };
+        let age = chrono::Utc::now().signed_duration_since(updated.with_timezone(&chrono::Utc));
+        // Negative age means clock skew; treat it as fresh rather than reaping a pass
+        // that may well be alive.
+        age < chrono::Duration::from_std(HEARTBEAT_MAX_AGE).unwrap_or(chrono::Duration::zero())
     }
 
     /// Check if an indexing process is already running.

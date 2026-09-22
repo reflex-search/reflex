@@ -226,3 +226,75 @@ fn the_in_progress_message_matches_the_documented_shape() {
         "symbol indexing in progress (pid 12345, started 14:22:07, 1000/1027 files)"
     );
 }
+
+// --- heartbeat fallback ---
+//
+// On Windows (and anywhere pid liveness is undeterminable) a lock is judged by the
+// pass's own heartbeat: `indexing.status` is rewritten every 128-file chunk, so a
+// frozen `updated_at` means the process died. Linux never takes this branch, so the
+// predicate is tested directly.
+
+fn write_status(cache_dir: &Path, state: &str, updated_secs_ago: i64) {
+    let t = chrono::Utc::now() - chrono::Duration::seconds(updated_secs_ago);
+    fs::create_dir_all(cache_dir).unwrap();
+    fs::write(
+        cache_dir.join("indexing.status"),
+        serde_json::json!({
+            "state": state,
+            "total_files": 10, "processed_files": 5,
+            "cached_files": 0, "parsed_files": 5, "failed_files": 0,
+            "started_at": t.to_rfc3339(), "updated_at": t.to_rfc3339(),
+            "completed_at": null, "error": null,
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_recent_heartbeat_means_the_pass_is_alive() {
+    let temp = TempDir::new().unwrap();
+    let cache_dir = temp.path().join(".reflex");
+    write_status(&cache_dir, "running", 2);
+    assert!(BackgroundIndexer::heartbeat_is_fresh(&cache_dir));
+}
+
+#[test]
+fn a_frozen_heartbeat_means_the_pass_died() {
+    let temp = TempDir::new().unwrap();
+    let cache_dir = temp.path().join(".reflex");
+    // Older than HEARTBEAT_MAX_AGE (60s). This is the case that turned a crashed
+    // pass into a 15-minute outage on Windows.
+    write_status(&cache_dir, "running", 600);
+    assert!(!BackgroundIndexer::heartbeat_is_fresh(&cache_dir));
+}
+
+#[test]
+fn a_finished_pass_is_not_a_heartbeat() {
+    let temp = TempDir::new().unwrap();
+    let cache_dir = temp.path().join(".reflex");
+    for state in ["completed", "failed", "cancelled"] {
+        write_status(&cache_dir, state, 1);
+        assert!(
+            !BackgroundIndexer::heartbeat_is_fresh(&cache_dir),
+            "{state} must not count as a live heartbeat"
+        );
+    }
+}
+
+#[test]
+fn a_missing_or_corrupt_status_is_not_a_heartbeat() {
+    let temp = TempDir::new().unwrap();
+    let cache_dir = temp.path().join(".reflex");
+    fs::create_dir_all(&cache_dir).unwrap();
+    assert!(
+        !BackgroundIndexer::heartbeat_is_fresh(&cache_dir),
+        "missing"
+    );
+
+    fs::write(cache_dir.join("indexing.status"), "{ not json").unwrap();
+    assert!(
+        !BackgroundIndexer::heartbeat_is_fresh(&cache_dir),
+        "corrupt"
+    );
+}
