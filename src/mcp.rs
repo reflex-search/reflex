@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
@@ -122,6 +122,30 @@ fn parse_symbol_kind(kind: Option<String>) -> Option<SymbolKind> {
     })
 }
 
+/// Server instructions sent in the `initialize` response.
+///
+/// Written for agents that never see the tool schemas: Claude Code defers MCP
+/// tool schemas until the model calls `ToolSearch`, and in 34 measured
+/// sessions 14 of 16 opened with a wrong argument name (`query` instead of
+/// `pattern`). So the text carries the exact call shapes and the canonical
+/// argument names, plus the ToolSearch hint. Keep it compact: every consumer
+/// pays these tokens once per session. Guarded by tests
+/// (`test_instructions_*`).
+const MCP_INSTRUCTIONS: &str = r#"Reflex is the full-text code search engine for this workspace. For any task that asks where code is, where a pattern occurs, where a symbol is defined or used, or who imports a file, prefer a Reflex tool over Grep, Glob, ripgrep, or shell grep: call Reflex first. It returns grep's data plus line context, symbol typing, and dependency links, instantly.
+
+Your harness may defer MCP tool schemas. If Reflex tools appear in a deferred-tools list, load them first: ToolSearch("select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references").
+
+Exact call shapes:
+search_code {"pattern": "fn verify_totp", "limit": 40, "file": "src/identity"}
+search_regex {"pattern": "fn (get|set)_\w+", "glob": ["src/**/*.rs"]}
+find_references {"pattern": "start_webauthn_registration"}
+
+Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: a natural-language query like "hot tier promotion" matches nothing, so search for identifiers or code fragments.
+
+Use find_references for a definition plus every call site without string/comment noise. Use get_dependents for what imports a file.
+
+On an "Index not found" or "corrupted" error, call index_project, then retry the failed tool. Only fall back to Grep/Glob after index_project has been called and the tool still fails."#;
+
 /// Handle initialize request
 fn handle_initialize(_params: Option<Value>) -> Result<Value> {
     Ok(json!({
@@ -133,7 +157,7 @@ fn handle_initialize(_params: Option<Value>) -> Result<Value> {
             "name": "reflex",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Reflex is the in-process full-text code search engine for this workspace. For any task that asks where code is, where a pattern occurs, where a symbol is defined or used, or who imports a file, **prefer a Reflex search tool over Grep, Glob, ripgrep, or shell `grep`** for code search — call a Reflex tool first in every such case. Reflex returns the same data as grep plus per-line context, symbol typing, and dependency links, in under 100 ms. On an \"Index not found\" or \"stale\" error from any Reflex tool, call `index_project`, then retry the failed tool — recovery is automatic and the retry will succeed. Only fall back to Grep/Glob after `index_project` has been called and the tool still fails."
+        "instructions": MCP_INSTRUCTIONS
     }))
 }
 
@@ -744,6 +768,441 @@ fn make_tool_result(data: Value) -> Value {
     })
 }
 
+/// Wrap tool data into the MCP `content` envelope, attaching any argument
+/// normalisation warnings (deprecated alias used, duplicate key ignored).
+///
+/// JSON-object data gets a top-level `warnings` array. Prose data
+/// (`Value::String`, e.g. `gather_context`) is emitted verbatim as
+/// `content[text]`, with the warnings appended as trailing lines.
+fn finish_tool_result(data: Value, warnings: Vec<String>) -> Value {
+    match data {
+        Value::String(text) => {
+            let text = if warnings.is_empty() {
+                text
+            } else {
+                format!("{}\n\nwarnings: {}", text, warnings.join("; "))
+            };
+            json!({ "content": [{ "type": "text", "text": text }] })
+        }
+        mut other => {
+            if !warnings.is_empty()
+                && let Some(obj) = other.as_object_mut()
+            {
+                obj.insert("warnings".to_string(), json!(warnings));
+            }
+            make_tool_result(other)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Argument validation (1.7.0)
+//
+// Field data from 34 real Claude Code sessions: 20 of 21 Reflex failures were
+// `Missing pattern` because the agent sent `query`, `symbol`, `max_results`
+// or `path`. The schema was correct; the agent never saw it (deferred tool
+// schemas). Three defences now sit in front of every tool arm:
+//
+// 1. Aliases: the habitual wrong names are accepted and rewritten, with a
+//    `warnings` entry in the response so the next call is right.
+// 2. Unknown keys are rejected with the received keys, the valid keys and a
+//    nearest-match suggestion (previously they were silently dropped, so a
+//    `max_results: 40` call quietly returned 200 results).
+// 3. Numeric strings (`"40"`) and boolean strings (`"true"`) are coerced;
+//    anything else that is the wrong type is a typed error, not a silent
+//    fallback to the default.
+//
+// The valid-key and required-key lists are read from the `tools/list` schema
+// at runtime, so the validator can never drift from what clients are shown.
+// ---------------------------------------------------------------------------
+
+/// Wrong-but-common argument names and the key each one means.
+///
+/// `path` is only an alias on tools whose schema has no real `path` key
+/// (the dependency/context tools take a real `path`).
+const ARG_ALIASES: &[(&str, &str)] = &[
+    ("query", "pattern"),
+    ("symbol", "pattern"),
+    ("text", "pattern"),
+    ("search", "pattern"),
+    ("max_results", "limit"),
+    ("path", "file"),
+];
+
+/// Keys that must be non-negative integers. Numeric strings are coerced.
+const NUMERIC_ARG_KEYS: &[&str] = &[
+    "limit",
+    "offset",
+    "depth",
+    "preview_length",
+    "min_dependents",
+    "min_island_size",
+    "max_island_size",
+];
+
+/// Keys that must be booleans. `"true"` / `"false"` strings are coerced.
+const BOOL_ARG_KEYS: &[&str] = &[
+    "symbols",
+    "exact",
+    "expand",
+    "paths",
+    "force",
+    "dependencies",
+    "include_strings",
+    "structure",
+    "file_types",
+    "project_type",
+    "framework",
+    "entry_points",
+    "test_layout",
+    "config_files",
+];
+
+/// Keys that must be strings when present.
+const STRING_ARG_KEYS: &[&str] = &["pattern", "lang", "kind", "mode", "file", "path", "sort"];
+
+/// Keys that must be arrays of strings when present.
+const STRING_ARRAY_ARG_KEYS: &[&str] = &["glob", "exclude", "languages"];
+
+/// Per-tool argument contract, derived from the published `inputSchema`.
+#[derive(Debug, Clone)]
+struct ToolSpec {
+    /// Every key the schema declares under `properties`, in schema order.
+    valid: Vec<String>,
+    /// Keys the schema lists under `required`.
+    required: Vec<String>,
+}
+
+/// All tool specs, built once from `handle_list_tools` with structural tools
+/// included so hidden tools still validate when called directly.
+fn tool_specs() -> &'static std::collections::HashMap<String, ToolSpec> {
+    static SPECS: std::sync::OnceLock<std::collections::HashMap<String, ToolSpec>> =
+        std::sync::OnceLock::new();
+    SPECS.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        let listing = handle_list_tools(None, true).expect("static tool list is valid JSON");
+        for tool in listing["tools"].as_array().into_iter().flatten() {
+            let Some(name) = tool["name"].as_str() else {
+                continue;
+            };
+            let required: Vec<String> = tool["inputSchema"]["required"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Required keys first so error text leads with `pattern`; the rest
+            // follow in serde_json's (alphabetical) map order.
+            let mut valid: Vec<String> = required.clone();
+            for key in tool["inputSchema"]["properties"]
+                .as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+            {
+                if !valid.contains(&key) {
+                    valid.push(key);
+                }
+            }
+            map.insert(name.to_string(), ToolSpec { valid, required });
+        }
+        map
+    })
+}
+
+/// Spec for one tool, `None` when the tool does not exist.
+fn tool_spec(name: &str) -> Option<&'static ToolSpec> {
+    tool_specs().get(name)
+}
+
+/// Classic two-row Levenshtein edit distance (ASCII keys, so bytes suffice).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Closest valid key to `key`, if any is close enough to be a likely typo.
+///
+/// Known aliases count too: `max_resultz` is near the alias `max_results`,
+/// so the suggestion is that alias's canonical key, `limit`.
+fn nearest_key<'a>(key: &str, valid: &'a [String]) -> Option<&'a str> {
+    let threshold = 2.max(key.len() / 3);
+    let direct = valid.iter().map(|v| (levenshtein(key, v), v.as_str()));
+    let via_alias = ARG_ALIASES.iter().filter_map(|(alias, canonical)| {
+        valid
+            .iter()
+            .find(|v| v == canonical)
+            .map(|v| (levenshtein(key, alias), v.as_str()))
+    });
+    direct
+        .chain(via_alias)
+        .filter(|(d, _)| *d <= threshold)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, v)| v)
+}
+
+fn keys_list(keys: &[String]) -> String {
+    serde_json::to_string(keys).unwrap_or_default()
+}
+
+fn invalid_params(msg: String) -> anyhow::Error {
+    crate::errors::ReflexError::InvalidParams(msg).into()
+}
+
+/// Short human rendering of a JSON value for error text.
+fn describe_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{}\"", s),
+        other => other.to_string(),
+    }
+}
+
+/// Apply aliases, reject unknown keys, check required keys, coerce types.
+///
+/// Returns the rewritten arguments plus warnings for the caller. Every error
+/// is [`ReflexError::InvalidParams`] and maps to JSON-RPC `-32602`.
+fn normalize_arguments(tool: &str, spec: &ToolSpec, args: Value) -> Result<(Value, Vec<String>)> {
+    let mut obj = match args {
+        Value::Object(o) => o,
+        Value::Null => serde_json::Map::new(),
+        other => {
+            return Err(invalid_params(format!(
+                "Invalid arguments for {}: expected a JSON object, got {}",
+                tool,
+                describe_value(&other)
+            )));
+        }
+    };
+    let received: Vec<String> = obj.keys().cloned().collect();
+    let mut warnings = Vec::new();
+
+    // Pass 1: aliases.
+    for (alias, canonical) in ARG_ALIASES {
+        if spec.valid.iter().any(|k| k == alias) {
+            continue; // a real key on this tool (e.g. `path` on get_dependencies)
+        }
+        if !spec.valid.iter().any(|k| k == canonical) {
+            continue; // canonical key does not exist here; leave for the unknown-key pass
+        }
+        if let Some(value) = obj.remove(*alias) {
+            if obj.contains_key(*canonical) {
+                warnings.push(format!(
+                    "ignored \"{}\" because \"{}\" was also given",
+                    alias, canonical
+                ));
+            } else {
+                warnings.push(format!(
+                    "argument \"{}\" is deprecated; use \"{}\"",
+                    alias, canonical
+                ));
+                obj.insert((*canonical).to_string(), value);
+            }
+        }
+    }
+
+    // Pass 2: unknown keys.
+    for key in obj.keys() {
+        if !spec.valid.iter().any(|k| k == key) {
+            let hint = nearest_key(key, &spec.valid)
+                .map(|s| format!(" (did you mean \"{}\"?)", s))
+                .unwrap_or_default();
+            return Err(invalid_params(format!(
+                "Unknown argument \"{}\" for {}{}. Received: {}. Valid: {}",
+                key,
+                tool,
+                hint,
+                keys_list(&received),
+                keys_list(&spec.valid)
+            )));
+        }
+    }
+
+    // Pass 3: required keys.
+    for req in &spec.required {
+        if !obj.contains_key(req) {
+            return Err(invalid_params(format!(
+                "Missing required argument \"{}\" for {}. Received: {}. Valid: {}",
+                req,
+                tool,
+                keys_list(&received),
+                keys_list(&spec.valid)
+            )));
+        }
+    }
+
+    // Pass 4: types and coercion.
+    for (key, value) in obj.iter_mut() {
+        let key = key.as_str();
+        if NUMERIC_ARG_KEYS.contains(&key) {
+            let coerced = match value {
+                Value::Number(n) if n.as_u64().is_some() => None,
+                Value::String(s) => s.trim().parse::<u64>().ok().map(Value::from),
+                _ => None,
+            };
+            match coerced {
+                Some(n) => *value = n,
+                None if value.as_u64().is_some() => {}
+                None => {
+                    return Err(invalid_params(format!(
+                        "Invalid value for \"{}\": expected a non-negative integer, got {}",
+                        key,
+                        describe_value(value)
+                    )));
+                }
+            }
+        } else if BOOL_ARG_KEYS.contains(&key) {
+            let coerced = match value {
+                Value::Bool(_) => None,
+                Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+                    "true" => Some(Value::Bool(true)),
+                    "false" => Some(Value::Bool(false)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match coerced {
+                Some(b) => *value = b,
+                None if value.is_boolean() => {}
+                None => {
+                    return Err(invalid_params(format!(
+                        "Invalid value for \"{}\": expected a boolean, got {}",
+                        key,
+                        describe_value(value)
+                    )));
+                }
+            }
+        } else if STRING_ARG_KEYS.contains(&key) && !value.is_string() {
+            return Err(invalid_params(format!(
+                "Invalid value for \"{}\": expected a string, got {}",
+                key,
+                describe_value(value)
+            )));
+        } else if STRING_ARRAY_ARG_KEYS.contains(&key) {
+            // A bare string is a common shorthand for a one-element list.
+            if let Value::String(s) = value {
+                *value = json!([s]);
+            } else if !value
+                .as_array()
+                .map(|a| a.iter().all(Value::is_string))
+                .unwrap_or(false)
+            {
+                return Err(invalid_params(format!(
+                    "Invalid value for \"{}\": expected an array of strings, got {}",
+                    key,
+                    describe_value(value)
+                )));
+            }
+        }
+    }
+
+    Ok((Value::Object(obj), warnings))
+}
+
+// ---------------------------------------------------------------------------
+// Cache corruption auto-recovery (1.7.0)
+// ---------------------------------------------------------------------------
+
+/// Build (or force-rebuild) the index for `root`. Shared by the
+/// `index_project` tool and the corruption auto-recovery path.
+fn rebuild_index(
+    root: &Path,
+    force: bool,
+    languages: Vec<Language>,
+) -> Result<crate::models::IndexStats> {
+    let cache = CacheManager::new(root);
+    if force {
+        log::info!("Force rebuild requested, clearing existing cache");
+        cache.clear()?;
+    }
+    let config = IndexConfig {
+        languages,
+        ..Default::default()
+    };
+    let indexer = Indexer::new(cache, config);
+    indexer.index(root, false)
+}
+
+fn is_cache_corrupted(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<crate::errors::ReflexError>(),
+        Some(crate::errors::ReflexError::CacheCorrupted(_))
+    )
+}
+
+/// Run a tool; if it fails because the on-disk cache is corrupted, rebuild
+/// the index once (force) and retry once. `index_project` itself is never
+/// wrapped, so recovery cannot recurse.
+fn with_corruption_recovery(
+    name: &str,
+    root: &Path,
+    mut run: impl FnMut() -> Result<Value>,
+) -> Result<Value> {
+    let first = match run() {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    if name == "index_project" || !is_cache_corrupted(&first) {
+        return Err(first);
+    }
+
+    log::warn!(
+        "Cache corruption detected during {}; rebuilding index once and retrying: {}",
+        name,
+        first
+    );
+    if let Err(rebuild_err) = rebuild_index(root, true, Vec::new()) {
+        if rebuild_err
+            .downcast_ref::<crate::errors::ReflexError>()
+            .is_some_and(|re| matches!(re, crate::errors::ReflexError::IndexLocked(_)))
+        {
+            // Someone else is already rebuilding; let the caller retry later.
+            return Err(rebuild_err);
+        }
+        return Err(anyhow::anyhow!(
+            "Index is corrupted and automatic rebuild failed: {}. \
+             Call the index_project tool with {{\"force\": true}}.",
+            rebuild_err
+        ));
+    }
+    run().map_err(|e| {
+        anyhow::anyhow!(
+            "Index was rebuilt after corruption but {} still failed: {}. \
+             Call the index_project tool with {{\"force\": true}}.",
+            name,
+            e
+        )
+    })
+}
+
+/// Error text as an MCP client should read it: an agent cannot run the CLI,
+/// so `rfx index` advice becomes `index_project` advice. CLI/HTTP output is
+/// untouched (they format the error themselves).
+fn mcp_facing_message(e: &anyhow::Error) -> String {
+    use crate::errors::ReflexError;
+    match e.downcast_ref::<ReflexError>() {
+        Some(ReflexError::IndexNotFound) => {
+            "Index not found. Call the index_project tool, then retry.".to_string()
+        }
+        Some(ReflexError::CacheCorrupted(inner)) => format!(
+            "Cache appears to be corrupted: {}. Call the index_project tool with {{\"force\": true}}, then retry.",
+            inner
+        ),
+        _ => e.to_string(),
+    }
+}
+
 /// REF-209: columnar result-format toggle for `search_code` / `search_regex`.
 ///
 /// Default ON. Returns `false` only when `REFLEX_MCP_COLUMNAR` is explicitly set
@@ -916,15 +1375,25 @@ fn to_columnar(mut value: Value) -> Value {
     value
 }
 
-fn handle_call_tool(params: Option<Value>) -> Result<Value> {
+fn handle_call_tool(params: Option<Value>, root: &Path) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow::anyhow!("Missing params for tools/call"))?;
 
     let name = params["name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
 
-    let arguments = params["arguments"].clone();
+    let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
+    let (arguments, warnings) = normalize_arguments(name, spec, params["arguments"].clone())?;
 
+    let data = with_corruption_recovery(name, root, || dispatch_tool(name, &arguments, root))?;
+
+    Ok(finish_tool_result(data, warnings))
+}
+
+/// Run one tool. Every arm returns the tool's *data* (a JSON object, or a
+/// plain `Value::String` for prose tools such as `gather_context`);
+/// `handle_call_tool` wraps it into the MCP `content` envelope.
+fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
     match name {
         "list_locations" => {
             // Location discovery tool (minimal token usage)
@@ -978,7 +1447,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 ..Default::default()
             };
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
             let response = engine.search_with_metadata(&pattern, filter)?;
 
@@ -1003,7 +1472,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "locations": locations
             });
 
-            Ok(make_tool_result(compact_response))
+            Ok(compact_response)
         }
         "count_occurrences" => {
             // Quick stats tool (minimal token usage)
@@ -1061,7 +1530,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 ..Default::default()
             };
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
             let response = engine.search_with_metadata(&pattern, filter)?;
 
@@ -1078,7 +1547,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "files": unique_files.len()
             });
 
-            Ok(make_tool_result(stats))
+            Ok(stats)
         }
         "search_code" => {
             let pattern = arguments["pattern"]
@@ -1175,11 +1644,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     include_dependencies: false,
                     ..Default::default()
                 };
-                let cache = CacheManager::new(".");
+                let cache = CacheManager::new(root);
                 let engine = QueryEngine::new(cache);
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
                 let result = json!({"count": response.pagination.total, "pattern": pattern});
-                return Ok(make_tool_result(result));
+                return Ok(result);
             }
 
             let filter = QueryFilter {
@@ -1204,7 +1673,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 ..Default::default()
             };
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
@@ -1257,7 +1726,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 response_val = to_columnar(response_val);
             }
 
-            Ok(make_tool_result(response_val))
+            Ok(response_val)
         }
         "search_regex" => {
             let pattern = arguments["pattern"]
@@ -1325,11 +1794,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     include_dependencies: false,
                     ..Default::default()
                 };
-                let cache = CacheManager::new(".");
+                let cache = CacheManager::new(root);
                 let engine = QueryEngine::new(cache);
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
                 let result = json!({"count": response.pagination.total, "pattern": pattern});
-                return Ok(make_tool_result(result));
+                return Ok(result);
             }
 
             let filter = QueryFilter {
@@ -1354,7 +1823,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 ..Default::default()
             };
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
@@ -1400,7 +1869,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 response_val = to_columnar(response_val);
             }
 
-            Ok(make_tool_result(response_val))
+            Ok(response_val)
         }
         "search_ast" => {
             // AST pattern (Tree-sitter S-expression)
@@ -1483,7 +1952,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 ..Default::default()
             };
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
 
             // Use the new search_ast_all_files method (no trigram filtering)
@@ -1495,39 +1964,23 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     crate::cli::truncate_preview(&result.preview, DEFAULT_MCP_PREVIEW_LENGTH);
             }
 
-            Ok(make_tool_result(serde_json::to_value(&results)?))
+            Ok(serde_json::to_value(&results)?)
         }
         "index_project" => {
-            let force = arguments["force"].as_bool();
-            let languages = arguments["languages"].as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<_>>()
-            });
+            let force = arguments["force"].as_bool().unwrap_or(false);
+            let lang_filters: Vec<Language> = arguments["languages"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .filter_map(|s| parse_language(Some(s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
 
-            let cache = CacheManager::new(".");
+            let stats = rebuild_index(root, force, lang_filters)?;
 
-            if force.unwrap_or(false) {
-                log::info!("Force rebuild requested, clearing existing cache");
-                cache.clear()?;
-            }
-
-            let lang_filters: Vec<Language> = languages
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|s| parse_language(Some(s.clone())))
-                .collect();
-
-            let config = IndexConfig {
-                languages: lang_filters,
-                ..Default::default()
-            };
-
-            let indexer = Indexer::new(cache, config);
-            let path = PathBuf::from(".");
-            let stats = indexer.index(&path, false)?;
-
-            Ok(make_tool_result(serde_json::to_value(&stats)?))
+            Ok(serde_json::to_value(&stats)?)
         }
         "get_dependencies" => {
             let path = arguments["path"]
@@ -1535,7 +1988,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .ok_or_else(|| anyhow::anyhow!("Missing path"))?
                 .to_string();
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             // Fuzzy path matching
@@ -1545,7 +1998,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             let dependencies = deps_index.get_dependencies_info(file_id)?;
 
-            Ok(make_tool_result(serde_json::to_value(&dependencies)?))
+            Ok(serde_json::to_value(&dependencies)?)
         }
         "get_dependents" => {
             let path = arguments["path"]
@@ -1553,7 +2006,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .ok_or_else(|| anyhow::anyhow!("Missing path"))?
                 .to_string();
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             // Fuzzy path matching
@@ -1570,7 +2023,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .filter_map(|id| paths.get(id).cloned())
                 .collect();
 
-            Ok(make_tool_result(serde_json::to_value(&path_list)?))
+            Ok(serde_json::to_value(&path_list)?)
         }
         "get_transitive_deps" => {
             let path = arguments["path"]
@@ -1580,7 +2033,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             let depth = arguments["depth"].as_u64().map(|n| n as usize).unwrap_or(3); // Default depth of 3
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             // Fuzzy path matching
@@ -1607,7 +2060,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 })
                 .collect();
 
-            Ok(make_tool_result(serde_json::to_value(&result)?))
+            Ok(serde_json::to_value(&result)?)
         }
         "find_hotspots" => {
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
@@ -1618,7 +2071,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .unwrap_or(2);
             let sort = arguments["sort"].as_str().map(|s| s.to_string());
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             // Get all hotspots first (without limit) to track total count
@@ -1684,14 +2137,14 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "results": results,
             });
 
-            Ok(make_tool_result(response))
+            Ok(response)
         }
         "find_circular" => {
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
             let sort = arguments["sort"].as_str().map(|s| s.to_string());
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             let mut all_cycles = deps_index.detect_circular_dependencies()?;
@@ -1756,13 +2209,13 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "results": results,
             });
 
-            Ok(make_tool_result(response))
+            Ok(response)
         }
         "find_unused" => {
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             let all_unused = deps_index.find_unused_files()?;
@@ -1799,7 +2252,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "results": results,
             });
 
-            Ok(make_tool_result(response))
+            Ok(response)
         }
         "find_islands" => {
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
@@ -1811,7 +2264,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let max_island_size = arguments["max_island_size"].as_u64().map(|n| n as usize);
             let sort = arguments["sort"].as_str().map(|s| s.to_string());
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             let all_islands = deps_index.find_islands()?;
@@ -1908,7 +2361,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "results": results,
             });
 
-            Ok(make_tool_result(response))
+            Ok(response)
         }
         "analyze_summary" => {
             let min_dependents = arguments["min_dependents"]
@@ -1916,7 +2369,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .map(|n| n as usize)
                 .unwrap_or(2);
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let deps_index = DependencyIndex::new(cache);
 
             let cycles = deps_index.detect_circular_dependencies()?;
@@ -1932,7 +2385,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "min_dependents": min_dependents,
             });
 
-            Ok(make_tool_result(summary))
+            Ok(summary)
         }
         "gather_context" => {
             // Parse optional parameters
@@ -1968,7 +2421,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 opts.entry_points = true;
             }
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let context = crate::context::generate_context(&cache, &opts)?;
 
             let hint = if no_flags_set {
@@ -1982,23 +2435,17 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             // and change content[text]; instead keep content[text] as the raw
             // string (REF-215: content[text] only, no structuredContent).
             let context_text = format!("{}{}", context, hint);
-            let result = json!({
-                "content": [{
-                    "type": "text",
-                    "text": context_text
-                }]
-            });
-            Ok(result)
+            Ok(Value::String(context_text))
         }
         "check_index_status" => {
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
 
             if !cache.exists() {
                 let result = json!({
                     "status": "missing",
-                    "action_required": "rfx index"
+                    "action_required": "index_project"
                 });
-                return Ok(make_tool_result(result));
+                return Ok(result);
             }
 
             let engine = QueryEngine::new(cache);
@@ -2023,7 +2470,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 json!({ "status": status_str })
             };
 
-            Ok(make_tool_result(result))
+            Ok(result)
         }
         "find_references" => {
             let pattern = arguments["pattern"]
@@ -2082,11 +2529,11 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                     include_dependencies: false,
                     ..Default::default()
                 };
-                let cache = CacheManager::new(".");
+                let cache = CacheManager::new(root);
                 let engine = QueryEngine::new(cache);
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
                 let result = json!({"count": response.pagination.total, "pattern": pattern});
-                return Ok(make_tool_result(result));
+                return Ok(result);
             }
 
             // Search 1: Find symbol definition (symbols_mode=true, small cap)
@@ -2112,7 +2559,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 ..Default::default()
             };
 
-            let cache = CacheManager::new(".");
+            let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
             let def_response = engine.search_with_metadata(&pattern, def_filter)?;
 
@@ -2197,20 +2644,24 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "pagination": ref_response.pagination,
             });
 
-            Ok(make_tool_result(response))
+            Ok(response)
         }
         _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }
 }
 
 /// Process a single JSON-RPC request
-fn process_request(request: JsonRpcRequest, enable_structural: bool) -> JsonRpcResponse {
+fn process_request(
+    request: JsonRpcRequest,
+    enable_structural: bool,
+    root: &Path,
+) -> JsonRpcResponse {
     log::debug!("MCP request: method={}", request.method);
 
     let result = match request.method.as_str() {
         "initialize" => handle_initialize(request.params),
         "tools/list" => handle_list_tools(request.params, enable_structural),
-        "tools/call" => handle_call_tool(request.params),
+        "tools/call" => handle_call_tool(request.params, root),
         _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
     };
 
@@ -2228,10 +2679,12 @@ fn process_request(request: JsonRpcRequest, enable_structural: bool) -> JsonRpcR
             let (code, kind, message) =
                 if let Some(re) = e.downcast_ref::<crate::errors::ReflexError>() {
                     let code = match re {
-                        crate::errors::ReflexError::QuerySyntaxError(_) => -32602, // Invalid params
-                        _ => -32603,                                               // Internal error
+                        crate::errors::ReflexError::QuerySyntaxError(_)
+                        | crate::errors::ReflexError::InvalidParams(_) => -32602, // Invalid params
+                        _ => -32603, // Internal error
                     };
-                    (code, re.kind().to_string(), re.to_string())
+                    // Agents cannot run the CLI: point them at index_project instead.
+                    (code, re.kind().to_string(), mcp_facing_message(&e))
                 } else if msg.starts_with("Unknown method:") {
                     (-32601, "MethodNotFound".to_string(), msg)
                 } else if msg.starts_with("Missing")
@@ -2279,15 +2732,35 @@ pub fn run_mcp_server() -> Result<()> {
 /// responses to `writer`. Exposed at crate-level for integration tests.
 pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, writer: W) -> Result<()> {
     let mcp_config = load_mcp_config();
-    run_mcp_server_io_impl(reader, writer, mcp_config.enable_structural_tools)
+    run_mcp_server_io_impl(
+        reader,
+        writer,
+        mcp_config.enable_structural_tools,
+        Path::new("."),
+    )
+}
+
+/// Like [`run_mcp_server_io`] but every tool operates on `root` instead of the
+/// process working directory. Exposed for integration tests so they can point
+/// the server at a temp workspace without `set_current_dir` (process-global,
+/// unsafe with parallel tests).
+pub fn run_mcp_server_io_in<R: BufRead, W: Write>(
+    root: &Path,
+    reader: R,
+    writer: W,
+    enable_structural: bool,
+) -> Result<()> {
+    run_mcp_server_io_impl(reader, writer, enable_structural, root)
 }
 
 /// Inner server loop. Accepts `enable_structural` so tests can drive the flag
-/// without touching the filesystem.
+/// without touching the filesystem, and `root` so tools resolve `.reflex/`
+/// relative to a chosen workspace.
 fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     reader: R,
     mut writer: W,
     enable_structural: bool,
+    root: &Path,
 ) -> Result<()> {
     log::info!("Starting Reflex MCP server on stdio");
 
@@ -2341,7 +2814,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
         }
 
         // Process request and write response
-        let response = process_request(request, enable_structural);
+        let response = process_request(request, enable_structural, root);
         let response_json = serde_json::to_string(&response)?;
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
@@ -2365,7 +2838,7 @@ mod tests {
     fn call_server_with_structural(input: &str, enable_structural: bool) -> String {
         let reader = Cursor::new(input.as_bytes());
         let mut output = Vec::new();
-        run_mcp_server_io_impl(reader, &mut output, enable_structural).unwrap();
+        run_mcp_server_io_impl(reader, &mut output, enable_structural, Path::new(".")).unwrap();
         String::from_utf8(output).unwrap()
     }
 
@@ -2415,14 +2888,10 @@ mod tests {
         );
     }
 
-    // REF-197: initialize handshake must carry the MCP `instructions` field that
-    // nudges clients to prefer reflex tools (moved out of the per-repo CLAUDE.md).
-    //
-    // Stage 1 of the client-agnostic instructions rewrite: the universal base
-    // directive must be present, must name the `index_project` recovery step,
-    // and must carry the "prefer Reflex over Grep/Glob/ripgrep" directive.
-    // The Claude-Code-specific `mcp__reflex__` addendum is no longer emitted on
-    // a generic `clientInfo.name` — see Stage 2's gated-addendum tests.
+    // REF-197 introduced the `instructions` field; 1.7.0 reversed its Stage-1
+    // "no Claude-Code-isms" policy after field data showed 14 of 16 sessions
+    // opened with a wrong argument name because deferred schemas were never
+    // loaded. The text must now carry the ToolSearch hint and exact call shapes.
     #[test]
     fn test_initialize_includes_instructions() {
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
@@ -2445,20 +2914,328 @@ mod tests {
             instructions.to_lowercase().contains("grep"),
             "instructions must name the native tools Reflex replaces (grep/glob/ripgrep)"
         );
-        // The Claude-Code-isms (`mcp__reflex__`, ToolSearch) are gated behind the
-        // addendum path (Stage 2). A generic client must NOT receive them.
         assert!(
-            !instructions.contains("mcp__reflex__"),
-            "generic client must not receive the Claude-Code addendum"
-        );
-        assert!(
-            !instructions.contains("ToolSearch"),
-            "generic client must not receive the Claude-Code ToolSearch nudge"
+            instructions.contains(
+                "ToolSearch(\"select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references\")"
+            ),
+            "instructions must tell deferred-schema harnesses how to load the tools"
         );
 
         // Pre-existing handshake fields must be unchanged.
         assert_eq!(resp["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(resp["result"]["serverInfo"]["name"], "reflex");
+    }
+
+    #[test]
+    fn test_instructions_have_pattern_call_shape() {
+        assert!(
+            !MCP_INSTRUCTIONS.contains("do NOT call ToolSearch"),
+            "the false 'pre-loaded' claim must never come back"
+        );
+        assert!(
+            !MCP_INSTRUCTIONS.contains("pre-loaded"),
+            "the false 'pre-loaded' claim must never come back"
+        );
+        assert!(
+            MCP_INSTRUCTIONS.contains("search_code {\"pattern\":"),
+            "must show an exact search_code call shape with the real key"
+        );
+        assert!(MCP_INSTRUCTIONS.contains("search_regex {\"pattern\":"));
+        assert!(MCP_INSTRUCTIONS.contains("find_references {\"pattern\":"));
+    }
+
+    #[test]
+    fn test_instructions_name_canonical_arg_names() {
+        for needle in [
+            "\"pattern\"",
+            "\"limit\"",
+            "\"file\"",
+            "\"glob\"",
+            "\"query\"",
+            "\"symbol\"",
+            "\"max_results\"",
+            "\"path\"",
+            "literal text index",
+        ] {
+            assert!(
+                MCP_INSTRUCTIONS.contains(needle),
+                "instructions must mention {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_instructions_size_budget() {
+        assert!(
+            MCP_INSTRUCTIONS.len() <= 1600,
+            "instructions are paid for on every session; keep them under 1600 chars (got {})",
+            MCP_INSTRUCTIONS.len()
+        );
+    }
+
+    // ---- 1.7.0 argument validation -------------------------------------------
+
+    fn call_tool(name: &str, args: &str) -> serde_json::Value {
+        let req = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
+            name, args
+        );
+        let raw = call_server(&format!("{}\n", req));
+        parse_first_response(&raw)
+    }
+
+    fn spec(name: &str) -> &'static ToolSpec {
+        tool_spec(name).expect("tool has a spec")
+    }
+
+    #[test]
+    fn test_every_listed_tool_has_spec() {
+        for structural in [true, false] {
+            let listing = handle_list_tools(None, structural).unwrap();
+            for tool in listing["tools"].as_array().unwrap() {
+                let name = tool["name"].as_str().unwrap();
+                let s = tool_spec(name).unwrap_or_else(|| panic!("no spec for {name}"));
+                for req in &s.required {
+                    assert!(
+                        s.valid.contains(req),
+                        "{name}: required {req} not in properties"
+                    );
+                }
+            }
+        }
+        assert!(tool_spec("no_such_tool").is_none());
+    }
+
+    #[test]
+    fn test_alias_query_rewritten_to_pattern_with_warning() {
+        let (args, warnings) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"query": "fn main"}),
+        )
+        .unwrap();
+        assert_eq!(args["pattern"], "fn main");
+        assert!(args.get("query").is_none());
+        assert_eq!(
+            warnings,
+            vec!["argument \"query\" is deprecated; use \"pattern\""]
+        );
+    }
+
+    #[test]
+    fn test_alias_symbol_on_find_references() {
+        let (args, warnings) = normalize_arguments(
+            "find_references",
+            spec("find_references"),
+            json!({"symbol": "start_webauthn_registration"}),
+        )
+        .unwrap();
+        assert_eq!(args["pattern"], "start_webauthn_registration");
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_alias_max_results_to_limit_and_path_to_file() {
+        let (args, warnings) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "x", "max_results": "40", "path": "src/protocol/scim"}),
+        )
+        .unwrap();
+        assert_eq!(args["limit"], 40, "alias then numeric-string coercion");
+        assert_eq!(args["file"], "src/protocol/scim");
+        assert!(args.get("max_results").is_none());
+        assert!(args.get("path").is_none());
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn test_alias_ignored_when_canonical_present() {
+        let (args, warnings) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "real", "query": "ignored"}),
+        )
+        .unwrap();
+        assert_eq!(args["pattern"], "real");
+        assert!(warnings[0].contains("ignored \"query\""));
+    }
+
+    #[test]
+    fn test_path_is_real_key_on_get_dependencies_no_warning() {
+        let (args, warnings) = normalize_arguments(
+            "get_dependencies",
+            spec("get_dependencies"),
+            json!({"path": "src/main.rs"}),
+        )
+        .unwrap();
+        assert_eq!(args["path"], "src/main.rs");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_unknown_argument_returns_32602_with_suggestion() {
+        let resp = call_tool("search_code", r#"{"pattern":"x","max_resultz":5}"#);
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["error"]["data"]["kind"], "InvalidParams");
+        let msg = resp["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.starts_with("Unknown argument \"max_resultz\" for search_code"),
+            "{msg}"
+        );
+        assert!(msg.contains("did you mean \"limit\""), "{msg}");
+        assert!(
+            msg.contains("Received: [\"max_resultz\",\"pattern\"]"),
+            "{msg}"
+        );
+        assert!(msg.contains("Valid: [\"pattern\""), "{msg}");
+    }
+
+    #[test]
+    fn test_unknown_argument_without_close_match_has_no_hint() {
+        let resp = call_tool("search_code", r#"{"pattern":"x","zzzzzzzzzz":1}"#);
+        assert_eq!(resp["error"]["code"], -32602);
+        let msg = resp["error"]["message"].as_str().unwrap();
+        assert!(!msg.contains("did you mean"), "{msg}");
+    }
+
+    #[test]
+    fn test_missing_pattern_lists_received_and_valid() {
+        let resp = call_tool("search_code", r#"{"limit": 5}"#);
+        assert_eq!(resp["error"]["code"], -32602);
+        let msg = resp["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.starts_with("Missing required argument \"pattern\" for search_code"),
+            "{msg}"
+        );
+        assert!(msg.contains("Received: [\"limit\"]"), "{msg}");
+        assert!(msg.contains("Valid: ["), "{msg}");
+    }
+
+    #[test]
+    fn test_numeric_string_limit_coerced_to_40() {
+        let (args, _) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "x", "limit": "40", "offset": " 3 "}),
+        )
+        .unwrap();
+        assert_eq!(args["limit"].as_u64(), Some(40));
+        assert_eq!(args["offset"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn test_negative_and_non_numeric_limit_rejected() {
+        for bad in [json!(-1), json!("abc"), json!(1.5), json!(true)] {
+            let err = normalize_arguments(
+                "search_code",
+                spec("search_code"),
+                json!({"pattern": "x", "limit": bad}),
+            )
+            .expect_err("must reject");
+            let msg = err.to_string();
+            assert!(
+                msg.starts_with("Invalid value for \"limit\": expected a non-negative integer"),
+                "{msg}"
+            );
+            let re = err.downcast_ref::<crate::errors::ReflexError>().unwrap();
+            assert_eq!(re.kind(), "InvalidParams");
+        }
+    }
+
+    #[test]
+    fn test_bool_string_coerced() {
+        let (args, _) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "x", "paths": "true", "exact": "False"}),
+        )
+        .unwrap();
+        assert_eq!(args["paths"], true);
+        assert_eq!(args["exact"], false);
+        let err = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "x", "paths": "yes"}),
+        )
+        .expect_err("must reject");
+        assert!(err.to_string().contains("expected a boolean"));
+    }
+
+    #[test]
+    fn test_pattern_non_string_typed_error() {
+        let resp = call_tool("search_code", r#"{"pattern": 42}"#);
+        assert_eq!(resp["error"]["code"], -32602);
+        let msg = resp["error"]["message"].as_str().unwrap();
+        assert_eq!(
+            msg,
+            "Invalid value for \"pattern\": expected a string, got 42"
+        );
+    }
+
+    #[test]
+    fn test_glob_string_promoted_to_array() {
+        let (args, _) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "x", "glob": "src/**/*.rs"}),
+        )
+        .unwrap();
+        assert_eq!(args["glob"], json!(["src/**/*.rs"]));
+    }
+
+    #[test]
+    fn test_non_object_arguments_rejected() {
+        let resp = call_tool("search_code", r#""just a string""#);
+        assert_eq!(resp["error"]["code"], -32602);
+        let (args, _) = normalize_arguments(
+            "check_index_status",
+            spec("check_index_status"),
+            Value::Null,
+        )
+        .unwrap();
+        assert_eq!(args, json!({}));
+    }
+
+    #[test]
+    fn test_warnings_survive_columnar_and_prose() {
+        let data = to_columnar(sample_search_response());
+        let out = finish_tool_result(data, vec!["w1".to_string()]);
+        let text: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text["warnings"], json!(["w1"]));
+        assert!(text["rows"].is_array());
+
+        let out = finish_tool_result(Value::String("prose".into()), vec!["w1".to_string()]);
+        assert_eq!(out["content"][0]["text"], "prose\n\nwarnings: w1");
+        let out = finish_tool_result(json!({"a": 1}), vec![]);
+        assert_eq!(out["content"][0]["text"], r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn test_index_not_found_message_names_index_project() {
+        let e: anyhow::Error = crate::errors::ReflexError::IndexNotFound.into();
+        let msg = mcp_facing_message(&e);
+        assert!(msg.contains("index_project"), "{msg}");
+        assert!(!msg.contains("rfx index"), "{msg}");
+        let e: anyhow::Error =
+            crate::errors::ReflexError::CacheCorrupted("content.bin is too small".into()).into();
+        let msg = mcp_facing_message(&e);
+        assert!(msg.contains("content.bin is too small"), "{msg}");
+        assert!(msg.contains("index_project"), "{msg}");
+        assert!(!msg.contains("rfx "), "{msg}");
+    }
+
+    #[test]
+    fn test_levenshtein_and_nearest_key() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("", "abc"), 3);
+        let valid: Vec<String> = ["pattern", "limit", "offset"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(nearest_key("limt", &valid), Some("limit"));
+        assert_eq!(nearest_key("zzzzzzzz", &valid), None);
     }
 
     // REF-215: make_tool_result must emit ONLY the spec-guaranteed content[text]
