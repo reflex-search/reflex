@@ -61,7 +61,9 @@ pub fn get_filter(lang: Language) -> Option<Box<dyn LineFilter>> {
         Language::Zig => Some(Box::new(ZigLineFilter)),
         Language::Vue => Some(Box::new(VueLineFilter)),
         Language::Svelte => Some(Box::new(SvelteLineFilter)),
-        Language::Swift | Language::Unknown => None,
+        // No filter for the text tier: "inside a string literal" is not a meaningful
+        // idea in markdown or YAML, and guessing would drop real matches.
+        Language::Text | Language::Swift | Language::Unknown => None,
     }
 }
 

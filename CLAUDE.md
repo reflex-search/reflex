@@ -101,6 +101,50 @@ The required argument is always `pattern` (never `query`, `symbol`, `text`); the
 server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a
 did-you-mean error, and numeric strings like `"40"` are coerced.
 
+### Matching semantics (1.7.2)
+
+Literal search matches **whole identifiers** by default. `verify_csrf` does **not**
+match `verify_csrf_form_field`. Three modes:
+
+| Mode | How | Behaves like |
+| --- | --- | --- |
+| whole identifier | default | `grep -w` |
+| substring | `contains: true` | `grep -F` |
+| regular expression | `search_regex` | `grep -E` |
+
+- `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
+  `find_references` (not `search_regex`, which is already substring-based).
+- A pattern containing brackets (`()`, `[]`, `<>`) is regex-escaped and run through the
+  regex path automatically, with the rewrite reported in `warnings`. Whole-identifier
+  matching wraps the pattern as `\b…\b`, which a pattern ending in `)` or `>` can
+  never satisfy — `unwrap()` used to return a silent `0`.
+- A zero result carries a `hint` naming the substring count:
+  `"0 whole-identifier matches; 89 substring matches — pass contains:true"`.
+
+### Freshness contract (1.7.2)
+
+Every response carries `status` and `can_trust_results`. Staleness now includes
+**uncommitted working-tree changes**, not just commit moves:
+
+```json
+{ "status": "stale", "can_trust_results": false,
+  "reason": "Working tree has uncommitted changes since indexing (1 modified, 1 added)",
+  "action_required": "index_project",
+  "files_modified": ["src/storage/mod.rs"],
+  "files_added": ["src/storage/zz_probe.rs"],
+  "files_deleted": [],
+  "changed_count": 2 }
+```
+
+- **A stale index always yields `can_trust_results: false`.** No exception — including
+  a zero-result search, which is exactly where an agent concludes "no callers".
+- `files_modified` was a `u32` count before 1.7.2 and is now a path list (**breaking**).
+  Lists cap at 100 per category; `truncated` says when.
+- `action_required` names the MCP tool (`index_project`), never the CLI.
+- Checked via `git status --porcelain`, memoised for 1s per workspace
+  (`REFLEX_FRESHNESS_TTL_MS`; `0` disables). `check_index_status` always bypasses it.
+- **Limitation**: outside a git repository, working-tree changes are not detected.
+
 **Core search:**
 | Tool | Purpose |
 |------|---------|
@@ -212,7 +256,34 @@ rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 
 **Coverage**: 90%+ of all codebases across web, mobile, systems, enterprise, and AI/ML development.
 
-**Note**: Full-text trigram search works for **all file types** regardless of parser support.
+### Plain-Text Tier (docs, config, templates)
+
+Reflex also indexes non-code files, because **agents do not partition searches by file
+type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
+returning only the struct and a confident `0` for the rest is a wrong answer.
+
+**Extensions**: `md mdx txt yaml yml toml json proto html htm sh bash ini cfg sql graphql`
+
+**Trigram-indexed only.** No tree-sitter, no symbol extraction, no import extraction. So:
+
+| Tool / flag | Text tier |
+| --- | --- |
+| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | **included by default** |
+| `--symbols`, `--kind`, `--ast`, `search_ast` | excluded (there is no grammar) |
+| `find_references`, `get_dependents`, structural tools | excluded (a mention in a changelog is not a call site) |
+
+- **Select it**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
+- **Exclude it**: `exclude_text: true` on the four full-text MCP tools.
+- **Turn it off**: `[index] text_tier = false` in `.reflex/config.toml`.
+- **Never indexed**: lock files (`package-lock.json`, `*-lock.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, `Cargo.lock`, `*.lock`) — 100k+ lines of near-random trigrams that
+  bloat posting lists without ever being searched for.
+- **Not subject to `[index] languages`.** That option means "which parsers do I care
+  about"; a user with `languages = ["rust"]` keeps their documentation searchable.
+  `text_tier = false` is the way to turn the tier off.
+
+**Note**: files outside both tiers (binaries, unknown extensions, dot-directories such
+as `.reflex/` itself) are not indexed.
 
 ---
 
@@ -370,7 +441,7 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
   ```json
   { "name": "extract_symbols", "kind": "Function", "span": { "start_line": 67, "end_line": 89 } }
   ```
-- **Language field forward-compatibility**: The `language` field in `SearchResult` serializes as an enum string (e.g. `"Rust"`, `"Python"`). When a file type is unrecognized, the field serializes as `"Unknown"`. Callers **must not** exhaustively match on this field without a fallback — treat `"Unknown"` as the forward-compatible sentinel for any language Reflex does not yet recognise. New languages may be added in minor releases.
+- **Language field forward-compatibility**: The `language` field serializes as a **lowercase** enum string (`"rust"`, `"python"`, `"typescript"`, …) — the enum carries `#[serde(rename_all = "lowercase")]`. Docs, config and template files serialize as `"text"` (see the plain-text tier below); an unrecognized file type serializes as `"unknown"`. Callers **must not** exhaustively match on this field without a fallback — treat `"unknown"` as the forward-compatible sentinel for any language Reflex does not yet recognise. New languages may be added in minor releases.
 
 ---
 
@@ -414,7 +485,7 @@ Located in the workspace's `.reflex/` directory.
 **Purpose**: Project-specific settings for indexing and search behavior.
 
 **Sections**:
-- `[index]`: Languages, file size limits, symlink handling
+- `[index]`: Languages, the plain-text tier, file size limits, symlink handling
 - `[search]`: Default result limits, fuzzy matching thresholds
 - `[performance]`: Thread count, compression levels
 
@@ -422,6 +493,7 @@ Located in the workspace's `.reflex/` directory.
 ```toml
 [index]
 languages = []  # Empty = all supported languages
+text_tier = true  # Also index docs and config (md, yaml, toml, json, proto, html, sh, sql)
 max_file_size = 10485760  # 10 MB
 
 [search]

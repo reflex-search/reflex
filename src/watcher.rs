@@ -109,9 +109,9 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                             .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("");
-                        let is_code = ext.is_empty()
-                            || crate::models::Language::from_extension(ext).is_supported();
-                        if is_code {
+                        let is_indexed = ext.is_empty()
+                            || crate::models::Language::from_extension(ext).is_indexable();
+                        if is_indexed {
                             log::debug!("Detected removal: {:?}", changed_path);
                             pending_deletions.insert(changed_path);
                             last_event_time = Some(Instant::now());
@@ -232,6 +232,15 @@ fn should_watch_file(path: &Path) -> bool {
     if let Some(ext) = path.extension() {
         let ext_str = ext.to_string_lossy();
         let lang = Language::from_extension(&ext_str);
+        // is_indexable, not is_supported: the text tier is watched too, so editing a
+        // README or a config file triggers a reindex like any other indexed file.
+        if lang.is_text() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
+            return crate::models::is_text_tier_file(&name);
+        }
         return lang.is_supported();
     }
 
@@ -256,10 +265,26 @@ mod tests {
     #[test]
     fn test_should_not_watch_unsupported_file() {
         let temp = TempDir::new().unwrap();
-        let txt_file = temp.path().join("test.txt");
-        fs::write(&txt_file, "plain text").unwrap();
+        // .txt is watched since 1.7.2 (plain-text tier); use an unclaimed extension.
+        let unknown = temp.path().join("test.xyz");
+        fs::write(&unknown, "mystery format").unwrap();
+        assert!(!should_watch_file(&unknown));
 
-        assert!(!should_watch_file(&txt_file));
+        // A lock file matches a text extension but must not trigger a reindex.
+        let lock = temp.path().join("package-lock.json");
+        fs::write(&lock, "{}").unwrap();
+        assert!(!should_watch_file(&lock));
+    }
+
+    #[test]
+    fn test_should_watch_text_tier_file() {
+        let temp = TempDir::new().unwrap();
+        // Editing a README must trigger a reindex like any other indexed file.
+        for name in ["README.md", "config.yaml", "notes.txt"] {
+            let path = temp.path().join(name);
+            fs::write(&path, "content").unwrap();
+            assert!(should_watch_file(&path), "{name} should be watched");
+        }
     }
 
     #[test]

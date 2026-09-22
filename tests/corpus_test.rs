@@ -570,7 +570,8 @@ fn test_empty_file() {
 fn test_very_long_line() {
     setup_corpus();
 
-    // .txt files are not indexed by default, so test long lines in actual code
+    // Long lines are most interesting in real code, so use a .rs fixture here
+    // (.txt joined the plain-text tier in 1.7.2 and is indexed too).
     let filter = QueryFilter {
         file_pattern: Some("rust/long_lines.rs".to_string()),
         ..Default::default()
@@ -618,7 +619,8 @@ fn test_raw_identifiers() {
 fn test_whitespace_handling() {
     setup_corpus();
 
-    // .txt files are not indexed, but weird spacing in rust files are
+    // Weird spacing matters most in real code, so use a .rs fixture here
+    // (.txt joined the plain-text tier in 1.7.2 and is indexed too).
     let filter = QueryFilter {
         file_pattern: Some("rust/weird_spacing.rs".to_string()),
         ..Default::default()

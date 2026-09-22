@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+message Realm {
+  string realm_marker = 1;
+  uint32 jwks_rps_limit = 2;
+}

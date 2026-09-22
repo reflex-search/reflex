@@ -161,16 +161,32 @@ fn gitignored_files_are_not_changes() {
 #[test]
 fn files_reflex_does_not_index_are_not_changes() {
     let temp = repo();
-    // Editing a README or a lockfile must not mark the index permanently stale.
-    fs::write(temp.path().join("README.md"), "# docs\n").unwrap();
-    fs::write(temp.path().join("notes.txt"), "hello\n").unwrap();
-    fs::write(temp.path().join("data.json"), "{}\n").unwrap();
+    // Editing something Reflex never indexes must not mark the index permanently
+    // stale. Note markdown, txt and json ARE indexed since 1.7.2 (the plain-text
+    // tier), so they belong in the test below, not here.
+    fs::write(temp.path().join("logo.png"), "not really a png\n").unwrap();
+    fs::write(temp.path().join("mystery.xyz"), "?\n").unwrap();
+    fs::write(temp.path().join("package-lock.json"), "{}\n").unwrap();
 
     let c = changes(temp.path());
     assert!(
         c.is_empty(),
         "non-indexed file types must not count as staleness: {c:?}"
     );
+}
+
+#[test]
+fn text_tier_files_do_count_as_changes() {
+    let temp = repo();
+    // Docs and config are indexed now, so editing them genuinely does make the
+    // index stale — and saying so is the point of this whole check.
+    fs::write(temp.path().join("README.md"), "# docs\n").unwrap();
+    fs::write(temp.path().join("config.yaml"), "key: value\n").unwrap();
+
+    let c = changes(temp.path());
+    let mut added = c.added.clone();
+    added.sort();
+    assert_eq!(added, vec!["README.md", "config.yaml"], "{c:?}");
 }
 
 #[test]
@@ -202,4 +218,22 @@ fn a_mixed_tree_buckets_every_change_correctly() {
     assert_eq!(c.deleted, vec!["src/other.rs"], "{c:?}");
     assert_eq!(c.added, vec!["src/brand_new.rs"], "{c:?}");
     assert_eq!(c.total(), 3);
+}
+
+#[test]
+fn reflexs_own_cache_directory_is_never_a_change() {
+    let temp = repo();
+    // `.reflex/config.toml` matches the text tier's `.toml`, so without a dot-path
+    // rule Reflex's own cache makes every index permanently stale — even on a repo
+    // that has not been touched.
+    fs::create_dir_all(temp.path().join(".reflex")).unwrap();
+    fs::write(temp.path().join(".reflex/config.toml"), "[index]\n").unwrap();
+    // A dotfile at the root is skipped for the same reason.
+    fs::write(temp.path().join(".env.example"), "KEY=\n").unwrap();
+
+    let c = changes(temp.path());
+    assert!(
+        c.is_empty(),
+        "dot-directories are skipped by the walker, so they cannot make it stale: {c:?}"
+    );
 }

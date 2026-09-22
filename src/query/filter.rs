@@ -27,6 +27,14 @@ pub struct QueryFilter {
     pub exact: bool,
     /// Use substring matching instead of word-boundary matching (opt-in, expansive)
     pub use_contains: bool,
+    /// Drop plain-text-tier results (docs, config, templates) from this query.
+    ///
+    /// The tier is included by default, because an agent searching for a config key
+    /// wants the YAML as well as the struct. It is excluded for questions that are
+    /// only meaningful about code — `find_references` in particular, whose reference
+    /// search is a plain trigram scan and would otherwise return the name in a
+    /// changelog entry as a "call site".
+    pub exclude_text: bool,
     /// Query timeout in seconds (0 = no timeout)
     pub timeout_secs: u64,
     /// Glob patterns to include (empty = all files)
@@ -66,6 +74,7 @@ impl Default for QueryFilter {
             file_pattern: None,
             exact: false,
             use_contains: false, // Default: word-boundary matching
+            exclude_text: false, // Default: docs and config are searched too
             timeout_secs: 30,    // 30 seconds default timeout
             glob_patterns: Vec::new(),
             exclude_patterns: Vec::new(),

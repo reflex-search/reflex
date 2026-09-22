@@ -1,3 +1,71 @@
+## [1.7.2] - 2026-09-22
+
+Fixes four defects found by a field test of the `rfx mcp` server against ripgrep on a
+480k-line, 1027-file repo. Three of them returned a **wrong answer** with
+`status: "fresh"` and `can_trust_results: true` — the worst failure shape for an AI
+consumer, which does not retry but concludes "no callers" and acts on it.
+
+
+### ⚠️ Breaking
+
+
+- `IndexWarning.files_modified` is now a list of paths (`Vec<String>`), not a count (`u32`). It is joined by `files_added`, `files_deleted`, `changed_count` and `truncated`. A count told a caller something was wrong without saying what, so the only safe reaction was to distrust everything.
+
+- A stale index now always reports `can_trust_results: false`. Staleness includes uncommitted working-tree changes, so this fires in ordinary edit-then-search loops. It means "these results may be incomplete", not "this call failed".
+
+- `check_index_status` and search warnings advise `index_project`, not `rfx index`. An agent cannot run the CLI.
+
+- The `language` field serializes **lowercase** (`"rust"`, not `"Rust"`). This was always the behaviour; `CLAUDE.md` documented it wrongly.
+
+
+### Added
+
+
+- `contains: true` on `search_code`, `count_occurrences`, `list_locations` and `find_references` — substring matching, like `grep -F`. Literal search matches whole identifiers by default, which was undocumented and had no MCP switch: `verify_csrf` returned 0 against ripgrep's 89, because every hit was `verify_csrf_form_field`.
+
+- A zero-result search now carries a `hint` naming the substring count: `"0 whole-identifier matches; 89 substring matches — pass contains:true"`.
+
+- Plain-text tier: `md mdx txt yaml yml toml json proto html htm sh bash ini cfg sql graphql` are indexed for full-text search. Trigram-only — no symbols, no AST, no dependency analysis. Select with `--lang text`, exclude with `exclude_text: true`, disable with `[index] text_tier = false`. Lock files are never indexed. Previously `count_occurrences` over `*.md` returned 0 against ripgrep's 3425.
+
+- `check_index_status` reports `files_modified`, `files_added`, `files_deleted` and `changed_count` as paths.
+
+- `cache::open_meta_db`, which applies `busy_timeout=5000`, `journal_mode=WAL` and `foreign_keys=ON` to every meta.db connection. `REFLEX_SQLITE_JOURNAL=delete` opts out of WAL on network filesystems.
+
+- `ReflexError::SymbolIndexingInProgress` and `ReflexError::CacheVersionMismatch`.
+
+- `meta.db` records `writer_version` and `writer_git_sha`, replacing the `cache_version` row that nothing read.
+
+- `REFLEX_FRESHNESS_TTL_MS` (default 1000) bounds the cost of the working-tree check; `REFLEX_ALLOW_SCHEMA_REBUILD=1` bypasses the version guard.
+
+
+### Fixed
+
+
+- Working-tree changes are now detected. Freshness compared `git rev-parse HEAD` to the indexed commit and then sampled the mtimes of the first **ten** indexed files — so an edit to any other file, every untracked file, and every deletion reported `fresh`.
+
+- Literal patterns containing brackets no longer return a silent 0. `unwrap()` (ripgrep: 1221), `#[derive(` (1141) and `-> Result<` (2139) all returned 0, because whole-identifier matching wraps the pattern as `\b…\b` and a pattern ending in `)` can never satisfy the trailing boundary. Such patterns are now escaped onto the regex path, with the rewrite reported in `warnings`.
+
+- Deleted files no longer produce ghost hits. `meta.db` was pruned only by `compact()`, which is throttled to 24h and was skipped entirely for the MCP command; the incremental fast path noticed added paths but never deleted ones, so a delete-one-add-one left the file count unchanged and skipped the rebuild.
+
+- No MCP or CLI call surfaces a raw SQLite lock error. The detached symbol pass holds `meta.db` but takes its own lock, so `rfx index` passed the workspace lock gate and then hit `BEGIN IMMEDIATE`, failing for ~4 minutes with `database is locked: Error code 5`. The indexer now asks the pass to yield at its next batch, and reports `symbol indexing in progress (pid N, started HH:MM:SS, 1000/1027 files)` if it does not.
+
+- A cache-format mismatch is no longer treated as corruption. `validate()` runs on every search and bailed on a schema-hash mismatch, which the MCP layer answered by force-rebuilding — so several Reflex versions sharing one `.reflex/` each rebuilt it concurrently. That is the origin of `content.bin is too small`. Readers now degrade with a warning; writers refuse only when a different released version owns the cache.
+
+- Committing already-indexed content no longer leaves the index permanently stale. The incremental fast path skipped the rebuild and therefore never refreshed the recorded commit.
+
+- `list_locations` returns one entry per **match**, as documented. It set `paths_only`, which collapses each file to its first match, so a 20-match pattern returned 8 entries.
+
+- `find_references` count fields reconcile. `pagination.total` 25 / `total_references` 24 / `returned_count` 24 looked like an off-by-one; each now has one meaning and the gap is named `filtered_out`.
+
+- `include_strings` applies in `find_references` count mode, where it was a no-op returning the raw engine total.
+
+- Symbol-indexing progress advances. The `processed % 500 < batch_size` guard was a no-op (`batch_size` was itself 500); batches are now 128 and status is written per chunk, with `pid`, `phase` and `current_file`.
+
+- Stale `indexing.lock` files are reaped by pid liveness rather than a one-hour age rule.
+
+- Reflex no longer treats its own `.reflex/` directory as a source of staleness.
+
+
 ## [1.5.2] - 2026-05-16
 
 

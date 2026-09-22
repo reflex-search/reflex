@@ -326,6 +326,7 @@ impl CacheManager {
 
         let default_config = r#"[index]
 languages = []  # Empty = all supported languages
+text_tier = true  # Also index docs and config: md, yaml, toml, json, proto, html, sh, sql
 max_file_size = 10485760  # 10 MB
 follow_symlinks = false
 
@@ -571,6 +572,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                     cfg.languages = parsed;
                 }
             }
+            if let Some(text_tier) = index_tbl.get("text_tier").and_then(|v| v.as_bool()) {
+                cfg.text_tier = text_tier;
+            }
+
             if let Some(max_size) = index_tbl.get("max_file_size").and_then(|v| v.as_integer()) {
                 cfg.max_file_size = max_size as usize;
             }
