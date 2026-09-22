@@ -75,7 +75,7 @@ impl DependencyIndex {
 
     /// Open a database connection to the backing store.
     fn open_conn(&self) -> Result<Connection> {
-        Connection::open(&self.db_path).context("Failed to open database")
+        crate::cache::open_meta_db(&self.db_path).context("Failed to open database")
     }
 
     /// Insert a dependency into the database

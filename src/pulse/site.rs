@@ -5,7 +5,6 @@
 //! and a Zola config. Optionally runs `zola build` to produce HTML.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2301,7 +2300,7 @@ fn build_project_overview_context(cache: &CacheManager, wiki_pages: &[WikiPageMe
 
     // Query database directly for true totals (wiki_pages would double-count nested modules)
     let db_path = cache.path().join("meta.db");
-    if let Ok(conn) = Connection::open(&db_path) {
+    if let Ok(conn) = crate::cache::open_meta_db(&db_path) {
         let total_files: usize = conn
             .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
             .unwrap_or(0);
@@ -2398,7 +2397,7 @@ fn build_architecture_context(cache: &CacheManager, wiki_pages: &[WikiPageMeta])
     let mut ctx = String::new();
 
     let db_path = cache.path().join("meta.db");
-    let conn = match Connection::open(&db_path) {
+    let conn = match crate::cache::open_meta_db(&db_path) {
         Ok(c) => c,
         Err(_) => return "No dependency data available.".to_string(),
     };

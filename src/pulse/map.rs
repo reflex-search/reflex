@@ -4,7 +4,6 @@
 //! Uses detect_modules() for consistent sub-module resolution across all Pulse surfaces.
 
 use anyhow::Result;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -50,7 +49,7 @@ pub fn generate_map(cache: &CacheManager, zoom: &MapZoom, format: MapFormat) -> 
 
 fn generate_repo_map(cache: &CacheManager, format: MapFormat) -> Result<String> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
 
     // Use detect_modules() for consistent sub-module resolution
     let modules = wiki::detect_modules(cache, &wiki::ModuleDiscoveryConfig::default())?;
@@ -137,7 +136,7 @@ fn generate_module_map(
     format: MapFormat,
 ) -> Result<String> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
     let pattern = format!("{}/%", module_path);
 
     // Get files in this module
@@ -242,7 +241,7 @@ fn render_mermaid_repo(
 /// Generate a layered (top-to-bottom) architecture diagram with Tier 1 subgraphs containing Tier 2 children
 pub fn generate_layered_map(cache: &CacheManager, format: MapFormat) -> Result<String> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
     let modules = wiki::detect_modules(cache, &wiki::ModuleDiscoveryConfig::default())?;
 
     let module_info: Vec<(String, usize, u8)> = modules

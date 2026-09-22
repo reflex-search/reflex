@@ -6,7 +6,7 @@
 //! files change.
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::OptionalExtension;
 use std::path::Path;
 
 use crate::models::SearchResult;
@@ -36,7 +36,7 @@ impl SymbolCache {
 
     /// Initialize the symbols table schema if it doesn't exist
     fn init_schema(&self) -> Result<()> {
-        let conn = Connection::open(&self.db_path).context("Failed to open meta.db")?;
+        let conn = crate::cache::open_meta_db(&self.db_path).context("Failed to open meta.db")?;
 
         // Check if we need to migrate to file_id-based schema
         let uses_file_id: bool = conn
@@ -94,7 +94,7 @@ impl SymbolCache {
 
     /// Get cached symbols for a file (returns None if not cached or hash mismatch)
     pub fn get(&self, file_path: &str, file_hash: &str) -> Result<Option<Vec<SearchResult>>> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         // Lookup file_id
         let file_id: Option<i64> = conn
@@ -156,7 +156,7 @@ impl SymbolCache {
             return Ok(Vec::new());
         }
 
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         // Prepare statements for file_id lookup and symbol retrieval
         let mut file_id_stmt = conn.prepare("SELECT id FROM files WHERE path = ?")?;
@@ -245,7 +245,7 @@ impl SymbolCache {
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         // SQLite has a limit of 999 parameters by default
         // Chunk requests to stay well under that limit
@@ -350,7 +350,7 @@ impl SymbolCache {
 
     /// Store symbols for a file using file_id
     pub fn set(&self, file_path: &str, file_hash: &str, symbols: &[SearchResult]) -> Result<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         // Lookup file_id from file_path
         let file_id: i64 = conn
@@ -391,7 +391,7 @@ impl SymbolCache {
 
     /// Batch store symbols for multiple files in a single transaction
     pub fn batch_set(&self, entries: &[(String, String, Vec<SearchResult>)]) -> Result<()> {
-        let mut conn = Connection::open(&self.db_path)?;
+        let mut conn = crate::cache::open_meta_db(&self.db_path)?;
         let tx = conn.transaction()?;
 
         let now = chrono::Utc::now().timestamp();
@@ -440,7 +440,7 @@ impl SymbolCache {
 
     /// Clear all cached symbols
     pub fn clear(&self) -> Result<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
         conn.execute("DELETE FROM symbols", [])?;
         log::info!("Cleared symbol cache");
         Ok(())
@@ -448,7 +448,7 @@ impl SymbolCache {
 
     /// Get cache statistics
     pub fn stats(&self) -> Result<SymbolCacheStats> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         let total_files: usize = conn
             .query_row("SELECT COUNT(DISTINCT file_id) FROM symbols", [], |row| {
@@ -482,7 +482,7 @@ impl SymbolCache {
     /// Note: With foreign key constraints (CASCADE DELETE), this should rarely
     /// find anything to clean up, but it's useful for manual verification.
     pub fn cleanup_stale(&self) -> Result<usize> {
-        let conn = Connection::open(&self.db_path)?;
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         let removed = conn.execute(
             "DELETE FROM symbols WHERE file_id NOT IN (SELECT id FROM files)",
@@ -812,7 +812,7 @@ mod tests {
         // Now remove "deleted.rs" from files table to make its symbol cache entry stale
         // Note: With CASCADE DELETE foreign key constraint, the symbol entry is automatically
         // removed when the file is deleted, so cleanup_stale() won't find anything to remove.
-        let conn = rusqlite::Connection::open(cache_mgr.path().join("meta.db")).unwrap();
+        let conn = crate::cache::open_meta_db(cache_mgr.path().join("meta.db")).unwrap();
         conn.execute("DELETE FROM files WHERE path = 'deleted.rs'", [])
             .unwrap();
 

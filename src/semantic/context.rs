@@ -47,8 +47,8 @@ impl CodebaseContext {
     /// Extract comprehensive context from cache
     pub fn extract(cache: &CacheManager) -> Result<Self> {
         let db_path = cache.path().join("meta.db");
-        let conn =
-            Connection::open(&db_path).context("Failed to open database for context extraction")?;
+        let conn = crate::cache::open_meta_db(&db_path)
+            .context("Failed to open database for context extraction")?;
 
         // Get total file count
         let total_files: usize = conn

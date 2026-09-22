@@ -24,6 +24,70 @@ pub const TOKENS_BIN: &str = "tokens.bin";
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
 
+/// Open a SQLite database with Reflex's standard pragmas.
+///
+/// Every connection to `meta.db` (and to the symbol cache, which lives in the same
+/// file) MUST go through this helper. Plain `Connection::open` leaves SQLite at its
+/// defaults, which caused three separate production failures:
+///
+/// 1. **No `busy_timeout`** — the default is 0, so `BEGIN IMMEDIATE` returned
+///    `database is locked` *instantly* whenever the background symbol indexer held a
+///    write. Agents saw a raw SQLite error instead of a retry.
+/// 2. **No `journal_mode=WAL`** — readers blocked writers and vice versa, and
+///    [`CacheManager::checkpoint_wal`] was issuing `wal_checkpoint(TRUNCATE)` against a
+///    rollback-journal database, where it does nothing.
+/// 3. **No `foreign_keys=ON`** — SQLite disables foreign keys per connection by
+///    default, so the `ON DELETE CASCADE` clauses in the schema never fired and
+///    deleting a row from `files` orphaned its `file_branches` / `file_dependencies` /
+///    `file_exports` rows.
+///
+/// Pragma order is load-bearing: `journal_mode=WAL` itself can return `SQLITE_BUSY`
+/// when another connection is attached, so `busy_timeout` must be set first.
+///
+/// Set `REFLEX_SQLITE_JOURNAL=delete` to opt out of WAL on network filesystems, where
+/// WAL requires shared-memory support that NFS/SMB do not reliably provide.
+pub fn open_meta_db(db_path: impl AsRef<Path>) -> Result<Connection> {
+    let db_path = db_path.as_ref();
+    let conn = Connection::open(db_path)
+        .with_context(|| format!("Failed to open {}", db_path.display()))?;
+
+    // Must come first: the journal_mode change below can itself hit a busy database.
+    conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
+        .context("Failed to set busy_timeout")?;
+
+    let journal_mode = std::env::var("REFLEX_SQLITE_JOURNAL")
+        .unwrap_or_else(|_| "WAL".to_string())
+        .to_uppercase();
+
+    // query_row, not execute: `PRAGMA journal_mode` returns the resulting mode as a row.
+    if let Err(e) = conn.query_row(
+        &format!("PRAGMA journal_mode={}", journal_mode),
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        // A read-only or network filesystem can refuse WAL. Degrading to the default
+        // journal is correct here — losing concurrency beats failing to open the cache.
+        log::warn!(
+            "Could not set journal_mode={} on {}: {} (continuing with the default journal)",
+            journal_mode,
+            db_path.display(),
+            e
+        );
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .context("Failed to enable foreign keys")?;
+
+    Ok(conn)
+}
+
+/// How long a SQLite connection waits for a competing writer before giving up.
+///
+/// The background symbol indexer writes in batches; 5s comfortably covers one batch.
+/// A pass that holds the database for longer than this is caught earlier and more
+/// clearly by the `BackgroundIndexer::is_running` gate in `Indexer::index`.
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+
 /// Manages the Reflex cache directory
 #[derive(Clone)]
 pub struct CacheManager {
@@ -68,7 +132,7 @@ impl CacheManager {
         // missing; the old "skip if the file exists" check then made every later
         // run fail with `no such table: file_branches`.) One transaction so a
         // kill mid-way leaves either the old state or the full schema.
-        let conn = Connection::open(&db_path).context("Failed to create meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to create meta.db")?;
         conn.execute_batch("BEGIN IMMEDIATE")
             .context("Failed to begin meta.db schema transaction")?;
 
@@ -311,8 +375,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         // Try to open database
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db - database may be corrupted")?;
+        let conn =
+            open_meta_db(&db_path).context("Failed to open meta.db - database may be corrupted")?;
 
         // Verify schema exists
         let tables: Result<Vec<String>, _> = conn
@@ -624,8 +688,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(());
         }
 
-        let conn =
-            Connection::open(&db_path).context("Failed to open meta.db for WAL checkpoint")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for WAL checkpoint")?;
 
         // PRAGMA wal_checkpoint(TRUNCATE) forces a full checkpoint and truncates the WAL
         // This ensures background processes see all committed data
@@ -659,7 +722,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // Get all hashes from file_branches, joined with files to get paths
         // If a file appears in multiple branches, we'll get multiple entries
@@ -691,7 +754,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // Get hashes for specific branch only
         let mut stmt = conn.prepare(
@@ -729,7 +792,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// via record_branch_file() or batch_record_branch_files().
     pub fn update_file(&self, path: &str, language: &str, line_count: usize) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path).context("Failed to open meta.db for file update")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for file update")?;
 
         let now = chrono::Utc::now().timestamp();
 
@@ -748,8 +811,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// via batch_update_files_and_branch().
     pub fn batch_update_files(&self, files: &[(String, String, usize)]) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let mut conn =
-            Connection::open(&db_path).context("Failed to open meta.db for batch update")?;
+        let mut conn = open_meta_db(&db_path).context("Failed to open meta.db for batch update")?;
 
         let now = chrono::Utc::now().timestamp();
         let now_str = now.to_string();
@@ -792,7 +854,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         );
 
         let db_path = self.cache_path.join(META_DB);
-        let mut conn = Connection::open(&db_path)
+        let mut conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for batch update and branch recording")?;
 
         let now = chrono::Utc::now().timestamp();
@@ -849,7 +911,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         // DIAGNOSTIC: Verify data was actually persisted after commit
         // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
         let verify_conn =
-            Connection::open(&db_path).context("Failed to open meta.db for verification")?;
+            open_meta_db(&db_path).context("Failed to open meta.db for verification")?;
 
         // Count actual files in database
         let actual_file_count: i64 = verify_conn.query_row(
@@ -903,7 +965,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Counts only files indexed for the given branch, not all files across all branches.
     pub fn update_stats(&self, branch: &str) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path).context("Failed to open meta.db for stats update")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for stats update")?;
 
         // Count files for specific branch only (branch-aware statistics)
         let total_files: usize = conn
@@ -939,7 +1001,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         if !db_path.exists() {
             return Ok(false);
         }
-        let conn = Connection::open(&db_path)?;
+        let conn = open_meta_db(&db_path)?;
         let current = env!("CACHE_SCHEMA_HASH");
         let stored: Option<String> = conn
             .query_row(
@@ -958,7 +1020,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     pub fn update_schema_hash(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn =
-            Connection::open(&db_path).context("Failed to open meta.db for schema hash update")?;
+            open_meta_db(&db_path).context("Failed to open meta.db for schema hash update")?;
 
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         let now = chrono::Utc::now().timestamp();
@@ -980,7 +1042,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(Vec::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let mut stmt =
             conn.prepare("SELECT path, language, last_indexed FROM files ORDER BY path")?;
@@ -1023,7 +1085,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             });
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // Determine current branch for branch-aware statistics
         let workspace_root = self.workspace_root();
@@ -1268,8 +1330,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         commit_sha: Option<&str>,
     ) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for branch file recording")?;
+        let conn =
+            open_meta_db(&db_path).context("Failed to open meta.db for branch file recording")?;
 
         // Lookup file_id from path
         let file_id: i64 = conn
@@ -1310,8 +1372,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         );
 
         let db_path = self.cache_path.join(META_DB);
-        let mut conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for batch branch recording")?;
+        let mut conn =
+            open_meta_db(&db_path).context("Failed to open meta.db for batch branch recording")?;
 
         let now = chrono::Utc::now().timestamp();
 
@@ -1360,7 +1422,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let mut stmt = conn.prepare(
             "SELECT f.path, fb.hash
@@ -1391,7 +1453,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let count: i64 = conn
             .query_row(
@@ -1416,7 +1478,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             anyhow::bail!("Database not initialized");
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let info = conn.query_row(
             "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE name = ?",
@@ -1447,8 +1509,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         is_dirty: bool,
     ) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open meta.db for branch metadata update")?;
+        let conn =
+            open_meta_db(&db_path).context("Failed to open meta.db for branch metadata update")?;
 
         let now = chrono::Utc::now().timestamp();
         let is_dirty_int = if is_dirty { 1 } else { 0 };
@@ -1503,7 +1565,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(None);
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let result = conn
             .query_row(
@@ -1531,7 +1593,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(None);
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         let result = conn
             .query_row("SELECT id FROM files WHERE path = ?", [path], |row| {
@@ -1555,7 +1617,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(HashMap::new());
         }
 
-        let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         // SQLite has a limit of 999 parameters by default
         // Chunk requests to stay well under that limit
@@ -1607,8 +1669,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
 
-        let conn =
-            Connection::open(&db_path).context("Failed to open meta.db for compaction check")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for compaction check")?;
 
         // Get last_compaction timestamp (defaults to "0" if not found)
         let last_compaction: i64 = conn
@@ -1647,7 +1708,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Called after successful compaction to record when it ran.
     pub fn update_compaction_timestamp(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
+        let conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for compaction timestamp update")?;
 
         let now = chrono::Utc::now().timestamp();
@@ -1734,7 +1795,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Returns a Vec of file IDs for files that should be removed from the cache.
     fn identify_deleted_files(&self) -> Result<Vec<i64>> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path)
+        let conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for deleted file identification")?;
 
         let workspace_root = self.workspace_root();
@@ -1775,7 +1836,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         let db_path = self.cache_path.join(META_DB);
         let mut conn =
-            Connection::open(&db_path).context("Failed to open meta.db for file deletion")?;
+            open_meta_db(&db_path).context("Failed to open meta.db for file deletion")?;
 
         let tx = conn.transaction()?;
 
@@ -1805,7 +1866,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// This can take several seconds on large databases but significantly reduces disk usage.
     fn vacuum_database(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
-        let conn = Connection::open(&db_path).context("Failed to open meta.db for VACUUM")?;
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db for VACUUM")?;
 
         // VACUUM cannot run inside a transaction
         // It rebuilds the entire database file
@@ -2288,7 +2349,7 @@ mod tests {
         cache.init().unwrap();
 
         let db_path = cache.path().join(META_DB);
-        let conn = Connection::open(&db_path).unwrap();
+        let conn = open_meta_db(&db_path).unwrap();
 
         // Verify tables exist
         let tables: Vec<String> = conn
@@ -2415,7 +2476,7 @@ mod tests {
 
         // Drop a required table to simulate schema corruption
         let db_path = cache.path().join(META_DB);
-        let conn = Connection::open(&db_path).unwrap();
+        let conn = open_meta_db(&db_path).unwrap();
         conn.execute("DROP TABLE files", []).unwrap();
 
         // Validation should fail due to missing required table

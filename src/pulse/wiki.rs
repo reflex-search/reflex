@@ -92,7 +92,7 @@ pub fn detect_modules(
     let context = CodebaseContext::extract(cache).context("Failed to extract codebase context")?;
 
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
 
     let mut modules = Vec::new();
 
@@ -185,7 +185,7 @@ pub fn generate_wiki_page(
     snapshot_id: &str,
 ) -> Result<WikiPage> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)?;
+    let conn = crate::cache::open_meta_db(&db_path)?;
     let deps_index = DependencyIndex::new(cache.clone());
     let query_engine = QueryEngine::new(cache.clone());
 
@@ -314,7 +314,7 @@ pub fn generate_all_pages_structural(
         .par_iter()
         .map(|module| {
             let db_path = cache.path().join("meta.db");
-            let conn = match Connection::open(&db_path) {
+            let conn = match crate::cache::open_meta_db(&db_path) {
                 Ok(c) => c,
                 Err(e) => {
                     return Err(anyhow::anyhow!(

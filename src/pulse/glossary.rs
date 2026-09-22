@@ -16,7 +16,6 @@
 //! module list derived from the same structural evidence.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -157,7 +156,7 @@ fn anchor_priority(kind: &str) -> u8 {
 /// to anchor concepts to).
 pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<GlossaryEvidence>> {
     let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path).context("Failed to open meta.db")?;
+    let conn = crate::cache::open_meta_db(&db_path).context("Failed to open meta.db")?;
 
     let has_symbols: bool = conn
         .query_row(
