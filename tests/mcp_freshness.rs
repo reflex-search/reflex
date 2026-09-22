@@ -282,3 +282,35 @@ fn a_reindex_returns_the_tree_to_fresh() {
     assert_eq!(r["total_count"], 1, "{r}");
     assert_eq!(r["can_trust_results"], true, "{r}");
 }
+
+/// The verdict is memoised for `REFLEX_FRESHNESS_TTL_MS` (default 1 s) so a burst
+/// of searches spawns git once. An index write in the same process must drop that
+/// memo: before this test, `index_project` left a stale "modified" verdict in the
+/// cache for up to the TTL, and the first search after re-indexing was reported
+/// untrustworthy even though the index was current.
+#[test]
+fn a_search_right_after_reindex_is_fresh_within_the_memo_ttl() {
+    let temp = indexed_repo();
+    let root = temp.path();
+
+    // Prime the memo with a stale verdict: a search sees the edited file.
+    fs::write(
+        root.join("src/storage/mod.rs"),
+        "pub fn edited_token() {}\n",
+    )
+    .unwrap();
+    let r = search(root, "storage_entry");
+    assert_eq!(r["status"], "stale", "{r}");
+
+    // Commit so the tree is clean, then re-index through the MCP tool.
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "edit"]);
+    let idx = call_tool(root, "index_project", json!({}));
+    assert!(idx.get("error").is_none(), "{idx}");
+
+    // Well inside the TTL: the search must not be answered from the old memo.
+    let r = search(root, "edited_token");
+    assert_eq!(r["status"], "fresh", "{r}");
+    assert_eq!(r["can_trust_results"], true, "{r}");
+    assert_eq!(r["total_count"], 1, "{r}");
+}

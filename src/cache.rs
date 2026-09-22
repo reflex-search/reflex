@@ -622,6 +622,9 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(());
         }
 
+        // No query in this process may keep serving from the files about to go.
+        crate::query::invalidate_caches(&self.workspace_root());
+
         // Hold the workspace index lock while deleting so we never pull
         // content.bin out from under a running indexer. Everything except the
         // lock file goes while the lock is held; the lock file and the (now
@@ -1038,6 +1041,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
         let conn = open_meta_db(&db_path)?;
+        Self::check_schema_hash_on(&conn)
+    }
+
+    fn check_schema_hash_on(conn: &Connection) -> Result<bool> {
         let current = env!("CACHE_SCHEMA_HASH");
         let stored: Option<String> = conn
             .query_row(
@@ -1049,6 +1056,57 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         Ok(stored.as_deref() == Some(current))
     }
 
+    /// Everything the freshness check reads from `meta.db`, on ONE connection.
+    ///
+    /// The per-query status check used to open three connections (`check_schema_hash`,
+    /// `branch_exists`, `get_branch_info`); on a 35 MB database each open is not free.
+    /// `branch` is `None` outside git, in which case only the schema is read.
+    pub fn status_reads(&self, branch: Option<&str>) -> Result<StatusReads> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(StatusReads {
+                schema_ok: false,
+                owner: None,
+                branch_indexed: false,
+                branch_info: None,
+            });
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+
+        let schema_ok = Self::check_schema_hash_on(&conn).unwrap_or(true);
+        if !schema_ok {
+            return Ok(StatusReads {
+                schema_ok,
+                owner: Self::cache_owner_on(&conn),
+                branch_indexed: false,
+                branch_info: None,
+            });
+        }
+
+        let Some(branch) = branch else {
+            return Ok(StatusReads {
+                schema_ok,
+                owner: None,
+                branch_indexed: false,
+                branch_info: None,
+            });
+        };
+
+        let branch_indexed = Self::branch_exists_on(&conn, branch);
+        let branch_info = if branch_indexed {
+            Self::get_branch_info_on(&conn, branch).ok()
+        } else {
+            None
+        };
+
+        Ok(StatusReads {
+            schema_ok,
+            owner: None,
+            branch_indexed,
+            branch_info,
+        })
+    }
+
     /// Who wrote this cache: `(version, git_sha)`, when the cache records it.
     ///
     /// `None` for a cache written before 1.7.2, or none at all.
@@ -1058,6 +1116,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return None;
         }
         let conn = open_meta_db(&db_path).ok()?;
+        Self::cache_owner_on(&conn)
+    }
+
+    fn cache_owner_on(conn: &Connection) -> Option<(String, Option<String>)> {
         let get = |key: &str| -> Option<String> {
             conn.query_row("SELECT value FROM statistics WHERE key = ?", [key], |row| {
                 row.get(0)
@@ -1574,7 +1636,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        Ok(Self::branch_exists_on(&conn, branch))
+    }
 
+    fn branch_exists_on(conn: &Connection, branch: &str) -> bool {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*)
@@ -1586,8 +1651,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                 |row| row.get(0),
             )
             .unwrap_or(0);
-
-        Ok(count > 0)
+        count > 0
     }
 
     /// Get branch metadata (commit, last_indexed, file_count, dirty status)
@@ -1599,7 +1663,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        Self::get_branch_info_on(&conn, branch)
+    }
 
+    fn get_branch_info_on(conn: &Connection, branch: &str) -> Result<BranchInfo> {
         let info = conn.query_row(
             "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE name = ?",
             [branch],
@@ -2021,6 +2088,19 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         Ok(total_size)
     }
+}
+
+/// Result of [`CacheManager::status_reads`].
+#[derive(Debug, Clone)]
+pub struct StatusReads {
+    /// The stored schema hash matches this binary.
+    pub schema_ok: bool,
+    /// `(version, git_sha)` of the writer, read only when `schema_ok` is false.
+    pub owner: Option<(String, Option<String>)>,
+    /// The current branch has indexed files.
+    pub branch_indexed: bool,
+    /// Branch metadata, when the branch is indexed.
+    pub branch_info: Option<BranchInfo>,
 }
 
 /// Branch metadata information

@@ -453,6 +453,41 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+/// Resolve `[performance] parallel_threads` to a concrete thread count.
+///
+/// `0` means automatic: 80% of the available cores, at least 1, at most
+/// `auto_cap`. A non-zero value is used as given. The indexer passes a cap of 8
+/// (write-side cache contention); query-time verification passes a higher cap.
+pub fn resolve_thread_count(configured: usize, auto_cap: usize) -> usize {
+    if configured != 0 {
+        return configured.max(1);
+    }
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    ((available as f64 * 0.8).ceil() as usize).clamp(1, auto_cap.max(1))
+}
+
+/// Per-phase wall-clock timings for one query, in microseconds.
+///
+/// Present in a [`QueryResponse`] only when the caller asked for it
+/// (`rfx query --timing`, or `REFLEX_MCP_TIMING=1` for the MCP server).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryTimings {
+    /// Opening (or reusing) the index handle.
+    pub open_us: u64,
+    /// Trigram lookup and posting-list intersection.
+    pub candidates_us: u64,
+    /// Verifying candidate lines against the pattern (and any enrichment).
+    pub verify_us: u64,
+    /// Freshness / staleness check.
+    pub status_us: u64,
+    /// Grouping by file, context lines, dependencies.
+    pub group_us: u64,
+    /// Whole query as seen by the engine.
+    pub total_us: u64,
+}
+
 /// Statistics about the index
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexStats {
@@ -611,6 +646,15 @@ pub struct QueryResponse {
     /// File-grouped search results
     /// Results are always grouped by file path, with dependencies populated when --dependencies flag is used
     pub results: Vec<FileGroupedResult>,
+    /// For a whole-identifier search that found nothing: how many candidate lines
+    /// contain the pattern as a substring. Lets the caller explain a zero without
+    /// running a second search. Absent whenever there were results, or when the
+    /// search was not a whole-identifier one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substring_hint_count: Option<usize>,
+    /// Per-phase timings, only when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<QueryTimings>,
 }
 
 /// Report from cache compaction operation

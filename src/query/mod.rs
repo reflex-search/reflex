@@ -4,6 +4,7 @@
 //! deterministic searches based on lexical, structural, or symbol patterns.
 
 pub mod filter;
+pub mod open_index;
 pub mod result;
 
 pub use filter::QueryFilter;
@@ -12,25 +13,126 @@ use anyhow::{Context, Result};
 use regex::Regex;
 
 use crate::cache::CacheManager;
-use crate::content_store::ContentReader;
 use crate::models::{
-    IndexStatus, IndexWarning, IndexWarningDetails, Language, QueryResponse, SearchResult, Span,
-    SymbolKind,
+    IndexStatus, IndexWarning, Language, QueryResponse, SearchResult, Span, SymbolKind,
 };
 use crate::output;
 use crate::parsers::ParserFactory;
 use crate::regex_trigrams::extract_trigrams_from_regex;
-use crate::trigram::TrigramIndex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use open_index::OpenIndex;
+
+/// Drop every process-wide memo for `workspace_root`: the shared open-index
+/// handle and the freshness snapshot. Called around index writes so no query in
+/// this process keeps serving from replaced files or a stale verdict.
+pub fn invalidate_caches(workspace_root: &std::path::Path) {
+    open_index::invalidate(&workspace_root.join(crate::cache::CACHE_DIR));
+    status_cache::invalidate(workspace_root);
+}
+
+/// What `search_internal` hands back: the page plus the bookkeeping the public
+/// wrappers turn into pagination, hints and timings.
+struct Internal {
+    results: Vec<SearchResult>,
+    /// Matches before offset/limit.
+    total_count: usize,
+    /// Candidate lines that contained the pattern only as a substring
+    /// (whole-identifier searches only), for the zero-result hint.
+    substring_only: Option<usize>,
+    /// Time spent in trigram lookup and intersection.
+    candidates_us: u64,
+}
+
+/// Bookkeeping from the trigram candidate pass.
+#[derive(Debug, Default, Clone, Copy)]
+struct CandidateStats {
+    candidates_us: u64,
+    substring_only: Option<usize>,
+}
+
+/// The per-line predicate for one query, built once.
+///
+/// The whole-identifier check used to compile `\b…\b` for every candidate line;
+/// on a common word that compile cost more than the match itself.
+enum LineMatcher {
+    /// Whole-identifier match (`\b…\b`), the default.
+    WordBoundary(Regex),
+    /// Substring match (`contains: true`), also the fallback when the
+    /// word-boundary regex cannot be built.
+    Contains(String),
+    /// User-supplied regex.
+    Regex(Regex),
+}
+
+impl LineMatcher {
+    fn new(pattern: &str, filter: &QueryFilter) -> Result<Self> {
+        if filter.use_regex {
+            return match Regex::new(pattern) {
+                Ok(re) => Ok(Self::Regex(re)),
+                Err(e) => {
+                    log::error!("Invalid regex pattern '{}': {}", pattern, e);
+                    anyhow::bail!("Invalid regex pattern '{}': {}", pattern, e);
+                }
+            };
+        }
+        if filter.use_contains {
+            return Ok(Self::Contains(pattern.to_string()));
+        }
+        match Regex::new(&format!(r"\b{}\b", regex::escape(pattern))) {
+            Ok(re) => Ok(Self::WordBoundary(re)),
+            Err(_) => {
+                log::debug!(
+                    "Word boundary regex failed for pattern '{}', falling back to substring",
+                    pattern
+                );
+                Ok(Self::Contains(pattern.to_string()))
+            }
+        }
+    }
+
+    fn is_word_boundary(&self) -> bool {
+        matches!(self, Self::WordBoundary(_))
+    }
+
+    #[inline]
+    fn is_match(&self, line: &str) -> bool {
+        match self {
+            Self::WordBoundary(re) | Self::Regex(re) => re.is_match(line),
+            Self::Contains(p) => line.contains(p.as_str()),
+        }
+    }
+}
 
 /// Manages query execution against the index
 pub struct QueryEngine {
     cache: CacheManager,
+    /// The open index for this engine's lifetime, resolved on first use so every
+    /// phase of one query reads the same files.
+    open: OnceLock<Arc<OpenIndex>>,
 }
 
 impl QueryEngine {
     /// Create a new query engine with the given cache manager
     pub fn new(cache: CacheManager) -> Self {
-        Self { cache }
+        Self {
+            cache,
+            open: OnceLock::new(),
+        }
+    }
+
+    /// The shared open-index handle (see [`open_index`]).
+    ///
+    /// Typed `CacheCorrupted` on a short or garbled store, so the MCP layer can
+    /// rebuild once and retry.
+    fn open_index(&self) -> Result<Arc<OpenIndex>> {
+        if let Some(open) = self.open.get() {
+            return Ok(Arc::clone(open));
+        }
+        let open = open_index::get_or_open(&self.cache)?;
+        let _ = self.open.set(Arc::clone(&open));
+        Ok(open)
     }
 
     /// Load dependencies for search results if requested (legacy - per result)
@@ -125,9 +227,9 @@ impl QueryEngine {
             None
         };
 
-        // Load ContentReader for extracting context lines
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader_opt = ContentReader::open(&content_path).ok();
+        // The shared index handle, for extracting context lines
+        let open_opt = self.open_index().ok();
+        let content_reader_opt = open_opt.as_deref().map(|o| &o.content);
 
         // Convert to FileGroupedResult and load dependencies
         let mut file_results: Vec<FileGroupedResult> = grouped
@@ -168,15 +270,8 @@ impl QueryEngine {
                     None
                 };
 
-                // Get file_id for context extraction
-                // Note: We use ContentReader's get_file_id_by_path() which returns array indices,
-                // not database file_ids (which are AUTO INCREMENT values)
-                let normalized_path = path.strip_prefix("./").unwrap_or(&path);
-                let file_id_for_context = if let Some(reader) = &content_reader_opt {
-                    reader.get_file_id_by_path(normalized_path)
-                } else {
-                    None
-                };
+                // Array file id (not the database id) for context extraction
+                let file_id_for_context = open_opt.as_deref().and_then(|o| o.file_id_for(&path));
                 log::debug!(
                     "Context extraction: file={}, file_id={:?}, content_reader={}",
                     path,
@@ -268,20 +363,29 @@ impl QueryEngine {
             filter
         );
 
+        let started = std::time::Instant::now();
+
         // Ensure cache exists
         if !self.cache.exists() {
             return Err(crate::errors::ReflexError::IndexNotFound.into());
         }
 
-        // Validate cache integrity
-        if let Err(e) = self.cache.validate() {
-            // Typed so the MCP layer can auto-rebuild once and retry.
-            return Err(crate::errors::ReflexError::CacheCorrupted(e.to_string()).into());
-        }
+        // Open (or reuse) the index. A short or garbled store surfaces as a typed
+        // `CacheCorrupted`, so the MCP layer can auto-rebuild once and retry. This
+        // replaces the per-query `validate()`, whose `PRAGMA quick_check` walked the
+        // whole database on every call.
+        self.open_index()?;
+        let open_us = started.elapsed().as_micros() as u64;
 
         // Execute the search first, so freshness can be judged against the files this
         // answer actually came from.
-        let (results, total) = self.search_internal(pattern, filter.clone())?;
+        let Internal {
+            results,
+            total_count: total,
+            substring_only,
+            candidates_us,
+        } = self.search_internal(pattern, filter.clone())?;
+        let search_done = started.elapsed();
 
         // Get index status and warning (without printing warnings to stderr).
         //
@@ -292,6 +396,7 @@ impl QueryEngine {
         // told to treat that as fatal could not use Reflex at all.
         let scope: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
         let (status, can_trust_results, warning) = self.index_status_for(Some(&scope))?;
+        let status_done = started.elapsed();
 
         // Build pagination metadata
         use crate::models::PaginationInfo;
@@ -311,6 +416,17 @@ impl QueryEngine {
             filter.context_lines,
         )?;
 
+        let total_elapsed = started.elapsed();
+        let timings = crate::models::QueryTimings {
+            open_us,
+            candidates_us,
+            verify_us: (search_done.as_micros() as u64).saturating_sub(open_us + candidates_us),
+            status_us: (status_done - search_done).as_micros() as u64,
+            group_us: (total_elapsed - status_done).as_micros() as u64,
+            total_us: total_elapsed.as_micros() as u64,
+        };
+        log::debug!("Query timings for '{}': {:?}", pattern, timings);
+
         Ok(QueryResponse {
             ai_instruction: None, // AI instruction is generated by CLI/MCP layer, not here
             status,
@@ -318,6 +434,8 @@ impl QueryEngine {
             warning,
             pagination,
             results: grouped_results,
+            substring_hint_count: if total == 0 { substring_only } else { None },
+            timings: filter.collect_timings.then_some(timings),
         })
     }
 
@@ -337,17 +455,14 @@ impl QueryEngine {
             return Err(crate::errors::ReflexError::IndexNotFound.into());
         }
 
-        // Validate cache integrity
-        if let Err(e) = self.cache.validate() {
-            // Typed so the MCP layer can auto-rebuild once and retry.
-            return Err(crate::errors::ReflexError::CacheCorrupted(e.to_string()).into());
-        }
+        // Open (or reuse) the index; corruption surfaces as a typed error.
+        self.open_index()?;
 
         // Show non-blocking warnings about branch state and staleness
         self.check_index_freshness(&filter)?;
 
         // Execute the search (discard total count - legacy method doesn't use it)
-        let (mut results, _total_count) = self.search_internal(pattern, filter.clone())?;
+        let mut results = self.search_internal(pattern, filter.clone())?.results;
 
         // Load dependencies if requested
         self.load_dependencies(&mut results, filter.include_dependencies)?;
@@ -357,11 +472,7 @@ impl QueryEngine {
 
     /// Internal search implementation (used by both search methods)
     /// Returns (results, total_count) where total_count is the count before offset/limit
-    fn search_internal(
-        &self,
-        pattern: &str,
-        filter: QueryFilter,
-    ) -> Result<(Vec<SearchResult>, usize)> {
+    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Internal> {
         use std::time::{Duration, Instant};
 
         // Start timeout timer if configured
@@ -419,8 +530,9 @@ impl QueryEngine {
         // 4. Not a keyword query (keywords are intentionally broad) AND
         // 5. Not forced by --force flag
         if !filter.force && !filter.use_regex && !is_keyword_query {
-            let stats = self.cache.stats()?;
-            let total_files = stats.total_files;
+            // Index-wide file count from the open handle. `cache.stats()` here used
+            // to open SQLite and spawn git on every query.
+            let total_files = self.open_index()?.file_count();
             let pattern_len = pattern.chars().count();
 
             // Thresholds for early blocking:
@@ -460,6 +572,8 @@ impl QueryEngine {
         }
 
         // PHASE 1: Get initial candidates (choose search strategy)
+        let mut substring_only = None;
+        let mut candidates_us = 0u64;
         let mut results = if is_keyword_query {
             // KEYWORD QUERY MODE: Scan all files (or files of target language if --lang specified)
             // This ensures we find ALL classes/functions/etc, not just those in the first 100 trigram matches
@@ -486,7 +600,10 @@ impl QueryEngine {
             )?
         } else {
             // Standard trigram-based full-text search
-            self.get_trigram_candidates(pattern, &filter)?
+            let (candidates, stats) = self.get_trigram_candidates(pattern, &filter)?;
+            substring_only = stats.substring_only;
+            candidates_us = stats.candidates_us;
+            candidates
         };
 
         // EARLY LANGUAGE FILTER: Apply language filtering BEFORE broad query check
@@ -806,14 +923,14 @@ impl QueryEngine {
         // Expand symbol bodies if requested
         // Works for both symbol-mode and regex searches (if regex matched a symbol definition)
         if filter.expand {
-            // Load content store to fetch full symbol bodies
-            let content_path = self.cache.path().join("content.bin");
-            if let Ok(content_reader) = ContentReader::open(&content_path) {
+            // Fetch full symbol bodies from the shared content store
+            if let Ok(open) = self.open_index() {
+                let content_reader = &open.content;
                 for result in &mut results {
                     // Only expand if the result has a meaningful span (not just a single line)
                     if result.span.start_line < result.span.end_line {
                         // Find the file_id for this result's path
-                        if let Some(file_id) = Self::find_file_id(&content_reader, &result.path) {
+                        if let Some(file_id) = open.file_id_for(&result.path) {
                             // Fetch the full span content
                             if let Ok(content) = content_reader.get_file_content(file_id) {
                                 let lines: Vec<&str> = content.lines().collect();
@@ -881,7 +998,12 @@ impl QueryEngine {
             total_count
         );
 
-        Ok((results, total_count))
+        Ok(Internal {
+            results,
+            total_count,
+            substring_only,
+            candidates_us,
+        })
     }
 
     /// Search for symbols by exact name match
@@ -950,10 +1072,9 @@ impl QueryEngine {
         // Show non-blocking warnings about branch state and staleness
         self.check_index_freshness(&filter)?;
 
-        // Load content store
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content store")?;
+        // The shared content store
+        let open = self.open_index()?;
+        let content_reader = &open.content;
 
         // Build glob matchers ONCE before file iteration (performance optimization)
         use globset::{Glob, GlobSetBuilder};
@@ -1098,12 +1219,14 @@ impl QueryEngine {
         // Note: exact filter doesn't make sense for AST queries (pattern is S-expression, not symbol name)
 
         // Expand symbol bodies if requested
-        if filter.expand {
-            let content_path = self.cache.path().join("content.bin");
-            if let Ok(content_reader) = ContentReader::open(&content_path) {
+        if filter.expand
+            && let Ok(open) = self.open_index()
+        {
+            let content_reader = &open.content;
+            {
                 for result in &mut results {
                     if result.span.start_line < result.span.end_line
-                        && let Some(file_id) = Self::find_file_id(&content_reader, &result.path)
+                        && let Some(file_id) = open.file_id_for(&result.path)
                         && let Ok(content) = content_reader.get_file_content(file_id)
                     {
                         let lines: Vec<&str> = content.lines().collect();
@@ -1213,7 +1336,7 @@ impl QueryEngine {
                 filter.suppress_output,
             )?
         } else {
-            self.get_trigram_candidates(text_pattern, &filter)?
+            self.get_trigram_candidates(text_pattern, &filter)?.0
         };
 
         log::debug!("Phase 1 found {} candidate locations", candidates.len());
@@ -1288,12 +1411,14 @@ impl QueryEngine {
         }
 
         // Expand symbol bodies if requested
-        if filter.expand {
-            let content_path = self.cache.path().join("content.bin");
-            if let Ok(content_reader) = ContentReader::open(&content_path) {
+        if filter.expand
+            && let Ok(open) = self.open_index()
+        {
+            let content_reader = &open.content;
+            {
                 for result in &mut results {
                     if result.span.start_line < result.span.end_line
-                        && let Some(file_id) = Self::find_file_id(&content_reader, &result.path)
+                        && let Some(file_id) = open.file_id_for(&result.path)
                         && let Ok(content) = content_reader.get_file_content(file_id)
                     {
                         let lines: Vec<&str> = content.lines().collect();
@@ -1380,18 +1505,9 @@ impl QueryEngine {
         pattern: &str,
         filter: &QueryFilter,
     ) -> Result<Vec<SearchResult>> {
-        // Load content store for file reading
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content store")?;
-
-        // Load trigram index for file path lookups
-        let trigrams_path = self.cache.path().join("trigrams.bin");
-        let trigram_index = if trigrams_path.exists() {
-            TrigramIndex::load(&trigrams_path)?
-        } else {
-            Self::rebuild_trigram_index(&content_reader)?
-        };
+        // The shared index handle (content store + file-id map)
+        let open = self.open_index()?;
+        let content_reader = &open.content;
 
         // Open symbol cache for reading cached symbols
         let symbol_cache = crate::symbol_cache::SymbolCache::open(self.cache.path())
@@ -1462,11 +1578,10 @@ impl QueryEngine {
             // Get line filter for this language (if available)
             if let Some(line_filter) = crate::line_filter::get_filter(lang) {
                 // Find file_id for this path
-                let file_id =
-                    match Self::find_file_id_by_path(&content_reader, &trigram_index, file_path) {
-                        Some(id) => id,
-                        None => continue,
-                    };
+                let file_id = match open.file_id_for(file_path) {
+                    Some(id) => id,
+                    None => continue,
+                };
 
                 // Load file content
                 let content = match content_reader.get_file_content(file_id) {
@@ -1523,29 +1638,8 @@ impl QueryEngine {
             files_to_process.len()
         );
 
-        // Configure thread pool for parallel processing (use 80% of available cores, capped at 8)
-        let num_threads = {
-            let available_cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            // Use 80% of available cores (minimum 1, maximum 8) to avoid locking the system
-            // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
-            ((available_cores as f64 * 0.8).ceil() as usize).clamp(1, 8)
-        };
-
-        log::debug!(
-            "Using {} threads for parallel symbol extraction (out of {} available cores)",
-            num_threads,
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-        );
-
-        // Build a custom thread pool with limited threads
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build()
-            .context("Failed to create thread pool for symbol extraction")?;
+        // Parse on the shared query pool, sized from `[performance] parallel_threads`
+        let pool = open.pool();
 
         // OPTIMIZATION: Batch read all cached symbols in ONE database transaction
         // This is 10-30x faster than calling get() individually for each file
@@ -1623,11 +1717,7 @@ impl QueryEngine {
                 .par_iter()
                 .flat_map(|file_path| {
                     // Find file_id for this path
-                    let file_id = match Self::find_file_id_by_path(
-                        &content_reader,
-                        &trigram_index,
-                        file_path,
-                    ) {
+                    let file_id = match open.file_id_for(file_path) {
                         Some(id) => id,
                         None => {
                             log::warn!("Could not find file_id for path: {}", file_path);
@@ -1807,18 +1897,9 @@ impl QueryEngine {
             "Language must be specified for AST pattern matching. Use --lang to specify the language."
         ))?;
 
-        // Load content store for file reading
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content store")?;
-
-        // Load trigram index for file path lookups
-        let trigrams_path = self.cache.path().join("trigrams.bin");
-        let trigram_index = if trigrams_path.exists() {
-            TrigramIndex::load(&trigrams_path)?
-        } else {
-            Self::rebuild_trigram_index(&content_reader)?
-        };
+        // The shared index handle (content store + file-id map)
+        let open = self.open_index()?;
+        let content_reader = &open.content;
 
         // Collect unique file paths from candidates and load their contents
         use std::collections::HashMap;
@@ -1830,11 +1911,7 @@ impl QueryEngine {
             }
 
             // Find file_id for this path
-            let file_id = match Self::find_file_id_by_path(
-                &content_reader,
-                &trigram_index,
-                &candidate.path,
-            ) {
+            let file_id = match open.file_id_for(&candidate.path) {
                 Some(id) => id,
                 None => {
                     log::warn!("Could not find file_id for path: {}", candidate.path);
@@ -1873,33 +1950,6 @@ impl QueryEngine {
         Ok(results)
     }
 
-    /// Helper to find file_id by path string
-    fn find_file_id_by_path(
-        content_reader: &ContentReader,
-        trigram_index: &TrigramIndex,
-        target_path: &str,
-    ) -> Option<u32> {
-        // Try trigram index first (faster)
-        for file_id in 0..trigram_index.file_count() {
-            if let Some(path) = trigram_index.get_file(file_id as u32)
-                && path.to_string_lossy() == target_path
-            {
-                return Some(file_id as u32);
-            }
-        }
-
-        // Fallback to content reader
-        for file_id in 0..content_reader.file_count() {
-            if let Some(path) = content_reader.get_file_path(file_id as u32)
-                && path.to_string_lossy() == target_path
-            {
-                return Some(file_id as u32);
-            }
-        }
-
-        None
-    }
-
     /// Map keyword patterns to SymbolKind for auto-inference
     ///
     /// When users search for keywords like "class" or "function" with --symbols,
@@ -1922,10 +1972,9 @@ impl QueryEngine {
         // Language filter is optional - if not specified, scan all files
         // If specified, only scan files of that language
 
-        // Load content store
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content store")?;
+        // The shared content store
+        let open = self.open_index()?;
+        let content_reader = &open.content;
 
         // Build glob matchers if specified (for filtering)
         use globset::{Glob, GlobSetBuilder};
@@ -2034,11 +2083,10 @@ impl QueryEngine {
         &self,
         pattern: &str,
         filter: &QueryFilter,
-    ) -> Result<Vec<SearchResult>> {
-        // Load content store
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content store")?;
+    ) -> Result<(Vec<SearchResult>, CandidateStats)> {
+        let open = self.open_index()?;
+        let content_reader = &open.content;
+        let trigram_index = &open.trigrams;
 
         // Patterns shorter than 3 chars have no trigrams, so the trigram index always
         // returns empty.  Fall back to a linear scan of the content store so that
@@ -2049,54 +2097,29 @@ impl QueryEngine {
                  falling back to linear scan",
                 pattern
             );
-            return self.linear_scan_candidates(pattern, filter, &content_reader);
+            let results = self.linear_scan_candidates(pattern, filter, &open)?;
+            return Ok((results, CandidateStats::default()));
         }
 
-        // Load trigram index from disk (or rebuild if missing)
-        let trigrams_path = self.cache.path().join("trigrams.bin");
-        let trigram_index = if trigrams_path.exists() {
-            match TrigramIndex::load(&trigrams_path) {
-                Ok(index) => {
-                    log::debug!(
-                        "Loaded trigram index from disk: {} trigrams, {} files",
-                        index.trigram_count(),
-                        index.file_count()
-                    );
-                    index
-                }
-                Err(e) => {
-                    log::warn!("Failed to load trigram index from disk: {}", e);
-                    log::warn!("Rebuilding trigram index from content store...");
-                    Self::rebuild_trigram_index(&content_reader)?
-                }
-            }
-        } else {
-            log::debug!("trigrams.bin not found, rebuilding from content store");
-            Self::rebuild_trigram_index(&content_reader)?
-        };
-
         // Search using trigrams
+        let candidates_started = std::time::Instant::now();
         let candidates = trigram_index.search(pattern);
+        let candidates_us = candidates_started.elapsed().as_micros() as u64;
         log::debug!(
-            "Found {} candidate locations from trigram search",
-            candidates.len()
+            "Found {} candidate locations from trigram search in {} us",
+            candidates.len(),
+            candidates_us
         );
 
         // Clone pattern to owned String for thread safety
         let pattern_owned = pattern.to_string();
 
-        // Compile regex once if in regex mode (before parallel processing for efficiency)
-        let compiled_regex = if filter.use_regex {
-            match Regex::new(&pattern_owned) {
-                Ok(re) => Some(re),
-                Err(e) => {
-                    log::error!("Invalid regex pattern '{}': {}", pattern_owned, e);
-                    anyhow::bail!("Invalid regex pattern '{}': {}", pattern_owned, e);
-                }
-            }
-        } else {
-            None
-        };
+        // One matcher for the whole query (see `LineMatcher`).
+        let matcher = LineMatcher::new(pattern, filter)?;
+        // For a whole-identifier search, count the candidate lines that only
+        // contain the pattern as a substring: that is the zero-result hint.
+        let count_substring_only = matcher.is_word_boundary();
+        let substring_only = AtomicUsize::new(0);
 
         // Group candidates by file for efficient processing
         use std::collections::HashMap;
@@ -2114,106 +2137,100 @@ impl QueryEngine {
         // Process files in parallel using rayon
         use rayon::prelude::*;
 
-        let results: Vec<SearchResult> = candidates_by_file
-            .par_iter()
-            .flat_map(|(file_id, locations)| {
-                // Get file metadata
-                let file_path = match trigram_index.get_file(*file_id) {
-                    Some(p) => p,
-                    None => return Vec::new(),
-                };
-
-                let content = match content_reader.get_file_content(*file_id) {
-                    Ok(c) => c,
-                    Err(_) => return Vec::new(),
-                };
-
-                let file_path_str = file_path.to_string_lossy().to_string();
-
-                // Detect language once per file
-                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                let lang = Language::from_extension(ext);
-
-                // Split content into lines once
-                let lines: Vec<&str> = content.lines().collect();
-
-                // Use a HashSet to deduplicate results by line number
-                let mut seen_lines: std::collections::HashSet<usize> =
-                    std::collections::HashSet::new();
-                let mut file_results = Vec::new();
-
-                // Only check the specific lines indicated by trigram posting lists
-                for loc in locations {
-                    let line_no = loc.line_no as usize;
-
-                    // Skip if we've already processed this line
-                    if seen_lines.contains(&line_no) {
-                        continue;
-                    }
-
-                    // Bounds check
-                    if line_no == 0 || line_no > lines.len() {
-                        log::debug!(
-                            "Line {} out of bounds (file has {} lines)",
-                            line_no,
-                            lines.len()
-                        );
-                        continue;
-                    }
-
-                    let line = lines[line_no - 1];
-
-                    // Apply matching strategy based on filter mode:
-                    // - Default: Word-boundary matching (restrictive - finds whole identifiers)
-                    // - --contains: Substring matching (expansive - finds pattern anywhere)
-                    // - --regex: Actual regex matching (controlled by pattern itself)
-                    let line_matches = if filter.use_regex {
-                        // Regex matching - use pre-compiled regex for efficiency
-                        // The regex was compiled once outside the parallel loop
-                        compiled_regex
-                            .as_ref()
-                            .map(|re| re.is_match(line))
-                            .unwrap_or(false)
-                    } else if filter.use_contains {
-                        // Substring matching (expansive)
-                        line.contains(&pattern_owned)
-                    } else {
-                        // Word-boundary matching (restrictive, default)
-                        Self::has_word_boundary_match(line, &pattern_owned)
+        let results: Vec<SearchResult> = open.pool().install(|| {
+            candidates_by_file
+                .par_iter()
+                .flat_map(|(file_id, locations)| {
+                    // Get file metadata
+                    let file_path = match trigram_index.get_file(*file_id) {
+                        Some(p) => p,
+                        None => return Vec::new(),
                     };
 
-                    if !line_matches {
-                        continue;
+                    let content = match content_reader.get_file_content(*file_id) {
+                        Ok(c) => c,
+                        Err(_) => return Vec::new(),
+                    };
+
+                    let file_path_str = file_path.to_string_lossy().to_string();
+
+                    // Detect language once per file
+                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let lang = Language::from_extension(ext);
+
+                    // Split content into lines once
+                    let lines: Vec<&str> = content.lines().collect();
+
+                    // Use a HashSet to deduplicate results by line number
+                    let mut seen_lines: std::collections::HashSet<usize> =
+                        std::collections::HashSet::new();
+                    let mut file_results = Vec::new();
+
+                    // Only check the specific lines indicated by trigram posting lists
+                    for loc in locations {
+                        let line_no = loc.line_no as usize;
+
+                        // Skip if we've already processed this line
+                        if seen_lines.contains(&line_no) {
+                            continue;
+                        }
+
+                        // Bounds check
+                        if line_no == 0 || line_no > lines.len() {
+                            log::debug!(
+                                "Line {} out of bounds (file has {} lines)",
+                                line_no,
+                                lines.len()
+                            );
+                            continue;
+                        }
+
+                        let line = lines[line_no - 1];
+
+                        // Apply matching strategy based on filter mode:
+                        // - Default: Word-boundary matching (restrictive - finds whole identifiers)
+                        // - --contains: Substring matching (expansive - finds pattern anywhere)
+                        // - --regex: Actual regex matching (controlled by pattern itself)
+                        if !matcher.is_match(line) {
+                            if count_substring_only && line.contains(pattern_owned.as_str()) {
+                                substring_only.fetch_add(1, Ordering::Relaxed);
+                            }
+                            continue;
+                        }
+
+                        seen_lines.insert(line_no);
+
+                        // Create a text match result (no symbol lookup for performance)
+                        file_results.push(SearchResult {
+                            path: file_path_str.clone(),
+                            lang,
+                            kind: SymbolKind::Unknown("text_match".to_string()),
+                            symbol: None, // No symbol name for text matches (avoid duplication)
+                            span: Span {
+                                start_line: line_no,
+                                end_line: line_no,
+                            },
+                            // Bounded, and WINDOWED on the match: on a minified bundle
+                            // this line is the whole 1.45 MB file, and the first 512
+                            // bytes of it would tell the caller nothing.
+                            preview: crate::parsers::preview::line_preview(
+                                line,
+                                line.find(pattern_owned.as_str()).unwrap_or(0),
+                            ),
+                            dependencies: None,
+                        });
                     }
 
-                    seen_lines.insert(line_no);
+                    file_results
+                })
+                .collect()
+        });
 
-                    // Create a text match result (no symbol lookup for performance)
-                    file_results.push(SearchResult {
-                        path: file_path_str.clone(),
-                        lang,
-                        kind: SymbolKind::Unknown("text_match".to_string()),
-                        symbol: None, // No symbol name for text matches (avoid duplication)
-                        span: Span {
-                            start_line: line_no,
-                            end_line: line_no,
-                        },
-                        // Bounded, and WINDOWED on the match: on a minified bundle
-                        // this line is the whole 1.45 MB file, and the first 512
-                        // bytes of it would tell the caller nothing.
-                        preview: crate::parsers::preview::line_preview(
-                            line,
-                            line.find(pattern_owned.as_str()).unwrap_or(0),
-                        ),
-                        dependencies: None,
-                    });
-                }
-
-                file_results
-            })
-            .collect();
-
-        Ok(results)
+        let stats = CandidateStats {
+            candidates_us,
+            substring_only: count_substring_only.then(|| substring_only.into_inner()),
+        };
+        Ok((results, stats))
     }
 
     /// Linear scan fallback for patterns shorter than 3 characters.
@@ -2226,87 +2243,71 @@ impl QueryEngine {
         &self,
         pattern: &str,
         filter: &QueryFilter,
-        content_reader: &ContentReader,
+        open: &OpenIndex,
     ) -> Result<Vec<SearchResult>> {
         use rayon::prelude::*;
 
+        let content_reader = &open.content;
         let pattern_owned = pattern.to_string();
         let file_count = content_reader.file_count();
+        let matcher = LineMatcher::new(pattern, filter)?;
 
-        let compiled_regex = if filter.use_regex {
-            match Regex::new(&pattern_owned) {
-                Ok(re) => Some(re),
-                Err(e) => anyhow::bail!("Invalid regex pattern '{}': {}", pattern_owned, e),
-            }
-        } else {
-            None
-        };
-
-        let results: Vec<SearchResult> = (0..file_count as u32)
-            .collect::<Vec<_>>()
-            .par_iter()
-            .flat_map(|&file_id| {
-                let file_path = match content_reader.get_file_path(file_id) {
-                    Some(p) => p.to_path_buf(),
-                    None => return Vec::new(),
-                };
-                let content = match content_reader.get_file_content(file_id) {
-                    Ok(c) => c,
-                    Err(_) => return Vec::new(),
-                };
-
-                let file_path_str = file_path.to_string_lossy().to_string();
-                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                let lang = Language::from_extension(ext);
-
-                let mut seen_lines = std::collections::HashSet::new();
-                let mut file_results = Vec::new();
-
-                for (line_idx, line) in content.lines().enumerate() {
-                    let line_no = line_idx + 1;
-                    if seen_lines.contains(&line_no) {
-                        continue;
-                    }
-
-                    let line_matches = if filter.use_regex {
-                        compiled_regex
-                            .as_ref()
-                            .map(|re| re.is_match(line))
-                            .unwrap_or(false)
-                    } else if filter.use_contains {
-                        line.contains(&pattern_owned)
-                    } else {
-                        Self::has_word_boundary_match(line, &pattern_owned)
+        let results: Vec<SearchResult> = open.pool().install(|| {
+            (0..file_count as u32)
+                .collect::<Vec<_>>()
+                .par_iter()
+                .flat_map(|&file_id| {
+                    let file_path = match content_reader.get_file_path(file_id) {
+                        Some(p) => p.to_path_buf(),
+                        None => return Vec::new(),
+                    };
+                    let content = match content_reader.get_file_content(file_id) {
+                        Ok(c) => c,
+                        Err(_) => return Vec::new(),
                     };
 
-                    if !line_matches {
-                        continue;
+                    let file_path_str = file_path.to_string_lossy().to_string();
+                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let lang = Language::from_extension(ext);
+
+                    let mut seen_lines = std::collections::HashSet::new();
+                    let mut file_results = Vec::new();
+
+                    for (line_idx, line) in content.lines().enumerate() {
+                        let line_no = line_idx + 1;
+                        if seen_lines.contains(&line_no) {
+                            continue;
+                        }
+
+                        if !matcher.is_match(line) {
+                            continue;
+                        }
+
+                        seen_lines.insert(line_no);
+                        file_results.push(SearchResult {
+                            path: file_path_str.clone(),
+                            lang,
+                            kind: SymbolKind::Unknown("text_match".to_string()),
+                            symbol: None,
+                            span: Span {
+                                start_line: line_no,
+                                end_line: line_no,
+                            },
+                            // Bounded, and WINDOWED on the match: on a minified bundle
+                            // this line is the whole 1.45 MB file, and the first 512
+                            // bytes of it would tell the caller nothing.
+                            preview: crate::parsers::preview::line_preview(
+                                line,
+                                line.find(pattern_owned.as_str()).unwrap_or(0),
+                            ),
+                            dependencies: None,
+                        });
                     }
 
-                    seen_lines.insert(line_no);
-                    file_results.push(SearchResult {
-                        path: file_path_str.clone(),
-                        lang,
-                        kind: SymbolKind::Unknown("text_match".to_string()),
-                        symbol: None,
-                        span: Span {
-                            start_line: line_no,
-                            end_line: line_no,
-                        },
-                        // Bounded, and WINDOWED on the match: on a minified bundle
-                        // this line is the whole 1.45 MB file, and the first 512
-                        // bytes of it would tell the caller nothing.
-                        preview: crate::parsers::preview::line_preview(
-                            line,
-                            line.find(pattern_owned.as_str()).unwrap_or(0),
-                        ),
-                        dependencies: None,
-                    });
-                }
-
-                file_results
-            })
-            .collect();
+                    file_results
+                })
+                .collect()
+        });
 
         log::info!(
             "Linear scan (short pattern '{}') found {} results across {} files",
@@ -2364,10 +2365,9 @@ impl QueryEngine {
         // Step 2: Extract trigrams from regex
         let trigrams = extract_trigrams_from_regex(pattern);
 
-        // Load content store
-        let content_path = self.cache.path().join("content.bin");
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content store")?;
+        // The shared index handle
+        let open = self.open_index()?;
+        let content_reader = &open.content;
 
         let mut results = Vec::new();
 
@@ -2396,13 +2396,7 @@ impl QueryEngine {
                 trigrams.len()
             );
 
-            // Load trigram index
-            let trigrams_path = self.cache.path().join("trigrams.bin");
-            let trigram_index = if trigrams_path.exists() {
-                TrigramIndex::load(&trigrams_path)?
-            } else {
-                Self::rebuild_trigram_index(&content_reader)?
-            };
+            let trigram_index = &open.trigrams;
 
             // Extract the literal sequences from the regex pattern
             use crate::regex_trigrams::extract_literal_sequences;
@@ -2510,20 +2504,8 @@ impl QueryEngine {
         Ok(())
     }
 
-    fn find_file_id(content_reader: &ContentReader, target_path: &str) -> Option<u32> {
-        result::find_file_id(content_reader, target_path)
-    }
-
-    fn rebuild_trigram_index(content_reader: &ContentReader) -> Result<TrigramIndex> {
-        result::rebuild_trigram_index(content_reader)
-    }
-
     fn normalize_glob_pattern(pattern: &str) -> String {
         result::normalize_glob_pattern(pattern)
-    }
-
-    fn has_word_boundary_match(line: &str, pattern: &str) -> bool {
-        filter::has_word_boundary_match(line, pattern)
     }
 
     /// Get index status for programmatic use (doesn't print warnings)
@@ -2539,7 +2521,7 @@ impl QueryEngine {
     /// For `check_index_status`: an agent asking whether the index is current is
     /// exactly the caller that must not be told what was true a second ago.
     pub fn fresh_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
-        freshness_cache::invalidate(&self.cache.workspace_root());
+        status_cache::invalidate(&self.cache.workspace_root());
         self.index_status_for(None)
     }
 
@@ -2558,106 +2540,12 @@ impl QueryEngine {
         &self,
         scope: Option<&[String]>,
     ) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
-        let root = self.cache.workspace_root();
-
-        // A cache written by a different Reflex build. `validate()` no longer bails on
-        // this (that turned a version skew into a rebuild stampede — see cache.rs), so
-        // reads still work; they are simply not to be trusted, and the message names
-        // who owns the cache so the user can pick a side.
-        if !self.cache.check_schema_hash().unwrap_or(true) {
-            let reason = match self.cache.cache_owner() {
-                Some((v, sha)) if v != env!("CARGO_PKG_VERSION") => {
-                    let sha = sha
-                        .map(|s| format!(" (sha {})", &s[..s.len().min(7)]))
-                        .unwrap_or_default();
-                    format!(
-                        "This .reflex/ was written by reflex {}{}; this binary is reflex {}. \
-                         Results come from a cache format this version does not fully \
-                         understand.",
-                        v,
-                        sha,
-                        env!("CARGO_PKG_VERSION")
-                    )
-                }
-                // Same version, or unstamped: the cache format changed under it. A
-                // reindex brings it up to date; results until then may be partial.
-                _ => "The index was built with a different cache format and needs \
-                      rebuilding. Results may be incomplete until then."
-                    .to_string(),
-            };
-
-            let warning = IndexWarning::new(reason, "index_project");
-            return Ok((IndexStatus::Stale, false, Some(warning)));
-        }
-
-        if !crate::git::is_git_repo(&root) || !crate::git::is_git_available() {
-            // Outside git there is no cheap way to find changes, and walking the tree
-            // on every query costs more than the staleness it would detect. Documented
-            // as a known limitation in the tool descriptions.
-            return Ok((IndexStatus::Fresh, true, None));
-        }
-
-        let Ok(current_branch) = crate::git::get_current_branch(&root) else {
-            return Ok((IndexStatus::Fresh, true, None));
-        };
-
-        // 1. A branch we have never indexed: nothing here is trustworthy.
-        if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
-            let warning = IndexWarning::new(
-                format!("Branch '{}' has not been indexed", current_branch),
-                "index_project",
-            )
-            .with_details(IndexWarningDetails {
-                current_branch: Some(current_branch),
-                indexed_branch: None,
-                current_commit: None,
-                indexed_commit: None,
-            });
-            return Ok((IndexStatus::Stale, false, Some(warning)));
-        }
-
-        let (Ok(current_commit), Ok(branch_info)) = (
-            crate::git::get_current_commit(&root),
-            self.cache.get_branch_info(&current_branch),
-        ) else {
-            return Ok((IndexStatus::Fresh, true, None));
-        };
-
-        let details = IndexWarningDetails {
-            current_branch: Some(current_branch.clone()),
-            indexed_branch: Some(branch_info.branch.clone()),
-            current_commit: Some(current_commit.clone()),
-            indexed_commit: Some(branch_info.commit_sha.clone()),
-        };
-
-        // 2. HEAD moved. Potentially every file differs, so nothing is trustworthy.
-        if branch_info.commit_sha != current_commit {
-            let short = |s: &str| s.chars().take(7).collect::<String>();
-            let warning = IndexWarning::new(
-                format!(
-                    "Commit changed from {} to {}",
-                    short(&branch_info.commit_sha),
-                    short(&current_commit)
-                ),
-                "index_project",
-            )
-            .with_details(details);
-            return Ok((IndexStatus::Stale, false, Some(warning)));
-        }
-
-        // 3. The working tree. This is the case 1.7.1 missed entirely: it sampled the
-        // mtimes of the first TEN indexed files, which never included an untracked
-        // file (absent from the list) or a deleted one (metadata() fails, skipped
-        // silently). Edit-then-search is the primary agent workflow, and every one of
-        // those searches was served stale and labelled fresh.
-        let changes = match freshness_cache::worktree_changes(&root) {
-            Ok(c) => c,
-            // git unavailable mid-session, or a broken repo. Don't claim staleness we
-            // cannot demonstrate.
-            Err(e) => {
-                log::debug!("Could not read working tree state: {}", e);
-                return Ok((IndexStatus::Fresh, true, None));
-            }
+        // Everything that costs a subprocess or a database open is computed once per
+        // TTL in `status_cache`; only the scope-dependent wording is built here.
+        let snapshot = status_cache::snapshot(&self.cache)?;
+        let (details, changes) = match snapshot.as_ref() {
+            status_cache::Snapshot::Decided(verdict) => return Ok(verdict.clone()),
+            status_cache::Snapshot::Worktree { details, changes } => (details.clone(), changes),
         };
 
         if changes.is_empty() {
@@ -2704,9 +2592,9 @@ impl QueryEngine {
         let warning = IndexWarning {
             reason,
             action_required: "index_project".to_string(),
-            files_modified: some_if_any(changes.modified),
-            files_added: some_if_any(changes.added),
-            files_deleted: some_if_any(changes.deleted),
+            files_modified: some_if_any(changes.modified.clone()),
+            files_added: some_if_any(changes.added.clone()),
+            files_deleted: some_if_any(changes.deleted.clone()),
             changed_count: Some(
                 changes.modified_count + changes.added_count + changes.deleted_count,
             ),
@@ -3585,31 +3473,48 @@ mod tests {
     }
 }
 
-/// Process-local memo for working-tree state.
+/// Process-local memo for the freshness verdict's expensive inputs.
 ///
 /// `search_with_metadata` runs the freshness check on EVERY query, and
-/// `find_references` calls it two or three times per MCP request. A `git status`
-/// subprocess each time would be a real cost on a large monorepo, so results are
-/// memoised briefly, keyed by workspace root.
+/// `find_references` calls it two or three times per MCP request. One snapshot
+/// costs one `meta.db` connection, two `git` spawns and one `git status
+/// --porcelain`; before this module the same query ran three connections and
+/// three spawns, and the memo covered only the last of them. Results are memoised
+/// briefly, keyed by workspace root.
 ///
 /// What this trades away: an edit landing less than the TTL before a search can be
 /// reported fresh. Agent tool round-trips are seconds apart, and `check_index_status`
 /// — the explicit probe an agent uses when it cares — always bypasses the cache.
+/// Every index write in this process invalidates the memo.
 ///
 /// `REFLEX_FRESHNESS_TTL_MS` overrides the window; `0` disables caching entirely.
-mod freshness_cache {
+mod status_cache {
+    use crate::cache::CacheManager;
     use crate::git::WorktreeChanges;
+    use crate::models::{IndexStatus, IndexWarning, IndexWarningDetails};
     use anyhow::Result;
     use std::collections::HashMap;
-    use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     const DEFAULT_TTL_MS: u64 = 1_000;
 
+    pub type Verdict = (IndexStatus, bool, Option<IndexWarning>);
+
+    pub enum Snapshot {
+        /// The verdict does not depend on which files an answer came from.
+        Decided(Verdict),
+        /// The working tree has changed; the wording depends on the caller's scope.
+        Worktree {
+            details: IndexWarningDetails,
+            changes: WorktreeChanges,
+        },
+    }
+
     struct Entry {
         computed_at: Instant,
-        changes: WorktreeChanges,
+        snapshot: Arc<Snapshot>,
     }
 
     fn ttl() -> Duration {
@@ -3623,9 +3528,13 @@ mod freshness_cache {
         })
     }
 
-    fn store() -> &'static Mutex<HashMap<std::path::PathBuf, Entry>> {
-        static STORE: OnceLock<Mutex<HashMap<std::path::PathBuf, Entry>>> = OnceLock::new();
+    fn store() -> &'static Mutex<HashMap<PathBuf, Entry>> {
+        static STORE: OnceLock<Mutex<HashMap<PathBuf, Entry>>> = OnceLock::new();
         STORE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn key(root: &Path) -> PathBuf {
+        root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
     }
 
     /// Only paths Reflex would index can make the index stale. Editing a README or
@@ -3634,9 +3543,14 @@ mod freshness_cache {
         crate::indexer::Indexer::is_indexable_path(Path::new(path))
     }
 
-    /// Working-tree changes for `root`, memoised for the TTL.
-    pub fn worktree_changes(root: &Path) -> Result<WorktreeChanges> {
-        let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    fn fresh() -> Verdict {
+        (IndexStatus::Fresh, true, None)
+    }
+
+    /// The memoised snapshot for the workspace `cache` belongs to.
+    pub fn snapshot(cache: &CacheManager) -> Result<Arc<Snapshot>> {
+        let root = cache.workspace_root();
+        let key = key(&root);
         let ttl = ttl();
 
         if !ttl.is_zero()
@@ -3644,10 +3558,10 @@ mod freshness_cache {
             && let Some(entry) = map.get(&key)
             && entry.computed_at.elapsed() < ttl
         {
-            return Ok(entry.changes.clone());
+            return Ok(Arc::clone(&entry.snapshot));
         }
 
-        let changes = crate::git::get_worktree_changes(root, indexable)?;
+        let snapshot = Arc::new(compute(cache, &root)?);
 
         if !ttl.is_zero()
             && let Ok(mut map) = store().lock()
@@ -3656,20 +3570,148 @@ mod freshness_cache {
                 key,
                 Entry {
                     computed_at: Instant::now(),
-                    changes: changes.clone(),
+                    snapshot: Arc::clone(&snapshot),
                 },
             );
         }
 
-        Ok(changes)
+        Ok(snapshot)
+    }
+
+    fn compute(cache: &CacheManager, root: &Path) -> Result<Snapshot> {
+        let is_git = crate::git::is_git_repo(root) && crate::git::is_git_available();
+        let current_branch = if is_git {
+            crate::git::get_current_branch(root).ok()
+        } else {
+            None
+        };
+
+        // One connection for the schema hash, the branch row and its metadata.
+        let reads = match cache.status_reads(current_branch.as_deref()) {
+            Ok(r) => r,
+            Err(e) => {
+                log::debug!("Could not read index status from meta.db: {}", e);
+                return Ok(Snapshot::Decided(fresh()));
+            }
+        };
+
+        // A cache written by a different Reflex build. `validate()` no longer bails on
+        // this (that turned a version skew into a rebuild stampede — see cache.rs), so
+        // reads still work; they are simply not to be trusted, and the message names
+        // who owns the cache so the user can pick a side.
+        if !reads.schema_ok {
+            let reason = match reads.owner {
+                Some((v, sha)) if v != env!("CARGO_PKG_VERSION") => {
+                    let sha = sha
+                        .map(|s| format!(" (sha {})", &s[..s.len().min(7)]))
+                        .unwrap_or_default();
+                    format!(
+                        "This .reflex/ was written by reflex {}{}; this binary is reflex {}. \
+                         Results come from a cache format this version does not fully \
+                         understand.",
+                        v,
+                        sha,
+                        env!("CARGO_PKG_VERSION")
+                    )
+                }
+                // Same version, or unstamped: the cache format changed under it. A
+                // reindex brings it up to date; results until then may be partial.
+                _ => "The index was built with a different cache format and needs \
+                      rebuilding. Results may be incomplete until then."
+                    .to_string(),
+            };
+
+            let warning = IndexWarning::new(reason, "index_project");
+            return Ok(Snapshot::Decided((
+                IndexStatus::Stale,
+                false,
+                Some(warning),
+            )));
+        }
+
+        // Outside git there is no cheap way to find changes, and walking the tree
+        // on every query costs more than the staleness it would detect. Documented
+        // as a known limitation in the tool descriptions.
+        let Some(current_branch) = current_branch else {
+            return Ok(Snapshot::Decided(fresh()));
+        };
+
+        // 1. A branch we have never indexed: nothing here is trustworthy.
+        if !reads.branch_indexed {
+            let warning = IndexWarning::new(
+                format!("Branch '{}' has not been indexed", current_branch),
+                "index_project",
+            )
+            .with_details(IndexWarningDetails {
+                current_branch: Some(current_branch),
+                indexed_branch: None,
+                current_commit: None,
+                indexed_commit: None,
+            });
+            return Ok(Snapshot::Decided((
+                IndexStatus::Stale,
+                false,
+                Some(warning),
+            )));
+        }
+
+        let (Ok(current_commit), Some(branch_info)) =
+            (crate::git::get_current_commit(root), reads.branch_info)
+        else {
+            return Ok(Snapshot::Decided(fresh()));
+        };
+
+        let details = IndexWarningDetails {
+            current_branch: Some(current_branch.clone()),
+            indexed_branch: Some(branch_info.branch.clone()),
+            current_commit: Some(current_commit.clone()),
+            indexed_commit: Some(branch_info.commit_sha.clone()),
+        };
+
+        // 2. HEAD moved. Potentially every file differs, so nothing is trustworthy.
+        if branch_info.commit_sha != current_commit {
+            let short = |s: &str| s.chars().take(7).collect::<String>();
+            let warning = IndexWarning::new(
+                format!(
+                    "Commit changed from {} to {}",
+                    short(&branch_info.commit_sha),
+                    short(&current_commit)
+                ),
+                "index_project",
+            )
+            .with_details(details);
+            return Ok(Snapshot::Decided((
+                IndexStatus::Stale,
+                false,
+                Some(warning),
+            )));
+        }
+
+        // 3. The working tree. This is the case 1.7.1 missed entirely: it sampled the
+        // mtimes of the first TEN indexed files, which never included an untracked
+        // file (absent from the list) or a deleted one (metadata() fails, skipped
+        // silently). Edit-then-search is the primary agent workflow, and every one of
+        // those searches was served stale and labelled fresh.
+        let changes = match crate::git::get_worktree_changes(root, indexable) {
+            Ok(c) => c,
+            // git unavailable mid-session, or a broken repo. Don't claim staleness we
+            // cannot demonstrate.
+            Err(e) => {
+                log::debug!("Could not read working tree state: {}", e);
+                return Ok(Snapshot::Decided(fresh()));
+            }
+        };
+
+        Ok(Snapshot::Worktree { details, changes })
     }
 
     /// Drop any memo for `root`, so the next read is fresh.
     ///
     /// Used by `check_index_status`, the explicit probe: an agent that asks whether
-    /// the index is current must never be answered from a cache.
+    /// the index is current must never be answered from a cache. Also called around
+    /// every index write.
     pub fn invalidate(root: &Path) {
-        let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let key = key(root);
         if let Ok(mut map) = store().lock() {
             map.remove(&key);
         }

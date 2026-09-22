@@ -47,6 +47,7 @@ pub(super) fn handle_query(
     use_regex: bool,
     as_json: bool,
     pretty_json: bool,
+    timing: bool,
     ai_mode: bool,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -342,6 +343,7 @@ No dependency data will be included for {} files.",
         suppress_output: as_json, // Suppress warnings in JSON mode
         include_dependencies,
         context_lines,
+        collect_timings: timing,
         ..Default::default()
     };
 
@@ -434,6 +436,23 @@ No dependency data will be included for {} files.",
     }
 
     let elapsed = start.elapsed();
+
+    if timing {
+        let ms = |us: u64| us as f64 / 1000.0;
+        match query_response.as_ref().and_then(|r| r.timings.as_ref()) {
+            Some(t) => eprintln!(
+                "timing: open {:.2}ms | candidates {:.2}ms | verify {:.2}ms | status {:.2}ms | group {:.2}ms | engine {:.2}ms | wall {:.2}ms",
+                ms(t.open_us),
+                ms(t.candidates_us),
+                ms(t.verify_us),
+                ms(t.status_us),
+                ms(t.group_us),
+                ms(t.total_us),
+                elapsed.as_secs_f64() * 1000.0
+            ),
+            None => eprintln!("timing: wall {:.2}ms", elapsed.as_secs_f64() * 1000.0),
+        }
+    }
 
     // Format timing string
     let timing_str = if elapsed.as_millis() < 1 {
@@ -603,6 +622,8 @@ No dependency data will be included for {} files.",
                         has_more: false, // AST already applied pagination
                     },
                     results: file_results,
+                    substring_hint_count: None,
+                    timings: None,
                 }
             };
 

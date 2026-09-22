@@ -2076,6 +2076,29 @@ Verified by hand. Same class as the 1.7.2 defects: a silently wrong answer. Affe
 every language filter using the `//` rule, and is far worse on minified JS, where one
 early URL hides every later match on that 1.4 MB line.
 
+## ⚡ Latency: close the gap to ripgrep (2026-09-22, branch `feat/perf-enhancements`)
+
+Plan: `~/.claude/plans/reflex-handoff-close-immutable-globe.md`. Field test (29 MB / 1875
+files / 16 cores): ripgrep wins 6–10x on plain queries and 45–56x on common words.
+Root causes found by code reading, **not** the handoff's guesses: `content.bin` is
+uncompressed and no SQLite runs per hit. The real costs are a quadratic posting-list
+intersection (`trigram.rs` `intersect_by_file_owned`: HashSet retain then a linear
+`find` per candidate), `PRAGMA quick_check` + `cache.stats()` (spawns git) + two more
+git spawns on every query, 3–4 re-opens of the index per query, and a per-byte
+posting format carrying an unused `byte_offset`.
+
+| WP | Scope | Status |
+|---|---|---|
+| WP0 | `tests/latency_budget.rs` + synthetic 30 MB corpus generator + MCP stdio round-trip; fix CI perf step (`--test` was after `--`, ran nothing) | in_progress |
+| WP1 | Linear-time sorted-merge intersection + streaming posting cursor (`src/trigram.rs`) | in_progress |
+| WP2 | `OpenIndex` shared handle (registry keyed by cache dir, fingerprint invalidation), drop `quick_check`/`stats()`/git spawns from the query path, `--timing` | in_progress |
+| WP3 | Early termination for list mode (`total_is_exact` / `approx_total`), chunked parallel verify honouring `[performance] parallel_threads`, line-restricted parallel regex, quantifier fix in `regex_trigrams.rs` | pending |
+| WP4 | `trigrams.bin` V4: drop `byte_offset`, per-line dedup, per-file blocks, zero-copy directory, `Index/corpus ratio` line | pending |
+
+Acceptance (same box): MCP zero-hit < 5 ms, CLI zero-hit < 15 ms, `RealmId` first
+page < 15 ms, `realm --limit 1` < 20 ms, `realm --count` < 100 ms, `trigrams.bin` < 40 MB.
+Counts must stay equal to ripgrep on the 1.7.2 parity set.
+
 ### Still open
 
 - **REF-219-style hybrid columnar format** — optional backlog, unchanged.

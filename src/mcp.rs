@@ -157,12 +157,17 @@ fn prepare_literal_pattern(pattern: &str, contains: bool) -> LiteralPattern {
 ///
 /// `pattern` is the caller's ORIGINAL pattern, not the rewritten one, so the message
 /// names what they actually asked for.
+///
+/// `precomputed` is the engine's `substring_hint_count`: the number of candidate
+/// lines that held the pattern only as a substring, counted during the search
+/// itself. When the caller has it, no second search runs.
 fn annotate_literal_result(
     response: &mut Value,
     root: &Path,
     pattern: &str,
     filter: &QueryFilter,
     prepared: &LiteralPattern,
+    precomputed: Option<usize>,
 ) {
     let Some(obj) = response.as_object_mut() else {
         return;
@@ -182,9 +187,22 @@ fn annotate_literal_result(
         return;
     }
 
-    if let Some(hint) = zero_result_hint(root, pattern, filter) {
+    let hint = match precomputed {
+        Some(count) => (count > 0).then(|| substring_hint_text(count, pattern)),
+        None => zero_result_hint(root, pattern, filter),
+    };
+    if let Some(hint) = hint {
         obj.insert("hint".to_string(), json!(hint));
     }
+}
+
+fn substring_hint_text(count: usize, pattern: &str) -> String {
+    format!(
+        "0 whole-identifier matches; {} substring matches — pass contains:true to see them. \
+         Reflex matches whole identifiers by default, so {:?} does not match longer names \
+         that merely contain it.",
+        count, pattern
+    )
 }
 
 /// Whether a tool response carries no matches, across the several response shapes.
@@ -235,12 +253,7 @@ fn zero_result_hint(root: &Path, pattern: &str, filter: &QueryFilter) -> Option<
         return None;
     }
 
-    Some(format!(
-        "0 whole-identifier matches; {} substring matches — pass contains:true to see them. \
-         Reflex matches whole identifiers by default, so {:?} does not match longer names \
-         that merely contain it.",
-        count, pattern
-    ))
+    Some(substring_hint_text(count, pattern))
 }
 
 /// Parse symbol kind string to SymbolKind enum
@@ -1402,6 +1415,19 @@ fn mcp_facing_message(e: &anyhow::Error) -> String {
 /// to a falsey value (`0`/`false`/`off`/`no`, case-insensitive), which restores
 /// the legacy file-grouped `results` array for backwards compatibility. The
 /// emitted payload (`to_columnar`) consults this to decide the shape.
+/// `REFLEX_MCP_TIMING=1` adds per-phase `timings` to `search_code` / `search_regex`
+/// responses. Off by default: it is a diagnostic, not part of the tool contract.
+fn timing_enabled() -> bool {
+    std::env::var("REFLEX_MCP_TIMING")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn columnar_enabled() -> bool {
     match std::env::var("REFLEX_MCP_COLUMNAR") {
         Ok(v) => !matches!(
@@ -1674,7 +1700,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "total_locations": locations.len(),
                 "locations": locations
             });
-            annotate_literal_result(&mut compact_response, root, &pattern, &filter, &prepared);
+            annotate_literal_result(
+                &mut compact_response,
+                root,
+                &pattern,
+                &filter,
+                &prepared,
+                response.substring_hint_count,
+            );
 
             Ok(compact_response)
         }
@@ -1755,7 +1788,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "total": response.pagination.total,
                 "files": unique_files.len()
             });
-            annotate_literal_result(&mut stats, root, &pattern, &filter, &prepared);
+            annotate_literal_result(
+                &mut stats,
+                root,
+                &pattern,
+                &filter,
+                &prepared,
+                response.substring_hint_count,
+            );
 
             Ok(stats)
         }
@@ -1864,7 +1904,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 let response =
                     engine.search_with_metadata(&prepared.effective, count_filter.clone())?;
                 let mut result = json!({"count": response.pagination.total, "pattern": pattern});
-                annotate_literal_result(&mut result, root, &pattern, &count_filter, &prepared);
+                annotate_literal_result(
+                    &mut result,
+                    root,
+                    &pattern,
+                    &count_filter,
+                    &prepared,
+                    response.substring_hint_count,
+                );
                 return Ok(result);
             }
 
@@ -1887,6 +1934,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 force,
                 suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
+                collect_timings: timing_enabled(),
                 ..Default::default()
             };
 
@@ -1929,6 +1977,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Extract pagination scalars before consuming response (REF-185)
             let has_more = response.pagination.has_more;
             let total_count = response.pagination.total;
+            let substring_hint_count = response.substring_hint_count;
 
             let mut response_val = serde_json::to_value(response)?;
             if let serde_json::Value::Object(ref mut map) = response_val {
@@ -1944,7 +1993,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             }
 
             // Applied after the columnar reshape so the hint survives both shapes.
-            annotate_literal_result(&mut response_val, root, &pattern, &filter, &prepared);
+            annotate_literal_result(
+                &mut response_val,
+                root,
+                &pattern,
+                &filter,
+                &prepared,
+                substring_hint_count,
+            );
 
             Ok(response_val)
         }
@@ -2040,6 +2096,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 force,
                 suppress_output: true, // MCP always returns JSON
                 include_dependencies: dependencies,
+                collect_timings: timing_enabled(),
                 ..Default::default()
             };
 
@@ -2075,7 +2132,6 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Extract pagination scalars before consuming response (REF-185)
             let has_more = response.pagination.has_more;
             let total_count = response.pagination.total;
-
             let mut response_val = serde_json::to_value(response)?;
             if let serde_json::Value::Object(ref mut map) = response_val {
                 map.insert("has_more".to_string(), json!(has_more));
@@ -2811,7 +2867,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 };
 
                 let mut result = json!({"count": count, "pattern": pattern});
-                annotate_literal_result(&mut result, root, &pattern, &count_filter, &prepared);
+                annotate_literal_result(
+                    &mut result,
+                    root,
+                    &pattern,
+                    &count_filter,
+                    &prepared,
+                    response.substring_hint_count,
+                );
                 return Ok(result);
             }
 
@@ -2936,6 +2999,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let filtered_out = page_matches.saturating_sub(returned_count);
             let total_references = ref_response.pagination.total;
             let has_more = ref_response.pagination.has_more;
+            let substring_hint_count = ref_response.substring_hint_count;
 
             let mut response = json!({
                 "status": ref_response.status,
@@ -2954,6 +3018,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 &pattern,
                 &ref_filter_for_hint,
                 &prepared,
+                substring_hint_count,
             );
 
             Ok(response)

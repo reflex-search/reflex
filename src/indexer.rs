@@ -94,6 +94,16 @@ pub struct Indexer {
     config: IndexConfig,
 }
 
+/// Drops the shared query handles for a workspace when an index run ends,
+/// on every exit path including errors and panics.
+struct InvalidateOnDrop(std::path::PathBuf);
+
+impl Drop for InvalidateOnDrop {
+    fn drop(&mut self) {
+        crate::query::invalidate_caches(&self.0);
+    }
+}
+
 impl Indexer {
     /// Create a new indexer with the given cache manager and config
     pub fn new(cache: CacheManager, config: IndexConfig) -> Self {
@@ -180,6 +190,12 @@ impl Indexer {
         // A previous indexer that died mid-write leaves `*.tmp` behind.
         crate::atomic_write::remove_stale_tmp(&cache_dir);
 
+        // Any open handle on the stores about to be rewritten is dropped now, and
+        // again on every exit path below, so a query in this process never reads a
+        // mix of old and new files and never keeps a memo of a stale verdict.
+        crate::query::invalidate_caches(root);
+        let _invalidate_on_exit = InvalidateOnDrop(root.to_path_buf());
+
         // The detached symbol pass holds meta.db but NOT this lock, so acquiring
         // `index.lock` above proves nothing about SQLite. Yield to it here, before
         // `cache.init()` runs `BEGIN IMMEDIATE`, so a waiting agent sees progress
@@ -205,17 +221,10 @@ impl Indexer {
         }
 
         // Configure thread pool for parallel processing
-        // 0 = auto (use 80% of available cores to avoid locking the system)
-        let num_threads = if self.config.parallel_threads == 0 {
-            let available_cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            // Use 80% of available cores (minimum 1, maximum 8)
-            // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
-            ((available_cores as f64 * 0.8).ceil() as usize).clamp(1, 8)
-        } else {
-            self.config.parallel_threads
-        };
+        // 0 = auto (use 80% of available cores to avoid locking the system).
+        // Capped at 8 to prevent diminishing returns from cache contention on
+        // high-core systems while writing.
+        let num_threads = crate::models::resolve_thread_count(self.config.parallel_threads, 8);
 
         log::info!(
             "Using {} threads for parallel indexing (out of {} available)",

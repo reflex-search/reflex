@@ -172,6 +172,11 @@ pub enum Command {
         #[arg(long)]
         pretty: bool,
 
+        /// Print per-phase timings (open, candidates, verify, status, group) to stderr;
+        /// with --json they are included as a `timings` object
+        #[arg(long)]
+        timing: bool,
+
         /// AI-optimized mode: returns JSON with ai_instruction field
         /// Implies --json (minified by default, use --pretty for formatted output)
         /// Provides context-aware guidance to AI agents on response format and next actions
@@ -1059,6 +1064,7 @@ impl Cli {
                 regex,
                 json,
                 pretty,
+                timing,
                 ai,
                 limit,
                 offset,
@@ -1098,6 +1104,7 @@ impl Cli {
                         regex,
                         json,
                         pretty,
+                        timing,
                         ai,
                         limit,
                         offset,
