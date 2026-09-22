@@ -516,6 +516,12 @@ pub struct IndexStats {
     /// Total bytes of files skipped due to max_file_size
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub skipped_bytes_too_large: u64,
+    /// Raw bytes of indexed source held in content.bin (0 if unknown)
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub corpus_bytes: u64,
+    /// Size of trigrams.bin on disk (0 if absent)
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub trigram_index_bytes: u64,
 }
 
 /// Information about an indexed file

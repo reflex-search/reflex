@@ -77,15 +77,15 @@ fn bench_posting_list_intersection(c: &mut Criterion) {
     let mut raw: Vec<(u32, FileLocation)> = Vec::with_capacity(15_000);
     // "abc": files 0–4 999
     for fid in 0u32..5_000 {
-        raw.push((abc, FileLocation::new(fid, 1, 0)));
+        raw.push((abc, FileLocation::new(fid, 1)));
     }
     // "bcd": files 2 500–7 499  (overlaps abc in files 2 500–4 999)
     for fid in 2_500u32..7_500 {
-        raw.push((bcd, FileLocation::new(fid, 1, 1)));
+        raw.push((bcd, FileLocation::new(fid, 1)));
     }
     // "cde": files 0–4 999
     for fid in 0u32..5_000 {
-        raw.push((cde, FileLocation::new(fid, 1, 2)));
+        raw.push((cde, FileLocation::new(fid, 1)));
     }
 
     let mut idx = TrigramIndex::new();
@@ -103,11 +103,11 @@ fn bench_posting_list_intersection(c: &mut Criterion) {
     let mut skewed: Vec<(u32, FileLocation)> = Vec::with_capacity(220_000);
     for i in 0u32..200_000 {
         // "abc" on every line 1..=200 of files 0..=999
-        skewed.push((abc, FileLocation::new(i / 200, i % 200 + 1, 0)));
+        skewed.push((abc, FileLocation::new(i / 200, i % 200 + 1)));
     }
     for i in 0u32..20_000 {
         // "bcd" on every 10th line of the same files (all shared keys)
-        skewed.push((bcd, FileLocation::new(i / 20, (i % 20) * 10 + 1, 1)));
+        skewed.push((bcd, FileLocation::new(i / 20, (i % 20) * 10 + 1)));
     }
     let mut skewed_idx = TrigramIndex::new();
     skewed_idx.build_from_trigrams(skewed);

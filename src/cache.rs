@@ -1362,6 +1362,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Calculate total cache size (all binary files)
         let mut index_size_bytes: u64 = 0;
+        let mut trigram_index_bytes: u64 = 0;
 
         for file_name in [
             META_DB,
@@ -1373,8 +1374,30 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 index_size_bytes += metadata.len();
+                if file_name == "trigrams.bin" {
+                    trigram_index_bytes = metadata.len();
+                }
             }
         }
+
+        // Raw corpus size: content.bin stores the concatenated file bytes
+        // directly after its 32-byte header, and `index_offset` (bytes 16..24)
+        // marks where they end. Read just the header; never load the store.
+        let corpus_bytes: u64 = {
+            use std::io::Read;
+            std::fs::File::open(self.cache_path.join("content.bin"))
+                .ok()
+                .and_then(|mut f| {
+                    let mut header = [0u8; 32];
+                    f.read_exact(&mut header).ok()?;
+                    if &header[..4] != b"RFCT" {
+                        return None;
+                    }
+                    let index_offset = u64::from_le_bytes(header[16..24].try_into().ok()?);
+                    Some(index_offset.saturating_sub(32))
+                })
+                .unwrap_or(0)
+        };
 
         // Get file count breakdown by language (branch-aware if possible)
         let mut files_by_language = std::collections::HashMap::new();
@@ -1458,6 +1481,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             last_updated,
             files_by_language,
             lines_by_language,
+            corpus_bytes,
+            trigram_index_bytes,
             ..Default::default()
         })
     }

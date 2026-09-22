@@ -169,6 +169,15 @@ pub(super) fn handle_index_build(
             "  Cache size: {}",
             super::format_bytes(stats.index_size_bytes)
         );
+        if stats.corpus_bytes > 0 {
+            let ratio = stats.trigram_index_bytes as f64 / stats.corpus_bytes as f64;
+            println!(
+                "  Index/corpus ratio: {:.1}x (trigrams.bin {}, content.bin {})",
+                ratio,
+                super::format_bytes(stats.trigram_index_bytes),
+                super::format_bytes(stats.corpus_bytes)
+            );
+        }
         println!("  Last updated: {}", stats.last_updated);
 
         // Show incremental breakdown if available (REF-100)
