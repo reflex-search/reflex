@@ -170,10 +170,23 @@ impl CacheManager {
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["total_files", "0", &now.to_string()],
         )?;
+        // Who wrote this cache. The old `cache_version = "1"` row was never read by
+        // anything; this replaces it with something actionable, so a refusal can name
+        // the version that owns the cache instead of just a hash.
         conn.execute(
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
-            ["cache_version", "1", &now.to_string()],
+            [
+                "writer_version",
+                env!("CARGO_PKG_VERSION"),
+                &now.to_string(),
+            ],
         )?;
+        if let Some(sha) = option_env!("REFLEX_GIT_SHA") {
+            conn.execute(
+                "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+                ["writer_git_sha", sha, &now.to_string()],
+            )?;
+        }
 
         // Store cache schema hash for automatic invalidation detection
         // This hash is computed at build time from cache-critical source files
@@ -486,54 +499,22 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             }
         }
 
-        // Check schema hash for automatic invalidation
-        let current_schema_hash = env!("CACHE_SCHEMA_HASH");
+        // NOT checked here any more: the schema hash.
+        //
+        // `validate()` runs on EVERY search (query/mod.rs), and a bail here becomes
+        // ReflexError::CacheCorrupted, which the MCP layer answers by force-rebuilding
+        // the index. With several Reflex versions sharing one `.reflex/` — three
+        // `rfx mcp` servers from three Claude Code sessions, in the field report —
+        // each one saw a mismatch, each force-rebuilt, and they streamed into
+        // content.bin concurrently. That is what produced `content.bin is too small`.
+        //
+        // A version mismatch is not corruption. Readers are now allowed through and
+        // the mismatch surfaces via `get_index_status` as stale with
+        // can_trust_results: false, naming the owner version. WRITERS refuse — see
+        // `assert_writable`. Structural checks above (magic bytes, short files,
+        // quick_check) still bail, because those really are corruption.
 
-        let stored_schema_hash: Option<String> = conn
-            .query_row(
-                "SELECT value FROM statistics WHERE key = 'schema_hash'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        if let Some(stored_hash) = stored_schema_hash {
-            if stored_hash != current_schema_hash {
-                log::warn!(
-                    "Cache schema hash mismatch! Stored: {}, Current: {}",
-                    stored_hash,
-                    current_schema_hash
-                );
-                anyhow::bail!(
-                    "Cache schema version mismatch.\n\
-                     \n\
-                     - Cache was built with version {}\n\
-                     - Current binary expects version {}\n\
-                     \n\
-                     The cache format may be incompatible with this version of Reflex.\n\
-                     Please rebuild the index by running:\n\
-                     \n\
-                       rfx index\n\
-                     \n\
-                     This usually happens after upgrading Reflex or making code changes.",
-                    stored_hash,
-                    current_schema_hash
-                );
-            }
-        } else {
-            log::debug!(
-                "No schema_hash found in cache - this cache was created before automatic invalidation was implemented"
-            );
-            // Don't fail for backward compatibility with old caches
-            // They will get the hash on next rebuild
-        }
-
-        let elapsed = start.elapsed();
-        log::debug!(
-            "Cache validation passed (schema hash: {}, took {:?})",
-            current_schema_hash,
-            elapsed
-        );
+        log::debug!("Cache validation passed (took {:?})", start.elapsed());
         Ok(())
     }
 
@@ -1063,6 +1044,75 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         Ok(stored.as_deref() == Some(current))
     }
 
+    /// Who wrote this cache: `(version, git_sha)`, when the cache records it.
+    ///
+    /// `None` for a cache written before 1.7.2, or none at all.
+    pub fn cache_owner(&self) -> Option<(String, Option<String>)> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return None;
+        }
+        let conn = open_meta_db(&db_path).ok()?;
+        let get = |key: &str| -> Option<String> {
+            conn.query_row("SELECT value FROM statistics WHERE key = ?", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+        };
+        get("writer_version").map(|v| (v, get("writer_git_sha")))
+    }
+
+    /// Refuse to write a cache a DIFFERENT RELEASED VERSION owns.
+    ///
+    /// Cross-version writers into one `.reflex/` is a corruption vector: the field
+    /// report had three `rfx mcp` servers at two versions sharing a cache, and 1.6.0
+    /// had already produced `content.bin is too small`.
+    ///
+    /// Scoped deliberately narrowly, to the one case that is actually unsafe and
+    /// actually detectable:
+    ///
+    /// * A differing SCHEMA HASH alone is NOT refused. It flips on any change to
+    ///   cache-critical sources, so it fires for every user on every upgrade and for
+    ///   every developer on every branch switch. A full rebuild is what it already
+    ///   triggers, it happens under the workspace `IndexLock`, and it truncates the
+    ///   binary stores — which is safe.
+    /// * An UNSTAMPED cache is adopted, not refused. Everything written before 1.7.2
+    ///   is unstamped, so refusing would break every upgrade.
+    /// * A cache stamped by a different released version IS refused, because that is
+    ///   the multi-version-sharing case, and only there can the error name who owns it.
+    ///
+    /// `force` (which clears the cache first) and `REFLEX_ALLOW_SCHEMA_REBUILD=1`
+    /// always pass — taking ownership is what force means.
+    pub fn assert_writable(&self, force: bool) -> Result<()> {
+        if force || std::env::var("REFLEX_ALLOW_SCHEMA_REBUILD").is_ok() {
+            return Ok(());
+        }
+
+        if !self.cache_path.join(META_DB).exists() {
+            return Ok(());
+        }
+
+        let Some((owner_version, owner_sha)) = self.cache_owner() else {
+            // Unstamped: written before 1.7.2. Adopt it.
+            return Ok(());
+        };
+
+        if owner_version == env!("CARGO_PKG_VERSION") {
+            return Ok(());
+        }
+
+        Err(crate::errors::ReflexError::CacheVersionMismatch {
+            owner_version,
+            owner_sha: owner_sha
+                .map(|s| format!(" (sha {})", &s[..s.len().min(7)]))
+                .unwrap_or_default(),
+            this_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+        .into())
+    }
+
     /// Update cache schema hash in statistics table
     ///
     /// This should be called after every index operation to ensure the cache
@@ -1079,6 +1129,21 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["schema_hash", schema_hash, &now.to_string()],
         )?;
+        // Keep ownership in step with the hash, so a refusal can always name a version.
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            [
+                "writer_version",
+                env!("CARGO_PKG_VERSION"),
+                &now.to_string(),
+            ],
+        )?;
+        if let Some(sha) = option_env!("REFLEX_GIT_SHA") {
+            conn.execute(
+                "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+                ["writer_git_sha", sha, &now.to_string()],
+            )?;
+        }
 
         log::debug!("Updated schema hash to: {}", schema_hash);
         Ok(())

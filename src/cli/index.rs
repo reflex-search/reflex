@@ -135,7 +135,31 @@ pub(super) fn handle_index_build(
     let indexer = Indexer::new(cache, config);
     // Show progress by default, unless quiet mode is enabled
     let show_progress = !quiet;
-    let stats = indexer.index(path, show_progress)?;
+
+    // A human at a terminal should not have to learn a flag to recover from a version
+    // skew, so the CLI self-heals: say who owns the cache, then rebuild it. The MCP
+    // server deliberately does NOT do this — an agent gets the refusal and decides,
+    // because N servers all "self-healing" the same cache at once is the stampede
+    // this guard exists to prevent.
+    let stats = match indexer.index(path, show_progress) {
+        Err(e)
+            if matches!(
+                e.downcast_ref::<crate::errors::ReflexError>(),
+                Some(crate::errors::ReflexError::CacheVersionMismatch { .. })
+            ) =>
+        {
+            if !quiet {
+                println!("{e}");
+                println!("Rebuilding the index for this version...");
+            }
+            log::warn!("Cache version mismatch; rebuilding: {e}");
+            let cache = CacheManager::new(path);
+            cache.clear()?;
+            let config = cache.load_index_config().unwrap_or_default();
+            Indexer::new(cache, config).index(path, show_progress)?
+        }
+        other => other?,
+    };
 
     // In quiet mode, suppress all output
     if !quiet {

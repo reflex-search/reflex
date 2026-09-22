@@ -225,6 +225,13 @@ impl Indexer {
                 .unwrap_or(4)
         );
 
+        // Refuse to write a cache another Reflex build owns.
+        //
+        // A `force` rebuild clears `.reflex/` first, so there is no meta.db left to
+        // conflict with and this passes — taking ownership is exactly what force
+        // means. Checked before `init()`, which is itself a write.
+        self.cache.assert_writable(false)?;
+
         // Ensure cache is initialized
         self.cache.init()?;
 

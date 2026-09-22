@@ -2520,6 +2520,36 @@ impl QueryEngine {
     ) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
         let root = self.cache.workspace_root();
 
+        // A cache written by a different Reflex build. `validate()` no longer bails on
+        // this (that turned a version skew into a rebuild stampede — see cache.rs), so
+        // reads still work; they are simply not to be trusted, and the message names
+        // who owns the cache so the user can pick a side.
+        if !self.cache.check_schema_hash().unwrap_or(true) {
+            let reason = match self.cache.cache_owner() {
+                Some((v, sha)) if v != env!("CARGO_PKG_VERSION") => {
+                    let sha = sha
+                        .map(|s| format!(" (sha {})", &s[..s.len().min(7)]))
+                        .unwrap_or_default();
+                    format!(
+                        "This .reflex/ was written by reflex {}{}; this binary is reflex {}. \
+                         Results come from a cache format this version does not fully \
+                         understand.",
+                        v,
+                        sha,
+                        env!("CARGO_PKG_VERSION")
+                    )
+                }
+                // Same version, or unstamped: the cache format changed under it. A
+                // reindex brings it up to date; results until then may be partial.
+                _ => "The index was built with a different cache format and needs \
+                      rebuilding. Results may be incomplete until then."
+                    .to_string(),
+            };
+
+            let warning = IndexWarning::new(reason, "index_project");
+            return Ok((IndexStatus::Stale, false, Some(warning)));
+        }
+
         if !crate::git::is_git_repo(&root) || !crate::git::is_git_available() {
             // Outside git there is no cheap way to find changes, and walking the tree
             // on every query costs more than the staleness it would detect. Documented
