@@ -330,6 +330,11 @@ pub struct IndexConfig {
     /// Maximum entries per trigram posting list (0 = unlimited).
     /// High-frequency trigrams are truncated at this threshold to bound query latency.
     pub max_posting_list_entries: usize,
+    /// How long `Indexer::index` waits for `.reflex/index.lock` when another
+    /// indexer holds it (seconds). 0 = fail immediately with `IndexLocked`.
+    /// The `rfx index` CLI waits; MCP, watcher and HTTP callers fail fast.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub lock_wait_secs: u64,
 }
 
 impl Default for IndexConfig {
@@ -343,6 +348,7 @@ impl Default for IndexConfig {
             parallel_threads: 0,               // 0 = auto (80% of available cores)
             query_timeout_secs: 30,            // 30 seconds default timeout
             max_posting_list_entries: 500_000, // cap at 500k to bound query latency
+            lock_wait_secs: 0,                 // fail fast when another indexer runs
         }
     }
 }

@@ -270,15 +270,13 @@ impl QueryEngine {
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
+            return Err(crate::errors::ReflexError::IndexNotFound.into());
         }
 
         // Validate cache integrity
         if let Err(e) = self.cache.validate() {
-            anyhow::bail!(
-                "Cache appears to be corrupted: {}. Run 'rfx clear' followed by 'rfx index' to rebuild.",
-                e
-            );
+            // Typed so the MCP layer can auto-rebuild once and retry.
+            return Err(crate::errors::ReflexError::CacheCorrupted(e.to_string()).into());
         }
 
         // Get index status and warning (without printing warnings to stderr)
@@ -328,15 +326,13 @@ impl QueryEngine {
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
+            return Err(crate::errors::ReflexError::IndexNotFound.into());
         }
 
         // Validate cache integrity
         if let Err(e) = self.cache.validate() {
-            anyhow::bail!(
-                "Cache appears to be corrupted: {}. Run 'rfx clear' followed by 'rfx index' to rebuild.",
-                e
-            );
+            // Typed so the MCP layer can auto-rebuild once and retry.
+            return Err(crate::errors::ReflexError::CacheCorrupted(e.to_string()).into());
         }
 
         // Show non-blocking warnings about branch state and staleness
@@ -929,7 +925,7 @@ impl QueryEngine {
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
+            return Err(crate::errors::ReflexError::IndexNotFound.into());
         }
 
         // Show non-blocking warnings about branch state and staleness
@@ -1166,7 +1162,7 @@ impl QueryEngine {
 
         // Ensure cache exists
         if !self.cache.exists() {
-            anyhow::bail!("Index not found. Run 'rfx index' to build the cache first.");
+            return Err(crate::errors::ReflexError::IndexNotFound.into());
         }
 
         // Show non-blocking warnings about branch state and staleness

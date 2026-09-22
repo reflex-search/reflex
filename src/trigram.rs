@@ -572,13 +572,16 @@ impl TrigramIndex {
             }
         }
 
-        // Open output file for writing
+        // Open the temp output file for writing. Both passes below (data
+        // pass, then directory-insertion rewrite) target the temp path; the
+        // final file is only replaced by one atomic rename at the end.
+        let tmp_path = crate::atomic_write::tmp_path_for(output_path);
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(output_path)
-            .with_context(|| format!("Failed to create {}", output_path.display()))?;
+            .open(&tmp_path)
+            .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
 
         let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
 
@@ -704,16 +707,16 @@ impl TrigramIndex {
         // Read data and files sections
         let mut temp_data = Vec::new();
         {
-            let mut file = File::open(output_path)?;
+            let mut file = File::open(&tmp_path)?;
             file.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
             file.read_to_end(&mut temp_data)?;
         }
 
-        // Rewrite file with correct structure
+        // Rewrite the temp file with correct structure
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)
-            .open(output_path)?;
+            .open(&tmp_path)?;
         let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
 
         // Write header with correct num_trigrams
@@ -734,9 +737,12 @@ impl TrigramIndex {
         // Write data and files sections
         writer.write_all(&temp_data)?;
 
-        // Flush and sync
+        // Flush and sync, then publish atomically
         writer.flush()?;
         writer.get_ref().sync_all()?;
+        drop(writer);
+        crate::atomic_write::atomic_replace(&tmp_path, output_path)
+            .with_context(|| format!("Failed to move {} into place", output_path.display()))?;
 
         // Clean up partial index files
         for partial_path in &self.partial_indices {
@@ -1002,15 +1008,16 @@ impl TrigramIndex {
         }
 
         // Standard write path (no batch flushing).
-        // Non-atomic: writes directly to the target path with truncate(true).
-        // On disk-full mid-write the file is left corrupt; the indexer fast-path
-        // validates the "RFTG" magic bytes on re-index, forcing a clean rebuild.
+        // Crash-safe: stream into `<path>.tmp`, sync, then rename over `path`.
+        // A crash mid-write leaves the previous trigrams.bin intact (or no file
+        // at all), never a short file with valid magic bytes.
+        let tmp_path = crate::atomic_write::tmp_path_for(path);
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(path)
-            .with_context(|| format!("Failed to create {}", path.display()))?;
+            .open(&tmp_path)
+            .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
 
         // Use a large buffer (16MB) for streaming writes
         let mut writer = std::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
@@ -1090,9 +1097,12 @@ impl TrigramIndex {
             writer.write_all(path_bytes)?;
         }
 
-        // Flush and sync
+        // Flush and sync, then publish atomically
         writer.flush()?;
         writer.get_ref().sync_all()?;
+        drop(writer);
+        crate::atomic_write::atomic_replace(&tmp_path, path)
+            .with_context(|| format!("Failed to move {} into place", path.display()))?;
 
         log::info!(
             "Wrote lazy-loadable trigram index: {} trigrams, {} files to {:?}",

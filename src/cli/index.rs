@@ -128,6 +128,10 @@ pub(super) fn handle_index_build(
         config.languages = lang_filters;
     }
 
+    // A human ran this; wait a little for a concurrent indexer instead of
+    // failing at once (MCP/watcher/HTTP callers keep the fail-fast default).
+    config.lock_wait_secs = 30;
+
     let indexer = Indexer::new(cache, config);
     // Show progress by default, unless quiet mode is enabled
     let show_progress = !quiet;

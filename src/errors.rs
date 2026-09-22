@@ -16,6 +16,29 @@ pub enum ReflexError {
 
     #[error("LLM error: {0}")]
     LlmError(String),
+
+    /// A tool/API call carried an argument set the server cannot accept:
+    /// unknown key, wrong type, or a required key that is absent. The payload
+    /// is the full human-readable diagnostic (received keys, valid keys,
+    /// nearest-match suggestion). Maps to JSON-RPC `-32602` in the MCP layer.
+    #[error("{0}")]
+    InvalidParams(String),
+
+    /// The on-disk cache failed structural validation (bad magic bytes, short
+    /// file, broken SQLite). The payload is the inner finding, e.g.
+    /// `content.bin is too small - appears to be corrupted`. The Display text
+    /// keeps the historical wording so string-matching callers stay valid.
+    #[error(
+        "Cache appears to be corrupted: {0}. Run 'rfx clear' followed by 'rfx index' to rebuild."
+    )]
+    CacheCorrupted(String),
+
+    /// Another process holds the workspace index lock (`.reflex/index.lock`).
+    /// The payload names the lock path.
+    #[error(
+        "Another indexer is already running on this workspace ({0}). Wait for it to finish and retry."
+    )]
+    IndexLocked(String),
 }
 
 impl ReflexError {
@@ -26,6 +49,9 @@ impl ReflexError {
             Self::IoError(_) => "IoError",
             Self::ParseError(_) => "ParseError",
             Self::LlmError(_) => "LlmError",
+            Self::InvalidParams(_) => "InvalidParams",
+            Self::CacheCorrupted(_) => "CacheCorrupted",
+            Self::IndexLocked(_) => "IndexLocked",
         }
     }
 
@@ -36,6 +62,9 @@ impl ReflexError {
             Self::IoError(_) => 4,
             Self::ParseError(_) => 5,
             Self::LlmError(_) => 6,
+            Self::InvalidParams(_) => 3,
+            Self::CacheCorrupted(_) => 2,
+            Self::IndexLocked(_) => 7,
         }
     }
 }
@@ -51,6 +80,36 @@ mod tests {
         assert_eq!(ReflexError::IoError("fail".into()).exit_code(), 4);
         assert_eq!(ReflexError::ParseError("oops".into()).exit_code(), 5);
         assert_eq!(ReflexError::LlmError("timeout".into()).exit_code(), 6);
+        assert_eq!(ReflexError::InvalidParams("bad".into()).exit_code(), 3);
+        assert_eq!(ReflexError::CacheCorrupted("x".into()).exit_code(), 2);
+        assert_eq!(ReflexError::IndexLocked("x".into()).exit_code(), 7);
+    }
+
+    #[test]
+    fn test_new_variant_kinds_and_display() {
+        assert_eq!(
+            ReflexError::InvalidParams("x".into()).kind(),
+            "InvalidParams"
+        );
+        assert_eq!(
+            ReflexError::CacheCorrupted("x".into()).kind(),
+            "CacheCorrupted"
+        );
+        assert_eq!(ReflexError::IndexLocked("x".into()).kind(), "IndexLocked");
+        // Display text of CacheCorrupted must keep the historical wording.
+        let msg = ReflexError::CacheCorrupted(
+            "content.bin is too small - appears to be corrupted".into(),
+        )
+        .to_string();
+        assert_eq!(
+            msg,
+            "Cache appears to be corrupted: content.bin is too small - appears to be corrupted. \
+             Run 'rfx clear' followed by 'rfx index' to rebuild."
+        );
+        assert_eq!(
+            ReflexError::InvalidParams("Unknown argument \"q\"".into()).to_string(),
+            "Unknown argument \"q\""
+        );
     }
 
     #[test]

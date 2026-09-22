@@ -62,12 +62,15 @@ impl CacheManager {
     fn init_meta_db(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
 
-        // Skip if already exists
-        if db_path.exists() {
-            return Ok(());
-        }
-
+        // Always run: every statement is `IF NOT EXISTS`, so this is a no-op on
+        // a complete database and a repair on a half-built one. (An indexer
+        // killed during schema creation used to leave meta.db with some tables
+        // missing; the old "skip if the file exists" check then made every later
+        // run fail with `no such table: file_branches`.) One transaction so a
+        // kill mid-way leaves either the old state or the full schema.
         let conn = Connection::open(&db_path).context("Failed to create meta.db")?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .context("Failed to begin meta.db schema transaction")?;
 
         // Create files table
         conn.execute(
@@ -228,6 +231,9 @@ impl CacheManager {
             "CREATE INDEX IF NOT EXISTS idx_exports_symbol ON file_exports(exported_symbol)",
             [],
         )?;
+
+        conn.execute_batch("COMMIT")
+            .context("Failed to commit meta.db schema transaction")?;
 
         log::debug!("Created meta.db with schema");
         Ok(())
@@ -562,9 +568,43 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     pub fn clear(&self) -> Result<()> {
         log::info!("Clearing cache at {:?}", self.cache_path);
 
-        if self.cache_path.exists() {
-            std::fs::remove_dir_all(&self.cache_path)?;
+        if !self.cache_path.exists() {
+            return Ok(());
         }
+
+        // Hold the workspace index lock while deleting so we never pull
+        // content.bin out from under a running indexer. Everything except the
+        // lock file goes while the lock is held; the lock file and the (now
+        // empty) directory are removed afterwards, best-effort, so callers
+        // that expect `.reflex/` to vanish keep working.
+        let lock =
+            crate::atomic_write::IndexLock::try_acquire(&self.cache_path)?.ok_or_else(|| {
+                crate::errors::ReflexError::IndexLocked(
+                    crate::atomic_write::IndexLock::lock_path(&self.cache_path)
+                        .display()
+                        .to_string(),
+                )
+            })?;
+
+        for entry in std::fs::read_dir(&self.cache_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str())
+                == Some(crate::atomic_write::INDEX_LOCK_FILE)
+            {
+                continue;
+            }
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                std::fs::remove_file(&path)?;
+            }
+        }
+
+        let lock_path = lock.path().to_path_buf();
+        drop(lock);
+        let _ = std::fs::remove_file(&lock_path);
+        let _ = std::fs::remove_dir(&self.cache_path);
 
         Ok(())
     }

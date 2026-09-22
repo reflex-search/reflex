@@ -26,6 +26,7 @@
 //! ```
 
 pub mod ast_query;
+pub mod atomic_write;
 pub mod background_indexer;
 pub mod cache;
 pub mod cli;

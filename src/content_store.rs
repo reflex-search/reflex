@@ -60,6 +60,9 @@ pub struct ContentWriter {
     file_path: Option<PathBuf>,
     // In-memory content buffer (only used if streaming mode not enabled)
     content: Vec<u8>,
+    // First streaming write failure; surfaced by finalize() instead of panicking
+    // inside add_file() (whose signature returns the file id, not a Result).
+    write_error: Option<std::io::Error>,
 }
 
 impl ContentWriter {
@@ -73,17 +76,23 @@ impl ContentWriter {
             current_offset: 0,
             file_path: None,
             content: Vec::new(),
+            write_error: None,
         }
     }
 
     /// Initialize the writer by creating the output file and writing header placeholder
+    ///
+    /// Crash safety: bytes are streamed into `<path>.tmp`; `finalize()` renames the
+    /// temp file over `path` only after the header is complete and synced, so a
+    /// reader never sees a short `content.bin`.
     pub fn init(&mut self, path: PathBuf) -> Result<()> {
+        let tmp_path = crate::atomic_write::tmp_path_for(&path);
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&path)
-            .with_context(|| format!("Failed to create {}", path.display()))?;
+            .open(&tmp_path)
+            .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
 
         // Use a large buffer (16MB) for better write performance
         let mut writer = std::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
@@ -116,8 +125,13 @@ impl ContentWriter {
         if let Some(ref mut w) = self.writer {
             // Streaming mode: write content immediately to disk
             let offset = self.current_offset;
-            w.write_all(content_bytes)
-                .expect("Failed to write file content to content.bin");
+            if let Err(e) = w.write_all(content_bytes)
+                && self.write_error.is_none()
+            {
+                // Keep going so the caller sees one clear error from finalize()
+                // instead of a panic mid-index; the temp file is discarded.
+                self.write_error = Some(e);
+            }
             self.current_offset += length;
 
             self.files.push(FileEntry {
@@ -166,12 +180,13 @@ impl ContentWriter {
     /// Content is accumulated in RAM and written all at once.
     fn write_legacy(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
+        let tmp_path = crate::atomic_write::tmp_path_for(path);
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(path)
-            .with_context(|| format!("Failed to create {}", path.display()))?;
+            .open(&tmp_path)
+            .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
 
         // Use a large buffer (8MB) for better write performance
         let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
@@ -201,6 +216,9 @@ impl ContentWriter {
         }
 
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        crate::atomic_write::atomic_replace(&tmp_path, path)
+            .with_context(|| format!("Failed to move {} into place", path.display()))?;
         Ok(())
     }
 
@@ -210,6 +228,19 @@ impl ContentWriter {
             .writer
             .take()
             .ok_or_else(|| anyhow::anyhow!("ContentWriter not initialized"))?;
+        let final_path = self
+            .file_path
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ContentWriter has no output path"))?;
+        let tmp_path = crate::atomic_write::tmp_path_for(&final_path);
+
+        if let Some(e) = self.write_error.take() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(anyhow::Error::new(e).context(format!(
+                "Failed to write file content to {}",
+                tmp_path.display()
+            )));
+        }
 
         // Write file index at current position
         let index_offset = HEADER_SIZE as u64 + self.current_offset;
@@ -240,8 +271,12 @@ impl ContentWriter {
         file.write_all(&index_offset.to_le_bytes())?;
         file.write_all(&[0u8; 8])?; // reserved
 
-        // Final sync to disk
+        // Final sync to disk, then publish atomically: readers see either the
+        // previous complete content.bin or this one, never a partial file.
         file.sync_all()?;
+        drop(file);
+        crate::atomic_write::atomic_replace(&tmp_path, &final_path)
+            .with_context(|| format!("Failed to move {} into place", final_path.display()))?;
 
         log::debug!(
             "Finalized content.bin: {} files, {} bytes of content",

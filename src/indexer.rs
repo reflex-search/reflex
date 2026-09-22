@@ -115,6 +115,17 @@ impl Indexer {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
 
+        // Exclusive workspace lock for the whole run. Two indexers streaming
+        // into the same content.bin/trigrams.bin is how a reader ends up with a
+        // short file. The OS drops the lock if this process dies.
+        let cache_dir = self.cache.path().to_path_buf();
+        let _index_lock = crate::atomic_write::IndexLock::acquire_with_timeout(
+            &cache_dir,
+            std::time::Duration::from_secs(self.config.lock_wait_secs),
+        )?;
+        // A previous indexer that died mid-write leaves `*.tmp` behind.
+        crate::atomic_write::remove_stale_tmp(&cache_dir);
+
         // Get git state (if in git repo)
         let git_state = crate::git::get_git_state_optional(root)?;
         let branch = git_state
@@ -1868,10 +1879,10 @@ impl Indexer {
         log::info!("Indexed {} files", files_indexed);
 
         // Step 3: Write trigram index.
-        // Non-atomic write: trigrams.bin is overwritten in-place (truncate + stream write).
-        // No temp-file-then-rename is used. A disk-full mid-write leaves a corrupt file;
-        // the fast-path incremental check above validates the magic bytes on re-index,
-        // so the next `rfx index` will detect corruption and rebuild from scratch.
+        // Crash-safe write: `TrigramIndex::write` streams into `trigrams.bin.tmp`,
+        // syncs, then renames over `trigrams.bin` (see `atomic_write`). A crash
+        // mid-write leaves the previous index untouched; the fast-path check
+        // above still validates magic bytes as a second line of defence.
         *progress_status.lock().unwrap() = "Writing trigram index...".to_string();
         if show_progress {
             pb.set_message("Writing trigram index...".to_string());
