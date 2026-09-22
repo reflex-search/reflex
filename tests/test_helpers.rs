@@ -588,11 +588,18 @@ pub mod synthetic_corpus {
         let root = root_for(seed);
         generate(&root, seed, DEFAULT_FILES, DEFAULT_BYTES);
 
-        if !root.join(".reflex").join("meta.db").exists() {
-            Indexer::new(CacheManager::new(&root), IndexConfig::default())
-                .index(&root, false)
-                .expect("index synthetic corpus");
+        // Always run the indexer: it is a no-op-fast incremental pass when the
+        // cached index is current, and a full rebuild when a cached index was
+        // written by a binary with a different cache schema (otherwise every
+        // query would pay the in-memory format fallback and the harness would
+        // measure that instead of the on-disk path).
+        let cache = CacheManager::new(&root);
+        if !cache.check_schema_hash().unwrap_or(false) {
+            let _ = cache.clear();
         }
+        Indexer::new(CacheManager::new(&root), IndexConfig::default())
+            .index(&root, false)
+            .expect("index synthetic corpus");
         root
     }
 }

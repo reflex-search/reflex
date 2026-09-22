@@ -187,3 +187,27 @@ streams four ~700k-posting lists (`ide`, `den`, `ent`, `nt_`) that do not narrow
 candidate set beyond what `t_7` already gave (105k candidate lines). Next step: stop
 intersecting when the candidate set is small relative to the next list, and let the
 (exact) line verification absorb the difference — planned on top of the V4 format.
+
+## Latency harness after WP1–WP4 + intersection stop rule (2026-09-22, final)
+
+V4 index on disk (`trigrams.bin` 30.3 MB for a 32.4 MB corpus, ratio 0.9x; 127 MB before).
+`hits` with `+` = lower bound (page filled, verification stopped).
+
+| shape | in-process median | MCP stdio median | baseline in-process | baseline MCP |
+|---|---:|---:|---:|---:|
+| zero_hit | 0.03 | 0.09 | 3.77 | 10.10 |
+| rare_ident | 0.16 | 0.23 | 4.89 | 6.59 |
+| common_ident_limit1 | 2.53 | 2.60 | 3689.56 | 3599.60 |
+| common_word_limit1 | 3.16 | 3.56 | 742.91 | 672.41 |
+| common_word_count | 30.23 | 31.95 | 796.68 | 730.03 |
+| regex_getset | 12.13 | 11.71 | 483.88 | 438.57 |
+
+MCP first call (cold open of the V4 index): 2.29 ms. `rfx query ident_7 --limit 1 --timing`:
+`open 1.6 | candidates 1.7 | verify 1.9 | status 0.5 ms` — the intersection now stops after
+the smallest list (`Intersection stopped early: 105497 candidates, next list 614023 bytes`).
+In count mode the remaining time is building 27k–52k result objects (`verify` ~14 ms,
+`group` ~13–20 ms on one thread); a paths-only or columnar-direct path would cut that.
+
+Caveats: the synthetic corpus has 2,611 distinct trigrams and is not a git repo (no
+`git status` in `status`); on a real repo the memoised status check adds ~10 ms to the
+first call in each `REFLEX_FRESHNESS_TTL_MS` window (the CLI pays it on every run).

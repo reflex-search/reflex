@@ -4,7 +4,7 @@
 //! - `meta.db`: Metadata, file hashes, and configuration (SQLite)
 //! - `tokens.bin`: Compressed lexical tokens (binary)
 //! - `content.bin`: Memory-mapped file contents (binary)
-//! - `trigrams.bin`: Trigram inverted index (custom varint+zstd binary, V3 format)
+//! - `trigrams.bin`: Trigram inverted index (per-file varint blocks, V4 format)
 //! - `config.toml`: Index settings (TOML text)
 
 use anyhow::{Context, Result};

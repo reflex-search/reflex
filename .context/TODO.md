@@ -2093,11 +2093,19 @@ posting format carrying an unused `byte_offset`.
 | WP1 | Linear-time sorted-merge intersection + streaming posting cursor (`src/trigram.rs`) | completed (da731e0): 23–90x on Criterion intersection cases |
 | WP2 | `OpenIndex` shared handle (registry keyed by cache dir, fingerprint invalidation), drop `quick_check`/`stats()`/git spawns from the query path, `--timing`; also: whole-identifier regex compiled once per query (was once per candidate line), zero-result hint counted in-search | completed (b18ae06) |
 | WP3 | Early termination for list mode (`total_is_exact` / `approx_total`), chunked parallel verify honouring `[performance] parallel_threads`, line-restricted parallel regex, quantifier fix in `regex_trigrams.rs` | completed |
-| WP4 | `trigrams.bin` V4: drop `byte_offset`, per-line dedup, per-file blocks, zero-copy directory, `Index/corpus ratio` line | in_progress |
+| WP4 | `trigrams.bin` V4: drop `byte_offset`, per-line dedup, per-file blocks, zero-copy directory, `Index/corpus ratio` line; plus `search_candidates` stop rule (skip a list > 2 B per surviving candidate) | completed |
 
 Acceptance (same box): MCP zero-hit < 5 ms, CLI zero-hit < 15 ms, `RealmId` first
 page < 15 ms, `realm --limit 1` < 20 ms, `realm --count` < 100 ms, `trigrams.bin` < 40 MB.
 Counts must stay equal to ripgrep on the 1.7.2 parity set.
+
+Result on the synthetic 30 MB corpus (medians, `.context/PERFORMANCE_RESEARCH.md`): MCP
+zero-hit 0.09 ms, rare identifier 0.23 ms, common identifier first page 2.6 ms, common word
+first page 3.6 ms, common word count 32 ms, regex 12 ms, `trigrams.bin` 30 MB (0.9x).
+Still to confirm on the field-test repo itself (not available here): the parity set counts
+and the ~10 ms `git status` share of the CLI floor. Open follow-ups: count-mode result
+building (`verify`+`group` ~30 ms for 52k rows) and the `max_posting_list_entries` cap
+silently dropping files past the cap.
 
 ### Still open
 

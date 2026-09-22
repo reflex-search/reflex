@@ -327,6 +327,15 @@ impl FileLocation {
 ///
 /// Maps each trigram to its compressed posting list location in the data section.
 /// Total size: 16 bytes per entry (4 + 8 + 4)
+/// Compressed posting bytes worth decoding per surviving candidate line.
+///
+/// Measured on the synthetic 30 MB corpus (16 cores): streaming a V4 list costs
+/// ~7 ns per byte on one thread; verifying one extra candidate line costs
+/// ~0.14 µs of CPU spread over the query pool, i.e. ~10–15 ns of wall time.
+/// Past this ratio the next list is not worth reading — `ident_7` spent 21 ms
+/// streaming four ~750 KB lists that removed no candidate.
+const SKIP_BYTES_PER_CANDIDATE: usize = 2;
+
 #[derive(Debug, Clone)]
 struct DirectoryEntry {
     /// The trigram value (for binary search)
@@ -967,6 +976,24 @@ impl TrigramIndex {
     /// In lazy-loaded mode: Decompresses posting lists on-demand from mmap.
     /// In in-memory mode: Uses pre-loaded posting lists.
     pub fn search(&self, pattern: &str) -> Vec<FileLocation> {
+        self.search_impl(pattern, false)
+    }
+
+    /// Candidate lines for `pattern`, allowing the intersection to stop early.
+    ///
+    /// Every posting list of a common trigram (`ide`, `ent`, `nt_` …) is streamed
+    /// in full on every query, and on a pattern like `ident_7` the four largest
+    /// lists cost ~45 ms without removing a single candidate that the smallest
+    /// list (`t_7`) had not already narrowed to. The caller verifies every
+    /// candidate line anyway — exactly, and on a thread pool — so once the next
+    /// list is much larger than the surviving candidate set, decoding it costs
+    /// more than verifying the extra candidates would. This method stops there;
+    /// the result is a superset of [`Self::search`] and never misses a match.
+    pub fn search_candidates(&self, pattern: &str) -> Vec<FileLocation> {
+        self.search_impl(pattern, true)
+    }
+
+    fn search_impl(&self, pattern: &str, allow_skip: bool) -> Vec<FileLocation> {
         if pattern.len() < 3 {
             // Pattern too short for trigrams - caller must fall back to full scan
             return vec![];
@@ -1017,6 +1044,19 @@ impl TrigramIndex {
                 if cands.is_empty() {
                     break;
                 }
+                // Lists are ascending, so once one is too big to be worth
+                // decoding, all the remaining ones are too.
+                if allow_skip
+                    && entry.compressed_size as usize
+                        > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE)
+                {
+                    log::debug!(
+                        "Intersection stopped early: {} candidates, next list {} bytes",
+                        cands.len(),
+                        entry.compressed_size
+                    );
+                    break;
+                }
                 let start = entry.data_offset as usize;
                 let end = start + entry.compressed_size as usize;
                 if end > mmap.len() {
@@ -1059,7 +1099,24 @@ impl TrigramIndex {
             // Sort by list size (smallest first for efficient intersection)
             posting_lists.sort_by_key(|list| list.len());
 
-            intersect_sorted(&posting_lists)
+            if !allow_skip {
+                return intersect_sorted(&posting_lists);
+            }
+            let mut cands: Vec<FileLocation> = posting_lists[0].to_vec();
+            cands.dedup_by_key(|l| key(l));
+            for list in &posting_lists[1..] {
+                if cands.is_empty() {
+                    break;
+                }
+                // ~1.3 bytes per posting on disk; same rule as the lazy path.
+                if list.len().saturating_mul(13) / 10
+                    > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE)
+                {
+                    break;
+                }
+                cands = intersect_two(&cands, list);
+            }
+            cands
         }
     }
 
@@ -1458,6 +1515,47 @@ pub(crate) fn intersect_sorted(lists: &[&[FileLocation]]) -> Vec<FileLocation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `search_candidates` may stop intersecting once the next list is much larger
+    /// than the candidate set; it must then return a superset of the exact
+    /// intersection, never a subset, in both lazy and in-memory modes.
+    #[test]
+    fn search_candidates_is_a_superset_of_search() {
+        let mut index = TrigramIndex::new();
+        // Many lines share the common trigrams of "ident_"; only a few carry "t_7".
+        for f in 0..20u32 {
+            let id = index.add_file(PathBuf::from(format!("f{f}.rs")));
+            let mut text = String::new();
+            for i in 0..200 {
+                text.push_str(&format!("let ident_{} = ident_{}; // filler\n", i, i + 1));
+            }
+            text.push_str("let ident_7 = 1;\n");
+            index.index_file(id, &text);
+        }
+        index.finalize();
+
+        let exact = index.search("ident_7");
+        let cands = index.search_candidates("ident_7");
+        assert!(!exact.is_empty());
+        let exact_keys: std::collections::HashSet<_> = exact.iter().map(key).collect();
+        let cand_keys: std::collections::HashSet<_> = cands.iter().map(key).collect();
+        assert!(
+            exact_keys.is_subset(&cand_keys),
+            "candidates must cover every match"
+        );
+
+        // Same contract through the on-disk (lazy) path.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trigrams.bin");
+        index.write(&path).unwrap();
+        let lazy = TrigramIndex::load(&path).unwrap();
+        let lazy_exact: std::collections::HashSet<_> =
+            lazy.search("ident_7").iter().map(key).collect();
+        let lazy_cands: std::collections::HashSet<_> =
+            lazy.search_candidates("ident_7").iter().map(key).collect();
+        assert_eq!(lazy_exact, exact_keys);
+        assert!(lazy_exact.is_subset(&lazy_cands));
+    }
     use tempfile::TempDir;
 
     #[test]

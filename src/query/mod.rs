@@ -2420,7 +2420,7 @@ impl QueryEngine {
 
         // Search using trigrams
         let candidates_started = std::time::Instant::now();
-        let candidates = trigram_index.search(pattern);
+        let candidates = trigram_index.search_candidates(pattern);
         let candidates_us = candidates_started.elapsed().as_micros() as u64;
         log::debug!(
             "Found {} candidate locations from trigram search in {} us",
@@ -2622,7 +2622,7 @@ impl QueryEngine {
             use std::collections::BTreeMap;
             let mut by_file: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
             for literal in &literals {
-                let locations = open.trigrams.search(literal);
+                let locations = open.trigrams.search_candidates(literal);
                 log::debug!(
                     "Literal '{}' found on {} candidate lines",
                     literal,

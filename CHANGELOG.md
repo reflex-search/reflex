@@ -4,9 +4,25 @@
 
 - `trigrams.bin` V4 — **re-index required**. A V3 index is served from an in-memory rebuild (slow) until `rfx index` runs; `rfx index` detects the schema change and rebuilds in full. Postings are now one per distinct trigram per line, grouped into per-file blocks, with no byte offsets: 3.9x → 0.9x of corpus size on the synthetic latency corpus (127 MB → 30 MB), 1.4x on the Reflex repo. `TrigramIndex::load` is O(files) — the directory is binary-searched in the mmap instead of being decoded and re-sorted. `FileLocation` (library API) drops `byte_offset`; `FileLocation::new` takes `(file_id, line_no)`.
 
+- A list-mode `search_code` / `search_regex` (and `rfx query` with a limit) stops verifying once the page is full. The page is unchanged, but `pagination.total` / `total_count` is a **lower bound** whenever the new `total_is_exact` is `false`; `approx_total` is the upper bound and `has_more` is `true`. `mode: "count"`, `list_locations`, `find_references` (`total_references`), symbol/AST searches and no-limit searches keep exact totals. The CLI prints an inexact total as `(1234+ total)`.
+
+### Performance
+
+Field test (29 MB / 1875 files / 16 cores, warm cache): ripgrep won 6–10x on plain queries and 45–56x on common words. On the synthetic 30 MB latency corpus, medians before → after: MCP zero-hit call 10.1 → 0.07 ms; common word first page 743 → 2.7 ms; common word count 797 → 25 ms; regex `fn (get|set)_\w+` 484 → 10 ms; common identifier first page 3690 → 2.5 ms. `trigrams.bin` 127 MB → 30 MB on that corpus.
+
+- Posting-list intersection is a linear sorted merge with a streaming decoder (only the smallest list is materialised); it was quadratic (`HashSet` retain plus a linear `find` per candidate). The intersection also stops once the next list is far larger than the surviving candidate set, leaving the exact, parallel line verification to finish the job.
+- `rfx mcp` and `rfx serve` keep the index open across calls (memory maps, path→id map, query thread pool) and reopen only when the files change on disk or after `index_project`. The per-query `PRAGMA quick_check`, `cache.stats()` (a SQLite open plus a `git` subprocess for the broad-query guard) and two further `git` spawns are gone from the query path; the freshness verdict is one memoised snapshot per workspace, invalidated by every index write (this also fixes `index_project` leaving a stale verdict in the memo for up to the TTL).
+- The whole-identifier matcher is compiled once per query, not once per candidate line.
+- Regex search verifies only the candidate lines its literals name, in parallel; it scanned every line of every candidate file on one thread. The literal extractor now drops the atom before `?`, `*` and `{0,n}` (`foobar?` → `fooba`), which also fixes a pre-existing file-level miss.
+- The zero-result hint (`N substring matches — pass contains:true`) is counted during the search; the MCP layer no longer runs a second full search for it.
+- Query-time verification runs on a pool sized by `[performance] parallel_threads` (previously ignored by the query path).
+
 ### Added
 
 - `rfx index` prints `Index/corpus ratio: 1.4x (trigrams.bin …, content.bin …)`; `IndexStats` gains `corpus_bytes` and `trigram_index_bytes` (omitted from JSON when zero).
+- `rfx query --timing` prints per-phase timings (open, candidates, verify, status, group) to stderr and includes a `timings` object with `--json`; `REFLEX_MCP_TIMING=1` adds the same object to `search_code` / `search_regex` responses.
+- `QueryResponse.substring_hint_count`, `PaginationInfo.total_is_exact` / `approx_total`, `QueryFilter.require_exact_total` / `collect_timings` (library API).
+- `tests/latency_budget.rs`: a latency harness over a deterministic synthetic 30 MB corpus, measured in-process and through a real `rfx mcp` stdio round-trip; CI enforces budgets with `REFLEX_LATENCY_BUDGET=1`. The CI performance step's filter was also fixed (it ran zero tests).
 
 ## [1.7.2] - 2026-09-22
 
