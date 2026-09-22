@@ -41,6 +41,16 @@ consumer, which does not retry but concludes "no callers" and acts on it.
 ### Fixed
 
 
+- **Symbol indexing no longer uses gigabytes of memory on minified files.** `rfx index-symbols-internal` reached 34.4 GiB RSS and ran 3m55s on a 1027-file repo. `extract_preview` bounded previews in LINES with no byte limit; a minified bundle is 1.4 MB on ONE line, so every one of its ~13,843 symbols got a copy of the whole file. Previews are now capped at 512 bytes, the 14 duplicated copies are one shared function, and minified files are detected by bytes-per-line and skipped for symbol extraction only — they stay fully text-searchable. Measured on the same corpus: **15.27 GiB → 0.11 GiB, 38s → 8s**.
+
+- The same unbounded-preview bug on the QUERY path: full-text and regex results returned the whole matched line, which at the 200-result default page size meant ~290 MB of previews per search over a minified file. Now windowed on the match, so a hit deep inside a single-line file still shows its own neighbourhood. `--expand` gets a separate 32 KB ceiling.
+
+- **Two panics on non-ASCII minified content.** `truncate_preview` sliced a raw byte index when a line had no whitespace in its first 100 characters — exactly minified code, which is also where non-ASCII i18n tables live — crashing `rfx query` and the MCP server. `semantic/answer.rs` had the same unguarded slice in three places. The old per-parser previews also underflowed on line 0 and on Vue/Svelte script offsets.
+
+- `symbol_cache::batch_set` cloned every result to blank a field that parsers already leave empty and that the read path overwrites anyway, doubling peak memory for no effect.
+
+- Symbol-indexing status no longer reports a write failure as a parse failure. One failed batch write used to mark its whole batch as failed without decrementing the parsed count, so 27 successes plus one SQLite error read as `parsed_files: 27, failed_files: 27`. `write_failed_files` and `skipped_minified` are now separate, and the error names the count and the first file.
+
 - Working-tree changes are now detected. Freshness compared `git rev-parse HEAD` to the indexed commit and then sampled the mtimes of the first **ten** indexed files — so an edit to any other file, every untracked file, and every deletion reported `fresh`.
 
 - Literal patterns containing brackets no longer return a silent 0. `unwrap()` (ripgrep: 1221), `#[derive(` (1141) and `-> Result<` (2139) all returned 0, because whole-identifier matching wraps the pattern as `\b…\b` and a pattern ending in `)` can never satisfy the trailing boundary. Such patterns are now escaped onto the regex path, with the rewrite reported in `warnings`.
