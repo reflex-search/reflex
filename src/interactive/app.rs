@@ -190,6 +190,10 @@ impl InteractiveApp {
                                 crate::background_indexer::IndexerState::Failed => {
                                     SymbolIndexingState::Failed
                                 }
+                                // Yielded to an `rfx index`; it will be re-spawned.
+                                crate::background_indexer::IndexerState::Cancelled => {
+                                    SymbolIndexingState::NotStarted
+                                }
                             },
                             _ => SymbolIndexingState::NotStarted,
                         };
@@ -484,6 +488,11 @@ impl InteractiveApp {
                             crate::background_indexer::IndexerState::Failed => {
                                 log::warn!("Symbol indexing FAILED: {:?}", bg_status.error);
                                 SymbolIndexingState::Failed
+                            }
+                            // Yielded to an `rfx index`; it will be re-spawned.
+                            crate::background_indexer::IndexerState::Cancelled => {
+                                log::debug!("Symbol indexing yielded to an indexer");
+                                SymbolIndexingState::NotStarted
                             }
                         };
 

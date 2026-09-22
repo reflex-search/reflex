@@ -105,6 +105,60 @@ impl Indexer {
         self.index_with_callback(root, show_progress, None)
     }
 
+    /// How long to wait for a running symbol pass to yield the database.
+    ///
+    /// One batch is 128 files, so a pass normally yields in well under a second.
+    /// 10s covers a slow batch without making the caller wait out a whole pass.
+    const SYMBOL_PASS_YIELD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Wait for the detached background symbol pass to release `meta.db`.
+    ///
+    /// The pass (`rfx index-symbols-internal`) runs for minutes on a large repo and
+    /// holds a SQLite write lock the whole time, but takes its own `indexing.lock`
+    /// rather than the workspace `index.lock`. In 1.7.0 that meant every
+    /// `index_project` and `rfx index` during the window failed with a raw
+    /// `Failed to begin meta.db schema transaction: database is locked`.
+    ///
+    /// Asks the pass to stop at its next batch, then waits briefly. If it does not
+    /// yield, returns [`ReflexError::SymbolIndexingInProgress`], which names the pid
+    /// and the progress — never SQLite's error text.
+    fn yield_to_symbol_pass(&self, cache_dir: &Path) -> Result<()> {
+        use crate::background_indexer::BackgroundIndexer;
+
+        let Some(holder) = BackgroundIndexer::lock_holder(cache_dir) else {
+            // Nothing running (or the lock was stale and has just been reaped).
+            BackgroundIndexer::clear_cancel(cache_dir);
+            return Ok(());
+        };
+
+        log::info!(
+            "Symbol indexing is running (pid {}); asking it to yield",
+            holder.pid
+        );
+        let _ = BackgroundIndexer::request_cancel(cache_dir);
+
+        let deadline = std::time::Instant::now() + Self::SYMBOL_PASS_YIELD_TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            if !BackgroundIndexer::is_running(cache_dir) {
+                BackgroundIndexer::clear_cancel(cache_dir);
+                log::info!("Symbol indexing yielded; continuing");
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        // It did not yield. Report what it is doing, then leave it alone.
+        BackgroundIndexer::clear_cancel(cache_dir);
+        let status = BackgroundIndexer::get_status(cache_dir).ok().flatten();
+        Err(crate::errors::ReflexError::SymbolIndexingInProgress {
+            pid: holder.pid,
+            started_at: holder.started_clock(),
+            processed: status.as_ref().map(|s| s.processed_files).unwrap_or(0),
+            total: status.as_ref().map(|s| s.total_files).unwrap_or(0),
+        }
+        .into())
+    }
+
     /// Build or update the index with progress callback support
     pub fn index_with_callback(
         &self,
@@ -125,6 +179,12 @@ impl Indexer {
         )?;
         // A previous indexer that died mid-write leaves `*.tmp` behind.
         crate::atomic_write::remove_stale_tmp(&cache_dir);
+
+        // The detached symbol pass holds meta.db but NOT this lock, so acquiring
+        // `index.lock` above proves nothing about SQLite. Yield to it here, before
+        // `cache.init()` runs `BEGIN IMMEDIATE`, so a waiting agent sees progress
+        // instead of `database is locked: Error code 5`.
+        self.yield_to_symbol_pass(&cache_dir)?;
 
         // Get git state (if in git repo)
         let git_state = crate::git::get_git_state_optional(root)?;

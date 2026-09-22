@@ -1370,6 +1370,28 @@ fn mcp_facing_message(e: &anyhow::Error) -> String {
             "Cache appears to be corrupted: {}. Call the index_project tool with {{\"force\": true}}, then retry.",
             inner
         ),
+        // Never surface SQLite's "database is locked" for this. Name the process, its
+        // progress, and the fact that waiting is the right move.
+        Some(
+            err @ ReflexError::SymbolIndexingInProgress {
+                processed, total, ..
+            },
+        ) => {
+            let pct = if *total > 0 {
+                format!(" ({}%)", processed * 100 / total)
+            } else {
+                String::new()
+            };
+            format!(
+                "{}{}. It holds the index database. Wait a few seconds and call index_project again; \
+                 searches keep working from the existing index meanwhile.",
+                err, pct
+            )
+        }
+        Some(err @ ReflexError::CacheVersionMismatch { .. }) => format!(
+            "{} Call the index_project tool with {{\"force\": true}} to rebuild it for this version.",
+            err
+        ),
         _ => e.to_string(),
     }
 }

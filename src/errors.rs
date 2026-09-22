@@ -39,6 +39,38 @@ pub enum ReflexError {
         "Another indexer is already running on this workspace ({0}). Wait for it to finish and retry."
     )]
     IndexLocked(String),
+
+    /// The detached background symbol pass (`rfx index-symbols-internal`) holds
+    /// `meta.db`. Raised BEFORE any SQLite call, so the agent sees progress instead
+    /// of `database is locked: Error code 5`, which is what 1.7.0 surfaced for the
+    /// four minutes a 1027-file pass was running.
+    #[error(
+        "symbol indexing in progress (pid {pid}, started {started_at}, {processed}/{total} files)"
+    )]
+    SymbolIndexingInProgress {
+        pid: u32,
+        /// Wall-clock start time, `HH:MM:SS`.
+        started_at: String,
+        processed: usize,
+        total: usize,
+    },
+
+    /// This `.reflex/` was written by a different Reflex build.
+    ///
+    /// Deliberately NOT `CacheCorrupted`: the MCP layer force-rebuilds on corruption,
+    /// so classifying a version mismatch as corruption makes N servers at differing
+    /// versions rebuild the same cache concurrently. That stampede is what produced
+    /// `content.bin is too small` in the field.
+    #[error(
+        "this .reflex/ was written by reflex {owner_version}{owner_sha}; this binary is {this_version}. \
+         Rebuild with force, or run the matching binary."
+    )]
+    CacheVersionMismatch {
+        owner_version: String,
+        /// Pre-formatted as ` (sha abc1234)`, or empty when unknown.
+        owner_sha: String,
+        this_version: String,
+    },
 }
 
 impl ReflexError {
@@ -52,6 +84,8 @@ impl ReflexError {
             Self::InvalidParams(_) => "InvalidParams",
             Self::CacheCorrupted(_) => "CacheCorrupted",
             Self::IndexLocked(_) => "IndexLocked",
+            Self::SymbolIndexingInProgress { .. } => "SymbolIndexingInProgress",
+            Self::CacheVersionMismatch { .. } => "CacheVersionMismatch",
         }
     }
 
@@ -65,6 +99,8 @@ impl ReflexError {
             Self::InvalidParams(_) => 3,
             Self::CacheCorrupted(_) => 2,
             Self::IndexLocked(_) => 7,
+            Self::SymbolIndexingInProgress { .. } => 7,
+            Self::CacheVersionMismatch { .. } => 2,
         }
     }
 }
