@@ -904,6 +904,56 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
         log::info!("Inserted {} file_branches entries", inserted);
 
+        // Step 4: Drop rows for files that are no longer on disk.
+        //
+        // Until 1.7.2 this method was INSERT OR REPLACE only, so `meta.db` never
+        // shrank. A deleted file kept its `files` and `file_branches` rows forever,
+        // `stats()` counts `file_branches`, and so `total_files` still reported 1027
+        // after a deletion. Pruning lived only in `compact()`, which is throttled to
+        // once a day AND skipped entirely for the `mcp`, `watch` and `serve` commands
+        // — so an MCP-only session never pruned at all.
+        //
+        // A temp table rather than a bound IN-list: SQLite caps a statement at 999
+        // parameters, and a workspace has far more files than that.
+        let pruned = {
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT PRIMARY KEY);
+                 DELETE FROM current_paths;",
+            )?;
+            {
+                let mut stmt =
+                    tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
+                for (path, _) in branch_files {
+                    stmt.execute([path.as_str()])?;
+                }
+            }
+
+            // Detach this branch from files it no longer contains.
+            let unlinked = tx.execute(
+                "DELETE FROM file_branches
+                 WHERE branch_id = ?
+                   AND file_id NOT IN (SELECT id FROM files WHERE path IN (SELECT path FROM current_paths))",
+                rusqlite::params![branch_id],
+            )?;
+
+            // Then sweep files no branch references any more. Scoped this way so a
+            // file that still exists on another branch is never dropped.
+            let orphaned = tx.execute(
+                "DELETE FROM files WHERE id NOT IN (SELECT file_id FROM file_branches)",
+                [],
+            )?;
+
+            tx.execute_batch("DROP TABLE IF EXISTS current_paths;")?;
+            (unlinked, orphaned)
+        };
+        if pruned.0 > 0 || pruned.1 > 0 {
+            log::info!(
+                "Pruned {} stale file_branches rows and {} orphaned files rows",
+                pruned.0,
+                pruned.1
+            );
+        }
+
         // Commit the entire transaction atomically
         tx.commit()?;
         log::info!("Transaction committed successfully (files + file_branches)");
@@ -1793,7 +1843,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// Identify files in database that no longer exist on filesystem
     ///
     /// Returns a Vec of file IDs for files that should be removed from the cache.
-    fn identify_deleted_files(&self) -> Result<Vec<i64>> {
+    pub(crate) fn identify_deleted_files(&self) -> Result<Vec<i64>> {
         let db_path = self.cache_path.join(META_DB);
         let conn = open_meta_db(&db_path)
             .context("Failed to open meta.db for deleted file identification")?;
@@ -1829,7 +1879,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// - file_branches entries
     /// - file_dependencies entries
     /// - file_exports entries
-    fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
+    pub(crate) fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
         if file_ids.is_empty() {
             return Ok(());
         }

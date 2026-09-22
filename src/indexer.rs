@@ -228,6 +228,30 @@ impl Indexer {
         // Ensure cache is initialized
         self.cache.init()?;
 
+        // Drop rows for files that no longer exist on disk, before anything reads
+        // them. `batch_update_files_and_branch` prunes too, but only on a path that
+        // actually rebuilds; this covers the skip path, where every surviving hash
+        // matches and nothing else would notice the deletion. One `exists()` per row.
+        //
+        // Note the flag: this prune SHRINKS `existing_hashes` below, which would
+        // otherwise make the incremental check see a matching file count and skip
+        // the rebuild — leaving the deleted file in content.bin as a ghost hit. A
+        // deletion always requires the binary stores to be rewritten.
+        let had_deletions = match self.cache.identify_deleted_files() {
+            Ok(gone) if !gone.is_empty() => {
+                log::info!("Removing {} deleted files from meta.db", gone.len());
+                if let Err(e) = self.cache.delete_files_from_db(&gone) {
+                    log::warn!("Failed to prune deleted files: {}", e);
+                }
+                true
+            }
+            Ok(_) => false,
+            Err(e) => {
+                log::warn!("Could not identify deleted files: {}", e);
+                false
+            }
+        };
+
         // Check available disk space after cache is initialized
         self.check_disk_space(root)?;
 
@@ -269,8 +293,12 @@ impl Indexer {
         // Step 1.5: Quick incremental check - are all files unchanged?
         // If yes, skip expensive rebuild entirely and return cached stats
         if !existing_hashes.is_empty() && total_files == existing_hashes.len() {
-            // Same number of files - check if any changed by comparing hashes
-            let mut any_changed = false;
+            // Same number of files - check if any changed by comparing hashes.
+            // A deletion pruned above already means the binary stores are stale.
+            let mut any_changed = had_deletions;
+            // Every path we saw on disk this pass. Needed for the deletion check
+            // below, which the hash loop alone cannot make.
+            let mut current_paths = std::collections::HashSet::<String>::with_capacity(files.len());
 
             for file_path in &files {
                 // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
@@ -285,6 +313,8 @@ impl Indexer {
                     // Already relative, just strip ./ prefix
                     path_str.trim_start_matches("./").replace('\\', "/")
                 };
+
+                current_paths.insert(normalized_path.clone());
 
                 // Check if file exists in cache
                 if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
@@ -308,6 +338,21 @@ impl Indexer {
                     any_changed = true;
                     break;
                 }
+            }
+
+            // The loop above catches an ADDED path (not in existing_hashes) but never
+            // a cached path with no file on disk. Delete one file and add another and
+            // the count is unchanged, every surviving hash matches, and the rebuild is
+            // skipped — leaving the deleted file searchable as a ghost hit. Close it
+            // with a set difference, which costs nothing extra: the paths are already
+            // collected and no file is re-read.
+            if !any_changed
+                && let Some(gone) = existing_hashes
+                    .keys()
+                    .find(|indexed| !current_paths.contains(*indexed))
+            {
+                log::debug!("File deleted since last index: {}", gone);
+                any_changed = true;
             }
 
             if !any_changed {
