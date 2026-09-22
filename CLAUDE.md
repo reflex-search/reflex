@@ -93,7 +93,13 @@ rfx mcp                          # Start MCP server on stdio (for AI coding assi
 ## MCP Tools (for AI Coding Assistants)
 
 When using Reflex as an MCP server (`rfx mcp`), the following tools are available as `mcp__reflex__<name>`.
-All tool schemas are pre-loaded — **do NOT call ToolSearch** to discover them.
+Claude Code may register MCP tools as *deferred*: their schemas are not in context until loaded.
+If Reflex tools appear in a deferred-tools list, load them first with
+`ToolSearch("select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references")`.
+The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`
+(never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. Since 1.7.0 the
+server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a
+did-you-mean error, and numeric strings like `"40"` are coerced.
 
 **Core search:**
 | Tool | Purpose |
@@ -119,7 +125,7 @@ All tool schemas are pre-loaded — **do NOT call ToolSearch** to discover them.
 | `get_dependents` | What imports a file (reverse lookup) |
 | `find_hotspots` | Most-imported files by dependent count |
 
-**Structural analysis** (requires `[mcp] enable_structural_tools = true` in `~/.reflex/config.toml`):
+**Structural analysis** (on by default; hide with `[mcp] enable_structural_tools = false` in `~/.reflex/config.toml`):
 `find_circular` · `find_islands` · `find_unused` · `analyze_summary` · `get_transitive_deps`
 
 See [`docs/mcp-tool-cheatsheet.md`](./docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.

@@ -182,6 +182,40 @@ get_dependents(path: "src/auth.rs")
 
 ---
 
+## Argument Names: Canonical vs Aliased (1.7.0)
+
+Field data from 34 Claude Code sessions: 20 of 21 Reflex failures were `Missing pattern`
+because the agent guessed `query`, `symbol`, `max_results` or `path`. Since 1.7.0 the server
+maps the habitual wrong names to the real ones and tells you about it.
+
+| Canonical key | Accepted aliases (deprecated) | Applies to |
+|---------------|-------------------------------|------------|
+| `pattern` | `query`, `symbol`, `text`, `search` | every search tool, `find_references` |
+| `limit` | `max_results` | every tool with a `limit` |
+| `file` | `path` | search tools only |
+| `path` | — (real key, no alias) | `get_dependencies`, `get_dependents`, `get_transitive_deps`, `gather_context` |
+
+Behaviour:
+
+- An alias is rewritten and the response carries a top-level `warnings` array, e.g.
+  `["argument \"query\" is deprecated; use \"pattern\""]`. Prose tools append the warnings as
+  trailing text.
+- A key that matches nothing is rejected with JSON-RPC `-32602`:
+  `Unknown argument "max_resultz" for search_code (did you mean "limit"?). Received: [...]. Valid: [...]`.
+- A missing required key is `-32602`:
+  `Missing required argument "pattern" for search_code. Received: [...]. Valid: [...]`.
+- Numeric strings are coerced (`"40"` → `40`); `"true"`/`"false"` strings become booleans; a bare
+  string for `glob`/`exclude` becomes a one-element array. Anything else of the wrong type is a
+  typed `-32602` error, never a silent fallback to the default.
+- `search_code` is a literal text index. A natural-language query such as `"hot tier promotion"`
+  matches nothing; search for identifiers or code fragments.
+
+**Corrupted or missing index:** on `CacheCorrupted` the server rebuilds once (force) and retries
+the call automatically. If that cannot work (lock held, read-only cache), the error names the
+`index_project` tool rather than the CLI. `IndexNotFound` errors also point at `index_project`.
+
+---
+
 ## When to Use `search_ast` (Rare)
 
 `search_ast` is a **last resort**. Use it only when:

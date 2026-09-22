@@ -155,6 +155,23 @@ reflex query "unwrap" --lang rust --limit 10 --json
 
 ### ⚠️ REMAINING WORK
 
+**1.7.0 MCP hardening (2026-09-21, from the 34-session Hearth transcript analysis):**
+- [x] A. Argument validation for every MCP tool: aliases (`query`/`symbol`/`text`/`search`→`pattern`,
+      `max_results`→`limit`, `path`→`file` on search tools) with a `warnings` field; unknown keys →
+      `-32602` with received/valid/did-you-mean; numeric/boolean string coercion; typed errors
+      (`ReflexError::InvalidParams`). Specs derived from the `tools/list` schema at runtime (no drift).
+- [x] B. `initialize` instructions rewritten: deferred-schema `ToolSearch("select:mcp__reflex__…")`
+      hint, exact call shapes, canonical arg names, literal-index note (`MCP_INSTRUCTIONS`, ≤1600 chars).
+- [x] C. Crash-safe index writes (`src/atomic_write.rs`: tmp + fsync + rename) for content.bin and
+      trigrams.bin; `.reflex/index.lock` OS advisory lock held for the whole `Indexer::index` run
+      (`IndexConfig::lock_wait_secs`, CLI waits 30 s); `clear()` takes the lock; `init_meta_db` is
+      idempotent + transactional (a kill mid-schema used to brick the cache with `no such table`).
+- [x] D. MCP auto-recovery: `CacheCorrupted` → force rebuild once → retry; errors name
+      `index_project`, never `rfx index`. Tests: `tests/mcp_corruption_recovery.rs`,
+      `tests/index_crash_safety.rs` (real `rfx index` killed mid-write), `tests/index_lock.rs`.
+- [ ] E. Follow-up: measure first-call correctness on a fresh Claude Code session with deferred tools
+      (acceptance criterion from the handoff) once 1.7.0 is installed in a consumer project.
+
 **P2 Enhancements Not Yet Implemented:**
 - **Query Result Caching** (LRU cache for sub-1ms cached queries) - See section 3, lines 649-658
   - In-memory LRU cache with 100-entry limit
@@ -315,7 +332,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 ## Priority Levels
 
-- **P0 (MVP):** Required for minimum viable product (sub-100ms queries, basic symbol search)
+- **P0 (MVP):** Required for minimum viable product (instant queries, basic symbol search)
 - **P1 (Core):** Essential features for production readiness
 - **P2 (Enhancement):** Nice-to-have features and optimizations
 - **P3 (Future):** Long-term roadmap items from CLAUDE.md
@@ -325,7 +342,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 ## 🎯 MVP Goals (from CLAUDE.md) ✅ ALL COMPLETED
 
 - [x] **Goal 1:** <100 ms per query on 100k+ files (warm path, OS cache) ✅
-  - **Achieved:** 2-3ms on small codebases, 124ms on Linux kernel (62K files), sub-100ms on medium codebases
+  - **Achieved:** 2-3ms on small codebases, 124ms on Linux kernel (62K files), instant on medium codebases
 - [x] **Goal 2:** Accurate symbol-level and scope-aware retrieval for Rust, TS/JS, Go, Python, PHP, C, C++, Java, C#, Ruby, Kotlin, Zig ✅
   - **Achieved:** Runtime symbol detection implemented for all 18 supported languages
 - [x] **Goal 3:** Fully offline; no daemon required (per-request invocation) ✅
@@ -1031,7 +1048,7 @@ Located in tests/performance_test.rs:
   - Runtime symbol detection tested on candidate files
   - All 8 language parsers validated
 - [x] Measure actual query performance
-  - Sub-100ms for full-text on medium codebases ✅
+  - Instant for full-text on medium codebases ✅
   - 2-224ms range depending on codebase size and query type ✅
 
 ---
@@ -1920,7 +1937,7 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
   - Cache persistence across sessions
 - [x] **Performance Tests** (10 tests in tests/performance_test.rs)
   - Indexing speed (100-500 files: <1-3s)
-  - Query latency (sub-100ms on 200+ files ✅)
+  - Query latency (instant on 200+ files ✅)
   - Memory-mapped I/O efficiency
   - Scalability (large files, many files)
 - [x] **Real-world validation**
