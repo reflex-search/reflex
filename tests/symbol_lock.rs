@@ -82,26 +82,60 @@ fn a_live_symbol_pass_yields_a_typed_error_not_a_sqlite_one() {
 }
 
 #[test]
-fn a_dead_pid_lock_is_reaped_and_indexing_proceeds() {
+fn a_dead_pid_lock_is_reaped_where_liveness_is_knowable() {
     let temp = workspace();
     let cache_dir = temp.path().join(".reflex");
 
     // PID 1 exists but is init, not a symbol pass. A pid that never existed would
     // work too; this also exercises the cmdline check that defeats pid reuse.
     write_lock(&cache_dir, 1);
+
+    if reflex::background_indexer::pid_liveness_supported() {
+        assert!(
+            !BackgroundIndexer::is_running(&cache_dir),
+            "a lock whose pid is not a symbol pass must not count as running"
+        );
+        assert!(
+            !cache_dir.join("indexing.lock").exists(),
+            "the stale lock must be removed, not merely ignored"
+        );
+
+        let stats = Indexer::new(CacheManager::new(temp.path()), IndexConfig::default())
+            .index(temp.path(), false)
+            .expect("indexing must proceed once the stale lock is reaped");
+        assert!(stats.total_files >= 2);
+    } else {
+        // Windows: liveness is undeterminable, so a FRESH lock is honoured on the
+        // age rule regardless of whose pid it names. Documented degradation, not a
+        // silent one — the indexer still reports SymbolIndexingInProgress by pid.
+        assert!(
+            BackgroundIndexer::is_running(&cache_dir),
+            "without liveness a fresh lock must be honoured, not reaped"
+        );
+    }
+}
+
+/// The age rule must still reap, on every platform.
+#[test]
+fn an_old_lock_is_reaped_everywhere() {
+    let temp = workspace();
+    let cache_dir = temp.path().join(".reflex");
+    write_lock(&cache_dir, 1);
+
+    // Backdate well past LOCK_MAX_AGE (15 minutes).
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 3600);
+    let f = fs::File::options()
+        .write(true)
+        .open(cache_dir.join("indexing.lock"))
+        .unwrap();
+    f.set_modified(old).unwrap();
+    drop(f);
+
     assert!(
         !BackgroundIndexer::is_running(&cache_dir),
-        "a lock whose pid is not a symbol pass must not count as running"
+        "a lock older than LOCK_MAX_AGE must be reaped on any platform"
     );
-    assert!(
-        !cache_dir.join("indexing.lock").exists(),
-        "the stale lock must be removed, not merely ignored"
-    );
-
-    let stats = Indexer::new(CacheManager::new(temp.path()), IndexConfig::default())
-        .index(temp.path(), false)
-        .expect("indexing must proceed once the stale lock is reaped");
-    assert!(stats.total_files >= 2);
+    assert!(!cache_dir.join("indexing.lock").exists());
 }
 
 #[test]
@@ -132,11 +166,16 @@ fn the_legacy_bare_pid_lock_format_is_still_read() {
     // 1.7.1 and earlier wrote just the pid. An upgrade must not orphan that lock.
     fs::write(cache_dir.join("indexing.lock"), "1\n").unwrap();
 
-    // pid 1 is not a symbol pass, so it is reaped — which proves it was PARSED.
-    // An unparsed lock would have left pid 0 and been reaped for a different reason,
-    // so also assert the file is gone rather than the parse result directly.
-    assert!(!BackgroundIndexer::is_running(&cache_dir));
-    assert!(!cache_dir.join("indexing.lock").exists());
+    // The observable proof that the bare pid PARSED differs by platform: where
+    // liveness is knowable, pid 1 is recognised as not-a-symbol-pass and reaped.
+    // Where it is not, the lock is honoured on age. Either way it must not error.
+    if reflex::background_indexer::pid_liveness_supported() {
+        assert!(!BackgroundIndexer::is_running(&cache_dir));
+        assert!(!cache_dir.join("indexing.lock").exists());
+    } else {
+        assert!(BackgroundIndexer::is_running(&cache_dir));
+    }
+    // Parsed either way: a holder is returned or the lock was reaped, never a panic.
 }
 
 #[test]

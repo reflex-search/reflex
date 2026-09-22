@@ -109,11 +109,25 @@ fn pid_is_live_symbol_pass(pid: u32) -> Option<bool> {
         Some(String::from_utf8_lossy(&out.stdout).contains("index-symbols-internal"))
     }
 
+    // Windows and everything else: liveness is not determinable without either a
+    // new dependency or an untested `tasklist` shell-out. `None` means "fall back to
+    // the age rule", so a crashed pass holds its lock for at most LOCK_MAX_AGE
+    // (15 minutes) instead of being reaped at once. Degraded, not broken: `rfx index`
+    // still asks the pass to yield and reports `SymbolIndexingInProgress` with the
+    // pid, rather than a raw SQLite error.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         None
     }
+}
+
+/// Whether this platform can tell a live symbol pass from a dead one.
+///
+/// Exposed so tests assert the behaviour the platform actually guarantees, rather
+/// than the behaviour Linux happens to have.
+pub const fn pid_liveness_supported() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
 /// Indexing progress status

@@ -141,6 +141,10 @@ fn reindex_replaces_binaries_atomically_and_keeps_old_readable() {
         .index(root, false)
         .unwrap();
 
+    // Only the Unix assertion below reads this, but it must be captured BEFORE the
+    // reindex lands. Bound under cfg so Windows does not see an unused variable —
+    // CI runs clippy with -D warnings.
+    #[cfg(unix)]
     let before = fs::read(root.join(".reflex/content.bin")).unwrap();
     let held = fs::File::open(root.join(".reflex/content.bin")).unwrap();
 
