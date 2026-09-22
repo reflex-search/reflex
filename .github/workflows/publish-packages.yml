@@ -1,6 +1,23 @@
 name: Publish Packages
 
+# Two publish targets, two trigger paths:
+#
+# * crates.io uses Trusted Publishing (OIDC). crates.io refuses tokens minted
+#   from a `workflow_run` event, so that job runs on the tag `push` itself
+#   (the same event that starts the Release workflow), on `release`, or on
+#   `workflow_dispatch`. `cargo publish` builds from source, so it does not
+#   need the Release artifacts.
+# * npm needs the `*-npm-package.tar.gz` asset from the GitHub release, so
+#   it runs after Release completes (`workflow_run`), on `release`, or on
+#   `workflow_dispatch`. It is skipped on the tag push.
+#
+# Note: the GitHub release is created by the Release workflow with
+# GITHUB_TOKEN, so the `release` event usually does not fire; it is kept as
+# a fallback for releases created by hand.
 on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
   release:
     types: [published]
   workflow_run:
@@ -20,18 +37,22 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    # Never on workflow_run: crates.io Trusted Publishing rejects that event.
     if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
       (github.event_name == 'release' && !github.event.release.prerelease) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          # On dispatch, publish the requested tag, not the default branch.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Check prerelease tag
         id: prerelease_check
         run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            TAG="${{ github.event.workflow_run.head_branch }}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
           elif [ "${{ github.event_name }}" = "release" ]; then
             TAG="${{ github.event.release.tag_name }}"
           else
