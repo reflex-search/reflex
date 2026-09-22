@@ -96,6 +96,37 @@ fn bench_posting_list_intersection(c: &mut Criterion) {
         // "abcde" → 3 trigrams; search returns the pre-computed intersection
         b.iter(|| idx.search(black_box("abcde")))
     });
+
+    // Skewed case: a rare trigram (20 K entries) against a very common one
+    // (200 K entries), mirroring a query such as `realm` on a large repo where
+    // the `rea` list dwarfs the `alm` list. Exercises the gallop path.
+    let mut skewed: Vec<(u32, FileLocation)> = Vec::with_capacity(220_000);
+    for i in 0u32..200_000 {
+        // "abc" on every line 1..=200 of files 0..=999
+        skewed.push((abc, FileLocation::new(i / 200, i % 200 + 1, 0)));
+    }
+    for i in 0u32..20_000 {
+        // "bcd" on every 10th line of the same files (all shared keys)
+        skewed.push((bcd, FileLocation::new(i / 20, (i % 20) * 10 + 1, 1)));
+    }
+    let mut skewed_idx = TrigramIndex::new();
+    skewed_idx.build_from_trigrams(skewed);
+
+    g.bench_function("skewed_20k_vs_200k", |b| {
+        b.iter(|| skewed_idx.search(black_box("abcd")))
+    });
+
+    // Lazy mode: the same skewed index written to disk and memory-mapped, so
+    // only the smallest list is decoded and the large one is streamed.
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("trigrams.bin");
+    skewed_idx.write(&path).unwrap();
+    let lazy_idx = TrigramIndex::load(&path).unwrap();
+
+    g.bench_function("skewed_20k_vs_200k_lazy", |b| {
+        b.iter(|| lazy_idx.search(black_box("abcd")))
+    });
+
     g.finish();
 }
 

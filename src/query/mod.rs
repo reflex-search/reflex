@@ -2423,9 +2423,8 @@ impl QueryEngine {
                 let mut candidate_files: HashSet<u32> = HashSet::new();
 
                 for literal in &literals {
-                    // Search for this literal in the trigram index
-                    let candidates = trigram_index.search(literal);
-                    let file_ids: HashSet<u32> = candidates.iter().map(|loc| loc.file_id).collect();
+                    // Search for this literal in the trigram index (distinct file IDs)
+                    let file_ids = trigram_index.search_files(literal);
 
                     log::debug!("Literal '{}' found in {} files", literal, file_ids.len());
 

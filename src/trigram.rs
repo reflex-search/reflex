@@ -96,44 +96,106 @@ fn decompress_posting_list(mmap: &[u8], offset: u64, size: u32) -> Result<Vec<Fi
 
     let compressed_data = &mmap[start..end];
 
-    // Decompress delta-encoded posting list
-    let mut locations = Vec::new();
-    let mut pos = 0;
-    let mut prev_file_id = 0u32;
-    let mut prev_line_no = 0u32;
-    let mut prev_byte_offset = 0u32;
-
-    while pos < compressed_data.len() {
-        // Read file_id delta
-        let (file_id_delta, consumed) = read_varint(&compressed_data[pos..])?;
-        pos += consumed;
-
-        // Read line_no delta
-        let (line_no_delta, consumed) = read_varint(&compressed_data[pos..])?;
-        pos += consumed;
-
-        // Read byte_offset delta
-        let (byte_offset_delta, consumed) = read_varint(&compressed_data[pos..])?;
-        pos += consumed;
-
-        // Reconstruct absolute values from deltas
-        let file_id = prev_file_id.wrapping_add(file_id_delta);
-        let line_no = prev_line_no.wrapping_add(line_no_delta);
-        let byte_offset = prev_byte_offset.wrapping_add(byte_offset_delta);
-
-        locations.push(FileLocation {
-            file_id,
-            line_no,
-            byte_offset,
-        });
-
-        // Update previous values for next delta
-        prev_file_id = file_id;
-        prev_line_no = line_no;
-        prev_byte_offset = byte_offset;
+    // Rough capacity guess: a typical entry is ~3 bytes (three 1-byte varints)
+    let mut locations = Vec::with_capacity(compressed_data.len() / 3);
+    let mut cursor = PostingCursor::new(compressed_data)?;
+    while let Some(loc) = cursor.current() {
+        locations.push(loc);
+        cursor.advance()?;
     }
 
     Ok(locations)
+}
+
+/// Streaming decoder over a compressed (delta+varint) posting list.
+///
+/// Decodes one `FileLocation` at a time so a large posting list can be
+/// intersected against a small candidate set without materialising it.
+/// Uses the same `wrapping_add` delta scheme as the writer.
+pub(crate) struct PostingCursor<'a> {
+    /// Compressed posting list bytes
+    data: &'a [u8],
+    /// Read position in `data`
+    pos: usize,
+    /// Last decoded location (delta base)
+    prev: FileLocation,
+    /// Current location, `None` once exhausted
+    cur: Option<FileLocation>,
+}
+
+impl<'a> PostingCursor<'a> {
+    /// Create a cursor and decode the first entry (if any)
+    pub(crate) fn new(data: &'a [u8]) -> Result<Self> {
+        let mut cursor = Self {
+            data,
+            pos: 0,
+            prev: FileLocation::new(0, 0, 0),
+            cur: None,
+        };
+        cursor.advance()?;
+        Ok(cursor)
+    }
+
+    /// The entry the cursor is positioned on, or `None` if exhausted
+    #[inline]
+    pub(crate) fn current(&self) -> Option<FileLocation> {
+        self.cur
+    }
+
+    /// Decode the next entry, returning it (or `None` at end of list)
+    pub(crate) fn advance(&mut self) -> Result<Option<FileLocation>> {
+        if self.pos >= self.data.len() {
+            self.cur = None;
+            return Ok(None);
+        }
+
+        let (file_id_delta, consumed) = read_varint(&self.data[self.pos..])?;
+        self.pos += consumed;
+        let (line_no_delta, consumed) = read_varint(&self.data[self.pos..])?;
+        self.pos += consumed;
+        let (byte_offset_delta, consumed) = read_varint(&self.data[self.pos..])?;
+        self.pos += consumed;
+
+        let loc = FileLocation {
+            file_id: self.prev.file_id.wrapping_add(file_id_delta),
+            line_no: self.prev.line_no.wrapping_add(line_no_delta),
+            byte_offset: self.prev.byte_offset.wrapping_add(byte_offset_delta),
+        };
+        self.prev = loc;
+        self.cur = Some(loc);
+        Ok(self.cur)
+    }
+
+    /// Advance until the current key is `>= target` (or the list is exhausted)
+    pub(crate) fn seek(&mut self, target: (u32, u32)) -> Result<Option<FileLocation>> {
+        while let Some(loc) = self.cur {
+            if key(&loc) >= target {
+                break;
+            }
+            self.advance()?;
+        }
+        Ok(self.cur)
+    }
+}
+
+/// Intersect a sorted, key-deduplicated candidate set with a streamed posting list.
+///
+/// For each candidate, seeks the cursor to its key and keeps the candidate when
+/// the keys match. Runs in O(|cands| + |list|) without materialising the list.
+fn intersect_with_cursor(
+    cands: &[FileLocation],
+    cur: &mut PostingCursor,
+) -> Result<Vec<FileLocation>> {
+    let mut out = Vec::new();
+    for cand in cands {
+        let k = key(cand);
+        match cur.seek(k)? {
+            Some(loc) if key(&loc) == k => out.push(*cand),
+            Some(_) => {}
+            None => break,
+        }
+    }
+    Ok(out)
 }
 
 /// Location of a trigram occurrence in the codebase
@@ -897,81 +959,110 @@ impl TrigramIndex {
             return vec![];
         }
 
-        let trigrams = extract_trigrams(pattern);
+        let mut trigrams = extract_trigrams(pattern);
+        // A repeated trigram (e.g. "aaaa") would otherwise be intersected with itself
+        trigrams.sort_unstable();
+        trigrams.dedup();
         if trigrams.is_empty() {
             return vec![];
         }
 
         // Check if we're in lazy-loaded mode or in-memory mode
         if let Some(ref mmap) = self.mmap {
-            // Lazy-loaded mode: decompress posting lists on-demand
-            let mut posting_lists: Vec<Vec<FileLocation>> = Vec::new();
-
+            // Lazy-loaded mode: look up every directory entry first; any miss
+            // means the pattern cannot match.
+            let mut entries: Vec<&DirectoryEntry> = Vec::with_capacity(trigrams.len());
             for trigram in &trigrams {
-                // Binary search directory for this trigram
                 match self.directory.binary_search_by_key(trigram, |e| e.trigram) {
-                    Ok(idx) => {
-                        let entry = &self.directory[idx];
-                        // Decompress this posting list on-demand
-                        match decompress_posting_list(
-                            mmap,
-                            entry.data_offset,
-                            entry.compressed_size,
-                        ) {
-                            Ok(locations) => posting_lists.push(locations),
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to decompress posting list for trigram {}: {}",
-                                    trigram,
-                                    e
-                                );
-                                return vec![];
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Trigram not found - pattern cannot match
+                    Ok(idx) => entries.push(&self.directory[idx]),
+                    Err(_) => return vec![],
+                }
+            }
+
+            // Smallest compressed list first: it is the only one fully decoded.
+            entries.sort_by_key(|e| e.compressed_size);
+
+            let mut cands = match decompress_posting_list(
+                mmap,
+                entries[0].data_offset,
+                entries[0].compressed_size,
+            ) {
+                Ok(locations) => locations,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to decompress posting list for trigram {}: {}",
+                        entries[0].trigram,
+                        e
+                    );
+                    return vec![];
+                }
+            };
+            cands.dedup_by_key(|l| key(l));
+
+            // Stream the remaining lists against the shrinking candidate set.
+            for entry in &entries[1..] {
+                if cands.is_empty() {
+                    break;
+                }
+                let start = entry.data_offset as usize;
+                let end = start + entry.compressed_size as usize;
+                if end > mmap.len() {
+                    log::warn!(
+                        "Posting list out of bounds for trigram {}: offset={}, size={}, mmap_len={}",
+                        entry.trigram,
+                        entry.data_offset,
+                        entry.compressed_size,
+                        mmap.len()
+                    );
+                    return vec![];
+                }
+                let result = PostingCursor::new(&mmap[start..end])
+                    .and_then(|mut cursor| intersect_with_cursor(&cands, &mut cursor));
+                match result {
+                    Ok(next) => cands = next,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to decompress posting list for trigram {}: {}",
+                            entry.trigram,
+                            e
+                        );
                         return vec![];
                     }
                 }
             }
 
-            if posting_lists.is_empty() || posting_lists.len() < trigrams.len() {
-                return vec![];
-            }
-
-            // Sort by list size (smallest first for efficient intersection)
-            posting_lists.sort_by_key(|list| list.len());
-
-            // Intersect posting lists (owned version)
-            intersect_by_file_owned(&posting_lists)
+            cands
         } else {
             // In-memory mode: use pre-loaded index
-            let mut posting_lists: Vec<&Vec<FileLocation>> = trigrams
-                .iter()
-                .filter_map(|t| {
-                    self.index
-                        .binary_search_by_key(t, |(trigram, _)| *trigram)
-                        .ok()
-                        .map(|idx| &self.index[idx].1)
-                })
-                .collect();
-
-            if posting_lists.is_empty() {
-                return vec![];
-            }
-
-            if posting_lists.len() < trigrams.len() {
-                // Some trigrams missing - pattern cannot match
-                return vec![];
+            let mut posting_lists: Vec<&[FileLocation]> = Vec::with_capacity(trigrams.len());
+            for trigram in &trigrams {
+                match self.index.binary_search_by_key(trigram, |(t, _)| *t) {
+                    Ok(idx) => posting_lists.push(&self.index[idx].1),
+                    // Trigram missing - pattern cannot match
+                    Err(_) => return vec![],
+                }
             }
 
             // Sort by list size (smallest first for efficient intersection)
             posting_lists.sort_by_key(|list| list.len());
 
-            // Intersect posting lists (reference version)
-            intersect_by_file(&posting_lists)
+            intersect_sorted(&posting_lists)
         }
+    }
+
+    /// Search for a plain text pattern and return the distinct candidate file IDs
+    ///
+    /// Output is sorted ascending. Same caveats as [`search`](Self::search):
+    /// callers must verify actual matches, and short patterns yield nothing.
+    pub fn search_files(&self, pattern: &str) -> Vec<u32> {
+        let mut files: Vec<u32> = self
+            .search(pattern)
+            .into_iter()
+            .map(|l| l.file_id)
+            .collect();
+        // `search` output is sorted by (file_id, line_no), so duplicates are adjacent
+        files.dedup();
+        files
     }
 
     /// Get posting list for a specific trigram (for debugging)
@@ -1312,86 +1403,72 @@ fn trigram_to_bytes(trigram: Trigram) -> [u8; 3] {
     ]
 }
 
-/// Intersect posting lists by (file_id, line_no) pairs
-///
-/// Returns locations where ALL trigrams appear on the SAME line (not just in the same file).
-/// This ensures accurate full-text matching.
-fn intersect_by_file(lists: &[&Vec<FileLocation>]) -> Vec<FileLocation> {
-    if lists.is_empty() {
-        return vec![];
-    }
-
-    use std::collections::HashSet;
-
-    // Create a set of (file_id, line_no) pairs from the first list
-    let mut candidates: HashSet<(u32, u32)> = lists[0]
-        .iter()
-        .map(|loc| (loc.file_id, loc.line_no))
-        .collect();
-
-    // Intersect with (file_id, line_no) pairs from other lists
-    for &list in &lists[1..] {
-        let list_pairs: HashSet<(u32, u32)> =
-            list.iter().map(|loc| (loc.file_id, loc.line_no)).collect();
-        candidates.retain(|pair| list_pairs.contains(pair));
-    }
-
-    // Convert back to FileLocation results
-    let mut result = Vec::new();
-    for &(file_id, line_no) in &candidates {
-        // Find a location matching this (file_id, line_no) from the first list
-        if let Some(loc) = lists[0]
-            .iter()
-            .find(|loc| loc.file_id == file_id && loc.line_no == line_no)
-        {
-            result.push(*loc);
-        }
-    }
-
-    result.sort_unstable();
-    result
+/// Intersection key: posting lists are matched on (file_id, line_no)
+#[inline]
+fn key(l: &FileLocation) -> (u32, u32) {
+    (l.file_id, l.line_no)
 }
 
-/// Intersect posting lists by (file_id, line_no) pairs (owned version for lazy-loading)
+/// Sorted two-pointer intersection of `a` and `b` on `key`.
 ///
-/// Similar to intersect_by_file() but works with owned Vec<Vec<FileLocation>>
-/// instead of references. Used in lazy-loading mode where posting lists are decompressed on-demand.
-///
-/// Returns locations where ALL trigrams appear on the SAME line (not just in the same file).
-fn intersect_by_file_owned(lists: &[Vec<FileLocation>]) -> Vec<FileLocation> {
-    if lists.is_empty() {
-        return vec![];
-    }
+/// `a` is the running candidate set (sorted, deduplicated by key). `b` is a sorted
+/// posting list that may hold several entries per key (same line, different
+/// byte offsets); all of them are consumed on a match. When `b` is much larger
+/// than `a`, the scan of `b` gallops via `partition_point`. Output keeps the
+/// `FileLocation` from `a`, so it stays sorted and key-unique.
+fn intersect_two(a: &[FileLocation], b: &[FileLocation]) -> Vec<FileLocation> {
+    let mut out = Vec::with_capacity(a.len().min(b.len()));
+    let gallop = b.len() > 8 * a.len();
+    let (mut i, mut j) = (0, 0);
 
-    use std::collections::HashSet;
-
-    // Create a set of (file_id, line_no) pairs from the first list
-    let mut candidates: HashSet<(u32, u32)> = lists[0]
-        .iter()
-        .map(|loc| (loc.file_id, loc.line_no))
-        .collect();
-
-    // Intersect with (file_id, line_no) pairs from other lists
-    for list in &lists[1..] {
-        let list_pairs: HashSet<(u32, u32)> =
-            list.iter().map(|loc| (loc.file_id, loc.line_no)).collect();
-        candidates.retain(|pair| list_pairs.contains(pair));
-    }
-
-    // Convert back to FileLocation results
-    let mut result = Vec::new();
-    for &(file_id, line_no) in &candidates {
-        // Find a location matching this (file_id, line_no) from the first list
-        if let Some(loc) = lists[0]
-            .iter()
-            .find(|loc| loc.file_id == file_id && loc.line_no == line_no)
-        {
-            result.push(*loc);
+    while i < a.len() && j < b.len() {
+        let ka = key(&a[i]);
+        match key(&b[j]).cmp(&ka) {
+            std::cmp::Ordering::Less => {
+                if gallop {
+                    j += b[j..].partition_point(|x| key(x) < ka);
+                } else {
+                    j += 1;
+                }
+            }
+            std::cmp::Ordering::Greater => i += 1,
+            std::cmp::Ordering::Equal => {
+                out.push(a[i]);
+                i += 1;
+                // Consume every entry in `b` with this key
+                j += 1;
+                while j < b.len() && key(&b[j]) == ka {
+                    j += 1;
+                }
+            }
         }
     }
 
-    result.sort_unstable();
-    result
+    out
+}
+
+/// Intersect sorted posting lists by (file_id, line_no).
+///
+/// Returns locations where ALL trigrams appear on the SAME line (not just in the
+/// same file), keeping the `FileLocation` from the first list. Callers should
+/// pass lists smallest-first: the first list is copied and deduplicated by key,
+/// then folded against the rest in linear time.
+pub(crate) fn intersect_sorted(lists: &[&[FileLocation]]) -> Vec<FileLocation> {
+    let Some((first, rest)) = lists.split_first() else {
+        return vec![];
+    };
+
+    let mut cands = first.to_vec();
+    cands.dedup_by_key(|l| key(l));
+
+    for list in rest {
+        if cands.is_empty() {
+            break;
+        }
+        cands = intersect_two(&cands, list);
+    }
+
+    cands
 }
 
 #[cfg(test)]
@@ -1539,6 +1616,220 @@ mod tests {
 
         // Note: Full roundtrip test verifies write works correctly.
         // Load verification is tested in production via query performance tests.
+    }
+
+    fn loc(file_id: u32, line_no: u32, byte_offset: u32) -> FileLocation {
+        FileLocation::new(file_id, line_no, byte_offset)
+    }
+
+    #[test]
+    fn test_intersect_two_empty() {
+        let a = [loc(0, 1, 0), loc(1, 2, 0)];
+        assert!(intersect_two(&a, &[]).is_empty());
+        assert!(intersect_two(&[], &a).is_empty());
+        assert!(intersect_two(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn test_intersect_two_disjoint() {
+        let a = [loc(0, 1, 0), loc(0, 3, 0), loc(2, 1, 0)];
+        let b = [loc(0, 2, 0), loc(1, 1, 0), loc(2, 2, 0)];
+        assert!(intersect_two(&a, &b).is_empty());
+        assert!(intersect_two(&b, &a).is_empty());
+    }
+
+    #[test]
+    fn test_intersect_two_duplicate_keys_in_b() {
+        // Same line, several byte offsets in `b`; result keeps `a`'s location once
+        let a = [loc(0, 1, 5), loc(0, 2, 9), loc(1, 1, 3)];
+        let b = [
+            loc(0, 1, 0),
+            loc(0, 1, 4),
+            loc(0, 1, 8),
+            loc(1, 1, 0),
+            loc(1, 1, 1),
+            loc(1, 2, 0),
+        ];
+        assert_eq!(intersect_two(&a, &b), vec![loc(0, 1, 5), loc(1, 1, 3)]);
+    }
+
+    #[test]
+    fn test_intersect_two_gallop_path() {
+        // 1 vs 200 entries forces the gallop branch (b.len() > 8 * a.len())
+        let b: Vec<FileLocation> = (0u32..200).map(|i| loc(i / 10, i % 10 + 1, i)).collect();
+        assert_eq!(intersect_two(&[loc(7, 4, 99)], &b), vec![loc(7, 4, 99)]);
+        assert!(intersect_two(&[loc(7, 11, 99)], &b).is_empty());
+        assert!(intersect_two(&[loc(20, 1, 0)], &b).is_empty());
+
+        // A few shared keys spread through a large `b`
+        let a = [
+            loc(0, 1, 1),
+            loc(5, 5, 1),
+            loc(12, 3, 1),
+            loc(19, 10, 1),
+            loc(25, 1, 1),
+        ];
+        assert_eq!(
+            intersect_two(&a, &b),
+            vec![loc(0, 1, 1), loc(5, 5, 1), loc(12, 3, 1), loc(19, 10, 1)]
+        );
+    }
+
+    #[test]
+    fn test_intersect_two_all_equal() {
+        let a: Vec<FileLocation> = (0u32..50).map(|i| loc(i, 1, 0)).collect();
+        let b: Vec<FileLocation> = (0u32..50).map(|i| loc(i, 1, 7)).collect();
+        assert_eq!(intersect_two(&a, &b), a);
+    }
+
+    /// Minimal LCG so the property test is deterministic without extra crates
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) as u32
+        }
+    }
+
+    fn random_sorted_list(rng: &mut Lcg, n: usize) -> Vec<FileLocation> {
+        // Keys from a small range (40 files x 60 lines) to force heavy overlap
+        let mut list: Vec<FileLocation> = (0..n)
+            .map(|_| loc(rng.next() % 40, rng.next() % 60 + 1, rng.next() % 500))
+            .collect();
+        list.sort_unstable();
+        list.dedup();
+        list
+    }
+
+    fn reference_intersection(lists: &[&[FileLocation]]) -> Vec<FileLocation> {
+        use std::collections::HashSet;
+        let mut keys: HashSet<(u32, u32)> = lists[0].iter().map(key).collect();
+        for list in &lists[1..] {
+            let set: HashSet<(u32, u32)> = list.iter().map(key).collect();
+            keys.retain(|k| set.contains(k));
+        }
+        let mut out: Vec<FileLocation> = keys
+            .iter()
+            .map(|k| *lists[0].iter().find(|l| key(l) == *k).unwrap())
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
+    fn test_intersect_sorted_matches_reference() {
+        let mut rng = Lcg(0x5eed);
+        for _ in 0..5 {
+            let lists: Vec<Vec<FileLocation>> = (0..3)
+                .map(|_| random_sorted_list(&mut rng, 5_000))
+                .collect();
+            let mut refs: Vec<&[FileLocation]> = lists.iter().map(|l| l.as_slice()).collect();
+            refs.sort_by_key(|l| l.len());
+
+            let expected = reference_intersection(&refs);
+            assert!(!expected.is_empty(), "test data should overlap");
+            assert_eq!(intersect_sorted(&refs), expected);
+        }
+    }
+
+    #[test]
+    fn test_lazy_search_matches_in_memory() {
+        use tempfile::TempDir;
+
+        let mut rng = Lcg(0xbeef);
+        let mut index = TrigramIndex::new();
+        for i in 0..40 {
+            index.add_file(PathBuf::from(format!("f{i}.txt")));
+        }
+        // Random lines built from a small alphabet so the pattern's trigrams
+        // occur on many lines with widely differing posting-list sizes.
+        let words = ["realm", "real", "alma", "lmn", "rea", "xyz", "ealm"];
+        for file_id in 0..40u32 {
+            let mut content = String::new();
+            for _ in 0..60 {
+                for _ in 0..4 {
+                    content.push_str(words[(rng.next() % words.len() as u32) as usize]);
+                    content.push(' ');
+                }
+                content.push('\n');
+            }
+            index.index_file(file_id, &content);
+        }
+        index.finalize();
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("trigrams.bin");
+        index.write(&path).unwrap();
+        let lazy = TrigramIndex::load(&path).unwrap();
+
+        // Compare on (file_id, line_no): the two modes order lists by entry
+        // count vs compressed size, so the retained byte_offset may differ.
+        let keys = |v: Vec<FileLocation>| v.iter().map(key).collect::<Vec<_>>();
+        for pattern in ["realm", "alma", "xyz", "lmn r", "ealm x", "nothing"] {
+            let expected = keys(index.search(pattern));
+            let actual = keys(lazy.search(pattern));
+            assert_eq!(actual, expected, "pattern {pattern:?}");
+            assert_eq!(lazy.search_files(pattern), index.search_files(pattern));
+        }
+
+        let files = lazy.search_files("realm");
+        assert!(!files.is_empty());
+        assert!(files.windows(2).all(|w| w[0] < w[1]), "sorted, distinct");
+    }
+
+    #[test]
+    fn test_search_repeated_trigram_returns_line_once() {
+        use tempfile::TempDir;
+
+        let mut index = TrigramIndex::new();
+        let file_id = index.add_file(PathBuf::from("a.txt"));
+        index.index_file(file_id, "x\naaaa\ny");
+        index.finalize();
+
+        let results = index.search("aaaa");
+        assert_eq!(results.len(), 1);
+        assert_eq!(key(&results[0]), (file_id, 2));
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("trigrams.bin");
+        index.write(&path).unwrap();
+        let lazy = TrigramIndex::load(&path).unwrap();
+        assert_eq!(lazy.search("aaaa"), results);
+    }
+
+    #[test]
+    fn test_posting_cursor_roundtrip() {
+        let locations = vec![loc(0, 1, 0), loc(0, 1, 4), loc(0, 7, 90), loc(3, 2, 10)];
+        let mut data = Vec::new();
+        let mut prev = loc(0, 0, 0);
+        for l in &locations {
+            write_varint(&mut data, l.file_id.wrapping_sub(prev.file_id)).unwrap();
+            write_varint(&mut data, l.line_no.wrapping_sub(prev.line_no)).unwrap();
+            write_varint(&mut data, l.byte_offset.wrapping_sub(prev.byte_offset)).unwrap();
+            prev = *l;
+        }
+
+        assert_eq!(
+            decompress_posting_list(&data, 0, data.len() as u32).unwrap(),
+            locations
+        );
+
+        let mut cursor = PostingCursor::new(&data).unwrap();
+        assert_eq!(cursor.current(), Some(loc(0, 1, 0)));
+        assert_eq!(cursor.seek((0, 7)).unwrap(), Some(loc(0, 7, 90)));
+        assert_eq!(cursor.seek((1, 1)).unwrap(), Some(loc(3, 2, 10)));
+        assert_eq!(cursor.seek((9, 9)).unwrap(), None);
+        assert_eq!(cursor.current(), None);
+
+        let empty = PostingCursor::new(&[]).unwrap();
+        assert_eq!(empty.current(), None);
+
+        // Truncated varint surfaces as an error rather than a panic
+        assert!(PostingCursor::new(&[0x80]).is_err());
     }
 
     #[test]
