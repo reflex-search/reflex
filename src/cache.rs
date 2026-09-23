@@ -460,8 +460,8 @@ impl CacheManager {
         let default_config = r#"[index]
 languages = []  # Empty = all supported languages
 text_tier = true  # Also index docs, config and every other non-binary file
-# "tracked" (default): every file git tracks or does not ignore, unless binary —
-#   ripgrep's rule. Lock and generated files are indexed but excluded from
+# "tracked" (default): every non-binary file that is not gitignored and not under a
+#   dot-directory — ripgrep's defaults (hidden = true walks dot-directories). Lock and generated files are indexed but excluded from
 #   searches unless asked for (include_locks / include_generated / lang).
 # "allowlist": the pre-1.8.0 rule — code plus a fixed docs/config extension list.
 mode = "tracked"

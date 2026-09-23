@@ -121,7 +121,7 @@ fn paths_only_result(response: &crate::models::QueryResponse) -> serde_json::Val
     if response.pagination.has_more {
         result["has_more"] = json!(true);
     }
-    annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
+    annotate_literal_result(&mut result, response);
     result
 }
 
@@ -136,7 +136,25 @@ fn paths_only_result(response: &crate::models::QueryResponse) -> serde_json::Val
 /// A handler that serialises the whole `QueryResponse` already carries both fields;
 /// this is for the tools that build their own compact object, and it is idempotent
 /// (`insert` replaces), so calling it on a full response is harmless.
-fn annotate_literal_result(response: &mut Value, warnings: &[String], hint: Option<&str>) {
+fn annotate_literal_result(response: &mut Value, engine: &crate::models::QueryResponse) {
+    annotate_literal_fields(
+        response,
+        &engine.warnings,
+        engine.hint.as_deref(),
+        engine.excluded_reason,
+        engine.excluded_by_default,
+    );
+}
+
+/// [`annotate_literal_result`] for a handler that has already moved the engine
+/// response into its JSON and kept only these fields.
+fn annotate_literal_fields(
+    response: &mut Value,
+    warnings: &[String],
+    hint: Option<&str>,
+    excluded_reason: Option<crate::query::ExcludedReason>,
+    excluded_by_default: Option<usize>,
+) {
     let Some(obj) = response.as_object_mut() else {
         return;
     };
@@ -145,6 +163,14 @@ fn annotate_literal_result(response: &mut Value, warnings: &[String], hint: Opti
     }
     if let Some(hint) = hint {
         obj.insert("hint".to_string(), json!(hint));
+    }
+    // The machine-readable cause beside the prose, and the scoped lock/generated
+    // count, so a harness can branch without parsing the sentence.
+    if let Some(reason) = excluded_reason {
+        obj.insert("excluded_reason".to_string(), json!(reason));
+    }
+    if let Some(n) = excluded_by_default {
+        obj.insert("excluded_by_default".to_string(), json!(n));
     }
 }
 
@@ -201,7 +227,7 @@ Rules: the required argument is always "pattern", never "query", "symbol", or "t
 
 Use find_references for a definition plus every call site without string/comment noise. Use get_dependents for what imports a file.
 
-Coverage is every non-binary tracked file, like ripgrep; lock and generated files need include_locks / include_generated.
+Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated.
 
 On an "Index not found" or "corrupted" error, call index_project, then retry the failed tool. Only fall back to Grep/Glob after index_project has been called and the tool still fails."#;
 
@@ -241,7 +267,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
         "tools": [
             {
                 "name": "list_locations",
-                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns an array of `{path, line}` objects — one per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. COVERAGE: every file git tracks or does not ignore, unless it is binary — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile), the same set ripgrep searches. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`; a zero result says how many such files it skipped (`excluded_by_default`). Dot-directories are not indexed unless the project sets `[index] hidden = true`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns an array of `{path, line}` objects — one per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. COVERAGE matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …) — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile). Hidden paths are not indexed unless the project sets `[index] hidden = true`; use grep for those. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`. A zero result carries `excluded_reason` (`hidden` | `not_indexed` | `lock_or_generated` | `whole_identifier`) and a `hint` naming the one cause; `excluded_by_default` counts the lock/generated files under your filter. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -297,7 +323,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "count_occurrences",
-                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. COVERAGE: every file git tracks or does not ignore, unless it is binary — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile), the same set ripgrep searches. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`; a zero result says how many such files it skipped (`excluded_by_default`). Dot-directories are not indexed unless the project sets `[index] hidden = true`. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. COVERAGE matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …) — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile). Hidden paths are not indexed unless the project sets `[index] hidden = true`; use grep for those. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`. A zero result carries `excluded_reason` (`hidden` | `not_indexed` | `lock_or_generated` | `whole_identifier`) and a `hint` naming the one cause; `excluded_by_default` counts the lock/generated files under your filter. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -361,7 +387,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "search_code",
-                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE: every file git tracks or does not ignore, unless it is binary — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile), the same set ripgrep searches. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`; a zero result says how many such files it skipped (`excluded_by_default`). Dot-directories are not indexed unless the project sets `[index] hidden = true`. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` is `rg -i`; combine with `contains` for `rg -i -F`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full: `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …) — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile). Hidden paths are not indexed unless the project sets `[index] hidden = true`; use grep for those. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`. A zero result carries `excluded_reason` (`hidden` | `not_indexed` | `lock_or_generated` | `whole_identifier`) and a `hint` naming the one cause; `excluded_by_default` counts the lock/generated files under your filter. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` is `rg -i`; combine with `contains` for `rg -i -F`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full: `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -454,7 +480,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "search_regex",
-                "description": "Regex code search across the whole codebase. Prefer this over `rg` / `grep -E` / `grep -P` for pattern matching across files — one call returns every match with file paths, line numbers, and previews. \n\nUse this for patterns with special characters or regex operators: `->with\\(`, `::new\\(`, `fn (get|set)_\\w+`, `\\[(derive|test)\\]`, `\\bAuth\\w*Controller\\b`, alternation `a|b`, anchors `^$`, wildcards `.*`. Escaping: must escape `( ) [ ] { } . * + ? \\\\ | ^ $`; no escaping needed for `-> :: - _ / = < >`; in JSON use double backslashes (`\\\\(`, `\\\\[`). \n\nFor simple alphanumeric patterns use `search_code` instead — it is faster and avoids escaping overhead. For symbol definitions use `search_code` with `symbols: true`. \n\n`mode: \"count\"` returns `{count, pattern}` only. List-mode result shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` prepends `(?i)`. A `(?i)` regex with a literal of 3+ chars still uses the trigram index; only a pattern with no such literal (`\\w+_id`) scans every file, and says so in `warnings`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. Pagination: if `response.pagination.has_more` is true, fetch the next page with `offset`. `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Regex code search across the whole codebase — the same COVERAGE as search_code (ripgrep's defaults: not gitignored, not binary, not under a dot-directory; lock/generated files need include_locks / include_generated). Prefer this over `rg` / `grep -E` / `grep -P` for pattern matching across files — one call returns every match with file paths, line numbers, and previews. \n\nUse this for patterns with special characters or regex operators: `->with\\(`, `::new\\(`, `fn (get|set)_\\w+`, `\\[(derive|test)\\]`, `\\bAuth\\w*Controller\\b`, alternation `a|b`, anchors `^$`, wildcards `.*`. Escaping: must escape `( ) [ ] { } . * + ? \\\\ | ^ $`; no escaping needed for `-> :: - _ / = < >`; in JSON use double backslashes (`\\\\(`, `\\\\[`). \n\nFor simple alphanumeric patterns use `search_code` instead — it is faster and avoids escaping overhead. For symbol definitions use `search_code` with `symbols: true`. \n\n`mode: \"count\"` returns `{count, pattern}` only. List-mode result shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` prepends `(?i)`. A `(?i)` regex with a literal of 3+ chars still uses the trigram index; only a pattern with no such literal (`\\w+_id`) scans every file, and says so in `warnings`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. Pagination: if `response.pagination.has_more` is true, fetch the next page with `offset`. `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -744,7 +770,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "find_references",
-                "description": "Atomic symbol definition + every usage in one call. Prefer this over the two-step Grep-based find-all-callers pattern (search, then filter to call sites by eye) and over chaining `search_code(symbols=true) + search_code()` — `find_references` returns both the definition and all call sites in a single call, complete with no follow-up searches needed. \n\nUse this for: \"find all callers of X\" (the most common agent refactoring task); impact analysis before changing a function or class; rename planning; dead-code detection before deleting a function. \n\nBy default, matches inside string literals and comments are excluded (so test fixtures and doc comments don't drown out real call sites); pass `include_strings: true` to restore all occurrences. CODE FILES ONLY: the docs/config tier (md, yaml, json, toml, html, sh, proto) is never searched here, because a name mentioned in a changelog is not a call site — use search_code with `lang: \"text\"` for those. Returns `{definition, references, total_references, returned_count, filtered_out, pagination, status}`. `pagination.total` and `total_references` are the RAW totals before string/comment filtering (that is the space `offset` indexes into); `returned_count` is what this page actually returns after filtering, and `filtered_out` is the difference — they are not expected to be equal. `definition` is the first symbol definition (`{path, line, kind, symbol, span, preview}`) or null, and `references` is a flat array of `{path, line, preview}` covering every textual occurrence including the definition site itself. Pagination applies to `references` only; if `pagination.has_more` is true, fetch the next page with `offset`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Atomic symbol definition + every usage in one call. Prefer this over the two-step Grep-based find-all-callers pattern (search, then filter to call sites by eye) and over chaining `search_code(symbols=true) + search_code()` — `find_references` returns both the definition and all call sites in a single call, complete with no follow-up searches needed. \n\nUse this for: \"find all callers of X\" (the most common agent refactoring task); impact analysis before changing a function or class; rename planning; dead-code detection before deleting a function. \n\nBy default, matches inside string literals and comments are excluded (so test fixtures and doc comments don't drown out real call sites); pass `include_strings: true` to restore all occurrences. CODE FILES ONLY: the docs/config tier (md, yaml, json, toml, html, sh, proto) is never searched here, because a name mentioned in a changelog is not a call site — use search_code with `lang: \"text\"` for those. Coverage otherwise matches ripgrep's defaults: hidden paths (dot-directories) and gitignored files are not indexed. Returns `{definition, references, total_references, returned_count, filtered_out, pagination, status}`. `pagination.total` and `total_references` are the RAW totals before string/comment filtering (that is the space `offset` indexes into); `returned_count` is what this page actually returns after filtering, and `filtered_out` is the difference — they are not expected to be equal. `definition` is the first symbol definition (`{path, line, kind, symbol, span, preview}`) or null, and `references` is a flat array of `{path, line, preview}` covering every textual occurrence including the definition site itself. Pagination applies to `references` only; if `pagination.has_more` is true, fetch the next page with `offset`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -850,7 +876,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "check_index_status",
-                "description": "Check whether the Reflex search index is fresh, stale, or missing — without running any search. Call this at session start, after any git operation (checkout, merge, rebase, pull), and after editing files. \n\nReturns `{status: \"fresh\" | \"stale\" | \"missing\", can_trust_results, reason?, action_required?, files_modified?, files_added?, files_deleted?, changed_count?, details}`. The three file lists name the actual paths (capped at 100 each; `truncated` is set if cut short). `action_required` is the tool to call — `index_project`. \n\nFreshness is judged by FILE CONTENT, not by commit: every indexed file has a recorded fingerprint, and the index is stale only when a file on disk differs from it — edited, newly created, or deleted, whether or not the change is committed. So: edit → stale; `index_project` → fresh again, with no commit needed. Committing already-indexed content, or switching to a branch with the same tree, is NOT stale; `details.indexed_commit` and `details.current_commit` may differ while status is fresh. Reverting a file after its edit was indexed IS stale. A deleted file is the serious one: it still produces hits at its old lines until you reindex. `details.checked_by` says how the tree was compared: `git` (candidates from `git status`, confirmed by fingerprint) or `walk` (no git; every file stat'ed). \n\nA stale index always has `can_trust_results: false`, including for a zero-result search. \n\nExample fresh: `{\"status\": \"fresh\", \"can_trust_results\": true, \"details\": {\"current_branch\": \"main\", \"indexed_commit\": \"9af2695…\", \"current_commit\": \"a473cae…\", \"checked_by\": \"git\"}}`. Example stale: `{\"status\": \"stale\", \"can_trust_results\": false, \"reason\": \"Files changed since the index was built (2 modified, 1 added)\", \"action_required\": \"index_project\", \"files_modified\": [\"src/storage/mod.rs\", \"src/lib.rs\"], \"files_added\": [\"src/storage/zz_probe.rs\"], \"changed_count\": 3}`",
+                "description": "Check whether the Reflex search index is fresh, stale, or missing — without running any search. Call this at session start, after any git operation (checkout, merge, rebase, pull), and after editing files. \n\nReturns `{status: \"fresh\" | \"stale\" | \"missing\", can_trust_results, details, reason?, action_required?, files_modified?, files_added?, files_deleted?, changed_count?}`. The three file lists and `reason` are present only when stale; they name the actual paths (capped at 100 each; `truncated` is set if cut short). `details.checked_by` is `git` or `walk`. `action_required` is the tool to call — `index_project`. \n\nFreshness is judged by FILE CONTENT, not by commit: every indexed file has a recorded fingerprint, and the index is stale only when a file on disk differs from it — edited, newly created, or deleted, whether or not the change is committed. So: edit → stale; `index_project` → fresh again, with no commit needed. Committing already-indexed content, or switching to a branch with the same tree, is NOT stale; `details.indexed_commit` and `details.current_commit` may differ while status is fresh. Reverting a file after its edit was indexed IS stale. A deleted file is the serious one: it still produces hits at its old lines until you reindex. `details.checked_by` says how the tree was compared: `git` (candidates from `git status`, confirmed by fingerprint) or `walk` (no git; every file stat'ed). \n\nA stale index always has `can_trust_results: false`, including for a zero-result search. \n\nExample fresh: `{\"status\": \"fresh\", \"can_trust_results\": true, \"details\": {\"current_branch\": \"main\", \"indexed_commit\": \"9af2695…\", \"current_commit\": \"a473cae…\", \"checked_by\": \"git\"}}`. Example stale: `{\"status\": \"stale\", \"can_trust_results\": false, \"reason\": \"Files changed since the index was built (2 modified, 1 added)\", \"action_required\": \"index_project\", \"files_modified\": [\"src/storage/mod.rs\", \"src/lib.rs\"], \"files_added\": [\"src/storage/zz_probe.rs\"], \"changed_count\": 3}`",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -1662,11 +1688,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "total_locations": locations.len(),
                 "locations": locations
             });
-            annotate_literal_result(
-                &mut compact_response,
-                &response.warnings,
-                response.hint.as_deref(),
-            );
+            annotate_literal_result(&mut compact_response, &response);
 
             Ok(compact_response)
         }
@@ -1751,7 +1773,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "total": exact_total_or_count(&response),
                 "files": response.file_count.unwrap_or(unique_files.len())
             });
-            annotate_literal_result(&mut stats, &response.warnings, response.hint.as_deref());
+            annotate_literal_result(&mut stats, &response);
 
             Ok(stats)
         }
@@ -1864,7 +1886,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
                 let mut result =
                     json!({"count": exact_total_or_count(&response), "pattern": pattern});
-                annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
+                annotate_literal_result(&mut result, &response);
                 return Ok(result);
             }
 
@@ -1941,6 +1963,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let approx_total = response.pagination.approx_total;
             let engine_warnings = response.warnings.clone();
             let engine_hint = response.hint.clone();
+            let engine_reason = response.excluded_reason;
+            let engine_excluded = response.excluded_by_default;
 
             let mut response_val = serde_json::to_value(response)?;
             if let serde_json::Value::Object(ref mut map) = response_val {
@@ -1960,7 +1984,13 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             }
 
             // Applied after the columnar reshape so the hint survives both shapes.
-            annotate_literal_result(&mut response_val, &engine_warnings, engine_hint.as_deref());
+            annotate_literal_fields(
+                &mut response_val,
+                &engine_warnings,
+                engine_hint.as_deref(),
+                engine_reason,
+                engine_excluded,
+            );
 
             Ok(response_val)
         }
@@ -2042,7 +2072,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
                 let mut result =
                     json!({"count": exact_total_or_count(&response), "pattern": pattern});
-                annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
+                annotate_literal_result(&mut result, &response);
                 return Ok(result);
             }
 
@@ -2853,7 +2883,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 };
 
                 let mut result = json!({"count": count, "pattern": pattern});
-                annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
+                annotate_literal_result(&mut result, &response);
                 return Ok(result);
             }
 
@@ -2984,6 +3014,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let has_more = ref_response.pagination.has_more;
             let engine_warnings = ref_response.warnings.clone();
             let engine_hint = ref_response.hint.clone();
+            let engine_reason = ref_response.excluded_reason;
+            let engine_excluded = ref_response.excluded_by_default;
 
             let mut response = json!({
                 "status": ref_response.status,
@@ -2996,7 +3028,13 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "has_more": has_more,
                 "pagination": ref_response.pagination,
             });
-            annotate_literal_result(&mut response, &engine_warnings, engine_hint.as_deref());
+            annotate_literal_fields(
+                &mut response,
+                &engine_warnings,
+                engine_hint.as_deref(),
+                engine_reason,
+                engine_excluded,
+            );
 
             Ok(response)
         }
@@ -3298,6 +3336,43 @@ mod tests {
         assert!(MCP_INSTRUCTIONS.contains("find_references {\"pattern\":"));
     }
 
+    /// The coverage text must say what is true: ripgrep's defaults, which skip
+    /// dot-directories. "Every tracked file" made an agent trust a false zero.
+    #[test]
+    fn test_coverage_text_matches_ripgrep_defaults() {
+        let tools = handle_list_tools(None, true).unwrap();
+        let mut texts: Vec<String> = vec![MCP_INSTRUCTIONS.to_string()];
+        for t in tools["tools"].as_array().unwrap() {
+            let d = t["description"].as_str().unwrap();
+            if d.contains("COVERAGE") || d.contains("Coverage") {
+                texts.push(d.to_string());
+            }
+        }
+        assert!(
+            texts.len() >= 6,
+            "instructions + 5 tool descriptions: {}",
+            texts.len()
+        );
+        for text in &texts {
+            assert!(
+                text.contains("dot-director"),
+                "{}",
+                &text[..text.len().min(120)]
+            );
+            for bad in [
+                "every tracked file",
+                "every non-binary tracked file",
+                "every file git tracks",
+            ] {
+                assert!(
+                    !text.contains(bad),
+                    "{bad:?} in {}",
+                    &text[..text.len().min(120)]
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_instructions_name_canonical_arg_names() {
         for needle in [
@@ -3321,8 +3396,10 @@ mod tests {
     #[test]
     fn test_instructions_size_budget() {
         assert!(
-            MCP_INSTRUCTIONS.len() <= 1600,
-            "instructions are paid for on every session; keep them under 1600 chars (got {})",
+            // 1700, not 1600: the ripgrep-default coverage sentence (1.8.0) costs ~25
+            // tokens per session and prevents an agent trusting a false zero.
+            MCP_INSTRUCTIONS.len() <= 1700,
+            "instructions are paid for on every session; keep them under 1700 chars (got {})",
             MCP_INSTRUCTIONS.len()
         );
     }

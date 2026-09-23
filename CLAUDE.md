@@ -346,9 +346,10 @@ Reflex indexes non-code files, because **agents do not partition searches by fil
 type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
 returning only the struct and a confident `0` for the rest is a wrong answer.
 
-**Coverage rule (1.8.0, `[index] mode = "tracked"`, the default)**: ripgrep's — every
-file not excluded by `.gitignore` / `.ignore` / `.rgignore` / `[index] exclude`, unless
-a NUL byte anywhere in it says it is binary (ripgrep's rule). So `OWNERS`, `SECURITY_CONTACTS`,
+**Coverage rule (1.8.0, `[index] mode = "tracked"`, the default)**: ripgrep's defaults —
+every non-binary file (no NUL byte anywhere) that is not excluded by `.gitignore` /
+`.ignore` / `.rgignore` / `[index] exclude` and not under a dot-directory (`.github/`,
+`.githooks/`, `.cargo/`; `[index] hidden = true` walks them). So `OWNERS`, `SECURITY_CONTACTS`,
 `foo.po`, `a.css`, `data.jsonl`, `Makefile`, `Dockerfile` and every other extensionless
 or unlisted name are `language: "text"`. Code is still classified by extension
 (`.mjs` / `.cjs` are JavaScript, with symbols). Non-UTF-8 text (Latin-1 `.po`) is

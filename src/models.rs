@@ -555,7 +555,7 @@ pub struct IndexConfig {
     /// and gets the new default.
     #[serde(default = "default_true")]
     pub text_tier: bool,
-    /// Which non-code files the text tier takes: every non-binary tracked file
+    /// Which non-code files the text tier takes: every non-binary, non-hidden, non-ignored file
     /// (`tracked`, the default since 1.8.0) or the fixed extension list
     /// (`allowlist`, the pre-1.8.0 rule).
     #[serde(default)]
@@ -584,9 +584,9 @@ impl Default for IndexConfig {
             query_timeout_secs: 30,            // 30 seconds default timeout
             max_posting_list_entries: 500_000, // cap at 500k to bound query latency
             text_tier: true,                   // docs and config are searchable by default
-            mode: IndexMode::Tracked,          // every non-binary tracked file
-            hidden: false,                     // dot-directories skipped, like ripgrep
-            lock_wait_secs: 0,                 // fail fast when another indexer runs
+            mode: IndexMode::Tracked, // ripgrep defaults: not ignored, not hidden, not binary
+            hidden: false,            // dot-directories skipped, like ripgrep
+            lock_wait_secs: 0,        // fail fast when another indexer runs
         }
     }
 }
@@ -681,6 +681,9 @@ pub struct IndexStats {
     /// Unchanged files (same hash as last run, still re-indexed due to other changes)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unchanged_files: usize,
+    /// Files dropped from the index because they no longer exist on disk
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub deleted_files: usize,
     /// Files skipped because they exceeded max_file_size
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_too_large: usize,
@@ -905,6 +908,12 @@ pub struct QueryResponse {
     /// whole-identifier one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Machine-readable cause behind `hint`: `hidden` (the filter names a
+    /// dot-directory), `not_indexed` (the `file` filter names a path the index does
+    /// not hold), `lock_or_generated`, `whole_identifier`. Absent when no rule
+    /// applies, so a harness can branch without parsing prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_reason: Option<crate::query::ExcludedReason>,
     /// For a search that found nothing: how many candidate files were lock or
     /// generated files, which every search leaves out unless `include_locks` /
     /// `include_generated` (or `lang`) asks for them. The `hint` says so too.

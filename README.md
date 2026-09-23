@@ -226,7 +226,9 @@ Full symbol extraction (functions, classes, methods, types, etc.) for 15 languag
 
 > **Swift** is temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). `rfx query --lang swift` emits a warning; full-text search still works.
 
-Full-text search works on **all file types** regardless of parser support.
+### Coverage
+
+Coverage matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …). Hidden paths are not indexed — use grep for those. Lock and generated files are indexed but left out of results unless you pass include_locks / include_generated. Select the non-code tier with `--lang text`; select lock or generated files alone with `--lang lock` / `--lang generated`. `[index] mode = "allowlist"` restores the pre-1.8.0 fixed extension list; `[index] hidden = true` indexes dot-directories (never `.git/` or `.reflex/`). A zero result names its cause in `excluded_reason` (`hidden`, `not_indexed`, `lock_or_generated`, `whole_identifier`) and a `hint`.
 
 ---
 

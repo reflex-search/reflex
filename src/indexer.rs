@@ -235,7 +235,7 @@ impl PathPolicy {
                 if seg == ".git" || seg == crate::cache::CACHE_DIR {
                     return false;
                 }
-                self.hidden || !seg.starts_with('.')
+                self.hidden || !is_hidden_segment(seg)
             })
     }
 
@@ -266,6 +266,12 @@ struct Discovered {
     skipped_too_large: usize,
     skipped_bytes_too_large: u64,
     skipped_binary: usize,
+}
+
+/// A path segment the walker treats as hidden: a dot-name other than `.` / `..`.
+/// Shared by the walker policy, the freshness check and the zero-result hint.
+pub fn is_hidden_segment(seg: &str) -> bool {
+    seg.len() > 1 && seg.starts_with('.') && seg != ".."
 }
 
 /// ripgrep's binary rule: a NUL byte anywhere in the file.
@@ -455,20 +461,21 @@ impl Indexer {
         // otherwise make the incremental check see a matching file count and skip
         // the rebuild — leaving the deleted file in content.bin as a ghost hit. A
         // deletion always requires the binary stores to be rewritten.
-        let had_deletions = match self.cache.identify_deleted_files() {
+        let deleted_file_count = match self.cache.identify_deleted_files() {
             Ok(gone) if !gone.is_empty() => {
                 log::info!("Removing {} deleted files from meta.db", gone.len());
                 if let Err(e) = self.cache.delete_files_from_db(&gone) {
                     log::warn!("Failed to prune deleted files: {}", e);
                 }
-                true
+                gone.len()
             }
-            Ok(_) => false,
+            Ok(_) => 0,
             Err(e) => {
                 log::warn!("Could not identify deleted files: {}", e);
-                false
+                0
             }
         };
+        let had_deletions = deleted_file_count > 0;
 
         // Check available disk space after cache is initialized
         self.check_disk_space(root)?;
@@ -652,6 +659,7 @@ impl Indexer {
 
                             let mut stats = self.cache.stats()?;
                             stats.unchanged_files = total_files;
+                            stats.deleted_files = deleted_file_count;
                             stats.skipped_too_large = skipped_too_large;
                             stats.skipped_bytes_too_large = skipped_bytes_too_large;
                             stats.skipped_binary = skipped_binary;
@@ -2306,6 +2314,7 @@ impl Indexer {
         let mut stats = self.cache.stats()?;
         stats.new_files = new_file_count;
         stats.modified_files = modified_file_count;
+        stats.deleted_files = deleted_file_count;
         stats.unchanged_files = unchanged_file_count;
         stats.skipped_too_large = skipped_too_large;
         stats.skipped_bytes_too_large = skipped_bytes_too_large;

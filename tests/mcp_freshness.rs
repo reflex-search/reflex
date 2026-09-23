@@ -465,3 +465,34 @@ fn a_search_right_after_reindex_is_fresh_within_the_memo_ttl() {
     assert_eq!(r["can_trust_results"], true, "{r}");
     assert_eq!(r["total_count"], 1, "{r}");
 }
+
+/// The stale reason "deleted files still produce hits at their old lines" is right
+/// before a reindex and must never appear after one.
+#[test]
+fn a_reindex_after_a_delete_carries_no_ghost_warning() {
+    let temp = indexed_repo();
+    let root = temp.path();
+    fs::remove_file(root.join("src/storage/mod.rs")).unwrap();
+
+    let s = status(root);
+    assert!(
+        s["reason"]
+            .as_str()
+            .unwrap()
+            .contains("deleted files still produce hits"),
+        "{s}"
+    );
+
+    index(root);
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "{s}");
+    assert!(s.get("reason").is_none(), "{s}");
+
+    let r = search(root, "storage_entry");
+    assert_eq!(r["total_count"], 0, "{r}");
+    assert!(r.get("warning").is_none(), "{r}");
+    assert!(
+        !r.to_string().contains("deleted files still produce hits"),
+        "{r}"
+    );
+}

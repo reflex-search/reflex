@@ -510,6 +510,9 @@ No dependency data will be included for {} files.",
             if let Some(h) = &engine_hint {
                 count_response["hint"] = serde_json::json!(h);
             }
+            if let Some(reason) = query_response.as_ref().and_then(|r| r.excluded_reason) {
+                count_response["excluded_reason"] = serde_json::json!(reason);
+            }
             let json_output = if pretty_json {
                 serde_json::to_string_pretty(&count_response)?
             } else {
@@ -669,6 +672,7 @@ No dependency data will be included for {} files.",
                     },
                     results: file_results,
                     substring_hint_count: None,
+                    excluded_reason: None,
                     excluded_by_default: None,
                     file_count: None,
                     warnings: Vec::new(),

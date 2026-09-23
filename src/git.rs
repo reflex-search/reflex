@@ -365,6 +365,28 @@ where
     Ok(changes)
 }
 
+/// Whether `git check-ignore` says `path` (workspace-relative) is ignored.
+///
+/// `None` outside a git repository or when git cannot answer. Used only to explain
+/// a zero result, so a process spawn is acceptable here.
+pub fn is_ignored(root: impl AsRef<Path>, path: &str) -> Option<bool> {
+    let root = root.as_ref();
+    if !is_git_repo(root) || !is_git_available() {
+        return None;
+    }
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "-q", "--", path])
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
 /// Get complete git state for the current repository
 ///
 /// This is a convenience function that captures branch, commit, and dirty state
