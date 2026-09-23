@@ -151,6 +151,28 @@ Follow-ups (not done; each changes behaviour or is a separate feature):
 
 ---
 
+## 🐛 `find_references` count mode returned 0 (2026-09-23) — COMPLETED
+
+`find_references {"mode":"count"}` returned `{"count":0}` for every symbol (Hearth:
+`ShardedArcSwapMap` list total 28, `validate_token` 289). Cause: the count branch set
+`count_only: true`, which since 2.0.0 takes the count-only fast path in
+`verify_files_streaming` and returns no rows; the default string/comment filter then
+counted an empty row set. `include_strings: true` was correct (it reads the total).
+
+- Fix: `count_only: include_strings` in the `find_references` count branch (`src/mcp.rs`).
+- Decision: count mode returns the count AFTER string/comment filtering over all pages;
+  with `include_strings: true` it is the raw total (= list-mode `total_references`).
+  Stated in the tool and `mode` descriptions.
+- Tests: `tests/mcp_literal_search.rs` — `find_references_count_mode_matches_list_total`,
+  `find_references_count_mode_is_zero_for_unreferenced_symbol`, and exact values in
+  `include_strings_changes_the_count_in_count_mode` (it passed with a 0 before).
+- Hearth after the fix: `ShardedArcSwapMap` 26 filtered / 28 raw; `validate_token` 152 /
+  289. The 289 vs CLI `--lang rust` 287 gap is 2 JavaScript hits in
+  `docs-site/src/pages/index.js` (find_references has no `lang` → every code language).
+  Not a counting bug.
+
+---
+
 ## 🔧 2.0.0 post-perf-round defects (2026-09-22) — COMPLETED
 
 Field test of the perf round (b18ae06 → 11ba6de) against ripgrep surfaced four defects

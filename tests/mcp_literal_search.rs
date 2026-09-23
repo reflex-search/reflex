@@ -265,13 +265,93 @@ fn include_strings_changes_the_count_in_count_mode() {
         json!({"pattern": "marker_token", "mode": "count", "include_strings": false}),
     );
 
-    assert!(
-        with["count"].as_u64().unwrap() > without["count"].as_u64().unwrap(),
-        "include_strings must change the count in count mode: \
-         with={} without={}",
-        with["count"],
-        without["count"]
+    // Exact values. `with > without` alone passed while `without` was a silent 0
+    // (the count-only fast path returns no rows for the string/comment filter).
+    assert_eq!(
+        with["count"], 4,
+        "raw count: comment, definition, call, string"
     );
+    assert_eq!(
+        without["count"], 2,
+        "filtered count: definition and call; comment and string dropped"
+    );
+}
+
+/// A workspace where `ref_target` has 4 references, none in a string or comment.
+fn references_workspace() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub mod caller;\n\
+         pub fn ref_target() -> u32 {\n\
+         \x20   1\n\
+         }\n\
+         pub fn local_user() -> u32 {\n\
+         \x20   ref_target()\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("src/caller.rs"),
+        "use crate::ref_target;\n\
+         pub fn remote_user() -> u32 {\n\
+         \x20   ref_target() + 1\n\
+         }\n",
+    )
+    .unwrap();
+    let cache = CacheManager::new(temp.path());
+    Indexer::new(cache, IndexConfig::default())
+        .index(temp.path(), false)
+        .unwrap();
+    temp
+}
+
+#[test]
+fn find_references_count_mode_matches_list_total() {
+    let temp = references_workspace();
+    let root = temp.path();
+
+    let list = call_tool(root, "find_references", json!({"pattern": "ref_target"}));
+    assert_eq!(list["total_references"], 4, "list mode: {list}");
+    assert_eq!(list["filtered_out"], 0, "no hit is in a string or comment");
+
+    let count = call_tool(
+        root,
+        "find_references",
+        json!({"pattern": "ref_target", "mode": "count"}),
+    );
+    assert_eq!(
+        count["count"], list["total_references"],
+        "count mode must equal list-mode total_references: {count}"
+    );
+
+    let raw = call_tool(
+        root,
+        "find_references",
+        json!({"pattern": "ref_target", "mode": "count", "include_strings": true}),
+    );
+    assert_eq!(raw["count"], 4, "include_strings count is the raw total");
+}
+
+#[test]
+fn find_references_count_mode_is_zero_for_unreferenced_symbol() {
+    let temp = references_workspace();
+    let root = temp.path();
+
+    let count = call_tool(
+        root,
+        "find_references",
+        json!({"pattern": "no_such_symbol_xyz", "mode": "count"}),
+    );
+    assert_eq!(count["count"], 0, "{count}");
+
+    let list = call_tool(
+        root,
+        "find_references",
+        json!({"pattern": "no_such_symbol_xyz"}),
+    );
+    assert_eq!(list["total_references"], 0, "{list}");
 }
 
 #[test]
