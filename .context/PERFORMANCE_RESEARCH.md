@@ -244,3 +244,22 @@ identical for the whole tree; dependency row counts per type are identical
 What is left (k8s): 3.4 s in the pool is dominated by tree-sitter parsing of every Go
 file for imports; the files transaction's per-file `SELECT id` (0.9 s); the discovery
 walk (0.8 s, serial `ignore::Walk`).
+
+## Background symbol pass round (2026-09-23)
+
+Same Kubernetes clone. `rfx index-symbols-internal` after `DELETE FROM symbols`:
+
+| step | wall | user CPU | notes |
+| --- | ---: | ---: | --- |
+| 1.8.0 | 44.9 s | 131 s | 5 threads; 40.3 s "parse" incl. serial per-file cache check; 256 MB JSON |
+| + cached queries + byte-offset previews | 20.1 s | 40 s | still 5 threads, serial check, per-batch writes |
+| + streaming writer, 8 threads, zstd, skip text tiers | 6.4–8.3 s | 49–64 s | load-dependent (browser + editor at load ~6); parse 63 s, encode 1.7 s |
+| + one combined query per language | **3.4 s** | **25 s** | parse 24 s, encode 1.5 s; blob 28.6 MB |
+
+Bench (`examples/symbol_bench.rs`, deleted after use) over the first 4,000 Go files:
+tree-sitter parse 3.25 s vs full parse+extract 10.66 s before the combined query
+(extraction 70%), 5.18 s after (extraction 1.73 s, 33%). Per-file: 6 query passes over
+the whole tree cost more than parsing it.
+
+Query path effect (latency harness, budgets on): `symbol_lookup` 7.1 → 2.9 ms median,
+`find_references` 14.2 → 6.2 ms — cache misses parse with the same combined query.

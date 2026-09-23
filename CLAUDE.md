@@ -277,6 +277,14 @@ Before 1.8.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also ma
   `index_project`. The freshness verdict is memoised for `REFLEX_FRESHNESS_TTL_MS`.
 - Query-time verification runs on a pool sized by `[performance] parallel_threads`
   (`0` = 80% of cores, up to 32).
+- The background symbol pass (`rfx index-symbols-internal`, spawned by `rfx index`) runs
+  on `[performance] symbol_threads` (`0` = 50% of cores, up to 32; `REFLEX_SYMBOL_THREADS`
+  overrides). It is a streaming pipeline: workers parse files from `content.bin`, run
+  ONE combined tree-sitter query per language per file (`parsers::LanguageQueries`), and
+  hand zstd-compressed symbol blobs to a single writer thread that commits in 1024-file
+  batches. `rfx index status` shows `parsed`/`cached`/`write_failed` counts and the phase.
+  Files with no symbol parser (text tiers, Swift) are skipped, not stored as empty rows.
+  Kubernetes (27k files, 15k with a parser): 45 s → ~5 s on 8 threads.
 - `rfx index` uses the same pool rule. It reads, hashes, extracts imports and trigram
   postings in the pool, builds each batch per trigram shard in parallel, and merges
   partials by byte copy (`src/trigram_build.rs`); output is byte-identical whatever
@@ -623,6 +631,7 @@ default_limit = 100
 
 [performance]
 parallel_threads = 0  # 0 = auto (80% of cores)
+symbol_threads = 0  # background symbol pass (rfx index-symbols-internal); 0 = auto (50% of cores, max 32)
 ```
 
 **Git tracking**: Should be committed for team-wide consistency.

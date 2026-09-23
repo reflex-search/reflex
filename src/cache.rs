@@ -761,6 +761,11 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         {
             cfg.parallel_threads = threads as usize;
         }
+        if let Some(perf) = toml_val.get("performance")
+            && let Some(threads) = perf.get("symbol_threads").and_then(|v| v.as_integer())
+        {
+            cfg.symbol_threads = threads.max(0) as usize;
+        }
 
         log::debug!("Loaded IndexConfig from config.toml: {:?}", cfg);
         Ok(cfg)
@@ -856,6 +861,32 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     ///
     /// Used by background indexer to get hashes for all indexed files.
     /// Returns the most recent hash for each file across all branches.
+    /// `path → (file_id, hash)` for every file on every branch, in one query.
+    ///
+    /// What the background symbol pass needs to decide, without touching SQLite
+    /// again, which files are already cached and which ids to write.
+    pub fn load_all_file_rows(&self) -> Result<HashMap<String, (i64, String)>> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, f.id, fb.hash
+             FROM file_branches fb
+             JOIN files f ON fb.file_id = f.id",
+        )?;
+        let rows: HashMap<String, (i64, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    (row.get::<_, i64>(1)?, row.get::<_, String>(2)?),
+                ))
+            })?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn load_all_hashes(&self) -> Result<HashMap<String, String>> {
         let db_path = self.cache_path.join(META_DB);
 

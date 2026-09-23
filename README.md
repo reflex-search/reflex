@@ -248,6 +248,7 @@ default_limit = 100
 
 [performance]
 parallel_threads = 0    # 0 = auto (80% of available cores)
+symbol_threads = 0      # background symbol pass; 0 = auto (50% of cores, max 32)
 ```
 
 For AI provider configuration (`rfx ask`, `rfx pulse`), run `rfx llm config`.

@@ -532,6 +532,10 @@ pub struct IndexConfig {
     pub max_file_size: usize,
     /// Number of threads for parallel indexing (0 = auto, 80% of available cores)
     pub parallel_threads: usize,
+    /// Threads for the background symbol pass (`rfx index-symbols-internal`).
+    /// `0` = auto: half the cores, at most 32. See [`resolve_symbol_thread_count`].
+    #[serde(default)]
+    pub symbol_threads: usize,
     /// Query timeout in seconds (0 = no timeout)
     pub query_timeout_secs: u64,
     /// Maximum entries per trigram posting list (0 = unlimited).
@@ -581,6 +585,7 @@ impl Default for IndexConfig {
             follow_symlinks: false,
             max_file_size: 10 * 1024 * 1024,   // 10 MB
             parallel_threads: 0,               // 0 = auto (80% of available cores)
+            symbol_threads: 0,                 // 0 = auto (50% of available cores)
             query_timeout_secs: 30,            // 30 seconds default timeout
             max_posting_list_entries: 500_000, // cap at 500k to bound query latency
             text_tier: true,                   // docs and config are searchable by default
@@ -596,6 +601,30 @@ fn is_zero(v: &usize) -> bool {
 }
 fn is_zero_u64(v: &u64) -> bool {
     *v == 0
+}
+
+/// Resolve `[performance] symbol_threads` (the background symbol pass) to a
+/// concrete thread count.
+///
+/// `REFLEX_SYMBOL_THREADS` overrides for benchmarking, then `configured` if
+/// non-zero, else half the cores (1..=32). The pass is detached from `rfx index`
+/// and runs while the user may be querying, so it takes half the machine rather
+/// than the indexer's 80%; before 1.8.1 it took 27.5%.
+pub fn resolve_symbol_thread_count(configured: usize) -> usize {
+    if let Some(n) = std::env::var("REFLEX_SYMBOL_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+    {
+        return n;
+    }
+    if configured != 0 {
+        return configured.max(1);
+    }
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    ((available as f64 * 0.5).ceil() as usize).clamp(1, 32)
 }
 
 /// Resolve `[performance] parallel_threads` to a concrete thread count.

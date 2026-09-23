@@ -63,6 +63,44 @@
 
 ---
 
+## ⚡ 1.8.x background symbol pass (2026-09-23) — COMPLETED
+
+Goal: ≥10x on `rfx index-symbols-internal` with identical symbols. Scratch Kubernetes
+clone (27,448 files in content.bin, 15,436 with a parser), release, 16 cores:
+
+| | 1.8.0 | now |
+| --- | ---: | ---: |
+| wall | 44.9 s (5 threads) | **3.4 s** (8 threads, 50% policy) |
+| user CPU | 131 s | 25 s |
+| `symbols` blob bytes | 256 MB (JSON) | 28.6 MB (zstd) |
+| peak RSS | 444 MB | ~400 MB |
+| harness `symbol_lookup` / `find_references` | 7.1 / 14.2 ms | 2.9 / 6.2 ms |
+
+Identity: per-file sha256 of canonical JSON for all 15,436 parsed files equals the
+baseline (`scratchpad/baseline/symbols-before.tsv`); 12,007 text-tier rows are no
+longer stored (were `[]`). Snapshots in `tests/symbol_equivalence.rs` (corpus +
+synthetic + nine more languages) were generated on the old extractors.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | Cached compiled queries at all ~130 sites (`cached_query`, `KeyedQueries` for the two TS grammars) | `src/parsers/*` |
+| 2 | Preview from the node's byte offset (`extract_preview_from_byte`) — removed the quadratic `lines().skip()` | `src/parsers/preview.rs` + 15 module wrappers |
+| 3 | One combined query per language per file (`LanguageQueries`, `MatchTable`); extractors take `&MatchTable` and read `table.sub(k)` | `src/parsers/mod.rs`, all modules (converter script kept in the session scratchpad) |
+| 4 | Streaming pipeline: rayon workers → `sync_channel(256)` → one writer, 1024-file commits, retry once, `write_failed_files`; one up-front `load_cached_keys_on` + `load_all_file_rows` | `src/background_indexer.rs`, `src/symbol_cache.rs`, `src/cache.rs` |
+| 5 | `[performance] symbol_threads` (50% default), `REFLEX_SYMBOL_THREADS` | `src/models.rs`, `src/cache.rs` |
+| 6 | zstd blobs, `SYMBOL_FORMAT_VERSION` 3, `encode_symbols`/`decode_symbols`/`read_symbols_column` used by every reader incl. Pulse | `src/symbol_cache.rs`, `src/pulse/{glossary,onboard}.rs` |
+| 7 | `ParserFactory::has_symbol_parser`; text tiers skipped | `src/parsers/mod.rs` |
+
+Measured split before step 3 (bench over 4,000 Go files): tree-sitter parse 3.25 s,
+extraction 7.40 s (70%) → after: 1.73 s. The pass is now bound by tree-sitter parsing
+itself (~1 ms per 10 KB).
+
+Observed once, not solved: a spawned pass reported `128 file(s) parsed but not
+persisted: database is locked` under 1.8.0's per-file connections; the single-writer
+design logs commit duration and retries once — watch `rfx index status` `error`.
+
+---
+
 ## ⚡ 1.8.x indexing throughput (2026-09-23) — COMPLETED
 
 Goal: orders-of-magnitude faster `rfx index` from scratch on huge trees (Linux kernel
