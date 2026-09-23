@@ -816,7 +816,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "check_index_status",
-                "description": "Check whether the Reflex search index is fresh, stale, or missing — without running any search. Call this at session start, after any git operation (checkout, merge, rebase, pull), and after editing files. \n\nReturns `{status: \"fresh\" | \"stale\" | \"missing\", can_trust_results, reason, action_required, files_modified?, files_added?, files_deleted?, changed_count?}`. The three file lists name the actual paths (capped at 100 each; `truncated` is set if cut short). `action_required` is the tool to call — `index_project`. \n\nStale covers three cases: an unindexed branch, HEAD moved off the indexed commit, and UNCOMMITTED WORKING-TREE CHANGES — edited, newly created, or deleted files. A deleted file is the serious one: it still produces hits at its old lines until you reindex. \n\n`can_trust_results` is narrower than `status`: it goes false only when the changes could actually affect an answer. A stale index with `can_trust_results: true` means results are still sound, they just may not include your newest edits. \n\nLIMITATION: outside a git repository, working-tree changes are not detected and status is always reported fresh. \n\nExample fresh: `{\"status\": \"fresh\", \"can_trust_results\": true}`. Example stale: `{\"status\": \"stale\", \"can_trust_results\": false, \"reason\": \"Working tree has uncommitted changes since indexing (2 modified, 1 added)\", \"action_required\": \"index_project\", \"files_modified\": [\"src/storage/mod.rs\", \"src/lib.rs\"], \"files_added\": [\"src/storage/zz_probe.rs\"], \"changed_count\": 3}`",
+                "description": "Check whether the Reflex search index is fresh, stale, or missing — without running any search. Call this at session start, after any git operation (checkout, merge, rebase, pull), and after editing files. \n\nReturns `{status: \"fresh\" | \"stale\" | \"missing\", can_trust_results, reason?, action_required?, files_modified?, files_added?, files_deleted?, changed_count?, details}`. The three file lists name the actual paths (capped at 100 each; `truncated` is set if cut short). `action_required` is the tool to call — `index_project`. \n\nFreshness is judged by FILE CONTENT, not by commit: every indexed file has a recorded fingerprint, and the index is stale only when a file on disk differs from it — edited, newly created, or deleted, whether or not the change is committed. So: edit → stale; `index_project` → fresh again, with no commit needed. Committing already-indexed content, or switching to a branch with the same tree, is NOT stale; `details.indexed_commit` and `details.current_commit` may differ while status is fresh. Reverting a file after its edit was indexed IS stale. A deleted file is the serious one: it still produces hits at its old lines until you reindex. `details.checked_by` says how the tree was compared: `git` (candidates from `git status`, confirmed by fingerprint) or `walk` (no git; every file stat'ed). \n\nA stale index always has `can_trust_results: false`, including for a zero-result search. \n\nExample fresh: `{\"status\": \"fresh\", \"can_trust_results\": true, \"details\": {\"current_branch\": \"main\", \"indexed_commit\": \"9af2695…\", \"current_commit\": \"a473cae…\", \"checked_by\": \"git\"}}`. Example stale: `{\"status\": \"stale\", \"can_trust_results\": false, \"reason\": \"Files changed since the index was built (2 modified, 1 added)\", \"action_required\": \"index_project\", \"files_modified\": [\"src/storage/mod.rs\", \"src/lib.rs\"], \"files_added\": [\"src/storage/zz_probe.rs\"], \"changed_count\": 3}`",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -2661,17 +2661,17 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let engine = QueryEngine::new(cache);
             // This is the explicit probe. An agent that asks whether the index is
             // current must never be answered from the freshness memo.
-            let (status, can_trust, warning) = engine.fresh_index_status()?;
+            let report = engine.fresh_index_report()?;
 
-            let status_str = match status {
+            let status_str = match report.status {
                 IndexStatus::Fresh => "fresh",
                 IndexStatus::Stale => "stale",
             };
 
-            let result = if let Some(w) = warning {
+            let mut result = if let Some(w) = report.warning {
                 let mut obj = json!({
                     "status": status_str,
-                    "can_trust_results": can_trust,
+                    "can_trust_results": report.can_trust_results,
                     "reason": w.reason,
                     // Name the MCP tool, not the CLI. An agent cannot run `rfx index`.
                     "action_required": w.action_required
@@ -2693,8 +2693,13 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 }
                 obj
             } else {
-                json!({ "status": status_str, "can_trust_results": can_trust })
+                json!({ "status": status_str, "can_trust_results": report.can_trust_results })
             };
+            // Branch and commit context for humans. Present even when fresh: since
+            // 1.8.0 the indexed commit differing from HEAD is not staleness.
+            if let Some(details) = report.details {
+                result["details"] = serde_json::to_value(details)?;
+            }
 
             Ok(result)
         }

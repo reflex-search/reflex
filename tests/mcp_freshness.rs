@@ -112,7 +112,7 @@ fn probe_0_a_clean_tree_is_fresh_and_trusted() {
 }
 
 #[test]
-fn probe_1_head_moving_is_stale_and_names_both_hashes() {
+fn probe_1_head_moving_with_changed_content_is_stale_and_names_the_file() {
     let temp = indexed_repo();
     let root = temp.path();
 
@@ -120,13 +120,164 @@ fn probe_1_head_moving_is_stale_and_names_both_hashes() {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "second"]);
 
+    // The tree is clean to git; the commit diff is what names the file.
     let s = status(root);
     assert_eq!(s["status"], "stale", "{s}");
     assert_eq!(s["can_trust_results"], false, "{s}");
-    assert!(
-        s["reason"].as_str().unwrap().contains("Commit changed"),
+    assert_eq!(
+        listed(&s, "files_modified"),
+        vec!["src/storage/mod.rs"],
         "{s}"
     );
+    assert_eq!(s["details"]["checked_by"], "git", "{s}");
+    assert_ne!(
+        s["details"]["indexed_commit"], s["details"]["current_commit"],
+        "{s}"
+    );
+}
+
+fn index(root: &Path) -> Value {
+    let r = call_tool(root, "index_project", json!({}));
+    assert!(r.get("error").is_none(), "{r}");
+    r
+}
+
+/// The 1.8.0 field-test sequence: an agent edits, reindexes and searches, and
+/// never commits. Before, only `git commit` could return the tree to `fresh`.
+#[test]
+fn edit_then_index_project_is_fresh_without_commit() {
+    let temp = indexed_repo();
+    let root = temp.path();
+
+    fs::write(
+        root.join("src/storage/mod.rs"),
+        "pub fn storage_entry() -> u32 { 1 }\npub fn dirty_token() {}\n",
+    )
+    .unwrap();
+    assert_eq!(status(root)["status"], "stale");
+
+    index(root);
+
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "reindexed content is current: {s}");
+    assert_eq!(s["can_trust_results"], true, "{s}");
+    assert_eq!(s["details"]["checked_by"], "git", "{s}");
+
+    let r = search(root, "dirty_token");
+    assert_eq!(r["total_count"], 1, "{r}");
+    assert_eq!(r["status"], "fresh", "{r}");
+    assert_eq!(r["can_trust_results"], true, "{r}");
+}
+
+#[test]
+fn add_untracked_then_index_is_fresh() {
+    let temp = indexed_repo();
+    let root = temp.path();
+
+    fs::write(root.join("src/added.rs"), "pub fn added_token() {}\n").unwrap();
+    let s = status(root);
+    assert_eq!(listed(&s, "files_added"), vec!["src/added.rs"], "{s}");
+
+    index(root);
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "{s}");
+    assert_eq!(search(root, "added_token")["total_count"], 1);
+}
+
+#[test]
+fn delete_then_index_is_fresh_and_the_file_is_gone() {
+    let temp = indexed_repo();
+    let root = temp.path();
+
+    fs::remove_file(root.join("src/storage/mod.rs")).unwrap();
+    let s = status(root);
+    assert_eq!(
+        listed(&s, "files_deleted"),
+        vec!["src/storage/mod.rs"],
+        "{s}"
+    );
+
+    let r = index(root);
+    assert_eq!(r["total_files"], 1, "{r}");
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "{s}");
+    assert_eq!(search(root, "storage_entry")["total_count"], 0);
+}
+
+/// An edit indexed and then reverted is clean to git, but the index holds the
+/// edited bytes. Only the dirty-at-index record can catch this.
+#[test]
+fn revert_after_indexing_the_edit_is_stale() {
+    let temp = indexed_repo();
+    let root = temp.path();
+
+    fs::write(
+        root.join("src/storage/mod.rs"),
+        "pub fn storage_entry() -> u32 { 1 }\npub fn reverted_token() {}\n",
+    )
+    .unwrap();
+    index(root);
+    assert_eq!(status(root)["status"], "fresh");
+
+    git(root, &["checkout", "--", "src/storage/mod.rs"]);
+
+    let s = status(root);
+    assert_eq!(s["status"], "stale", "content changed back: {s}");
+    assert_eq!(
+        listed(&s, "files_modified"),
+        vec!["src/storage/mod.rs"],
+        "{s}"
+    );
+    assert_eq!(search(root, "reverted_token")["can_trust_results"], false);
+
+    index(root);
+    assert_eq!(status(root)["status"], "fresh");
+    assert_eq!(search(root, "reverted_token")["total_count"], 0);
+}
+
+/// Committing already-indexed content moves HEAD without changing a byte.
+#[test]
+fn commit_of_indexed_content_stays_fresh() {
+    let temp = indexed_repo();
+    let root = temp.path();
+
+    fs::write(root.join("src/added.rs"), "pub fn committed_token() {}\n").unwrap();
+    index(root);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "already indexed"]);
+
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "{s}");
+    assert_eq!(s["can_trust_results"], true, "{s}");
+    assert_ne!(
+        s["details"]["indexed_commit"], s["details"]["current_commit"],
+        "the commits differ and that is fine: {s}"
+    );
+}
+
+#[test]
+fn touch_with_identical_content_is_fresh() {
+    let temp = indexed_repo();
+    let root = temp.path();
+    let path = root.join("src/lib.rs");
+    let bytes = fs::read(&path).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(&path, &bytes).unwrap();
+
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "same bytes, new mtime: {s}");
+}
+
+#[test]
+fn a_new_branch_on_the_same_tree_is_fresh() {
+    let temp = indexed_repo();
+    let root = temp.path();
+    git(root, &["checkout", "-qb", "feature"]);
+
+    let s = status(root);
+    assert_eq!(s["status"], "fresh", "{s}");
+    assert_eq!(s["details"]["current_branch"], "feature", "{s}");
+    assert_ne!(s["details"]["indexed_branch"], "feature", "{s}");
 }
 
 #[test]

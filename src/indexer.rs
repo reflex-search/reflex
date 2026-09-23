@@ -47,6 +47,10 @@ struct FileProcessingResult {
     content: String,
     language: Language,
     line_count: usize,
+    /// On-disk size and mtime, taken BEFORE the read so a write that lands
+    /// between the two is caught by the next status check, not hidden by it.
+    size: u64,
+    mtime_ns: i64,
     dependencies: Vec<ImportInfo>,
     exports: Vec<ExportInfo>,
 }
@@ -106,17 +110,36 @@ pub struct Indexer {
 /// The same policy must answer "would Reflex index this path?" everywhere: the
 /// walker, the working-tree freshness check and the watcher. If they disagree, an
 /// edit to an excluded file marks the index permanently stale.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PathPolicy {
     overrides: Option<ignore::overrides::Override>,
+    /// `[index] text_tier`.
+    text_tier: bool,
+    /// `[index] languages`; empty = every supported language.
+    languages: Vec<Language>,
+}
+
+impl Default for PathPolicy {
+    fn default() -> Self {
+        Self {
+            overrides: None,
+            text_tier: true,
+            languages: Vec::new(),
+        }
+    }
 }
 
 impl PathPolicy {
-    /// Compile the policy from an index config. No patterns → an empty policy
-    /// that admits everything. An invalid pattern is logged and skipped.
+    /// Compile the policy from an index config. No patterns → a policy that admits
+    /// every path the language rules allow. An invalid pattern is logged and skipped.
     pub fn from_config(root: &Path, config: &IndexConfig) -> Self {
+        let mut policy = Self {
+            overrides: None,
+            text_tier: config.text_tier,
+            languages: config.languages.clone(),
+        };
         if config.include_patterns.is_empty() && config.exclude_patterns.is_empty() {
-            return Self::default();
+            return policy;
         }
         let mut builder = ignore::overrides::OverrideBuilder::new(root);
         for pat in &config.include_patterns {
@@ -131,14 +154,54 @@ impl PathPolicy {
             }
         }
         match builder.build() {
-            Ok(ov) => Self {
-                overrides: Some(ov),
-            },
-            Err(e) => {
-                log::warn!("Failed to build [index] include/exclude policy: {}", e);
-                Self::default()
-            }
+            Ok(ov) => policy.overrides = Some(ov),
+            Err(e) => log::warn!("Failed to build [index] include/exclude policy: {}", e),
         }
+        policy
+    }
+
+    /// The language a file at `path` would be indexed as, or `None` when the
+    /// policy would not index it (excluded by pattern, tier off, parser not
+    /// wanted). Path only: no filesystem access, so it is the same answer for the
+    /// walker, the freshness check and the watcher.
+    pub fn classify(&self, path: &Path) -> Option<Language> {
+        if !self.admits(path, false) {
+            return None;
+        }
+        // `from_path` judges the text tier by full filename, so lock files (100k+
+        // lines of near-random trigrams) stay out and `Makefile` gets in.
+        let lang = Language::from_path(path);
+
+        // The plain-text tier: docs, config and templates.
+        if lang.is_text() {
+            // Deliberately NOT subject to `languages`. That option means "which
+            // PARSERS do I care about"; a user with languages = ["rust"] would
+            // otherwise lose the text tier silently, which is the very bug this tier
+            // exists to fix. `text_tier = false` is the way to turn it off.
+            return self.text_tier.then_some(lang);
+        }
+
+        if !lang.is_supported() {
+            if !matches!(lang, Language::Unknown) {
+                log::debug!(
+                    "Skipping {} ({:?} parser not yet implemented)",
+                    path.display(),
+                    lang
+                );
+            }
+            return None;
+        }
+
+        if !self.languages.is_empty() && !self.languages.contains(&lang) {
+            log::debug!(
+                "Skipping {} ({:?} not in configured languages)",
+                path.display(),
+                lang
+            );
+            return None;
+        }
+
+        Some(lang)
     }
 
     /// Whether the policy admits this path. Directories are always admitted (the
@@ -245,6 +308,9 @@ impl Indexer {
     ) -> Result<IndexStats> {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
+        // Files modified at or after this instant record an unknown mtime, so a
+        // write racing the read is caught by hash on the next status check.
+        let run_start = std::time::SystemTime::now();
 
         // Exclusive workspace lock for the whole run. Two indexers streaming
         // into the same content.bin/trigrams.bin is how a reader ends up with a
@@ -382,6 +448,9 @@ impl Indexer {
             // Every path we saw on disk this pass. Needed for the deletion check
             // below, which the hash loop alone cannot make.
             let mut current_paths = std::collections::HashSet::<String>::with_capacity(files.len());
+            // (path, size, mtime_ns) of every file proven unchanged, so the stored
+            // fingerprint can follow a `touch` or a reverted edit without a rebuild.
+            let mut stat_rows: Vec<(String, u64, i64)> = Vec::with_capacity(files.len());
 
             for file_path in &files {
                 // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
@@ -401,6 +470,10 @@ impl Indexer {
 
                 // Check if file exists in cache
                 if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
+                    // Stat before the read, for the same reason as the main pass.
+                    let stat = std::fs::metadata(file_path)
+                        .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
+                        .unwrap_or((0, 0));
                     // Read and hash file to check if changed
                     match std::fs::read_to_string(file_path) {
                         Ok(content) => {
@@ -410,6 +483,7 @@ impl Indexer {
                                 log::debug!("File changed: {}", path_str);
                                 break; // Early exit - we know we need to rebuild
                             }
+                            stat_rows.push((normalized_path.clone(), stat.0, stat.1));
                         }
                         Err(_) => {
                             any_changed = true;
@@ -486,6 +560,20 @@ impl Indexer {
                                 log::warn!("Failed to refresh branch metadata: {}", e);
                             }
 
+                            // Same for the per-file fingerprint: the bytes are
+                            // current, but a `touch` or a reverted edit has moved
+                            // the mtime, and git's view of which paths are dirty
+                            // may have changed too.
+                            let dirty_paths = git_state
+                                .as_ref()
+                                .map(|s| s.dirty_paths.clone())
+                                .unwrap_or_default();
+                            if let Err(e) =
+                                self.cache.refresh_fingerprints(&stat_rows, &dirty_paths)
+                            {
+                                log::warn!("Failed to refresh file fingerprints: {}", e);
+                            }
+
                             let mut stats = self.cache.stats()?;
                             stats.unchanged_files = total_files;
                             stats.skipped_too_large = skipped_too_large;
@@ -518,7 +606,11 @@ impl Indexer {
         let mut new_file_count = 0usize;
         let mut modified_file_count = 0usize;
         let mut unchanged_file_count = 0usize;
-        let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
+        let mut file_metadata: Vec<crate::cache::FileRow> = Vec::new(); // For batch SQLite update
+        let dirty_paths: std::collections::HashSet<String> = git_state
+            .as_ref()
+            .map(|s| s.dirty_paths.clone())
+            .unwrap_or_default();
         let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
         let mut all_exports: Vec<(String, Vec<ExportInfo>)> = Vec::new(); // For batch export insertion
 
@@ -634,6 +726,13 @@ impl Indexer {
                     // Already relative, just strip ./ prefix
                     path_str.trim_start_matches("./").replace('\\', "/")
                 };
+
+                // Stat BEFORE the read. If the file changes between the two, the
+                // recorded (size, mtime) is older than the bytes, so the next status
+                // check re-hashes it rather than trusting a stat that matches.
+                let (size, mtime_ns) = std::fs::metadata(file_path)
+                    .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
+                    .unwrap_or((0, 0));
 
                 // Read file content once (used for hashing, trigrams, and parsing)
                 let content = match std::fs::read_to_string(file_path) {
@@ -828,6 +927,8 @@ impl Indexer {
                     content,
                     language,
                     line_count,
+                    size,
+                    mtime_ns,
                     dependencies,
                     exports,
                 })
@@ -861,12 +962,15 @@ impl Indexer {
                 }
 
                 // Prepare file metadata for batch database update
-                file_metadata.push((
-                    result.path_str.clone(),
-                    result.hash.clone(),
-                    format!("{:?}", result.language),
-                    result.line_count,
-                ));
+                file_metadata.push(crate::cache::FileRow {
+                    path: result.path_str.clone(),
+                    hash: result.hash.clone(),
+                    language: format!("{:?}", result.language),
+                    line_count: result.line_count,
+                    size: result.size,
+                    mtime_ns: result.mtime_ns,
+                    dirty: dirty_paths.contains(&result.path_str),
+                });
 
                 // Collect dependencies for batch insertion (if any)
                 if !result.dependencies.is_empty() {
@@ -921,29 +1025,16 @@ impl Indexer {
         // Batch write file metadata AND branch hashes in a SINGLE atomic transaction
         // This ensures that if files are inserted, their hashes are guaranteed to be inserted too
         if !file_metadata.is_empty() {
-            // Prepare files data (path, language, line_count)
-            let files_without_hash: Vec<(String, String, usize)> = file_metadata
-                .iter()
-                .map(|(path, _hash, lang, lines)| (path.clone(), lang.clone(), *lines))
-                .collect();
-
             // Record files for this branch (for branch-aware indexing)
             *progress_status.lock().unwrap() = "Recording branch files...".to_string();
             if show_progress {
                 pb.set_message("Recording branch files...".to_string());
             }
 
-            // Prepare branch files data (path, hash)
-            let branch_files: Vec<(String, String)> = file_metadata
-                .iter()
-                .map(|(path, hash, _, _)| (path.clone(), hash.clone()))
-                .collect();
-
             // Use atomic method that combines both operations
             self.cache
                 .batch_update_files_and_branch(
-                    &files_without_hash,
-                    &branch_files,
+                    &file_metadata,
                     &branch,
                     git_state.as_ref().map(|s| s.commit.as_str()),
                 )
@@ -2154,21 +2245,8 @@ impl Indexer {
         let mut skipped_count = 0usize;
         let mut skipped_bytes = 0u64;
 
-        // WalkBuilder from ignore crate automatically respects:
-        // - .gitignore (when in a git repo)
-        // - .ignore files
-        // - Hidden files (can be configured)
-        let mut builder = WalkBuilder::new(root);
-        builder
-            .follow_links(self.config.follow_symlinks)
-            .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
-            .git_global(false) // Don't use global gitignore
-            .git_exclude(false); // Don't use .git/info/exclude
-        // `[index] include.patterns` / `exclude.patterns`, gitignore semantics.
-        if let Some(ov) = self.path_policy(root).overrides() {
-            builder.overrides(ov.clone());
-        }
-        let walker = builder.build();
+        let policy = self.path_policy(root);
+        let walker = Self::walk_builder(root, &self.config, &policy).build();
 
         for entry in walker {
             let entry = entry?;
@@ -2180,7 +2258,7 @@ impl Indexer {
             }
 
             // Check extension / language eligibility first (cheap)
-            if !self.should_index_lang(path) {
+            if policy.classify(path).is_none() {
                 continue;
             }
 
@@ -2201,6 +2279,27 @@ impl Indexer {
         Ok((files, skipped_count, skipped_bytes))
     }
 
+    /// The directory walker every tree pass shares: the indexer, and the freshness
+    /// check outside git (which has no `git status` to name candidates and must
+    /// walk). One builder so the two can never disagree about what is in the tree.
+    pub fn walk_builder(root: &Path, config: &IndexConfig, policy: &PathPolicy) -> WalkBuilder {
+        // WalkBuilder from ignore crate automatically respects:
+        // - .gitignore (when in a git repo)
+        // - .ignore files
+        // - Hidden files (can be configured)
+        let mut builder = WalkBuilder::new(root);
+        builder
+            .follow_links(config.follow_symlinks)
+            .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
+            .git_global(false) // Don't use global gitignore
+            .git_exclude(false); // Don't use .git/info/exclude
+        // `[index] include.patterns` / `exclude.patterns`, gitignore semantics.
+        if let Some(ov) = policy.overrides() {
+            builder.overrides(ov.clone());
+        }
+        builder
+    }
+
     /// Whether a path is one Reflex would index, judged by extension alone.
     ///
     /// Public so freshness checking can ask the same question the walker asks. If the
@@ -2215,16 +2314,11 @@ impl Indexer {
         Self::is_indexable_path_with(path, None)
     }
 
-    /// [`Self::is_indexable_path`] under an `[index] include/exclude` policy.
+    /// [`Self::is_indexable_path`] under an `[index]` policy.
     ///
     /// The freshness check must apply the same policy as the walker: a file the
     /// config excludes is not indexed, so editing it must not report staleness.
     pub fn is_indexable_path_with(path: &Path, policy: Option<&PathPolicy>) -> bool {
-        if let Some(policy) = policy
-            && !policy.admits(path, false)
-        {
-            return false;
-        }
         // Mirror the walker, which uses `ignore::WalkBuilder`'s `hidden(true)`
         // default and so never descends into a dot-directory. Without this, Reflex's
         // OWN `.reflex/config.toml` counts as an indexable change the moment the text
@@ -2237,46 +2331,17 @@ impl Indexer {
             return false;
         }
 
-        // `from_path` judges the text tier by full NAME, so lock files stay out.
-        Language::from_path(path).is_indexable()
+        match policy {
+            Some(p) => p.classify(path).is_some(),
+            None => PathPolicy::default().classify(path).is_some(),
+        }
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).
     fn should_index_lang(&self, path: &Path) -> bool {
-        // `from_path` judges the text tier by full filename, so lock files (100k+
-        // lines of near-random trigrams) stay out and `Makefile` gets in.
-        let lang = Language::from_path(path);
-
-        // The plain-text tier: docs, config and templates.
-        if lang.is_text() {
-            // Deliberately NOT subject to `config.languages`. That option means "which
-            // PARSERS do I care about"; a user with languages = ["rust"] would
-            // otherwise lose the text tier silently, which is the very bug this tier
-            // exists to fix. `text_tier = false` is the way to turn it off.
-            return self.config.text_tier;
-        }
-
-        if !lang.is_supported() {
-            if !matches!(lang, Language::Unknown) {
-                log::debug!(
-                    "Skipping {} ({:?} parser not yet implemented)",
-                    path.display(),
-                    lang
-                );
-            }
-            return false;
-        }
-
-        if !self.config.languages.is_empty() && !self.config.languages.contains(&lang) {
-            log::debug!(
-                "Skipping {} ({:?} not in configured languages)",
-                path.display(),
-                lang
-            );
-            return false;
-        }
-
-        true
+        PathPolicy::from_config(Path::new("."), &self.config)
+            .classify(path)
+            .is_some()
     }
 
     /// Check if a file should be indexed based on config (language + size).

@@ -14,7 +14,8 @@ use regex::Regex;
 
 use crate::cache::CacheManager;
 use crate::models::{
-    IndexPath, IndexStatus, IndexWarning, Language, QueryResponse, SearchResult, Span, SymbolKind,
+    IndexPath, IndexStatus, IndexStatusReport, IndexWarning, Language, QueryResponse, SearchResult,
+    Span, SymbolKind,
 };
 use crate::output;
 use crate::parsers::ParserFactory;
@@ -740,8 +741,23 @@ impl QueryEngine {
         }
         filter.use_regex = prepared.use_regex;
 
-        // Execute the search first, so freshness can be judged against the files this
-        // answer actually came from.
+        // The freshness snapshot runs on its own thread while the search runs. It
+        // costs a few git spawns (or a tree walk outside git) and depends on nothing
+        // the search produces; only the WORDING is scoped to the result paths, and
+        // that is derived after both are done. On the CLI, where the memo is cold
+        // every time, this takes the status phase off the zero-hit floor.
+        let status_started = std::time::Instant::now();
+        let (searched, snapshot) = std::thread::scope(|s| {
+            let status = s.spawn(|| {
+                let snapshot = status_cache::snapshot(&self.cache);
+                (snapshot, status_started.elapsed())
+            });
+            let searched = self.search_internal(&prepared.effective, filter.clone());
+            let snapshot = status
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            (searched, snapshot)
+        });
         let Internal {
             results,
             total_count: total,
@@ -751,18 +767,18 @@ impl QueryEngine {
             candidates_us,
             index_path,
             warnings: engine_warnings,
-        } = self.search_internal(&prepared.effective, filter.clone())?;
+        } = searched?;
         let search_done = started.elapsed();
+        let (snapshot, status_compute) = snapshot;
+        let snapshot = snapshot?;
 
-        // Get index status and warning (without printing warnings to stderr).
-        //
         // Scoped to the result paths: the index being behind is reported honestly as
-        // `stale` either way, but `can_trust_results` only goes false when a changed
-        // file could have affected THIS answer. Without that, every search in an
-        // ordinary edit-then-search loop would be flagged untrustworthy, and an agent
-        // told to treat that as fatal could not use Reflex at all.
+        // `stale` either way, and a stale index is never trusted; the scope only
+        // sharpens the reason ("including a file these results came from").
         let scope: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
-        let (status, can_trust_results, warning) = self.index_status_for(Some(&scope))?;
+        let report = Self::report_from(&snapshot, Some(&scope));
+        let (status, can_trust_results, warning) =
+            (report.status, report.can_trust_results, report.warning);
         let status_done = started.elapsed();
 
         // Build pagination metadata
@@ -793,6 +809,7 @@ impl QueryEngine {
             candidates_us,
             verify_us: (search_done.as_micros() as u64).saturating_sub(open_us + candidates_us),
             status_us: (status_done - search_done).as_micros() as u64,
+            status_compute_us: status_compute.as_micros() as u64,
             group_us: (total_elapsed - status_done).as_micros() as u64,
             total_us: total_elapsed.as_micros() as u64,
         };
@@ -2698,8 +2715,15 @@ impl QueryEngine {
     /// For `check_index_status`: an agent asking whether the index is current is
     /// exactly the caller that must not be told what was true a second ago.
     pub fn fresh_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
+        let r = self.fresh_index_report()?;
+        Ok((r.status, r.can_trust_results, r.warning))
+    }
+
+    /// [`Self::fresh_index_status`] with the branch/commit details attached, which
+    /// are present even when fresh.
+    pub fn fresh_index_report(&self) -> Result<IndexStatusReport> {
         status_cache::invalidate(&self.cache.workspace_root());
-        self.index_status_for(None)
+        self.index_report_for(None)
     }
 
     /// Index status, with `scope` naming the files a caller's answer came from.
@@ -2717,16 +2741,44 @@ impl QueryEngine {
         &self,
         scope: Option<&[String]>,
     ) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
+        let r = self.index_report_for(scope)?;
+        Ok((r.status, r.can_trust_results, r.warning))
+    }
+
+    /// [`Self::index_status_for`] with details.
+    pub fn index_report_for(&self, scope: Option<&[String]>) -> Result<IndexStatusReport> {
         // Everything that costs a subprocess or a database open is computed once per
         // TTL in `status_cache`; only the scope-dependent wording is built here.
         let snapshot = status_cache::snapshot(&self.cache)?;
-        let (details, changes) = match snapshot.as_ref() {
-            status_cache::Snapshot::Decided(verdict) => return Ok(verdict.clone()),
-            status_cache::Snapshot::Worktree { details, changes } => (details.clone(), changes),
-        };
+        Ok(Self::report_from(&snapshot, scope))
+    }
+
+    /// The verdict for one caller, from a snapshot already computed.
+    ///
+    /// Pure, so a caller can compute the snapshot on another thread while the
+    /// search runs and derive the wording once both are done.
+    fn report_from(
+        snapshot: &status_cache::Snapshot,
+        scope: Option<&[String]>,
+    ) -> IndexStatusReport {
+        if let Some((status, can_trust_results, warning)) = snapshot.decided.clone() {
+            return IndexStatusReport {
+                status,
+                can_trust_results,
+                warning,
+                details: snapshot.details.clone(),
+            };
+        }
+        let changes = &snapshot.changes;
+        let details = snapshot.details.clone();
 
         if changes.is_empty() {
-            return Ok((IndexStatus::Fresh, true, None));
+            return IndexStatusReport {
+                status: IndexStatus::Fresh,
+                can_trust_results: true,
+                warning: None,
+                details,
+            };
         }
 
         // Whether a changed file is among the ones this answer came from. Used only
@@ -2759,7 +2811,7 @@ impl QueryEngine {
                 " — these results may not reflect them"
             };
             format!(
-                "Working tree has uncommitted changes since indexing ({}){}",
+                "Files changed since the index was built ({}){}",
                 parts.join(", "),
                 impact
             )
@@ -2776,13 +2828,18 @@ impl QueryEngine {
                 changes.modified_count + changes.added_count + changes.deleted_count,
             ),
             truncated: changes.truncated,
-            details: Some(details),
+            details: details.clone(),
         };
 
         // Stale means untrusted, with no exception. A search served from an index
         // that does not know about the caller's own edits cannot promise completeness,
         // and a silently-confident wrong answer is the failure this release fixes.
-        Ok((IndexStatus::Stale, false, Some(warning)))
+        IndexStatusReport {
+            status: IndexStatus::Stale,
+            can_trust_results: false,
+            warning: Some(warning),
+            details,
+        }
     }
 
     /// Check index freshness and show non-blocking warnings
@@ -3666,11 +3723,12 @@ mod tests {
 ///
 /// `REFLEX_FRESHNESS_TTL_MS` overrides the window; `0` disables caching entirely.
 mod status_cache {
-    use crate::cache::CacheManager;
+    use crate::cache::{CacheManager, FileFingerprint};
     use crate::git::WorktreeChanges;
-    use crate::models::{IndexStatus, IndexWarning, IndexWarningDetails};
+    use crate::indexer::{Indexer, PathPolicy};
+    use crate::models::{IndexConfig, IndexStatus, IndexWarning, IndexWarningDetails};
     use anyhow::Result;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
@@ -3679,14 +3737,26 @@ mod status_cache {
 
     pub type Verdict = (IndexStatus, bool, Option<IndexWarning>);
 
-    pub enum Snapshot {
-        /// The verdict does not depend on which files an answer came from.
-        Decided(Verdict),
-        /// The working tree has changed; the wording depends on the caller's scope.
-        Worktree {
-            details: IndexWarningDetails,
-            changes: WorktreeChanges,
-        },
+    /// What one freshness computation found. The verdict is derived per caller
+    /// (`QueryEngine::index_report_for`), because its wording depends on scope.
+    pub struct Snapshot {
+        /// A verdict that does not depend on the working tree at all (a cache
+        /// written by another build). `None` means: judge by `changes`.
+        pub decided: Option<Verdict>,
+        /// Branch/commit context for humans; present in git repos even when fresh.
+        pub details: Option<IndexWarningDetails>,
+        /// Files whose content differs from what the index holds.
+        pub changes: WorktreeChanges,
+    }
+
+    impl Snapshot {
+        fn fresh() -> Self {
+            Self {
+                decided: Some((IndexStatus::Fresh, true, None)),
+                details: None,
+                changes: WorktreeChanges::default(),
+            }
+        }
     }
 
     struct Entry {
@@ -3720,10 +3790,6 @@ mod status_cache {
         crate::indexer::Indexer::is_indexable_path_with(Path::new(path), Some(policy))
     }
 
-    fn fresh() -> Verdict {
-        (IndexStatus::Fresh, true, None)
-    }
-
     /// The memoised snapshot for the workspace `cache` belongs to.
     pub fn snapshot(cache: &CacheManager) -> Result<Arc<Snapshot>> {
         let root = cache.workspace_root();
@@ -3755,20 +3821,38 @@ mod status_cache {
         Ok(snapshot)
     }
 
+    /// Where the candidate paths for a content check come from.
+    enum Probe {
+        /// `git status`, the dirty-at-index set and, when HEAD moved, the commit
+        /// diff. Each path is then confirmed against its indexed fingerprint.
+        Git(HashSet<String>),
+        /// No git, or git could not answer: walk the tree and compare every file.
+        Walk,
+    }
+
+    /// Compare the working tree to what the index holds.
+    ///
+    /// Until 1.8.0 the baseline was the indexed COMMIT: any path `git status`
+    /// listed made the index stale, so a dirty tree could never be fresh however
+    /// often it was re-indexed, and an agent's session is dirty from its first edit
+    /// to its last. The baseline is now the per-file fingerprint the indexer wrote
+    /// (`size`, `mtime_ns`, blake3): a path git calls modified whose bytes the index
+    /// already holds is not stale, and a commit of already-indexed content moves
+    /// HEAD without changing a single file's verdict.
     fn compute(cache: &CacheManager, root: &Path) -> Result<Snapshot> {
         let is_git = crate::git::is_git_repo(root) && crate::git::is_git_available();
         let current_branch = if is_git {
-            crate::git::get_current_branch(root).ok()
+            crate::git::read_head_branch(root).or_else(|| crate::git::get_current_branch(root).ok())
         } else {
             None
         };
 
-        // One connection for the schema hash, the branch row and its metadata.
+        // One connection for the schema hash, the branch row and the dirty set.
         let reads = match cache.status_reads(current_branch.as_deref()) {
             Ok(r) => r,
             Err(e) => {
                 log::debug!("Could not read index status from meta.db: {}", e);
-                return Ok(Snapshot::Decided(fresh()));
+                return Ok(Snapshot::fresh());
             }
         };
 
@@ -3799,94 +3883,252 @@ mod status_cache {
             };
 
             let warning = IndexWarning::new(reason, "index_project");
-            return Ok(Snapshot::Decided((
-                IndexStatus::Stale,
-                false,
-                Some(warning),
-            )));
-        }
-
-        // Outside git there is no cheap way to find changes, and walking the tree
-        // on every query costs more than the staleness it would detect. Documented
-        // as a known limitation in the tool descriptions.
-        let Some(current_branch) = current_branch else {
-            return Ok(Snapshot::Decided(fresh()));
-        };
-
-        // 1. A branch we have never indexed: nothing here is trustworthy.
-        if !reads.branch_indexed {
-            let warning = IndexWarning::new(
-                format!("Branch '{}' has not been indexed", current_branch),
-                "index_project",
-            )
-            .with_details(IndexWarningDetails {
-                current_branch: Some(current_branch),
-                indexed_branch: None,
-                current_commit: None,
-                indexed_commit: None,
+            return Ok(Snapshot {
+                decided: Some((IndexStatus::Stale, false, Some(warning))),
+                details: None,
+                changes: WorktreeChanges::default(),
             });
-            return Ok(Snapshot::Decided((
-                IndexStatus::Stale,
-                false,
-                Some(warning),
-            )));
         }
 
-        let (Ok(current_commit), Some(branch_info)) =
-            (crate::git::get_current_commit(root), reads.branch_info)
-        else {
-            return Ok(Snapshot::Decided(fresh()));
+        let config = cache.load_index_config().unwrap_or_else(|e| {
+            log::debug!("Using default index config for freshness: {}", e);
+            IndexConfig::default()
+        });
+        let policy = PathPolicy::from_config(root, &config);
+
+        let info = reads.branch_info.as_ref();
+        let mut details = IndexWarningDetails {
+            current_branch: current_branch.clone(),
+            indexed_branch: info.map(|i| i.branch.clone()),
+            current_commit: None,
+            indexed_commit: info.map(|i| i.commit_sha.clone()),
+            indexed_at: info.map(|i| i.last_indexed),
+            checked_by: None,
         };
 
-        let details = IndexWarningDetails {
-            current_branch: Some(current_branch.clone()),
-            indexed_branch: Some(branch_info.branch.clone()),
-            current_commit: Some(current_commit.clone()),
-            indexed_commit: Some(branch_info.commit_sha.clone()),
+        let probe = if current_branch.is_some() {
+            let current_commit = crate::git::get_current_commit(root).ok();
+            details.current_commit = current_commit.clone();
+            let indexed_commit = info.map(|i| i.commit_sha.as_str());
+            match git_candidates(
+                root,
+                &reads.dirty_at_index,
+                indexed_commit,
+                current_commit.as_deref(),
+            ) {
+                Ok(set) => Probe::Git(set),
+                Err(e) => {
+                    log::debug!("git could not name changed paths ({}); walking the tree", e);
+                    Probe::Walk
+                }
+            }
+        } else {
+            Probe::Walk
         };
 
-        // 2. HEAD moved. Potentially every file differs, so nothing is trustworthy.
-        if branch_info.commit_sha != current_commit {
-            let short = |s: &str| s.chars().take(7).collect::<String>();
-            let warning = IndexWarning::new(
-                format!(
-                    "Commit changed from {} to {}",
-                    short(&branch_info.commit_sha),
-                    short(&current_commit)
-                ),
-                "index_project",
-            )
-            .with_details(details);
-            return Ok(Snapshot::Decided((
-                IndexStatus::Stale,
-                false,
-                Some(warning),
-            )));
-        }
-
-        // 3. The working tree. This is the case 1.7.1 missed entirely: it sampled the
-        // mtimes of the first TEN indexed files, which never included an untracked
-        // file (absent from the list) or a deleted one (metadata() fails, skipped
-        // silently). Edit-then-search is the primary agent workflow, and every one of
-        // those searches was served stale and labelled fresh.
-        // Under the workspace's `[index] include/exclude` policy, so an edit to an
-        // excluded file cannot mark the index stale.
-        let policy = cache
-            .load_index_config()
-            .map(|cfg| crate::indexer::PathPolicy::from_config(root, &cfg))
-            .unwrap_or_default();
-        let indexable = |p: &str| indexable_with(p, &policy);
-        let changes = match crate::git::get_worktree_changes(root, indexable) {
-            Ok(c) => c,
-            // git unavailable mid-session, or a broken repo. Don't claim staleness we
-            // cannot demonstrate.
-            Err(e) => {
-                log::debug!("Could not read working tree state: {}", e);
-                return Ok(Snapshot::Decided(fresh()));
+        let mut changes = match probe {
+            Probe::Git(candidates) => {
+                let keys: Vec<&str> = candidates.iter().map(String::as_str).collect();
+                let fingerprints = cache.fingerprints_for(&keys)?;
+                let mut out = WorktreeChanges::default();
+                for path in &candidates {
+                    classify_one(
+                        root,
+                        &config,
+                        &policy,
+                        path,
+                        fingerprints.get(path),
+                        &mut out,
+                    );
+                }
+                details.checked_by = Some("git".to_string());
+                out
+            }
+            Probe::Walk => {
+                let fingerprints = fingerprints_all(cache)?;
+                details.checked_by = Some("walk".to_string());
+                walk_changes(root, &config, &policy, &fingerprints)
             }
         };
+        changes.sort();
 
-        Ok(Snapshot::Worktree { details, changes })
+        Ok(Snapshot {
+            decided: None,
+            details: Some(details),
+            changes,
+        })
+    }
+
+    /// Paths whose content MAY differ from the index, in a git repository.
+    ///
+    /// Three sources, each necessary:
+    /// * `git status` — edits, additions and deletions since HEAD;
+    /// * the paths that were dirty when the index was written — an edit indexed
+    ///   and then reverted with `git checkout -- f` is clean to git but differs
+    ///   from the index;
+    /// * `git diff --name-only indexed..HEAD` when HEAD moved — a commit, pull or
+    ///   checkout changes tracked files without `git status` ever listing them.
+    ///
+    /// A path in none of the three has the bytes the index was built from.
+    fn git_candidates(
+        root: &Path,
+        dirty_at_index: &[String],
+        indexed_commit: Option<&str>,
+        current_commit: Option<&str>,
+    ) -> Result<HashSet<String>> {
+        let mut set = crate::git::changed_paths(root)?;
+        set.extend(dirty_at_index.iter().cloned());
+        match (indexed_commit, current_commit) {
+            (Some(indexed), Some(current)) if indexed != current => {
+                if indexed == "unknown" {
+                    anyhow::bail!("the index does not record a commit");
+                }
+                set.extend(crate::git::diff_names(root, indexed, current)?);
+            }
+            (None, _) | (_, None) => anyhow::bail!("no commit to diff against"),
+            _ => {}
+        }
+        Ok(set)
+    }
+
+    /// Every indexed fingerprint, memoised on the open index handle so a walk pays
+    /// the table read once per index version.
+    fn fingerprints_all(cache: &CacheManager) -> Result<Arc<HashMap<String, FileFingerprint>>> {
+        match super::open_index::get_or_open(cache) {
+            Ok(open) => open.fingerprints(cache),
+            Err(_) => Ok(Arc::new(cache.load_fingerprints()?)),
+        }
+    }
+
+    /// Whether the file at `full` still has the bytes the index holds.
+    ///
+    /// A matching `(size, mtime_ns)` is proof enough; otherwise the file is hashed.
+    /// That second step is what makes "reindexed but uncommitted" fresh: git lists
+    /// the path, the mtime moved, and the hash says the index already has it.
+    fn content_matches(full: &Path, md: &std::fs::Metadata, fp: &FileFingerprint) -> bool {
+        if fp.stat_matches(md) {
+            return true;
+        }
+        match std::fs::read(full) {
+            Ok(bytes) => blake3::hash(&bytes).to_hex().as_str() == fp.hash,
+            Err(_) => false,
+        }
+    }
+
+    /// Sort one candidate path into `out`, or leave it out when the indexer would.
+    fn classify_one(
+        root: &Path,
+        config: &IndexConfig,
+        policy: &PathPolicy,
+        path: &str,
+        fp: Option<&FileFingerprint>,
+        out: &mut WorktreeChanges,
+    ) {
+        if !indexable_with(path, policy) {
+            return;
+        }
+        let full = root.join(path);
+        let md = if config.follow_symlinks {
+            std::fs::metadata(&full)
+        } else {
+            std::fs::symlink_metadata(&full)
+        };
+        match (md, fp) {
+            (Err(_), Some(_)) => out.push_deleted(path),
+            (Err(_), None) => {}
+            // A directory or an unfollowed symlink is nothing the indexer holds.
+            (Ok(md), _) if !md.is_file() => {
+                if fp.is_some() {
+                    out.push_deleted(path);
+                }
+            }
+            (Ok(md), _) if md.len() > config.max_file_size as u64 => {
+                // Grown past the limit: the content differs and the next index
+                // drops it. Not indexed before either → nothing to report.
+                if fp.is_some() {
+                    out.push_modified(path);
+                }
+            }
+            (Ok(_), None) => out.push_added(path),
+            (Ok(md), Some(fp)) => {
+                if !content_matches(&full, &md, fp) {
+                    out.push_modified(path);
+                }
+            }
+        }
+    }
+
+    /// Compare every file the indexer would walk against the fingerprint table.
+    ///
+    /// Outside git this is the only way to know; the walk is parallel and the
+    /// hash is computed only for files whose stat does not match, so on a warm
+    /// cache it is a few milliseconds per thousand files.
+    fn walk_changes(
+        root: &Path,
+        config: &IndexConfig,
+        policy: &PathPolicy,
+        fingerprints: &HashMap<String, FileFingerprint>,
+    ) -> WorktreeChanges {
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(8);
+        let mut builder = Indexer::walk_builder(root, config, policy);
+        builder.threads(threads);
+
+        let seen: Mutex<Vec<(String, std::fs::Metadata)>> = Mutex::new(Vec::new());
+        let max_size = config.max_file_size as u64;
+        builder.build_parallel().run(|| {
+            let seen = &seen;
+            Box::new(move |entry| {
+                let Ok(entry) = entry else {
+                    return ignore::WalkState::Continue;
+                };
+                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    return ignore::WalkState::Continue;
+                }
+                let path = entry.path();
+                if policy.classify(path).is_none() {
+                    return ignore::WalkState::Continue;
+                }
+                let Ok(md) = entry.metadata() else {
+                    return ignore::WalkState::Continue;
+                };
+                if md.len() > max_size {
+                    return ignore::WalkState::Continue;
+                }
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if let Ok(mut v) = seen.lock() {
+                    v.push((rel, md));
+                }
+                ignore::WalkState::Continue
+            })
+        });
+
+        let seen = seen.into_inner().unwrap_or_default();
+        let mut out = WorktreeChanges::default();
+        let mut present: HashSet<&str> = HashSet::with_capacity(seen.len());
+        for (rel, md) in &seen {
+            present.insert(rel.as_str());
+            match fingerprints.get(rel) {
+                None => out.push_added(rel),
+                Some(fp) => {
+                    if !content_matches(&root.join(rel), md, fp) {
+                        out.push_modified(rel);
+                    }
+                }
+            }
+        }
+        for path in fingerprints.keys() {
+            if !present.contains(path.as_str()) {
+                out.push_deleted(path);
+            }
+        }
+        out
     }
 
     /// Drop any memo for `root`, so the next read is fresh.

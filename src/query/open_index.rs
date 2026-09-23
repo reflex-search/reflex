@@ -92,6 +92,9 @@ pub struct OpenIndex {
     /// connections per call (each running the WAL and foreign-key pragmas) and
     /// re-ran the schema migration every time.
     meta: OnceLock<Mutex<rusqlite::Connection>>,
+    /// Every indexed file's fingerprint, loaded on first use by the freshness walk
+    /// (outside git). Dropped with the handle when the index is rewritten.
+    fingerprints: OnceLock<Arc<HashMap<String, crate::cache::FileFingerprint>>>,
 }
 
 impl std::fmt::Debug for OpenIndex {
@@ -190,7 +193,22 @@ impl OpenIndex {
             posting_cap: config.max_posting_list_entries,
             fingerprint,
             meta: OnceLock::new(),
+            fingerprints: OnceLock::new(),
         })
+    }
+
+    /// The fingerprint table, read once per handle.
+    pub fn fingerprints(
+        &self,
+        cache: &CacheManager,
+    ) -> Result<Arc<HashMap<String, crate::cache::FileFingerprint>>> {
+        if let Some(fp) = self.fingerprints.get() {
+            return Ok(Arc::clone(fp));
+        }
+        let loaded = Arc::new(cache.load_fingerprints()?);
+        // A concurrent first caller may have won the race; either table is fine.
+        let _ = self.fingerprints.set(Arc::clone(&loaded));
+        Ok(Arc::clone(self.fingerprints.get().expect("set above")))
     }
 
     /// The shared `meta.db` connection, opened on first use.

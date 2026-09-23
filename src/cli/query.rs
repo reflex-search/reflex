@@ -469,11 +469,12 @@ No dependency data will be included for {} files.",
         let ms = |us: u64| us as f64 / 1000.0;
         match query_response.as_ref().and_then(|r| r.timings.as_ref()) {
             Some(t) => eprintln!(
-                "timing: open {:.2}ms | candidates {:.2}ms | verify {:.2}ms | status {:.2}ms | group {:.2}ms | engine {:.2}ms | wall {:.2}ms",
+                "timing: open {:.2}ms | candidates {:.2}ms | verify {:.2}ms | status wait {:.2}ms (compute {:.2}ms) | group {:.2}ms | engine {:.2}ms | wall {:.2}ms",
                 ms(t.open_us),
                 ms(t.candidates_us),
                 ms(t.verify_us),
                 ms(t.status_us),
+                ms(t.status_compute_us),
                 ms(t.group_us),
                 ms(t.total_us),
                 elapsed.as_secs_f64() * 1000.0

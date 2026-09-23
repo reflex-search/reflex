@@ -541,8 +541,13 @@ pub struct QueryTimings {
     pub candidates_us: u64,
     /// Verifying candidate lines against the pattern (and any enrichment).
     pub verify_us: u64,
-    /// Freshness / staleness check.
+    /// Time the query waited for the freshness check after the search finished.
+    /// The check runs on its own thread alongside the search, so this is usually
+    /// near zero; `status_compute_us` is what the check itself cost.
     pub status_us: u64,
+    /// The freshness check's own duration (git spawns, or a tree walk outside git).
+    #[serde(default)]
+    pub status_compute_us: u64,
     /// Grouping by file, context lines, dependencies.
     pub group_us: u64,
     /// Whole query as seen by the engine.
@@ -675,6 +680,26 @@ pub struct IndexWarningDetails {
     /// Indexed commit SHA (if in git repo)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indexed_commit: Option<String>,
+    /// When the index was last written (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_at: Option<i64>,
+    /// How the working tree was compared to the index: `"git"` (candidates from
+    /// `git status`, confirmed by fingerprint) or `"walk"` (every file stat'ed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_by: Option<String>,
+}
+
+/// The full answer to `check_index_status`.
+///
+/// `details` is present even when the index is fresh, so a human can see that the
+/// indexed commit differs from HEAD without that difference being called staleness:
+/// since 1.8.0 freshness is judged by file content, not by commit.
+#[derive(Debug, Clone)]
+pub struct IndexStatusReport {
+    pub status: IndexStatus,
+    pub can_trust_results: bool,
+    pub warning: Option<IndexWarning>,
+    pub details: Option<IndexWarningDetails>,
 }
 
 /// Pagination information for query results
