@@ -307,6 +307,30 @@ fn intersect_with_cursor(
     Ok(out)
 }
 
+/// Mark every candidate present in a streamed posting list.
+///
+/// Same walk as [`intersect_with_cursor`], but sets `keep[i]` for each hit
+/// instead of building a new vector, so several lists (the case variants of
+/// one trigram) can be OR-ed into one mask over the same candidate slice.
+fn mark_with_cursor(
+    cands: &[FileLocation],
+    cur: &mut PostingCursor,
+    keep: &mut [bool],
+) -> Result<()> {
+    for (i, cand) in cands.iter().enumerate() {
+        if keep[i] {
+            continue;
+        }
+        let k = key(cand);
+        match cur.seek(k)? {
+            Some(loc) if key(&loc) == k => keep[i] = true,
+            Some(_) => {}
+            None => break,
+        }
+    }
+    Ok(())
+}
+
 /// Location of a trigram occurrence in the codebase: one entry per
 /// (file, line) a trigram appears on. Derived `Ord` is the intersection key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1120,6 +1144,241 @@ impl TrigramIndex {
         }
     }
 
+    /// Case-insensitive candidate lines for an ASCII literal.
+    ///
+    /// Every 3-byte window of `literal` is looked up under all of its ASCII
+    /// case variants (≤ 8 trigrams: each letter byte has two forms) and the
+    /// variants' posting lists are OR-ed; windows are then AND-ed, cheapest
+    /// first, with the same early stop as [`search_candidates`](Self::search_candidates).
+    /// The result is a superset of every line that contains the literal in any
+    /// ASCII casing; callers verify with a `(?i)` regex.
+    ///
+    /// Only ASCII case is folded here. Unicode simple case folding also maps
+    /// `k` to U+212A KELVIN SIGN and `s` to U+017F LATIN SMALL LETTER LONG S;
+    /// a caller whose literal contains `k` or `s` must union
+    /// [`exotic_fold_lines`](Self::exotic_fold_lines) into the result to keep
+    /// parity with the regex engine. A non-ASCII literal is not supported:
+    /// the caller must fall back to a scan.
+    pub fn search_candidates_fold(&self, literal: &[u8]) -> Vec<FileLocation> {
+        if literal.len() < 3 || !literal.is_ascii() {
+            return vec![];
+        }
+
+        // Variant set per window; identical windows are intersected once.
+        let mut windows: Vec<Vec<Trigram>> = literal.windows(3).map(case_variants).collect();
+        windows.sort_unstable();
+        windows.dedup();
+
+        if let Some(ref mmap) = self.mmap {
+            // (weight, present variants) per window; a window with no present
+            // variant cannot match in any casing.
+            let mut ws: Vec<(usize, Vec<DirectoryEntry>)> = Vec::with_capacity(windows.len());
+            for variants in &windows {
+                let entries: Vec<DirectoryEntry> = variants
+                    .iter()
+                    .filter_map(|t| self.find_entry(*t))
+                    .collect();
+                if entries.is_empty() {
+                    return vec![];
+                }
+                let weight = entries.iter().map(|e| e.compressed_size as usize).sum();
+                ws.push((weight, entries));
+            }
+            ws.sort_by_key(|w| w.0);
+
+            // Cheapest window: decode every variant and merge.
+            let mut cands: Vec<FileLocation> = Vec::new();
+            for entry in &ws[0].1 {
+                match decompress_posting_list(mmap, entry.data_offset, entry.compressed_size) {
+                    Ok(list) => cands.extend(list),
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to decompress posting list for trigram {}: {}",
+                            entry.trigram,
+                            e
+                        );
+                        return vec![];
+                    }
+                }
+            }
+            cands.sort_unstable();
+            cands.dedup_by_key(|l| key(l));
+
+            for (weight, entries) in &ws[1..] {
+                if cands.is_empty() {
+                    break;
+                }
+                if *weight > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
+                    log::debug!(
+                        "Fold intersection stopped early: {} candidates, next window {} bytes",
+                        cands.len(),
+                        weight
+                    );
+                    break;
+                }
+                let mut keep = vec![false; cands.len()];
+                let mut window_ok = true;
+                for entry in entries {
+                    let start = entry.data_offset as usize;
+                    let end = start + entry.compressed_size as usize;
+                    let result = if end > mmap.len() {
+                        Err(anyhow::anyhow!("posting list out of bounds"))
+                    } else {
+                        PostingCursor::new(&mmap[start..end])
+                            .and_then(|mut cur| mark_with_cursor(&cands, &mut cur, &mut keep))
+                    };
+                    if let Err(e) = result {
+                        // Skipping a window keeps the result a superset.
+                        log::warn!(
+                            "Failed to read posting list for trigram {}: {}; window skipped",
+                            entry.trigram,
+                            e
+                        );
+                        window_ok = false;
+                        break;
+                    }
+                }
+                if !window_ok {
+                    continue;
+                }
+                cands = cands
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| **k)
+                    .map(|(c, _)| *c)
+                    .collect();
+            }
+            cands
+        } else {
+            let mut ws: Vec<(usize, Vec<&[FileLocation]>)> = Vec::with_capacity(windows.len());
+            for variants in &windows {
+                let lists: Vec<&[FileLocation]> = variants
+                    .iter()
+                    .filter_map(|t| {
+                        self.index
+                            .binary_search_by_key(t, |(x, _)| *x)
+                            .ok()
+                            .map(|i| self.index[i].1.as_slice())
+                    })
+                    .collect();
+                if lists.is_empty() {
+                    return vec![];
+                }
+                // ~1.3 bytes per posting on disk; same rule as the lazy path.
+                let weight = lists.iter().map(|l| l.len()).sum::<usize>() * 13 / 10;
+                ws.push((weight, lists));
+            }
+            ws.sort_by_key(|w| w.0);
+
+            let mut cands: Vec<FileLocation> =
+                ws[0].1.iter().flat_map(|l| l.iter().copied()).collect();
+            cands.sort_unstable();
+            cands.dedup_by_key(|l| key(l));
+
+            for (weight, lists) in &ws[1..] {
+                if cands.is_empty() {
+                    break;
+                }
+                if *weight > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
+                    break;
+                }
+                let mut next: Vec<FileLocation> = lists
+                    .iter()
+                    .flat_map(|l| intersect_two(&cands, l))
+                    .collect();
+                next.sort_unstable();
+                next.dedup_by_key(|l| key(l));
+                cands = next;
+            }
+            cands
+        }
+    }
+
+    /// Every line that contains U+212A KELVIN SIGN or U+017F LONG S.
+    ///
+    /// Under Unicode simple case folding a `(?i)` regex lets `k` match the
+    /// Kelvin sign and `s` match the long s. Their UTF-8 forms (`E2 84 AA` and
+    /// `C5 BF`) never align with the ASCII windows of
+    /// [`search_candidates_fold`](Self::search_candidates_fold), so a line whose
+    /// only match uses one of them would be missed. The Kelvin sign is its own
+    /// trigram; the long s appears in a `C5 BF ?` or `? C5 BF` trigram of any
+    /// line long enough to hold a ≥3-byte literal. On code corpora every lookup
+    /// misses, so this costs a few hundred directory probes and returns nothing.
+    pub fn exotic_fold_lines(&self) -> Vec<FileLocation> {
+        const KELVIN: Trigram = 0xE2_84_AA;
+        const LONG_S_LO: Trigram = 0xC5_BF_00;
+        const LONG_S_HI: Trigram = 0xC5_BF_FF;
+
+        let mut out: Vec<FileLocation> = Vec::new();
+        if let Some(ref mmap) = self.mmap {
+            let mut entries: Vec<DirectoryEntry> = Vec::new();
+            entries.extend(self.find_entry(KELVIN));
+            entries.extend(self.dir_range(LONG_S_LO, LONG_S_HI));
+            for first in 0u32..=0xFF {
+                entries.extend(self.find_entry(first << 16 | 0xC5_BF));
+            }
+            for entry in entries {
+                match decompress_posting_list(mmap, entry.data_offset, entry.compressed_size) {
+                    Ok(list) => out.extend(list),
+                    Err(e) => log::warn!(
+                        "Failed to decompress posting list for trigram {}: {}",
+                        entry.trigram,
+                        e
+                    ),
+                }
+            }
+        } else {
+            let lo = self.index.partition_point(|(t, _)| *t < LONG_S_LO);
+            let hi = self.index.partition_point(|(t, _)| *t <= LONG_S_HI);
+            for (_, list) in &self.index[lo..hi] {
+                out.extend(list.iter().copied());
+            }
+            let mut singles: Vec<Trigram> = (0u32..=0xFF).map(|f| f << 16 | 0xC5_BF).collect();
+            singles.push(KELVIN);
+            for t in singles {
+                if let Ok(i) = self.index.binary_search_by_key(&t, |(x, _)| *x) {
+                    out.extend(self.index[i].1.iter().copied());
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup_by_key(|l| key(l));
+        out
+    }
+
+    /// Directory entries with `lo <= trigram <= hi` (lazy mode only).
+    fn dir_range(&self, lo: Trigram, hi: Trigram) -> Vec<DirectoryEntry> {
+        let Some(mmap) = self.mmap.as_ref() else {
+            return vec![];
+        };
+        let at = |i: usize| read_u32(mmap, HEADER_SIZE + i * DIR_ENTRY_SIZE);
+        let (mut l, mut h) = (0usize, self.num_trigrams);
+        while l < h {
+            let mid = l + (h - l) / 2;
+            if at(mid) < lo {
+                l = mid + 1;
+            } else {
+                h = mid;
+            }
+        }
+        let mut out = Vec::new();
+        let mut i = l;
+        while i < self.num_trigrams {
+            let off = HEADER_SIZE + i * DIR_ENTRY_SIZE;
+            let trigram = read_u32(mmap, off);
+            if trigram > hi {
+                break;
+            }
+            out.push(DirectoryEntry {
+                trigram,
+                data_offset: read_u64(mmap, off + 4),
+                compressed_size: read_u32(mmap, off + 12),
+            });
+            i += 1;
+        }
+        out
+    }
+
     /// Search for a plain text pattern and return the distinct candidate file IDs
     ///
     /// Output is sorted ascending. Same caveats as [`search`](Self::search):
@@ -1434,6 +1693,32 @@ fn bytes_to_trigram(bytes: &[u8]) -> Trigram {
     (bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | (bytes[2] as u32)
 }
 
+/// All ASCII case variants of a 3-byte window, sorted and deduplicated.
+///
+/// Each ASCII letter byte contributes two forms, every other byte one, so the
+/// result has 1, 2, 4 or 8 trigrams.
+fn case_variants(window: &[u8]) -> Vec<Trigram> {
+    debug_assert_eq!(window.len(), 3);
+    let forms = |b: u8| -> Vec<u8> {
+        if b.is_ascii_alphabetic() {
+            vec![b.to_ascii_lowercase(), b.to_ascii_uppercase()]
+        } else {
+            vec![b]
+        }
+    };
+    let mut out = Vec::with_capacity(8);
+    for a in forms(window[0]) {
+        for b in forms(window[1]) {
+            for c in forms(window[2]) {
+                out.push(bytes_to_trigram(&[a, b, c]));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Convert trigram back to bytes (for debugging)
 #[allow(dead_code)]
 fn trigram_to_bytes(trigram: Trigram) -> [u8; 3] {
@@ -1556,6 +1841,101 @@ mod tests {
         assert_eq!(lazy_exact, exact_keys);
         assert!(lazy_exact.is_subset(&lazy_cands));
     }
+    /// `search_candidates_fold` plus `exotic_fold_lines` must cover every line a
+    /// `(?i)` regex matches, in both modes, including the Kelvin-sign and long-s
+    /// folds the regex crate applies to `k` and `s`.
+    #[test]
+    fn search_candidates_fold_covers_case_insensitive_matches() {
+        let mut index = TrigramIndex::new();
+        let mut texts: Vec<String> = Vec::new();
+        for f in 0..10u32 {
+            let id = index.add_file(PathBuf::from(format!("f{f}.rs")));
+            let mut text = String::new();
+            for i in 0..100 {
+                text.push_str(&format!("let ident_{} = other_{}; // filler\n", i, i + 1));
+            }
+            text.push_str("let RealmId = 1;\n");
+            text.push_str("let realmId = 2;\n");
+            text.push_str("let REALMID = 3;\n");
+            text.push_str("let realm_id = 4;\n");
+            text.push_str("let kelvin = 5;\n");
+            text.push_str("let \u{212A}elvin = 6;\n");
+            text.push_str("let \u{017F}tatus = 7;\n");
+            text.push_str("let STATUS = 8;\n");
+            index.index_file(id, &text);
+            texts.push(text);
+        }
+        index.finalize();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trigrams.bin");
+        index.write(&path).unwrap();
+        let lazy = TrigramIndex::load(&path).unwrap();
+
+        for literal in ["realmid", "kelvin", "status", "REALM_ID"] {
+            let re = regex::Regex::new(&format!("(?i){}", literal)).unwrap();
+            let mut expected = std::collections::HashSet::new();
+            for (f, text) in texts.iter().enumerate() {
+                for (i, line) in text.lines().enumerate() {
+                    if re.is_match(line) {
+                        expected.insert((f as u32, i as u32 + 1));
+                    }
+                }
+            }
+            assert!(!expected.is_empty(), "{literal}");
+            let has_ks = literal
+                .bytes()
+                .any(|b| matches!(b.to_ascii_lowercase(), b'k' | b's'));
+
+            for (name, idx) in [("memory", &index), ("lazy", &lazy)] {
+                let mut cands: std::collections::HashSet<_> = idx
+                    .search_candidates_fold(literal.as_bytes())
+                    .iter()
+                    .map(key)
+                    .collect();
+                if has_ks {
+                    cands.extend(idx.exotic_fold_lines().iter().map(key));
+                }
+                assert!(
+                    expected.is_subset(&cands),
+                    "{name}: fold candidates for {literal:?} miss {:?}",
+                    expected.difference(&cands).collect::<Vec<_>>()
+                );
+            }
+        }
+
+        // The regex crate really does fold these (Unicode simple case folding),
+        // and the ASCII windows alone do not reach them.
+        assert!(
+            regex::Regex::new("(?i)kelvin")
+                .unwrap()
+                .is_match("\u{212A}elvin")
+        );
+        assert!(
+            regex::Regex::new("(?i)status")
+                .unwrap()
+                .is_match("\u{017F}tatus")
+        );
+        let ascii_only: std::collections::HashSet<_> = lazy
+            .search_candidates_fold(b"kelvin")
+            .iter()
+            .map(key)
+            .collect();
+        assert!(
+            !ascii_only.contains(&(0, 106)),
+            "line 106 is the Kelvin-sign line"
+        );
+
+        // Exotic lines are exactly the two lines per file that carry the folds.
+        assert_eq!(lazy.exotic_fold_lines().len(), 20);
+        assert_eq!(index.exotic_fold_lines(), lazy.exotic_fold_lines());
+
+        // A window absent in every casing is a definite miss.
+        assert!(lazy.search_candidates_fold(b"zzqx_absent").is_empty());
+        // Non-ASCII is not folded here.
+        assert!(lazy.search_candidates_fold("straße".as_bytes()).is_empty());
+    }
+
     use tempfile::TempDir;
 
     #[test]

@@ -47,7 +47,16 @@ impl SymbolCache {
     /// Initialize the symbols table schema if it doesn't exist
     fn init_schema(&self) -> Result<()> {
         let conn = crate::cache::open_meta_db(&self.db_path).context("Failed to open meta.db")?;
+        Self::ensure_schema(&conn)
+    }
 
+    /// Create or migrate the `symbols` table on an already-open connection.
+    ///
+    /// The query path calls this once per index handle (see
+    /// `OpenIndex::meta_conn`), not once per query: it is several statements
+    /// (`pragma_table_info`, `CREATE TABLE`, two `CREATE INDEX`, a version read)
+    /// that cost real milliseconds and never change between queries.
+    pub fn ensure_schema(conn: &rusqlite::Connection) -> Result<()> {
         // Check if we need to migrate to file_id-based schema
         let uses_file_id: bool = conn
             .query_row(
@@ -173,6 +182,7 @@ impl SymbolCache {
                 // Restore file_path (it was removed during serialization to save space)
                 for symbol in &mut symbols {
                     symbol.path = file_path.to_string();
+                    symbol.lang = crate::models::Language::from_path(Path::new(file_path));
                 }
 
                 log::debug!(
@@ -234,6 +244,8 @@ impl SymbolCache {
                                 // Restore file_path (it was removed during serialization to save space)
                                 for symbol in &mut symbols {
                                     symbol.path = file_path.clone();
+                                    symbol.lang =
+                                        crate::models::Language::from_path(Path::new(file_path));
                                 }
                                 hits += 1;
                                 Some(symbols)
@@ -288,13 +300,29 @@ impl SymbolCache {
         file_ids: &[(i64, String, String)], // (file_id, hash, path)
         kind_filter: Option<crate::models::SymbolKind>,
     ) -> Result<std::collections::HashMap<i64, Vec<SearchResult>>> {
+        if file_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
+        Self::batch_get_with_kind_on(&conn, file_ids, kind_filter)
+    }
+
+    /// [`Self::batch_get_with_kind`] on an already-open connection.
+    ///
+    /// Only rows whose stored `file_hash` equals the expected hash are returned.
+    /// `INSERT OR REPLACE` keys on `(file_id, file_hash)`, so a file that changed
+    /// keeps its old-hash row next to the new one; before 1.8.0 this read ignored
+    /// the hash and could serve a changed file its pre-change symbols.
+    pub fn batch_get_with_kind_on(
+        conn: &rusqlite::Connection,
+        file_ids: &[(i64, String, String)], // (file_id, hash, path)
+        kind_filter: Option<crate::models::SymbolKind>,
+    ) -> Result<std::collections::HashMap<i64, Vec<SearchResult>>> {
         use std::collections::HashMap;
 
         if file_ids.is_empty() {
             return Ok(HashMap::new());
         }
-
-        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         // SQLite has a limit of 999 parameters by default
         // Chunk requests to stay well under that limit
@@ -319,7 +347,7 @@ impl SymbolCache {
 
             // Always use simple query - filter by kind in Rust to avoid cache miss detection bug
             let query = format!(
-                "SELECT file_id, symbols_json
+                "SELECT file_id, file_hash, symbols_json
                  FROM symbols
                  WHERE file_id IN ({})",
                 id_placeholders
@@ -335,21 +363,30 @@ impl SymbolCache {
             let mut stmt = conn.prepare(&query)?;
             let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })?;
 
             for row_result in rows {
-                let (file_id, symbols_json) = row_result?;
+                let (file_id, stored_hash, symbols_json) = row_result?;
 
-                // Verify hash matches
-                if let Some((_hash, file_path)) = file_info.get(&file_id) {
-                    // Note: We can't verify hash here since symbols table doesn't include hash in result
-                    // This is OK - we'll verify by checking file_hash in a separate query if needed
+                // Only the row for the CURRENT content counts as a hit.
+                if let Some((hash, file_path)) = file_info.get(&file_id) {
+                    if *hash != stored_hash {
+                        continue;
+                    }
                     match serde_json::from_str::<Vec<SearchResult>>(&symbols_json) {
                         Ok(mut symbols) => {
-                            // Restore file_path (it was removed during serialization)
+                            // Restore file_path (it was removed during serialization). `lang` is
+                            // `#[serde(skip)]`, so it must be re-derived from the path too, or every
+                            // cached symbol comes back as the default language.
                             for symbol in &mut symbols {
                                 symbol.path = file_path.clone();
+                                symbol.lang =
+                                    crate::models::Language::from_path(Path::new(file_path));
                             }
 
                             // Filter symbols by kind if needed (Rust-side filtering)
@@ -435,6 +472,35 @@ impl SymbolCache {
         )?;
 
         log::debug!("Cached {} symbols for {}", symbols.len(), file_path);
+        Ok(())
+    }
+
+    /// Store parsed symbols for files already resolved to ids, in one transaction
+    /// on an open connection. Used by the query path for cache misses, which
+    /// previously opened a connection and ran an `INSERT` per file from inside the
+    /// parse pool.
+    pub fn batch_set_by_id_on(
+        conn: &mut rusqlite::Connection,
+        entries: &[(i64, String, Vec<SearchResult>)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        let now_str = chrono::Utc::now().timestamp().to_string();
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
+                 VALUES (?, ?, ?, ?)",
+            )?;
+            for (file_id, file_hash, symbols) in entries {
+                let symbols_json =
+                    serde_json::to_string(symbols).context("Failed to serialize symbols")?;
+                stmt.execute(rusqlite::params![file_id, file_hash, symbols_json, now_str])?;
+            }
+        }
+        tx.commit()?;
+        log::debug!("Batch cached symbols for {} files (by id)", entries.len());
         Ok(())
     }
 

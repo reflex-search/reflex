@@ -765,6 +765,46 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         Ok(hashes)
     }
 
+    /// `path → (file_id, hash)` on `branch` for the given paths only.
+    ///
+    /// The symbol path used to load every hash on the branch (a three-way join over
+    /// the whole index) and then look up every candidate's file id in a second
+    /// query. A `--symbols` query touches tens of files; this asks for exactly
+    /// those, in 900-path chunks, on a connection the caller already holds.
+    pub fn branch_file_rows_on(
+        conn: &Connection,
+        branch: &str,
+        paths: &[String],
+    ) -> Result<HashMap<String, (i64, String)>> {
+        const BATCH_SIZE: usize = 900;
+        let mut out = HashMap::with_capacity(paths.len());
+        for chunk in paths.chunks(BATCH_SIZE) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "SELECT f.path, f.id, fb.hash
+                 FROM files f
+                 JOIN file_branches fb ON fb.file_id = f.id
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE b.name = ? AND f.path IN ({})",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params = std::iter::once(branch).chain(chunk.iter().map(String::as_str));
+            let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (path, id, hash) = row?;
+                out.insert(path, (id, hash));
+            }
+        }
+        Ok(out)
+    }
+
     /// Save file hashes for incremental indexing
     ///
     /// DEPRECATED: Hashes are now saved via record_branch_file() or batch_record_branch_files().

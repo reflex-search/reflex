@@ -46,6 +46,10 @@ struct Shape {
     /// `None` = fetch everything (in-process) / `mode: "count"` (MCP).
     limit: Option<usize>,
     regex: bool,
+    /// `--symbols` / `search_code {symbols: true}`: definitions only.
+    symbols: bool,
+    /// `find_references`: a symbol lookup plus an exhaustive reference search.
+    find_refs: bool,
     /// In-process median budget, ms.
     budget_ms: f64,
 }
@@ -56,6 +60,8 @@ const SHAPES: &[Shape] = &[
         pattern: corpus::ABSENT,
         limit: Some(100),
         regex: false,
+        symbols: false,
+        find_refs: false,
         budget_ms: 5.0,
     },
     Shape {
@@ -63,6 +69,8 @@ const SHAPES: &[Shape] = &[
         pattern: corpus::RARE_MARKER,
         limit: Some(100),
         regex: false,
+        symbols: false,
+        find_refs: false,
         budget_ms: 20.0,
     },
     Shape {
@@ -70,6 +78,8 @@ const SHAPES: &[Shape] = &[
         pattern: corpus::COMMON_IDENT,
         limit: Some(1),
         regex: false,
+        symbols: false,
+        find_refs: false,
         budget_ms: 50.0,
     },
     Shape {
@@ -77,6 +87,8 @@ const SHAPES: &[Shape] = &[
         pattern: corpus::COMMON_WORD,
         limit: Some(1),
         regex: false,
+        symbols: false,
+        find_refs: false,
         budget_ms: 50.0,
     },
     Shape {
@@ -84,6 +96,8 @@ const SHAPES: &[Shape] = &[
         pattern: corpus::COMMON_WORD,
         limit: None,
         regex: false,
+        symbols: false,
+        find_refs: false,
         budget_ms: 150.0,
     },
     Shape {
@@ -91,7 +105,42 @@ const SHAPES: &[Shape] = &[
         pattern: corpus::GETSET_REGEX,
         limit: None,
         regex: true,
+        symbols: false,
+        find_refs: false,
         budget_ms: 300.0,
+    },
+    // Case-insensitive regex over a rare literal. Before 1.8.0 every `(?i)`
+    // pattern scanned the whole corpus; now the literal is looked up under all
+    // of its case variants. Budget: twice the case-sensitive `rare_ident`.
+    Shape {
+        name: "ci_regex",
+        pattern: corpus::CI_REGEX,
+        limit: Some(100),
+        regex: true,
+        symbols: false,
+        find_refs: false,
+        budget_ms: 40.0,
+    },
+    // The one shape the perf round did not speed up (field test: 40 ms engine
+    // against a 16–25 ms floor). Budget: the plain-query floor (`rare_ident`)
+    // plus 5 ms.
+    Shape {
+        name: "symbol_lookup",
+        pattern: corpus::RARE_FN,
+        limit: Some(100),
+        regex: false,
+        symbols: true,
+        find_refs: false,
+        budget_ms: 25.0,
+    },
+    Shape {
+        name: "find_references",
+        pattern: corpus::RARE_FN,
+        limit: Some(200),
+        regex: false,
+        symbols: false,
+        find_refs: true,
+        budget_ms: 30.0,
     },
 ];
 
@@ -104,39 +153,43 @@ const RUNS: usize = 11;
 // ==================== Measurement ====================
 
 /// A reported hit count. A list-mode search with a `limit` stops verifying once
-/// the page is full, so its `total` is a lower bound and `upper` (candidate lines
-/// from the index) an upper bound; count mode and no-limit searches are exact.
+/// the page is full, so its `total` is absent and `estimate` (`approx_total`, a
+/// sampled estimate) stands in; count mode and no-limit searches are exact.
 #[derive(Clone, Copy, Debug)]
 struct Hits {
-    total: usize,
+    total: Option<usize>,
     exact: bool,
-    upper: Option<usize>,
+    estimate: Option<usize>,
 }
 
 impl Hits {
     fn exact(total: usize) -> Self {
         Self {
-            total,
+            total: Some(total),
             exact: true,
-            upper: None,
+            estimate: None,
         }
     }
 
-    /// The count to show in a table: `1234` or `216+`.
+    /// The count to show in a table: `1234`, `~1200` or `?`.
     fn label(&self) -> String {
-        if self.exact {
-            self.total.to_string()
-        } else {
-            format!("{}+", self.total)
+        match (self.exact, self.total, self.estimate) {
+            (true, Some(t), _) => t.to_string(),
+            (_, _, Some(e)) => format!("~{e}"),
+            _ => "?".to_string(),
         }
     }
 
-    /// Whether `want` is consistent with this report.
+    /// Whether `want` is consistent with this report: exact means equal; an
+    /// estimate must be within ±50% (the contract says "typically ±30%").
     fn admits(&self, want: usize) -> bool {
         if self.exact {
-            self.total == want
+            self.total == Some(want)
         } else {
-            self.total <= want && self.upper.is_none_or(|u| u >= want)
+            self.total.is_none()
+                && self
+                    .estimate
+                    .is_none_or(|e| e.abs_diff(want) <= (want / 2).max(8))
         }
     }
 }
@@ -198,7 +251,7 @@ fn print_table(harness: &str, rows: &[(&str, Stats)]) {
                     "shape": name,
                     "hits": s.hits.total,
                     "hits_exact": s.hits.exact,
-                    "hits_upper": s.hits.upper,
+                    "hits_estimate": s.hits.estimate,
                     "first_ms": s.first_ms,
                     "median_ms": s.median_ms,
                     "p90_ms": s.p90_ms,
@@ -246,6 +299,16 @@ fn expected_hits(root: &Path) -> Vec<usize> {
     SHAPES
         .iter()
         .map(|shape| {
+            if shape.symbols {
+                // Definitions only: `pub fn get_<n>()` is planted exactly once.
+                let re =
+                    regex::Regex::new(&format!(r"^\s*pub fn {}\(", regex::escape(shape.pattern)))
+                        .unwrap();
+                return contents
+                    .iter()
+                    .map(|c| c.lines().filter(|l| re.is_match(l)).count())
+                    .sum();
+            }
             let re = if shape.regex {
                 regex::Regex::new(shape.pattern).unwrap()
             } else {
@@ -281,7 +344,7 @@ fn assert_sanity(harness: &str, root: &Path, rows: &[(&str, Stats)], expected: &
     let files = count_files(root);
     for ((shape, (name, s)), &want) in SHAPES.iter().zip(rows).zip(expected) {
         assert!(
-            s.hits.admits(want),
+            shape.find_refs || s.hits.admits(want),
             "{harness}/{name}: Reflex reported {:?}, scan of generated files found {want}",
             s.hits
         );
@@ -294,13 +357,30 @@ fn assert_sanity(harness: &str, root: &Path, rows: &[(&str, Stats)], expected: &
             );
         }
         match shape.name {
-            "zero_hit" => assert_eq!(s.hits.total, 0, "{harness}/{name}"),
+            "zero_hit" => assert_eq!(s.hits.total, Some(0), "{harness}/{name}"),
             "rare_ident" => {
-                assert_eq!(s.hits.total, corpus::RARE_MARKER_LINES, "{harness}/{name}")
+                assert_eq!(
+                    s.hits.total,
+                    Some(corpus::RARE_MARKER_LINES),
+                    "{harness}/{name}"
+                )
+            }
+            "ci_regex" => {
+                assert_eq!(
+                    s.hits.total,
+                    Some(corpus::RARE_MARKER_LINES),
+                    "{harness}/{name}"
+                )
             }
             "regex_getset" => assert!(
-                s.hits.total >= files,
-                "{harness}/{name}: {} hits < {files} files",
+                s.hits.total.is_some_and(|t| t >= files),
+                "{harness}/{name}: {:?} hits < {files} files",
+                s.hits.total
+            ),
+            "symbol_lookup" => assert_eq!(s.hits.total, Some(1), "{harness}/{name}"),
+            "find_references" => assert!(
+                s.hits.total.is_some_and(|t| t >= 1),
+                "{harness}/{name}: {:?}",
                 s.hits.total
             ),
             _ => assert!(
@@ -317,6 +397,7 @@ fn filter_for(shape: &Shape) -> QueryFilter {
     QueryFilter {
         limit: shape.limit,
         use_regex: shape.regex,
+        symbols_mode: shape.symbols,
         suppress_output: true,
         ..Default::default()
     }
@@ -327,6 +408,41 @@ fn filter_for(shape: &Shape) -> QueryFilter {
 fn run_in_process(root: &Path, shape: &Shape) -> (Hits, f64) {
     let start = Instant::now();
     let engine = QueryEngine::new(CacheManager::new(root));
+    if shape.find_refs {
+        // What the `find_references` handler does: a capped symbol lookup, then an
+        // exhaustive reference search with an exact total.
+        let def = engine
+            .search_with_metadata(
+                shape.pattern,
+                QueryFilter {
+                    limit: Some(5),
+                    symbols_mode: true,
+                    suppress_output: true,
+                    ..Default::default()
+                },
+            )
+            .expect("definition query failed");
+        let refs = engine
+            .search_with_metadata(
+                shape.pattern,
+                QueryFilter {
+                    limit: shape.limit,
+                    require_exact_total: true,
+                    exclude_text: true,
+                    suppress_output: true,
+                    ..Default::default()
+                },
+            )
+            .expect("reference query failed");
+        assert!(
+            def.pagination.total.is_some_and(|t| t >= 1),
+            "{}: no definition found: {:?}",
+            shape.name,
+            def.pagination
+        );
+        let hits = Hits::exact(refs.pagination.total.expect("exact total"));
+        return (hits, ms(start));
+    }
     let response = engine
         .search_with_metadata(shape.pattern, filter_for(shape))
         .expect("query failed");
@@ -334,7 +450,7 @@ fn run_in_process(root: &Path, shape: &Shape) -> (Hits, f64) {
     let hits = Hits {
         total: p.total,
         exact: p.total_is_exact,
-        upper: p.approx_total,
+        estimate: p.approx_total,
     };
     (hits, ms(start))
 }
@@ -445,16 +561,18 @@ impl McpChild {
             .as_str()
             .unwrap_or_else(|| panic!("{}: no content[0].text in {result}", shape.name));
         let body: Value = serde_json::from_str(text).expect("tool result text is JSON");
-        let hits = match body["count"].as_u64() {
+        let hits = match body["count"]
+            .as_u64()
+            .or_else(|| body["total_references"].as_u64())
+        {
             Some(n) => Hits::exact(n as usize),
             None => Hits {
                 total: body["pagination"]["total"]
                     .as_u64()
                     .or_else(|| body["total_count"].as_u64())
-                    .unwrap_or_else(|| panic!("{}: no hit count in {body}", shape.name))
-                    as usize,
+                    .map(|n| n as usize),
                 exact: body["total_is_exact"].as_bool().unwrap_or(true),
-                upper: body["approx_total"].as_u64().map(|n| n as usize),
+                estimate: body["approx_total"].as_u64().map(|n| n as usize),
             },
         };
         (hits, elapsed)
@@ -470,15 +588,24 @@ impl Drop for McpChild {
 
 /// Map a shape onto the MCP tool an agent would use for it.
 fn mcp_call_for(shape: &Shape) -> (&'static str, Value) {
+    if shape.find_refs {
+        return (
+            "find_references",
+            json!({"pattern": shape.pattern, "limit": shape.limit}),
+        );
+    }
     let tool = if shape.regex {
         "search_regex"
     } else {
         "search_code"
     };
-    let args = match shape.limit {
+    let mut args = match shape.limit {
         Some(limit) => json!({"pattern": shape.pattern, "limit": limit}),
         None => json!({"pattern": shape.pattern, "mode": "count"}),
     };
+    if shape.symbols {
+        args["symbols"] = json!(true);
+    }
     (tool, args)
 }
 

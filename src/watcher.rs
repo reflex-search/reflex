@@ -59,6 +59,7 @@ impl Default for WatchConfig {
 /// t=20s: Timer expires    [reindex A, B, C]
 /// ```
 pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
+    let policy = indexer.path_policy(path);
     log::info!(
         "Starting file watcher for {:?} with {}ms debounce",
         path,
@@ -105,18 +106,14 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                         // but we must still reindex so the deleted entry is removed.
                         // Accept any path whose extension suggests a code file OR has no
                         // extension at all (e.g. a deleted directory triggers a broad Remove).
-                        let ext = changed_path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("");
-                        let is_indexed = ext.is_empty()
-                            || crate::models::Language::from_extension(ext).is_indexable();
+                        let is_indexed = changed_path.extension().is_none()
+                            || crate::models::Language::from_path(&changed_path).is_indexable();
                         if is_indexed {
                             log::debug!("Detected removal: {:?}", changed_path);
                             pending_deletions.insert(changed_path);
                             last_event_time = Some(Instant::now());
                         }
-                    } else if should_watch_file(&changed_path) {
+                    } else if should_watch_file_with(&changed_path, Some(&policy)) {
                         log::debug!("Detected change: {:?}", changed_path);
                         pending_files.insert(changed_path);
                         last_event_time = Some(Instant::now());
@@ -215,7 +212,18 @@ fn process_event(event: &Event) -> Option<PathBuf> {
 /// Check if a file should trigger a reindex
 ///
 /// Returns true if the file has a supported language extension
+#[cfg(test)]
 fn should_watch_file(path: &Path) -> bool {
+    should_watch_file_with(path, None)
+}
+
+/// [`should_watch_file`] under the workspace's `[index] include/exclude` policy.
+fn should_watch_file_with(path: &Path, policy: Option<&crate::indexer::PathPolicy>) -> bool {
+    if let Some(policy) = policy
+        && !policy.admits(path, false)
+    {
+        return false;
+    }
     // Skip hidden files and directories
     if let Some(file_name) = path.file_name()
         && file_name.to_string_lossy().starts_with('.')
@@ -228,23 +236,10 @@ fn should_watch_file(path: &Path) -> bool {
         return false;
     }
 
-    // Check if file extension is supported
-    if let Some(ext) = path.extension() {
-        let ext_str = ext.to_string_lossy();
-        let lang = Language::from_extension(&ext_str);
-        // is_indexable, not is_supported: the text tier is watched too, so editing a
-        // README or a config file triggers a reindex like any other indexed file.
-        if lang.is_text() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
-            return crate::models::is_text_tier_file(&name);
-        }
-        return lang.is_supported();
-    }
-
-    false
+    // is_indexable, not is_supported: the text tier is watched too, so editing a
+    // README, a config file or a Makefile triggers a reindex like any other indexed
+    // file. `from_path` applies the lock-file exclusions by name.
+    Language::from_path(path).is_indexable()
 }
 
 #[cfg(test)]

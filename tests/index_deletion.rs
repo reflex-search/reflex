@@ -52,6 +52,7 @@ fn count(root: &std::path::Path, pattern: &str) -> usize {
         .unwrap()
         .pagination
         .total
+        .expect("a no-limit search is exact")
 }
 
 #[test]

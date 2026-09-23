@@ -332,13 +332,13 @@ pub async fn execute_queries(
             .with_context(|| format!("Failed to execute query: {}", query_cmd.command))?;
 
         // Always accumulate total count from all queries
-        total_count += response.pagination.total;
+        total_count += response.pagination.best_total();
 
         log::debug!(
             "Query {} returned {} file groups, {} total matches (merge={})",
             query_cmd.order,
             response.results.len(),
-            response.pagination.total,
+            response.pagination.best_total(),
             query_cmd.merge
         );
 

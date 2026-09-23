@@ -347,10 +347,16 @@ pub mod synthetic_corpus {
     pub const RARE_MARKER: &str = "rare_marker_q7";
     /// Number of lines carrying [`RARE_MARKER`].
     pub const RARE_MARKER_LINES: usize = 3;
+    /// A function defined exactly once in the corpus (`pub fn get_<file_no>()` is
+    /// planted per file), for the symbol-lookup and find-references shapes.
+    pub const RARE_FN: &str = "get_1234";
     /// Token that never appears in the corpus.
     pub const ABSENT: &str = "zzqx_absent";
     /// Regex that hits every file (two lines per file).
     pub const GETSET_REGEX: &str = r"fn (get|set)_\w+";
+    /// Case-insensitive regex over [`RARE_MARKER`]: its literal must still reach
+    /// the trigram index (looked up under every case variant), not a full scan.
+    pub const CI_REGEX: &str = "(?i)RARE_MARKER_Q7";
 
     const VOCAB_SIZE: usize = 20_000;
     const CONFIG_LINE_PROBABILITY: f64 = 0.10;

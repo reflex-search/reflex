@@ -101,159 +101,61 @@ fn parse_language(lang: Option<String>) -> Option<Language> {
     lang.as_deref().and_then(Language::from_name)
 }
 
-/// Bracket characters that make a whole-token literal search structurally unmatchable.
+/// The `paths: true` response: file paths only, no preview rows.
 ///
-/// Whole-token matching wraps the pattern as `\b<pattern>\b`. A pattern ending in `)`
-/// or `>` can never satisfy the trailing `\b`, because the next character is almost
-/// never a word character. So `unwrap()`, `#[derive(` and `-> Result<` all returned a
-/// silent `0` in the 1.7.0 field test, against ripgrep counts of 1221, 1141 and 2139.
-const REGEX_ONLY_CHARS: &[char] = &['(', ')', '[', ']', '{', '}', '<', '>'];
-
-/// A literal pattern rewritten so it cannot silently return zero.
-struct LiteralPattern {
-    /// What to actually search for (regex-escaped when `use_regex` is set).
-    effective: String,
-    /// Whether the query must run down the regex path.
-    use_regex: bool,
-    /// Explanation for the caller when the pattern was rewritten.
-    warning: Option<String>,
+/// `{status, can_trust_results, paths, total_files}`; `has_more` appears only
+/// when a `limit` cut the list, `warning` only when the index is stale, and
+/// `warnings` / `hint` only when the engine set them. The freshness fields stay
+/// because every tool response carries them (see `check_index_status`).
+fn paths_only_result(response: &crate::models::QueryResponse) -> serde_json::Value {
+    let paths: Vec<&str> = response.results.iter().map(|fg| fg.path.as_str()).collect();
+    let mut result = json!({
+        "status": response.status,
+        "can_trust_results": response.can_trust_results,
+        "paths": paths,
+        "total_files": paths.len(),
+    });
+    if let Some(warning) = &response.warning {
+        result["warning"] = json!(warning);
+    }
+    if response.pagination.has_more {
+        result["has_more"] = json!(true);
+    }
+    annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
+    result
 }
 
-/// Make a literal pattern searchable, rather than letting it return a confident zero.
+/// Attach the engine's literal-search safety nets to a compact response object.
 ///
-/// A pattern containing brackets cannot match under whole-token rules, so it is
-/// escaped and routed to the regex path, which is substring-based. The caller is told
-/// in `warnings` — the rewrite is never silent.
+/// The engine (`QueryEngine::search_with_metadata`) owns both messages, so the CLI,
+/// HTTP and MCP surfaces cannot disagree:
 ///
-/// `contains` mode already does substring matching, so it needs no rewrite.
-fn prepare_literal_pattern(pattern: &str, contains: bool) -> LiteralPattern {
-    if contains || !pattern.contains(REGEX_ONLY_CHARS) {
-        return LiteralPattern {
-            effective: pattern.to_string(),
-            use_regex: false,
-            warning: None,
-        };
-    }
-
-    LiteralPattern {
-        effective: regex::escape(pattern),
-        use_regex: true,
-        warning: Some(format!(
-            "Pattern {:?} contains brackets, which a whole-identifier search can never \
-             match. Searched it as an escaped regex instead (substring semantics). For \
-             explicit control use search_regex, or pass contains:true.",
-            pattern
-        )),
-    }
-}
-
-/// Attach the literal-search safety nets to a response object.
+/// * `warnings` — the pattern was rewritten (brackets → escaped regex).
+/// * `hint` — the result is empty but substring matches exist.
 ///
-/// Two things go on, both aimed at the same failure: an agent reading a `0` and
-/// concluding "no callers".
-///
-/// * `warnings` — set when the pattern was rewritten (brackets → escaped regex).
-/// * `hint` — set when the result is empty but substring matches exist.
-///
-/// `pattern` is the caller's ORIGINAL pattern, not the rewritten one, so the message
-/// names what they actually asked for.
-///
-/// `precomputed` is the engine's `substring_hint_count`: the number of candidate
-/// lines that held the pattern only as a substring, counted during the search
-/// itself. When the caller has it, no second search runs.
-fn annotate_literal_result(
-    response: &mut Value,
-    root: &Path,
-    pattern: &str,
-    filter: &QueryFilter,
-    prepared: &LiteralPattern,
-    precomputed: Option<usize>,
-) {
+/// A handler that serialises the whole `QueryResponse` already carries both fields;
+/// this is for the tools that build their own compact object, and it is idempotent
+/// (`insert` replaces), so calling it on a full response is harmless.
+fn annotate_literal_result(response: &mut Value, warnings: &[String], hint: Option<&str>) {
     let Some(obj) = response.as_object_mut() else {
         return;
     };
-
-    if let Some(w) = &prepared.warning {
-        obj.insert("warnings".to_string(), json!([w]));
+    if !warnings.is_empty() {
+        obj.insert("warnings".to_string(), json!(warnings));
     }
-
-    // Only a whole-identifier search can be "explained"; a rewrite or an explicit
-    // contains:true search already has substring semantics.
-    if prepared.use_regex || filter.use_contains {
-        return;
-    }
-
-    if !result_is_empty(obj) {
-        return;
-    }
-
-    let hint = match precomputed {
-        Some(count) => (count > 0).then(|| substring_hint_text(count, pattern)),
-        None => zero_result_hint(root, pattern, filter),
-    };
     if let Some(hint) = hint {
         obj.insert("hint".to_string(), json!(hint));
     }
 }
 
-fn substring_hint_text(count: usize, pattern: &str) -> String {
-    format!(
-        "0 whole-identifier matches; {} substring matches — pass contains:true to see them. \
-         Reflex matches whole identifiers by default, so {:?} does not match longer names \
-         that merely contain it.",
-        count, pattern
-    )
-}
-
-/// Whether a tool response carries no matches, across the several response shapes.
-fn result_is_empty(obj: &serde_json::Map<String, Value>) -> bool {
-    for key in ["total", "count", "total_locations", "total_count"] {
-        if let Some(n) = obj.get(key).and_then(|v| v.as_u64()) {
-            return n == 0;
-        }
-    }
-    for key in ["rows", "results", "locations", "references"] {
-        if let Some(a) = obj.get(key).and_then(|v| v.as_array()) {
-            return a.is_empty();
-        }
-    }
-    false
-}
-
-/// Explain a zero-result whole-token search by counting substring matches.
-///
-/// This is the single line that would have prevented every wrong conclusion in the
-/// 1.7.0 field test: an agent that sees `0` for `verify_csrf` concludes "no callers"
-/// and acts on it, when 89 lines contain `verify_csrf_form_field`.
-///
-/// Runs only when the search already returned nothing, so it costs nothing on the
-/// common path. A failure here is swallowed — a missing hint must never fail a query.
-fn zero_result_hint(root: &Path, pattern: &str, filter: &QueryFilter) -> Option<String> {
-    let probe = QueryFilter {
-        use_contains: true,
-        limit: None,
-        offset: None,
-        paths_only: false,
-        suppress_output: true,
-        // A hint is a courtesy, never worth a slow response. A pathological substring
-        // (say a two-character pattern on a huge repo) times out and yields no hint
-        // rather than holding the answer the caller already has.
-        timeout_secs: 5,
-        ..filter.clone()
-    };
-
-    let engine = QueryEngine::new(CacheManager::new(root));
-    let count = engine
-        .search_with_metadata(pattern, probe)
-        .ok()?
+/// The exact total of a search that ran without a limit (or with
+/// `require_exact_total`). Such a search is always exact; the fallback to the
+/// returned match count only guards the type, never a real path.
+fn exact_total_or_count(response: &crate::models::QueryResponse) -> usize {
+    response
         .pagination
-        .total;
-
-    if count == 0 {
-        return None;
-    }
-
-    Some(substring_hint_text(count, pattern))
+        .exact_total()
+        .unwrap_or_else(|| response.results.iter().map(|fg| fg.matches.len()).sum())
 }
 
 /// Parse symbol kind string to SymbolKind enum
@@ -349,6 +251,10 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                             "type": "boolean",
                             "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
                         },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
+                        },
                         "lang": {
                             "type": "string",
                             "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the docs/config tier (md, yaml, toml, json, proto, html, sh, sql, graphql)."
@@ -360,12 +266,12 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching patterns (e.g., ['app/**/*.php'])"
+                            "description": "Include files matching patterns (e.g., ['app/**/*.php']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching patterns (e.g., ['vendor/**', 'tests/**'])"
+                            "description": "Exclude files matching patterns (e.g., ['vendor/**', 'tests/**']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "force": {
                             "type": "boolean",
@@ -393,6 +299,10 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                             "type": "boolean",
                             "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
                         },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
+                        },
                         "lang": {
                             "type": "string",
                             "description": "Filter by language"
@@ -412,12 +322,12 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching patterns"
+                            "description": "Include files matching patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching patterns"
+                            "description": "Exclude files matching patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "force": {
                             "type": "boolean",
@@ -433,7 +343,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "search_code",
-                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full, so `total_count` is a LOWER bound whenever `total_is_exact` is false (`approx_total` is the upper bound); use `mode: \"count\"` for the exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` is `rg -i`; combine with `contains` for `rg -i -F`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full: `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -444,6 +354,10 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "contains": {
                             "type": "boolean",
                             "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
+                        },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
                         },
                         "mode": {
                             "type": "string",
@@ -485,16 +399,16 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching glob patterns (e.g., 'src/**/*.rs')"
+                            "description": "Include files matching glob patterns (e.g., 'src/**/*.rs') Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns (e.g., 'target/**')"
+                            "description": "Exclude files matching glob patterns (e.g., 'target/**') Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "paths": {
                             "type": "boolean",
-                            "description": "Return only unique file paths (not full results)"
+                            "description": "Return only unique file paths: the response is `{status, can_trust_results, paths, total_files}` (plus `has_more` when a `limit` cut the list) instead of `{columns, rows}`. Without `limit`, every matching file is listed."
                         },
                         "force": {
                             "type": "boolean",
@@ -514,7 +428,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "search_regex",
-                "description": "Regex code search across the whole codebase. Prefer this over `rg` / `grep -E` / `grep -P` for pattern matching across files — one call returns every match with file paths, line numbers, and previews. \n\nUse this for patterns with special characters or regex operators: `->with\\(`, `::new\\(`, `fn (get|set)_\\w+`, `\\[(derive|test)\\]`, `\\bAuth\\w*Controller\\b`, alternation `a|b`, anchors `^$`, wildcards `.*`. Escaping: must escape `( ) [ ] { } . * + ? \\\\ | ^ $`; no escaping needed for `-> :: - _ / = < >`; in JSON use double backslashes (`\\\\(`, `\\\\[`). \n\nFor simple alphanumeric patterns use `search_code` instead — it is faster and avoids escaping overhead. For symbol definitions use `search_code` with `symbols: true`. \n\n`mode: \"count\"` returns `{count, pattern}` only. List-mode result shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. Pagination: if `response.pagination.has_more` is true, fetch the next page with `offset`. `total_count` is a LOWER bound whenever `total_is_exact` is false (`approx_total` is the upper bound); use `mode: \"count\"` for the exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Regex code search across the whole codebase. Prefer this over `rg` / `grep -E` / `grep -P` for pattern matching across files — one call returns every match with file paths, line numbers, and previews. \n\nUse this for patterns with special characters or regex operators: `->with\\(`, `::new\\(`, `fn (get|set)_\\w+`, `\\[(derive|test)\\]`, `\\bAuth\\w*Controller\\b`, alternation `a|b`, anchors `^$`, wildcards `.*`. Escaping: must escape `( ) [ ] { } . * + ? \\\\ | ^ $`; no escaping needed for `-> :: - _ / = < >`; in JSON use double backslashes (`\\\\(`, `\\\\[`). \n\nFor simple alphanumeric patterns use `search_code` instead — it is faster and avoids escaping overhead. For symbol definitions use `search_code` with `symbols: true`. \n\n`mode: \"count\"` returns `{count, pattern}` only. List-mode result shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` prepends `(?i)`. A `(?i)` regex with a literal of 3+ chars still uses the trigram index; only a pattern with no such literal (`\\w+_id`) scans every file, and says so in `warnings`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. Pagination: if `response.pagination.has_more` is true, fetch the next page with `offset`. `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -546,16 +460,20 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching glob patterns"
+                            "description": "Include files matching glob patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns"
+                            "description": "Exclude files matching glob patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "paths": {
                             "type": "boolean",
-                            "description": "Return only unique file paths"
+                            "description": "Return only unique file paths: the response is `{status, can_trust_results, paths, total_files}` (plus `has_more` when a `limit` cut the list) instead of `{columns, rows}`. Without `limit`, every matching file is listed."
+                        },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
                         },
                         "force": {
                             "type": "boolean",
@@ -586,12 +504,12 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching glob patterns (STRONGLY RECOMMENDED to limit scope, e.g., ['src/**/*.rs'])"
+                            "description": "Include files matching glob patterns (STRONGLY RECOMMENDED to limit scope, e.g., ['src/**/*.rs']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'node_modules/**'])"
+                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'node_modules/**']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "file": {
                             "type": "string",
@@ -804,6 +722,10 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                             "type": "boolean",
                             "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
                         },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
+                        },
                         "mode": {
                             "type": "string",
                             "enum": ["list", "count"],
@@ -820,12 +742,12 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching glob patterns (e.g., ['src/**/*.rs'])"
+                            "description": "Include files matching glob patterns (e.g., ['src/**/*.rs']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'tests/**'])"
+                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'tests/**']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
                         },
                         "limit": {
                             "type": "integer",
@@ -1028,6 +950,7 @@ const BOOL_ARG_KEYS: &[&str] = &[
     "symbols",
     "exact",
     "contains",
+    "ignore_case",
     "expand",
     "paths",
     "force",
@@ -1624,9 +1547,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
-            // Brackets can never match under whole-identifier rules, so route them to
-            // the regex path rather than returning a confident zero.
-            let prepared = prepare_literal_pattern(&pattern, contains);
+            let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let glob_patterns = arguments["glob"]
                 .as_array()
@@ -1653,13 +1574,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 language,
                 kind: None,
                 use_ast: false,
-                use_regex: prepared.use_regex,
+                use_regex: false,
                 limit: None, // The tool contract is "one per match, no limit"
                 symbols_mode: false,
                 expand: false,
                 file_pattern: file,
                 exact: false,
                 use_contains: contains,
+                ignore_case,
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,
@@ -1678,7 +1600,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
 
             let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
-            let response = engine.search_with_metadata(&prepared.effective, filter.clone())?;
+            let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             // Extract locations (path + line) for each match
             let locations: Vec<serde_json::Value> = response
@@ -1702,11 +1624,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             });
             annotate_literal_result(
                 &mut compact_response,
-                root,
-                &pattern,
-                &filter,
-                &prepared,
-                response.substring_hint_count,
+                &response.warnings,
+                response.hint.as_deref(),
             );
 
             Ok(compact_response)
@@ -1721,9 +1640,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
-            // Brackets can never match under whole-identifier rules, so route them to
-            // the regex path rather than returning a confident zero.
-            let prepared = prepare_literal_pattern(&pattern, contains);
+            let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
             let kind = arguments["kind"].as_str().map(|s| s.to_string());
             let symbols = arguments["symbols"].as_bool();
             let file = arguments["file"].as_str().map(|s| s.to_string());
@@ -1754,13 +1671,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 language,
                 kind: parsed_kind,
                 use_ast: false,
-                use_regex: prepared.use_regex,
+                use_regex: false,
                 limit: None, // No limit for counting
                 symbols_mode,
                 expand: false,
                 file_pattern: file,
                 exact: false,
                 use_contains: contains,
+                ignore_case,
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,
@@ -1774,7 +1692,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
 
             let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
-            let response = engine.search_with_metadata(&prepared.effective, filter.clone())?;
+            let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             // Count unique files
             use std::collections::HashSet;
@@ -1785,17 +1703,10 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let mut stats = json!({
                 "status": response.status,
                 "pattern": pattern,
-                "total": response.pagination.total,
+                "total": exact_total_or_count(&response),
                 "files": unique_files.len()
             });
-            annotate_literal_result(
-                &mut stats,
-                root,
-                &pattern,
-                &filter,
-                &prepared,
-                response.substring_hint_count,
-            );
+            annotate_literal_result(&mut stats, &response.warnings, response.hint.as_deref());
 
             Ok(stats)
         }
@@ -1808,9 +1719,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
-            // Brackets can never match under whole-identifier rules, so route them to
-            // the regex path rather than returning a confident zero.
-            let prepared = prepare_literal_pattern(&pattern, contains);
+            let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
             let kind = arguments["kind"].as_str().map(|s| s.to_string());
             let symbols = arguments["symbols"].as_bool();
             let exact = arguments["exact"].as_bool();
@@ -1882,13 +1791,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     language,
                     kind: parsed_kind,
                     use_ast: false,
-                    use_regex: prepared.use_regex,
+                    use_regex: false,
                     limit: None, // count everything
                     symbols_mode,
                     expand: false,
                     file_pattern: file,
                     exact: exact.unwrap_or(false),
                     use_contains: contains,
+                    ignore_case,
                     timeout_secs: 30,
                     glob_patterns,
                     exclude_patterns,
@@ -1901,17 +1811,10 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 };
                 let cache = CacheManager::new(root);
                 let engine = QueryEngine::new(cache);
-                let response =
-                    engine.search_with_metadata(&prepared.effective, count_filter.clone())?;
-                let mut result = json!({"count": response.pagination.total, "pattern": pattern});
-                annotate_literal_result(
-                    &mut result,
-                    root,
-                    &pattern,
-                    &count_filter,
-                    &prepared,
-                    response.substring_hint_count,
-                );
+                let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
+                let mut result =
+                    json!({"count": exact_total_or_count(&response), "pattern": pattern});
+                annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
                 return Ok(result);
             }
 
@@ -1919,13 +1822,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 language,
                 kind: parsed_kind,
                 use_ast: false,
-                use_regex: prepared.use_regex,
+                use_regex: false,
                 limit: final_limit,
                 symbols_mode,
                 expand: expand.unwrap_or(false),
                 file_pattern: file,
                 exact: exact.unwrap_or(false),
                 use_contains: contains,
+                ignore_case,
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
@@ -1940,7 +1844,11 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
 
             let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
-            let mut response = engine.search_with_metadata(&prepared.effective, filter.clone())?;
+            let mut response = engine.search_with_metadata(&pattern, filter.clone())?;
+
+            if paths_only {
+                return Ok(paths_only_result(&response));
+            }
 
             // Apply preview truncation for token efficiency
             for file_group in response.results.iter_mut() {
@@ -1955,7 +1863,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Generate AI instruction (MCP always uses AI mode)
             response.ai_instruction = crate::query::generate_ai_instruction(
                 result_count,
-                response.pagination.total,
+                response.pagination.best_total(),
                 response.pagination.has_more,
                 symbols_mode,
                 paths_only,
@@ -1979,7 +1887,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let total_count = response.pagination.total;
             let total_is_exact = response.pagination.total_is_exact;
             let approx_total = response.pagination.approx_total;
-            let substring_hint_count = response.substring_hint_count;
+            let engine_warnings = response.warnings.clone();
+            let engine_hint = response.hint.clone();
 
             let mut response_val = serde_json::to_value(response)?;
             if let serde_json::Value::Object(ref mut map) = response_val {
@@ -1999,14 +1908,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             }
 
             // Applied after the columnar reshape so the hint survives both shapes.
-            annotate_literal_result(
-                &mut response_val,
-                root,
-                &pattern,
-                &filter,
-                &prepared,
-                substring_hint_count,
-            );
+            annotate_literal_result(&mut response_val, &engine_warnings, engine_hint.as_deref());
 
             Ok(response_val)
         }
@@ -2036,6 +1938,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 })
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
+            let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
 
@@ -2066,6 +1969,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     file_pattern: file,
                     exact: false,
                     use_contains: false,
+                    ignore_case,
                     timeout_secs: 30,
                     glob_patterns,
                     exclude_patterns,
@@ -2079,7 +1983,9 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 let cache = CacheManager::new(root);
                 let engine = QueryEngine::new(cache);
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
-                let result = json!({"count": response.pagination.total, "pattern": pattern});
+                let mut result =
+                    json!({"count": exact_total_or_count(&response), "pattern": pattern});
+                annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
                 return Ok(result);
             }
 
@@ -2094,7 +2000,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 file_pattern: file,
                 exact: false,
                 use_contains: false, // Regex mode uses substring matching via use_regex flag
-                timeout_secs: 30,    // Default 30 second timeout for MCP queries
+                ignore_case,
+                timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
                 paths_only,
@@ -2110,6 +2017,10 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let engine = QueryEngine::new(cache);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
+            if paths_only {
+                return Ok(paths_only_result(&response));
+            }
+
             // Apply preview truncation for token efficiency
             for file_group in response.results.iter_mut() {
                 for m in file_group.matches.iter_mut() {
@@ -2124,7 +2035,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Generate AI instruction (MCP always uses AI mode)
             response.ai_instruction = crate::query::generate_ai_instruction(
                 result_count,
-                response.pagination.total,
+                response.pagination.best_total(),
                 response.pagination.has_more,
                 false, // symbols_mode
                 paths_only,
@@ -2796,9 +2707,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
-            // Brackets can never match under whole-identifier rules, so route them to
-            // the regex path rather than returning a confident zero.
-            let prepared = prepare_literal_pattern(&pattern, contains);
+            let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
             let kind = arguments["kind"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
@@ -2832,13 +2741,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     language,
                     kind: None,
                     use_ast: false,
-                    use_regex: prepared.use_regex,
+                    use_regex: false,
                     limit: None, // count everything
                     symbols_mode: false,
                     expand: false,
                     file_pattern: None,
                     exact: false,
                     use_contains: contains,
+                    ignore_case,
                     // Code only. The reference search is a plain trigram scan, and
                     // `is_in_string_or_comment` returns false for the text tier (no line
                     // filter exists for markdown), so a mention in a changelog would
@@ -2856,15 +2766,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 };
                 let cache = CacheManager::new(root);
                 let engine = QueryEngine::new(cache);
-                let response =
-                    engine.search_with_metadata(&prepared.effective, count_filter.clone())?;
+                let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
 
                 // `include_strings` must mean the same thing in count mode as in list
                 // mode. It previously returned `pagination.total`, which is the raw
                 // engine total, so include_strings:true and :false gave the SAME number
                 // even when many hits were in string literals and doc comments.
                 let count = if include_strings {
-                    response.pagination.total
+                    exact_total_or_count(&response)
                 } else {
                     let pat = pattern.as_str();
                     response
@@ -2879,14 +2788,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 };
 
                 let mut result = json!({"count": count, "pattern": pattern});
-                annotate_literal_result(
-                    &mut result,
-                    root,
-                    &pattern,
-                    &count_filter,
-                    &prepared,
-                    response.substring_hint_count,
-                );
+                annotate_literal_result(&mut result, &response.warnings, response.hint.as_deref());
                 return Ok(result);
             }
 
@@ -2895,13 +2797,14 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 language,
                 kind: parsed_kind,
                 use_ast: false,
-                use_regex: prepared.use_regex,
+                use_regex: false,
                 limit: Some(5),
                 symbols_mode: true,
                 expand: false,
                 file_pattern: None,
                 exact: false,
                 use_contains: contains,
+                ignore_case,
                 // Code only. The reference search is a plain trigram scan, and
                 // `is_in_string_or_comment` returns false for the text tier (no line
                 // filter exists for markdown), so a mention in a changelog would
@@ -2920,7 +2823,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
 
             let cache = CacheManager::new(root);
             let engine = QueryEngine::new(cache);
-            let def_response = engine.search_with_metadata(&prepared.effective, def_filter)?;
+            let def_response = engine.search_with_metadata(&pattern, def_filter)?;
 
             // Extract first definition as a compact object (reuse MatchResult's Serialize impl)
             let definition: Option<serde_json::Value> =
@@ -2947,7 +2850,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 language,
                 kind: None,
                 use_ast: false,
-                use_regex: prepared.use_regex,
+                use_regex: false,
                 // REF-191: default to the one-call page size so "find all callers"
                 // returns the full set instead of paginating at 50.
                 limit: limit.map(|l| l.min(500)).or(Some(DEFAULT_MCP_RESULT_LIMIT)),
@@ -2956,6 +2859,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 file_pattern: None,
                 exact: false,
                 use_contains: contains,
+                ignore_case,
                 // Code only. The reference search is a plain trigram scan, and
                 // `is_in_string_or_comment` returns false for the text tier (no line
                 // filter exists for markdown), so a mention in a changelog would
@@ -2975,8 +2879,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 ..Default::default()
             };
 
-            let ref_filter_for_hint = ref_filter.clone();
-            let ref_response = engine.search_with_metadata(&prepared.effective, ref_filter)?;
+            let ref_response = engine.search_with_metadata(&pattern, ref_filter)?;
 
             // Flatten references to compact {path, line, preview} array,
             // excluding matches inside string literals or comments (unless include_strings).
@@ -3014,7 +2917,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             let filtered_out = page_matches.saturating_sub(returned_count);
             let total_references = ref_response.pagination.total;
             let has_more = ref_response.pagination.has_more;
-            let substring_hint_count = ref_response.substring_hint_count;
+            let engine_warnings = ref_response.warnings.clone();
+            let engine_hint = ref_response.hint.clone();
 
             let mut response = json!({
                 "status": ref_response.status,
@@ -3027,14 +2931,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "has_more": has_more,
                 "pagination": ref_response.pagination,
             });
-            annotate_literal_result(
-                &mut response,
-                root,
-                &pattern,
-                &ref_filter_for_hint,
-                &prepared,
-                substring_hint_count,
-            );
+            annotate_literal_result(&mut response, &engine_warnings, engine_hint.as_deref());
 
             Ok(response)
         }

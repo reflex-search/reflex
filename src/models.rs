@@ -94,8 +94,15 @@ pub enum Language {
 /// binary blob and generated artefact in a repo would be slower and less useful.
 const TEXT_EXTENSIONS: &[&str] = &[
     "md", "mdx", "txt", "yaml", "yml", "toml", "json", "proto", "html", "htm", "sh", "bash", "ini",
-    "cfg", "sql", "graphql",
+    "cfg", "sql", "graphql", "bru",
 ];
+
+/// Extensionless files in the plain-text tier, matched by exact name.
+///
+/// Agents grep these as readily as any `.md`; a `Makefile` target or a `Dockerfile`
+/// `COPY` line is a legitimate search hit. `Dockerfile.<variant>` is handled as a
+/// prefix in [`is_text_tier_file`].
+const TEXT_FILENAMES: &[&str] = &["Makefile", "makefile", "Dockerfile", "Justfile", "justfile"];
 
 /// Filenames excluded from the text tier despite a matching extension.
 ///
@@ -126,6 +133,9 @@ pub fn is_text_tier_file(file_name: &str) -> bool {
     if file_name.ends_with("-lock.json") || file_name.ends_with(".lock") {
         return false;
     }
+    if TEXT_FILENAMES.contains(&file_name) || file_name.starts_with("Dockerfile.") {
+        return true;
+    }
     match file_name.rsplit_once('.') {
         Some((_, ext)) => TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
         None => false,
@@ -133,6 +143,35 @@ pub fn is_text_tier_file(file_name: &str) -> bool {
 }
 
 impl Language {
+    /// Classify a file by its path: extension first, then full file name.
+    ///
+    /// This is the one classifier the indexer, watcher and query engine share, so a
+    /// file is either indexed, watched and searchable, or none of the three.
+    ///
+    /// * A recognised code extension wins (`main.rs`, `app.mjs`).
+    /// * A text-tier extension is accepted only if [`is_text_tier_file`] admits the
+    ///   full name, so `package-lock.json` is `Unknown` even though `.json` is text.
+    /// * An extensionless or unrecognised name is `Text` when the name itself is in
+    ///   the tier (`Makefile`, `Dockerfile`, `Dockerfile.dev`, `Justfile`).
+    pub fn from_path(path: &std::path::Path) -> Self {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let by_ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(Self::from_extension)
+            .unwrap_or(Language::Unknown);
+        match by_ext {
+            Language::Text | Language::Unknown => {
+                if is_text_tier_file(name) {
+                    Language::Text
+                } else {
+                    Language::Unknown
+                }
+            }
+            code => code,
+        }
+    }
+
     pub fn from_extension(ext: &str) -> Self {
         match ext {
             "rs" => Language::Rust,
@@ -188,7 +227,8 @@ impl Language {
     pub fn supported_names_help() -> &'static str {
         "rust (rs), python (py), javascript (js), typescript (ts), vue, svelte, \
          go, java, php, c, cpp (c++), csharp (cs, c#), ruby (rb), kotlin (kt), zig, \
-         text (docs and config: md, yaml, toml, json, proto, html, sh, sql, graphql)"
+         text (docs and config: md, yaml, toml, json, proto, html, sh, sql, graphql, bru, \
+         Makefile, Dockerfile, Justfile)"
     }
 
     /// Check if this language has a parser implementation
@@ -468,12 +508,33 @@ pub fn resolve_thread_count(configured: usize, auto_cap: usize) -> usize {
     ((available as f64 * 0.8).ceil() as usize).clamp(1, auto_cap.max(1))
 }
 
+/// How a query found its candidate lines.
+///
+/// `trigram` is the normal case: the pattern's literals were looked up in the
+/// inverted index and only the lines they name were verified. `scan` means every
+/// line of every file was verified, which happens for a pattern shorter than
+/// 3 chars, a regex with no literal of 3+ chars (`\w+_id`), a non-ASCII literal
+/// under `(?i)`, or a keyword symbol query. Before 1.8.0 every `(?i)` regex
+/// scanned; since 1.8.0 its literals are looked up under all case variants.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexPath {
+    /// Candidates came from the trigram index.
+    #[default]
+    Trigram,
+    /// Every line was verified.
+    Scan,
+}
+
 /// Per-phase wall-clock timings for one query, in microseconds.
 ///
 /// Present in a [`QueryResponse`] only when the caller asked for it
 /// (`rfx query --timing`, or `REFLEX_MCP_TIMING=1` for the MCP server).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueryTimings {
+    /// Whether the trigram index or a full scan produced the candidates.
+    #[serde(default)]
+    pub index_path: IndexPath,
     /// Opening (or reusing) the index handle.
     pub open_us: u64,
     /// Trigram lookup and posting-list intersection.
@@ -619,8 +680,14 @@ pub struct IndexWarningDetails {
 /// Pagination information for query results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationInfo {
-    /// Total number of results (before offset/limit applied)
-    pub total: usize,
+    /// Total number of results before offset/limit — **`null` whenever
+    /// `total_is_exact` is false**. A list-mode search with a `limit` stops
+    /// verifying once the page is full, and the number verified by then is not a
+    /// total; reporting it as one made agents stop paginating early (1.8.0 field
+    /// test: `total: 851` for a term with 18,752 matches). Use `approx_total` for an
+    /// estimate, or a count-mode / no-limit search for the exact number.
+    #[serde(default)]
+    pub total: Option<usize>,
     /// Number of results in this response (after offset/limit)
     pub count: usize,
     /// Offset used (starting position)
@@ -631,15 +698,38 @@ pub struct PaginationInfo {
     /// Whether there are more results after this page
     pub has_more: bool,
     /// `true` when `total` counts every match. `false` when a list-mode search
-    /// stopped verifying once the page was full: `total` is then the number
-    /// verified so far (a lower bound) and `approx_total` an upper bound. Count
-    /// mode and no-limit searches are always exact.
+    /// stopped verifying once the page was full: `total` is then `null` and
+    /// `approx_total` carries an estimate. Count mode, no-limit searches,
+    /// symbol/AST searches and `require_exact_total` callers are always exact.
     #[serde(default = "default_true")]
     pub total_is_exact: bool,
-    /// Upper bound on the total when `total_is_exact` is false: candidate lines
-    /// from the index in files that pass the query's file filters.
+    /// Estimated total when `total_is_exact` is false. After the page filled, a
+    /// spread sample of the remaining candidate lines was verified and the
+    /// measured hit rate scaled over the rest (see
+    /// `query::ESTIMATE_SAMPLE_FILES`). Typically within ±30% on the synthetic
+    /// corpus; wider when hits cluster in a few files. Absent when no estimate was
+    /// possible (a regex with no literal, where every line is a candidate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approx_total: Option<usize>,
+}
+
+impl PaginationInfo {
+    /// The total, only when it is a real one.
+    pub fn exact_total(&self) -> Option<usize> {
+        if self.total_is_exact {
+            self.total
+        } else {
+            None
+        }
+    }
+
+    /// The best number available for a threshold or a log line: the exact total,
+    /// else the estimate, else the end of this page. Never show it as a total.
+    pub fn best_total(&self) -> usize {
+        self.exact_total()
+            .or(self.approx_total)
+            .unwrap_or(self.offset + self.count)
+    }
 }
 
 /// Query response with results and index status
@@ -668,6 +758,20 @@ pub struct QueryResponse {
     /// search was not a whole-identifier one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substring_hint_count: Option<usize>,
+    /// Things the engine did to the query that the caller should know about.
+    ///
+    /// Today this is one message at most: a whole-identifier pattern containing
+    /// brackets was escaped and run as a regex (see
+    /// `query::prepare_literal_pattern`). Every surface — CLI, MCP, HTTP — carries it,
+    /// so a rewrite is never silent on any of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// For a whole-identifier search that found nothing while substring matches
+    /// exist: a ready-to-show sentence naming the count and the switch that shows
+    /// them. Absent whenever there were results, or when the search was not a
+    /// whole-identifier one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     /// Per-phase timings, only when requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<QueryTimings>,

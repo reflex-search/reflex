@@ -65,8 +65,15 @@ rfx query "extract_symbols" --symbols
 # Filter by language, file patterns
 rfx query "unwrap" --lang rust --glob "src/**/*.rs"
 
+# Case-insensitive (rg -i); with --contains it is rg -i -F. Still uses the index.
+rfx query "realmid" -i
+rfx query "(?i)realm_?id" --regex
+
 # JSON output for AI agents
 rfx query "format!" --json
+
+# Patterns that start with `-` (clap would read them as flags)
+rfx query --pattern '-> Result<'      # or: rfx query -- '-> Result<'
 ```
 
 **AST Queries** (⚠️ SLOW - use --symbols in 95% of cases):
@@ -104,20 +111,31 @@ did-you-mean error, and numeric strings like `"40"` are coerced.
 ### Matching semantics (1.7.2)
 
 Literal search matches **whole identifiers** by default. `verify_csrf` does **not**
-match `verify_csrf_form_field`. Three modes:
+match `verify_csrf_form_field`. Three modes, each with a case-insensitive variant:
 
 | Mode | How | Behaves like |
 | --- | --- | --- |
 | whole identifier | default | `grep -w` |
 | substring | `contains: true` | `grep -F` |
 | regular expression | `search_regex` | `grep -E` |
+| any of the above, case-insensitive | `ignore_case: true` (`-i` / `--ignore-case` on the CLI) | `rg -i` (+ `contains` = `rg -i -F`) |
 
 - `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
   `find_references` (not `search_regex`, which is already substring-based).
+- `ignore_case` is available on those four **and** `search_regex` (where it prepends
+  `(?i)`). Since 1.8.0 a `(?i)` literal is looked up in the trigram index under every
+  case variant, so it costs about what the case-sensitive query costs; before, any `i`
+  flag forced a scan of every line. A whole-identifier `ignore_case` search keeps
+  whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
+  `kind: text_match`, and produces no zero-result substring `hint`. Counts match
+  ripgrep `-i` exactly, including the Unicode folds of `k` (KELVIN SIGN) and `s`
+  (LONG S); a non-ASCII literal under `(?i)` still scans, and says so in `warnings`.
 - A pattern containing brackets (`()`, `[]`, `<>`) is regex-escaped and run through the
   regex path automatically, with the rewrite reported in `warnings`. Whole-identifier
   matching wraps the pattern as `\b…\b`, which a pattern ending in `)` or `>` can
-  never satisfy — `unwrap()` used to return a silent `0`.
+  never satisfy — `unwrap()` used to return a silent `0`. Since 1.8.0 the rewrite lives
+  in the engine, so `rfx query`, `rfx serve` and MCP all apply it: the CLI prints
+  `Warning:` on stderr and carries `warnings[]` / `hint` in `--json` output.
 - A zero result carries a `hint` naming the substring count:
   `"0 whole-identifier matches; 89 substring matches — pass contains:true"`.
 
@@ -192,12 +210,23 @@ repeats `path`/`language` per row):
 }
 ```
 
+When the page filled before every candidate was verified, `total` and `total_count`
+are **`null`** and `approx_total` carries an estimate:
+
+```json
+{ "pagination": { "total": null, "count": 1, "has_more": true, "total_is_exact": false,
+                  "approx_total": 26580 },
+  "total_count": null, "total_is_exact": false, "approx_total": 26580, "has_more": true }
+```
+
 Each `rows[i]` is one match; element `j` corresponds to `columns[j]`. The five base
 columns (`path`, `language`, `start_line`, `end_line`, `preview`) are always present;
 `kind`/`symbol`/`context_before`/`context_after`/`dependencies` are appended only when
 a match carries them. Top-level metadata (`status`, `pagination`, `total_count`, …) is
 unchanged. Set env `REFLEX_MCP_COLUMNAR=0` to restore the legacy `results[]` object
 shape. `count` mode (`{count, pattern}`) and the other tools are unaffected.
+`paths: true` returns `{status, can_trust_results, paths, total_files}` (plus
+`has_more` when a `limit` cut the list) with no rows at all.
 
 ### Early termination and totals (1.8.0)
 
@@ -207,11 +236,31 @@ to the same slice of a full run, but the total is not always exact:
 
 | field | meaning |
 | --- | --- |
-| `total_is_exact: true` | `total_count` counts every match (count mode, no `limit`, symbol/AST searches, `find_references`) |
-| `total_is_exact: false` | verification stopped early: `total_count` is a **lower bound**, `approx_total` (candidate lines from the index in files that pass the filters) an **upper bound**, and `has_more` is `true` |
+| `total_is_exact: true` | `total_count` / `pagination.total` counts every match (count mode, no `limit`, symbol/AST searches, `find_references`) |
+| `total_is_exact: false` | verification stopped early: `total_count` / `pagination.total` are **`null`** (never the verified-so-far number), `approx_total` is a **sampled estimate** (32 files spread over the remaining candidates, ≤16 lines each; typically within ±30%, omitted for a regex with no literal), and `has_more` is `true` |
 
-`mode: "count"`, `list_locations` and `find_references` always verify everything.
-The CLI prints an inexact total as `(1234+ total)`.
+When 32 files or 128 candidate lines or fewer remain after the page fills, the search
+finishes instead and the total is exact. `mode: "count"`, `count_occurrences`,
+`list_locations` and `find_references` always verify everything. The CLI prints an
+inexact total as `Found 10 results (~1234 total, estimated)` and points at `--count`.
+Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
+`best_total()` (exact, else estimate, else page end; for thresholds only).
+
+### Glob rules (1.8.0)
+
+`glob` / `exclude` (every MCP search tool), `rfx query --glob` / `--exclude` and
+`[index] include.patterns` / `exclude.patterns` follow **gitignore / ripgrep rules**:
+
+| pattern | matches |
+| --- | --- |
+| `src/**/*.rs` | `.rs` files under `src/` **at the index root only** (a `/` anchors) |
+| `**/src/**/*.rs` | `.rs` files under any `src/` directory |
+| `*.rs`, `Makefile` | at any depth (no `/` in the pattern) |
+| `target/` | any `target/` directory and everything under it |
+| `src/*.rs` | directly in `src/`; `*` never crosses `/` |
+
+Before 1.8.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also matched
+`vendor/src/`. `./` and a leading `/` are dropped.
 
 ### Latency diagnostics
 
@@ -219,6 +268,10 @@ The CLI prints an inexact total as `(1234+ total)`.
   status, group) to stderr; with `--json` they appear as a `timings` object.
 - `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` /
   `search_regex` responses from `rfx mcp`.
+- `timings.index_path` is `"trigram"` (candidates from the inverted index) or `"scan"`
+  (every line verified: a pattern under 3 chars, a regex with no 3-byte literal such
+  as `\w+_?id`, a non-ASCII literal under `(?i)`, or a keyword symbol query). A scan
+  also puts its reason in `warnings[]`. `(?i)<literal>` is `"trigram"`.
 - `rfx mcp` and `rfx serve` keep the index open across calls (memory maps, path map,
   thread pool) and reopen only when the index files change on disk or after
   `index_project`. The freshness verdict is memoised for `REFLEX_FRESHNESS_TTL_MS`.
@@ -293,7 +346,11 @@ Reflex also indexes non-code files, because **agents do not partition searches b
 type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
 returning only the struct and a confident `0` for the rest is a wrong answer.
 
-**Extensions**: `md mdx txt yaml yml toml json proto html htm sh bash ini cfg sql graphql`
+**Extensions**: `md mdx txt yaml yml toml json proto html htm sh bash ini cfg sql graphql bru`
+
+**Extensionless names**: `Makefile`, `Dockerfile` (and `Dockerfile.<variant>`), `Justfile`.
+(`.mjs` / `.cjs` are JavaScript, with symbols, not text.) `Language::from_path` is the one
+classifier the indexer, watcher and query engine share.
 
 **Trigram-indexed only.** No tree-sitter, no symbol extraction, no import extraction. So:
 
@@ -526,6 +583,9 @@ Located in the workspace's `.reflex/` directory.
 languages = []  # Empty = all supported languages
 text_tier = true  # Also index docs and config (md, yaml, toml, json, proto, html, sh, sql)
 max_file_size = 10485760  # 10 MB
+# gitignore rules: a pattern with `/` is anchored at the root, a bare name matches anywhere.
+# include.patterns = ["src/**/*.rs", "docs/**"]   # whitelist (directories are still walked)
+# exclude.patterns = ["vendor/**", "*.generated.rs"]
 
 [search]
 default_limit = 100

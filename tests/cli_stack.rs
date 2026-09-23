@@ -57,6 +57,8 @@ fn every_subcommand_parses_within_that_stack() {
         vec!["rfx", "index", "."],
         vec!["rfx", "query", "pattern"],
         vec!["rfx", "query", "pattern", "--symbols", "--json"],
+        vec!["rfx", "query", "--pattern", "-> Result<"],
+        vec!["rfx", "query", "--", "-> Result<"],
         vec!["rfx", "deps", "src/main.rs"],
         vec!["rfx", "serve", "--port", "7878"],
         vec!["rfx", "mcp"],

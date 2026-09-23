@@ -147,6 +147,10 @@ rfx query "parse" --lang rust --kind function --symbols
 # Regex search
 rfx query "fn.*test" --regex
 
+# Case-insensitive (like rg -i); still uses the trigram index
+rfx query "realmid" -i
+rfx query "(?i)realm_?id" --regex
+
 # JSON output for programmatic use
 rfx query "unwrap" --json --limit 10
 
@@ -233,6 +237,9 @@ Full-text search works on **all file types** regardless of parser support.
 [index]
 languages = []          # Empty = all supported languages
 max_file_size = 10485760  # 10 MB
+# Optional, gitignore rules (a `/` anchors at the root; bare names match anywhere):
+# include.patterns = ["src/**/*.rs"]
+# exclude.patterns = ["vendor/**"]
 
 [search]
 default_limit = 100

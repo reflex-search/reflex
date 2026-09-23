@@ -249,6 +249,11 @@ fn the_extension_and_filename_rules_are_what_they_claim() {
         "a.sql",
         "a.graphql",
         "A.MD",
+        "a.bru",
+        "Makefile",
+        "Dockerfile",
+        "Dockerfile.dev",
+        "Justfile",
     ] {
         assert!(is_text_tier_file(yes), "{yes} should be in the text tier");
     }
@@ -259,9 +264,9 @@ fn the_extension_and_filename_rules_are_what_they_claim() {
         "Cargo.lock",
         "npm-shrinkwrap-lock.json",
         "main.rs",
-        "Dockerfile",
-        "Makefile",
         "image.png",
+        "README",
+        "LICENSE",
     ] {
         assert!(
             !is_text_tier_file(no),

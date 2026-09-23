@@ -63,6 +63,29 @@
 
 ---
 
+## 🔧 1.8.0 post-perf-round defects (2026-09-22) — COMPLETED
+
+Field test of the perf round (b18ae06 → 11ba6de) against ripgrep surfaced four defects
+plus two small items. All fixed on `feat/perf-enhancements`, in the order below; the
+latency harness stays green with budgets enforced (`REFLEX_LATENCY_BUDGET=1`).
+
+| # | Defect | Status | Where |
+| --- | --- | --- | --- |
+| 1 | CLI bracket literals (`unwrap()`) returned a silent 0; rewrite lived only in MCP | ✅ done | rewrite moved into `QueryEngine::search_with_metadata`; `QueryResponse.warnings` / `hint`; `tests/cli_query_bracket.rs` (CLI ⇄ MCP parity) |
+| 2 | Inexact list-mode `total` reported the verified-so-far count; `approx_total` was a 2x upper bound | ✅ done (breaking) | `PaginationInfo.total: Option<usize>` (`null` when inexact); sampled estimate in `verify_files_streaming` (32 files / ≤16 lines each; finishes when ≤32 files or ≤128 lines remain); synthetic corpus error 0–1.4% |
+| 3 | Globs unanchored (`src/**/*.rs` matched `vendor/src/`) | ✅ done (breaking) | gitignore rules in `query::result::normalize_glob_pattern` + `build_glob_set` (`literal_separator`); `[index] include/exclude` now applied via `indexer::PathPolicy` (walker, freshness check, watcher); `tests/glob_anchoring.rs` |
+| 4 | `--symbols` 40 ms vs 16–25 ms floor | ✅ done | one `meta.db` connection on `OpenIndex` (`meta_conn`), `.git/HEAD` instead of `git rev-parse`, candidate-only hash query (`branch_file_rows_on`), parallel candidate-line pre-filter, batched cache writes; hash-verified cache reads (correctness); harness shapes `symbol_lookup` (7.1 ms) + `find_references` (14.2 ms) |
+| 5a | `->` patterns need `--` | ✅ done | `rfx query --pattern <p>` (`allow_hyphen_values`), `--help` note |
+| 5b | `.bru`, `Makefile`, `Dockerfile`, `Justfile` outside both tiers | ✅ done | `TEXT_EXTENSIONS` + `TEXT_FILENAMES`; `Language::from_path` is the one classifier |
+
+Not done / follow-ups:
+- The first `--symbols` call in a fresh process on a cache miss is ~60 ms (tree-sitter
+  parser + query compilation, one-time per process); `rfx mcp` pays it once.
+- `estimate_is_within_band_on_synthetic_corpus` is `#[ignore]` (builds the 30 MB corpus);
+  run with `cargo test --release --test query_early_termination -- --ignored`.
+
+---
+
 ## 🎯 Current Status Summary (Updated: 2025-11-16)
 
 ### 🚀 ALL MVP FEATURES COMPLETE + MAJOR ENHANCEMENTS!
@@ -1800,7 +1823,8 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] Fallback to full scan when no literals present
 - [x] Handle regex metacharacters and escapes
 - [x] Support for alternation, quantifiers, groups
-- [x] Case-insensitive flag detection (triggers full scan)
+- [x] Case-insensitive flags: literals under `(?i)` are kept and looked up under every case variant (1.8.0; was a full scan)
+- [x] Extractor soundness: alternation branch without a literal, optional group, char class, unknown escapes, `x` flag (1.8.0)
 - [x] Comprehensive tests (13 test cases)
 - [x] Integration with query engine (search_with_regex)
 

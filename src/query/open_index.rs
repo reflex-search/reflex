@@ -87,6 +87,11 @@ pub struct OpenIndex {
     /// `IndexConfig::max_posting_list_entries` at open time (0 = unlimited).
     posting_cap: usize,
     fingerprint: Fingerprint,
+    /// One `meta.db` connection for the query path, opened on first use with the
+    /// symbol-cache schema ensured. Symbol queries opened three to four
+    /// connections per call (each running the WAL and foreign-key pragmas) and
+    /// re-ran the schema migration every time.
+    meta: OnceLock<Mutex<rusqlite::Connection>>,
 }
 
 impl std::fmt::Debug for OpenIndex {
@@ -184,7 +189,27 @@ impl OpenIndex {
             pool,
             posting_cap: config.max_posting_list_entries,
             fingerprint,
+            meta: OnceLock::new(),
         })
+    }
+
+    /// The shared `meta.db` connection, opened on first use.
+    ///
+    /// Lives as long as this handle, which is invalidated whenever the index files
+    /// change on disk or an index run finishes, so it never outlives the index it
+    /// was opened against. WAL readers coexist with a running indexer, and
+    /// `open_meta_db` sets the busy timeout.
+    pub fn meta_conn(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
+        if self.meta.get().is_none() {
+            let conn = crate::cache::open_meta_db(self.cache_dir.join(crate::cache::META_DB))
+                .context("Failed to open meta.db")?;
+            crate::symbol_cache::SymbolCache::ensure_schema(&conn)
+                .context("Failed to initialise the symbol cache schema")?;
+            // A concurrent first caller may have won the race; either connection is fine.
+            let _ = self.meta.set(Mutex::new(conn));
+        }
+        let m = self.meta.get().expect("set above");
+        Ok(m.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
     /// Number of files in the index.

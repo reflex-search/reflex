@@ -23,7 +23,15 @@ const PATTERNS: &[&str] = &[
     r"returns?\b", // same, with a boundary
     r"selfs*",
     r"\.unwrap\(\)",
-    r"(?i)controller", // case-insensitive: falls back to a full scan
+    r"(?i)controller", // case-insensitive: literal looked up under every case variant
+    r"(?i:Foo)bar",    // scoped flag: `foo` folded, `bar` exact
+    r"(?i)get_\w+",    // folded literal plus a class
+    r"(?i)foo(?-i)Bar", // flag turned off again
+    r"(?i)fn (get|set)_", // alternation under the flag
+    r"(abc|de)f",      // a branch without a literal: must not drop `def` lines
+    r"foobar(baz)?x",  // optional group: its literal is not required
+    r"[abc]def",       // class body is not a literal
+    r"abc\p{Lu}def",   // unknown escape breaks the sequence
     r"^use ",
     r"pub(lic)? fn",
     r"test_?\w+",

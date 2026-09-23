@@ -94,7 +94,8 @@ fn a_reader_still_gets_results_but_is_told_not_to_trust_them() {
         .expect("a version mismatch must NOT be an error for a reader");
 
     assert_eq!(
-        response.pagination.total, 1,
+        response.pagination.total,
+        Some(1),
         "the reader must still see results"
     );
     assert!(

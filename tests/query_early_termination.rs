@@ -124,9 +124,14 @@ fn assert_pages_match(pattern: &str, base: &QueryFilter) {
             "pattern {pattern:?} offset {offset} limit {limit}: page differs from full run"
         );
 
-        // The reported total is exact, or an honest lower bound with an upper bound.
+        // The reported total is exact, or absent (never the verified-so-far
+        // number) with an estimate that is in the right neighbourhood.
         if pagination.total_is_exact {
-            assert_eq!(pagination.total, full.len(), "{pattern:?} exact total");
+            assert_eq!(
+                pagination.total,
+                Some(full.len()),
+                "{pattern:?} exact total"
+            );
             assert_eq!(
                 pagination.has_more,
                 full.len() > offset + got.len(),
@@ -135,25 +140,27 @@ fn assert_pages_match(pattern: &str, base: &QueryFilter) {
             assert!(pagination.approx_total.is_none());
         } else {
             assert!(
-                pagination.total >= offset + got.len(),
-                "{pattern:?}: lower bound {} < page end {}",
-                pagination.total,
-                offset + got.len()
-            );
-            assert!(
-                pagination.total <= full.len(),
-                "{pattern:?}: lower bound above truth"
+                pagination.total.is_none(),
+                "{pattern:?}: an inexact total must be null, got {:?}",
+                pagination.total
             );
             assert!(
                 pagination.has_more,
                 "{pattern:?}: inexact total must set has_more"
             );
-            let approx = pagination.approx_total.expect("upper bound when inexact");
-            assert!(
-                approx >= full.len(),
-                "{pattern:?}: approx {approx} < true {}",
-                full.len()
-            );
+            if let Some(approx) = pagination.approx_total {
+                assert!(
+                    approx >= offset + got.len(),
+                    "{pattern:?}: estimate {approx} < page end {}",
+                    offset + got.len()
+                );
+                let band = (full.len() / 2).max(8);
+                assert!(
+                    approx.abs_diff(full.len()) <= band,
+                    "{pattern:?}: estimate {approx} vs true {} (band ±{band})",
+                    full.len()
+                );
+            }
         }
     }
 }
@@ -221,7 +228,7 @@ fn count_mode_and_no_limit_totals_are_exact() {
         assert!(r.pagination.total_is_exact, "{pattern:?}");
         assert!(r.pagination.approx_total.is_none(), "{pattern:?}");
         let flat: usize = r.results.iter().map(|fg| fg.matches.len()).sum();
-        assert_eq!(r.pagination.total, flat, "{pattern:?}");
+        assert_eq!(r.pagination.total, Some(flat), "{pattern:?}");
         assert!(!r.pagination.has_more, "{pattern:?}");
     }
 }
@@ -235,7 +242,7 @@ fn require_exact_total_verifies_everything_even_with_a_limit() {
         filter.require_exact_total = true;
         let r = engine().search_with_metadata(pattern, filter).unwrap();
         assert!(r.pagination.total_is_exact, "{pattern:?}");
-        assert_eq!(r.pagination.total, full.len(), "{pattern:?}");
+        assert_eq!(r.pagination.total, Some(full.len()), "{pattern:?}");
         assert_eq!(r.pagination.has_more, full.len() > 1, "{pattern:?}");
     }
 }
@@ -310,16 +317,143 @@ fn mcp_count_mode_matches_list_locations_and_a_full_page() {
             );
         } else {
             assert!(
-                page["total_count"].as_u64().unwrap() <= n,
-                "{pattern}: lower bound"
+                page["total_count"].is_null(),
+                "{pattern}: inexact total_count must be null: {}",
+                page["total_count"]
             );
             assert!(
-                page["approx_total"].as_u64().unwrap() >= n,
-                "{pattern}: upper bound"
+                page["pagination"]["total"].is_null(),
+                "{pattern}: inexact pagination.total must be null"
             );
+            if let Some(approx) = page["approx_total"].as_u64() {
+                assert!(
+                    approx.abs_diff(n) <= (n / 2).max(8),
+                    "{pattern}: estimate {approx} vs exact {n}"
+                );
+            }
             assert_eq!(page["has_more"], true, "{pattern}");
         }
     }
+}
+
+/// The 1.8.0 field test: `realm --limit 1` reported `total: 851` (the number
+/// verified before the page filled) and `approx_total: 36178` (candidate lines)
+/// for a term with 18,752 matches. An agent that read either number was wrong.
+/// The synthetic corpus is large enough (2000 files) that a one-result page for a
+/// common word cannot be finished cheaply, so it exercises the sampled estimate.
+#[test]
+#[ignore = "builds and indexes the 30 MB synthetic corpus; run with --ignored"]
+fn estimate_is_within_band_on_synthetic_corpus() {
+    use test_helpers::synthetic_corpus as corpus;
+    let root = corpus::indexed(corpus::DEFAULT_SEED);
+    let engine = QueryEngine::new(CacheManager::new(&root));
+
+    let exact = |pattern: &str| {
+        let f = QueryFilter {
+            limit: None,
+            ..Default::default()
+        };
+        let r = engine.search_with_metadata(pattern, f).unwrap();
+        assert!(r.pagination.total_is_exact);
+        r.pagination.total.unwrap()
+    };
+
+    for pattern in [corpus::COMMON_WORD, corpus::COMMON_IDENT] {
+        let truth = exact(pattern);
+        let f = QueryFilter {
+            limit: Some(1),
+            ..Default::default()
+        };
+        let r = engine.search_with_metadata(pattern, f).unwrap();
+        assert!(
+            !r.pagination.total_is_exact,
+            "{pattern}: a 1-page must be inexact"
+        );
+        assert!(
+            r.pagination.total.is_none(),
+            "{pattern}: {:?}",
+            r.pagination.total
+        );
+        assert!(r.pagination.has_more);
+        let est = r.pagination.approx_total.expect("estimate for a literal");
+        let err = est.abs_diff(truth) as f64 / truth as f64;
+        eprintln!(
+            "{pattern}: exact {truth}, estimate {est}, error {:.1}%",
+            err * 100.0
+        );
+        assert!(
+            err <= 0.40,
+            "{pattern}: estimate {est} is {:.0}% off the exact {truth}",
+            err * 100.0
+        );
+    }
+
+    // Few remaining candidates: the search finishes instead of sampling.
+    let f = QueryFilter {
+        limit: Some(1),
+        ..Default::default()
+    };
+    let r = engine.search_with_metadata(corpus::RARE_MARKER, f).unwrap();
+    assert!(r.pagination.total_is_exact);
+    assert_eq!(r.pagination.total, Some(corpus::RARE_MARKER_LINES));
+    assert!(r.pagination.approx_total.is_none());
+}
+
+/// Count mode, `list_locations` and a no-limit list must all agree, and none of
+/// them may be affected by early termination.
+#[test]
+fn count_mode_equals_no_limit_list_total_and_list_locations() {
+    let root = setup_corpus();
+    for pattern in ["main", "return", "self", "import"] {
+        let f = QueryFilter {
+            limit: None,
+            ..Default::default()
+        };
+        let full = engine().search_with_metadata(pattern, f).unwrap();
+        let n = full.pagination.total.expect("no-limit search is exact") as u64;
+
+        let count = call_tool(
+            root,
+            "search_code",
+            json!({"pattern": pattern, "mode": "count"}),
+        );
+        assert_eq!(count["count"].as_u64().unwrap(), n, "{pattern}: count mode");
+
+        let count2 = call_tool(root, "count_occurrences", json!({"pattern": pattern}));
+        assert_eq!(
+            count2["total"].as_u64().unwrap(),
+            n,
+            "{pattern}: count_occurrences"
+        );
+
+        let locations = call_tool(root, "list_locations", json!({"pattern": pattern}));
+        assert_eq!(
+            locations["locations"].as_array().unwrap().len() as u64,
+            n,
+            "{pattern}: list_locations must stay exhaustive"
+        );
+    }
+}
+
+/// The JSON contract: an inexact `total` serialises as `null`, not as a number.
+#[test]
+fn inexact_total_serialises_as_null() {
+    let p = reflex::models::PaginationInfo {
+        total: None,
+        count: 1,
+        offset: 0,
+        limit: Some(1),
+        has_more: true,
+        total_is_exact: false,
+        approx_total: Some(1234),
+    };
+    let v = serde_json::to_value(&p).unwrap();
+    assert!(v["total"].is_null(), "{v}");
+    assert_eq!(v["approx_total"], 1234);
+    let back: reflex::models::PaginationInfo = serde_json::from_value(v).unwrap();
+    assert_eq!(back.total, None);
+    assert_eq!(back.best_total(), 1234);
+    assert_eq!(back.exact_total(), None);
 }
 
 #[test]

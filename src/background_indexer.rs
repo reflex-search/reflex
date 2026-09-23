@@ -850,12 +850,7 @@ impl BackgroundIndexer {
             .with_context(|| format!("Failed to read file from content.bin: {}", path))?;
 
         // Detect language from file extension
-        let extension = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-
-        let language = crate::models::Language::from_extension(extension);
+        let language = crate::models::Language::from_path(std::path::Path::new(path));
 
         // Ask before parsing, so a declined file can be COUNTED rather than looking
         // like a parser that found nothing. `ParserFactory::parse` checks this too and

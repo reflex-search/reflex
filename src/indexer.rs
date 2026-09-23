@@ -94,6 +94,68 @@ pub struct Indexer {
     config: IndexConfig,
 }
 
+/// The `[index] include.patterns` / `exclude.patterns` policy, compiled once.
+///
+/// Built on `ignore::overrides::Override`, so the patterns follow gitignore rules
+/// exactly as the walker applies them: a pattern containing `/` is anchored at the
+/// workspace root, a bare name matches at any depth, `*` does not cross `/`.
+/// Includes are whitelist globs, excludes are `!`-prefixed. With only includes,
+/// non-matching *files* are dropped but directories are still walked, so
+/// `include = ["src/**/*.rs"]` works without listing `src/`.
+///
+/// The same policy must answer "would Reflex index this path?" everywhere: the
+/// walker, the working-tree freshness check and the watcher. If they disagree, an
+/// edit to an excluded file marks the index permanently stale.
+#[derive(Clone, Debug, Default)]
+pub struct PathPolicy {
+    overrides: Option<ignore::overrides::Override>,
+}
+
+impl PathPolicy {
+    /// Compile the policy from an index config. No patterns → an empty policy
+    /// that admits everything. An invalid pattern is logged and skipped.
+    pub fn from_config(root: &Path, config: &IndexConfig) -> Self {
+        if config.include_patterns.is_empty() && config.exclude_patterns.is_empty() {
+            return Self::default();
+        }
+        let mut builder = ignore::overrides::OverrideBuilder::new(root);
+        for pat in &config.include_patterns {
+            if let Err(e) = builder.add(pat) {
+                log::warn!("Invalid [index] include pattern '{}': {}", pat, e);
+            }
+        }
+        for pat in &config.exclude_patterns {
+            let negated = format!("!{}", pat.trim_start_matches('!'));
+            if let Err(e) = builder.add(&negated) {
+                log::warn!("Invalid [index] exclude pattern '{}': {}", pat, e);
+            }
+        }
+        match builder.build() {
+            Ok(ov) => Self {
+                overrides: Some(ov),
+            },
+            Err(e) => {
+                log::warn!("Failed to build [index] include/exclude policy: {}", e);
+                Self::default()
+            }
+        }
+    }
+
+    /// Whether the policy admits this path. Directories are always admitted (the
+    /// walker descends; files decide), unless an exclude names them.
+    pub fn admits(&self, path: &Path, is_dir: bool) -> bool {
+        match &self.overrides {
+            None => true,
+            Some(ov) => !ov.matched(path, is_dir).is_ignore(),
+        }
+    }
+
+    /// The walker-side view of the policy.
+    pub fn overrides(&self) -> Option<&ignore::overrides::Override> {
+        self.overrides.as_ref()
+    }
+}
+
 /// Drops the shared query handles for a workspace when an index run ends,
 /// on every exit path including errors and panics.
 struct InvalidateOnDrop(std::path::PathBuf);
@@ -108,6 +170,11 @@ impl Indexer {
     /// Create a new indexer with the given cache manager and config
     pub fn new(cache: CacheManager, config: IndexConfig) -> Self {
         Self { cache, config }
+    }
+
+    /// The `[index] include/exclude` policy for a workspace root.
+    pub fn path_policy(&self, root: &Path) -> PathPolicy {
+        PathPolicy::from_config(root, &self.config)
     }
 
     /// Build or update the index for the given root directory
@@ -583,10 +650,7 @@ impl Indexer {
                 let hash = self.hash_content(content.as_bytes());
 
                 // Detect language
-                let ext = file_path.extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                let language = Language::from_extension(ext);
+                let language = Language::from_path(file_path);
 
                 // Count lines in the file
                 let line_count = content.lines().count();
@@ -2094,12 +2158,17 @@ impl Indexer {
         // - .gitignore (when in a git repo)
         // - .ignore files
         // - Hidden files (can be configured)
-        let walker = WalkBuilder::new(root)
+        let mut builder = WalkBuilder::new(root);
+        builder
             .follow_links(self.config.follow_symlinks)
             .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
             .git_global(false) // Don't use global gitignore
-            .git_exclude(false) // Don't use .git/info/exclude
-            .build();
+            .git_exclude(false); // Don't use .git/info/exclude
+        // `[index] include.patterns` / `exclude.patterns`, gitignore semantics.
+        if let Some(ov) = self.path_policy(root).overrides() {
+            builder.overrides(ov.clone());
+        }
+        let walker = builder.build();
 
         for entry in walker {
             let entry = entry?;
@@ -2143,6 +2212,19 @@ impl Indexer {
     /// (git's own output is already filtered by that). Cheap enough to call per path
     /// in a `git status` listing.
     pub fn is_indexable_path(path: &Path) -> bool {
+        Self::is_indexable_path_with(path, None)
+    }
+
+    /// [`Self::is_indexable_path`] under an `[index] include/exclude` policy.
+    ///
+    /// The freshness check must apply the same policy as the walker: a file the
+    /// config excludes is not indexed, so editing it must not report staleness.
+    pub fn is_indexable_path_with(path: &Path, policy: Option<&PathPolicy>) -> bool {
+        if let Some(policy) = policy
+            && !policy.admits(path, false)
+        {
+            return false;
+        }
         // Mirror the walker, which uses `ignore::WalkBuilder`'s `hidden(true)`
         // default and so never descends into a dot-directory. Without this, Reflex's
         // OWN `.reflex/config.toml` counts as an indexable change the moment the text
@@ -2155,44 +2237,23 @@ impl Indexer {
             return false;
         }
 
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else {
-            return false;
-        };
-        let Some(ext) = path.extension().map(|e| e.to_string_lossy()) else {
-            return false;
-        };
-        let lang = Language::from_extension(&ext);
-        // The text tier is judged by full NAME, so lock files stay out.
-        if lang.is_text() {
-            return crate::models::is_text_tier_file(&name);
-        }
-        lang.is_supported()
+        // `from_path` judges the text tier by full NAME, so lock files stay out.
+        Language::from_path(path).is_indexable()
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).
     fn should_index_lang(&self, path: &Path) -> bool {
-        let ext = match path.extension() {
-            Some(ext) => ext.to_string_lossy(),
-            None => return false,
-        };
+        // `from_path` judges the text tier by full filename, so lock files (100k+
+        // lines of near-random trigrams) stay out and `Makefile` gets in.
+        let lang = Language::from_path(path);
 
-        let lang = Language::from_extension(&ext);
-
-        // The plain-text tier: docs, config and templates. Judged by full filename so
-        // lock files (100k+ lines of near-random trigrams) stay out.
+        // The plain-text tier: docs, config and templates.
         if lang.is_text() {
-            if !self.config.text_tier {
-                return false;
-            }
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
             // Deliberately NOT subject to `config.languages`. That option means "which
             // PARSERS do I care about"; a user with languages = ["rust"] would
             // otherwise lose the text tier silently, which is the very bug this tier
             // exists to fix. `text_tier = false` is the way to turn it off.
-            return crate::models::is_text_tier_file(&name);
+            return self.config.text_tier;
         }
 
         if !lang.is_supported() {
@@ -2237,9 +2298,9 @@ impl Indexer {
             return false;
         }
 
-        // TODO: Check include/exclude patterns when glob support is added
-        // For now, accept all files with supported language extensions
-
+        // `[index] include/exclude` patterns are applied by the walker
+        // (`discover_files`) and by `is_indexable_path_with`; this per-file check
+        // has no root to anchor them against.
         true
     }
 
@@ -2474,10 +2535,15 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let no_ext_file = temp.path().join("Makefile");
-        fs::write(&no_ext_file, "all:\n\techo hello").unwrap();
+        // `Makefile` is in the text tier by name; `README` (no extension, not
+        // listed) is not.
+        let makefile = temp.path().join("Makefile");
+        fs::write(&makefile, "all:\n\techo hello").unwrap();
+        assert!(indexer.should_index(&makefile));
 
-        assert!(!indexer.should_index(&no_ext_file));
+        let readme = temp.path().join("README");
+        fs::write(&readme, "hello").unwrap();
+        assert!(!indexer.should_index(&readme));
     }
 
     #[test]

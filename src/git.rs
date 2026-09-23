@@ -65,6 +65,39 @@ pub fn get_current_branch(root: impl AsRef<Path>) -> Result<String> {
     Ok(branch)
 }
 
+/// The current branch, read from `.git/HEAD` without spawning `git`.
+///
+/// `git rev-parse --abbrev-ref HEAD` costs a process spawn (2–5 ms) and ran on
+/// every `--symbols` query. The answer is one small file: `ref: refs/heads/<name>`
+/// on a branch, or a bare SHA when detached (`HEAD`, matching `--abbrev-ref`).
+/// Worktrees and submodules keep a `.git` *file* holding `gitdir: <path>`, which is
+/// followed one level. `None` when there is no readable HEAD, in which case the
+/// caller falls back to what the indexer recorded (`_default`).
+pub fn read_head_branch(root: impl AsRef<Path>) -> Option<String> {
+    let mut git_dir = root.as_ref().join(".git");
+    if git_dir.is_file() {
+        let text = std::fs::read_to_string(&git_dir).ok()?;
+        let target = text.strip_prefix("gitdir:")?.trim();
+        let target = Path::new(target);
+        git_dir = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            root.as_ref().join(target)
+        };
+    }
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref:") {
+        let reference = reference.trim();
+        let name = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        return Some(name.to_string());
+    }
+    if !head.is_empty() && head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some("HEAD".to_string());
+    }
+    None
+}
+
 /// Get the current commit SHA
 ///
 /// Returns the full 40-character commit hash for HEAD.
