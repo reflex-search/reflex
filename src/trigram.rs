@@ -1185,6 +1185,7 @@ impl TrigramIndex {
                 ws.push((weight, entries));
             }
             ws.sort_by_key(|w| w.0);
+            let t_lookup = std::time::Instant::now();
 
             // Cheapest window: decode every variant and merge.
             let mut cands: Vec<FileLocation> = Vec::new();
@@ -1201,18 +1202,36 @@ impl TrigramIndex {
                     }
                 }
             }
+            let t_decode = t_lookup.elapsed();
+            let raw = cands.len();
             cands.sort_unstable();
             cands.dedup_by_key(|l| key(l));
+            log::debug!(
+                "Fold first window: {} variants, {} bytes, {} raw postings -> {} keys; decode {:?}, sort+dedup {:?}",
+                ws[0].1.len(),
+                ws[0].0,
+                raw,
+                cands.len(),
+                t_decode,
+                t_lookup.elapsed() - t_decode
+            );
 
             for (weight, entries) in &ws[1..] {
                 if cands.is_empty() {
                     break;
                 }
-                if *weight > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
+                // Each variant walks the whole candidate set once (one seek per
+                // candidate, about the cost of decoding one byte), on top of
+                // decoding its list. Kubernetes, `(?i)kubernetes`: the second
+                // window cost 20 ms to drop 20k of 134k candidates, which the
+                // verifier would have handled in 0.3 ms.
+                let cost = weight.saturating_add(entries.len().saturating_mul(cands.len()));
+                if cost > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
                     log::debug!(
-                        "Fold intersection stopped early: {} candidates, next window {} bytes",
+                        "Fold intersection stopped early: {} candidates, next window {} bytes x {} variants",
                         cands.len(),
-                        weight
+                        weight,
+                        entries.len()
                     );
                     break;
                 }
@@ -1279,7 +1298,8 @@ impl TrigramIndex {
                 if cands.is_empty() {
                     break;
                 }
-                if *weight > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
+                let cost = weight.saturating_add(lists.len().saturating_mul(cands.len()));
+                if cost > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
                     break;
                 }
                 let mut next: Vec<FileLocation> = lists

@@ -2601,18 +2601,16 @@ impl QueryEngine {
             );
 
             // Union of each literal's exact candidate lines (alternation-safe).
-            use std::collections::BTreeMap;
-            let mut by_file: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-            let mut add = |locations: Vec<crate::trigram::FileLocation>| {
-                for loc in locations {
-                    by_file.entry(loc.file_id).or_default().push(loc.line_no);
-                }
-            };
+            // Each source is sorted by (file, line) and key-unique, so a single
+            // source needs no sort; several are merged with one sort + dedup. A
+            // per-file BTreeMap here cost ~8 ms per 100k locations.
+            let mut locations: Vec<crate::trigram::FileLocation> = Vec::new();
+            let mut sources = 0usize;
             // Under Unicode case folding `k` and `s` also match the Kelvin sign
             // and the long s, which live on lines the ASCII fold cannot reach.
             let mut need_exotic = false;
             for literal in &literals {
-                let locations = if literal.case_insensitive {
+                let found = if literal.case_insensitive {
                     if literal
                         .text
                         .bytes()
@@ -2629,21 +2627,30 @@ impl QueryEngine {
                     "Literal '{}' (ci={}) found on {} candidate lines",
                     literal.text,
                     literal.case_insensitive,
-                    locations.len()
+                    found.len()
                 );
-                add(locations);
+                locations.extend(found);
+                sources += 1;
             }
             if need_exotic {
-                add(open.trigrams.exotic_fold_lines());
+                locations.extend(open.trigrams.exotic_fold_lines());
+                sources += 1;
             }
-            by_file
-                .into_iter()
-                .map(|(id, mut lines)| {
-                    lines.sort_unstable();
-                    lines.dedup();
-                    (id, LineSet::Only(lines))
-                })
-                .collect()
+            if sources > 1 {
+                locations.sort_unstable();
+                locations.dedup();
+            }
+            // Group by file; lines arrive ascending within each file.
+            let mut files: Vec<(u32, LineSet)> = Vec::new();
+            for loc in locations {
+                match files.last_mut() {
+                    Some((id, LineSet::Only(lines))) if *id == loc.file_id => {
+                        lines.push(loc.line_no)
+                    }
+                    _ => files.push((loc.file_id, LineSet::Only(vec![loc.line_no]))),
+                }
+            }
+            files
         };
         let candidates_us = candidates_started.elapsed().as_micros() as u64;
         log::debug!(
