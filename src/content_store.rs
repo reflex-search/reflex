@@ -19,13 +19,20 @@
 //! File Contents (variable):
 //!   [Concatenated file contents]
 //!
-//! File Index (at index_offset):
-//!   For each file:
+//! File Index (at index_offset), version 2:
+//!   Entry table, num_files × 28 bytes, addressable by file_id:
+//!     offset: u64   (byte offset of the content, relative to the header end)
+//!     length: u64   (content size in bytes)
+//!     path_pos: u64 (absolute file position of the path bytes)
 //!     path_len: u32
-//!     path: UTF-8 string
-//!     offset: u64 (byte offset to file content)
-//!     length: u64 (file size in bytes)
+//!   Path blob: the UTF-8 paths, concatenated, in file_id order
 //! ```
+//!
+//! Version 1 stored `(path_len, path, offset, length)` per file, which forced the
+//! reader to decode the whole index into a `Vec` on open — O(files) work that
+//! was the floor of every CLI query on a 24k-file checkout (12 ms). An entry is
+//! now read from the mmap at `index_offset + file_id * 28`, so open is O(1) and
+//! a query touches only the entries it verifies.
 
 use anyhow::{Context, Result};
 use memmap2::Mmap;
@@ -34,7 +41,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"RFCT";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+/// Bytes per file-index entry: offset u64 + length u64 + path_pos u64 + path_len u32.
+const ENTRY_SIZE: usize = 28;
 const HEADER_SIZE: usize = 32; // 4 (magic) + 4 (version) + 8 (num_files) + 8 (index_offset) + 8 (reserved)
 
 /// Metadata for a file in the content store
@@ -204,16 +213,8 @@ impl ContentWriter {
         // Write all accumulated file contents
         writer.write_all(&self.content)?;
 
-        // Write file index
-        for entry in &self.files {
-            let path_str = entry.path.to_string_lossy();
-            let path_bytes = path_str.as_bytes();
-
-            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
-            writer.write_all(path_bytes)?;
-            writer.write_all(&entry.offset.to_le_bytes())?;
-            writer.write_all(&entry.length.to_le_bytes())?;
-        }
+        // Write file index: the fixed-width table, then the path blob.
+        write_file_index(&mut writer, &self.files, index_offset)?;
 
         writer.flush()?;
         writer.get_ref().sync_all()?;
@@ -242,18 +243,10 @@ impl ContentWriter {
             )));
         }
 
-        // Write file index at current position
+        // Write file index at current position: the fixed-width table, then the
+        // path blob.
         let index_offset = HEADER_SIZE as u64 + self.current_offset;
-
-        for entry in &self.files {
-            let path_str = entry.path.to_string_lossy();
-            let path_bytes = path_str.as_bytes();
-
-            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
-            writer.write_all(path_bytes)?;
-            writer.write_all(&entry.offset.to_le_bytes())?;
-            writer.write_all(&entry.length.to_le_bytes())?;
-        }
+        write_file_index(&mut writer, &self.files, index_offset)?;
 
         // Consume BufWriter and get the underlying File
         let mut file = writer
@@ -322,13 +315,47 @@ impl Default for ContentWriter {
     }
 }
 
+/// Write the version-2 file index: `files.len()` fixed-width entries followed by
+/// the path blob. `index_offset` is where the table starts in the file.
+fn write_file_index<W: Write>(
+    writer: &mut W,
+    files: &[FileEntry],
+    index_offset: u64,
+) -> Result<()> {
+    let blob_start = index_offset + (files.len() * ENTRY_SIZE) as u64;
+    let mut path_pos = blob_start;
+    for entry in files {
+        let path_len = entry.path.to_string_lossy().len() as u64;
+        writer.write_all(&entry.offset.to_le_bytes())?;
+        writer.write_all(&entry.length.to_le_bytes())?;
+        writer.write_all(&path_pos.to_le_bytes())?;
+        writer.write_all(&(path_len as u32).to_le_bytes())?;
+        path_pos += path_len;
+    }
+    for entry in files {
+        writer.write_all(entry.path.to_string_lossy().as_bytes())?;
+    }
+    Ok(())
+}
+
 /// Reader for memory-mapped content.bin
 ///
 /// Provides zero-copy access to file contents.
 pub struct ContentReader {
     _file: File,
     mmap: Mmap,
-    files: Vec<FileEntry>,
+    /// From the header; entries are read from the mmap on demand.
+    num_files: usize,
+    /// Start of the entry table.
+    index_offset: usize,
+}
+
+/// One file-index entry, read in place from the mmap.
+#[derive(Debug, Clone, Copy)]
+struct Entry<'a> {
+    offset: u64,
+    length: u64,
+    path: &'a str,
 }
 
 impl ContentReader {
@@ -368,84 +395,60 @@ impl ContentReader {
             mmap[16], mmap[17], mmap[18], mmap[19], mmap[20], mmap[21], mmap[22], mmap[23],
         ]) as usize;
 
-        // Read file index
-        let mut files = Vec::new();
-        let mut pos = index_offset;
-
-        for i in 0..num_files {
-            if pos + 4 > mmap.len() {
-                anyhow::bail!(
-                    "Truncated file index at file {} (pos={}, mmap.len()={})",
-                    i,
-                    pos,
-                    mmap.len()
-                );
-            }
-
-            let path_len =
-                u32::from_le_bytes([mmap[pos], mmap[pos + 1], mmap[pos + 2], mmap[pos + 3]])
-                    as usize;
-            pos += 4;
-
-            if pos + path_len + 16 > mmap.len() {
-                anyhow::bail!(
-                    "Truncated file entry at file {} (pos={}, path_len={}, need={}, mmap.len()={})",
-                    i,
-                    pos,
-                    path_len,
-                    pos + path_len + 16,
-                    mmap.len()
-                );
-            }
-
-            let path_bytes = &mmap[pos..pos + path_len];
-            let path_str = std::str::from_utf8(path_bytes).context("Invalid UTF-8 in file path")?;
-            let path = PathBuf::from(path_str);
-            pos += path_len;
-
-            let offset = u64::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-                mmap[pos + 4],
-                mmap[pos + 5],
-                mmap[pos + 6],
-                mmap[pos + 7],
-            ]);
-            pos += 8;
-
-            let length = u64::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-                mmap[pos + 4],
-                mmap[pos + 5],
-                mmap[pos + 6],
-                mmap[pos + 7],
-            ]);
-            pos += 8;
-
-            files.push(FileEntry {
-                path,
-                offset,
-                length,
-            });
+        // Bounds of the entry table, then the first and last entry as a sanity
+        // check. Nothing is decoded: a query reads the entries it verifies.
+        let num_files = num_files as usize;
+        let table_end = index_offset.saturating_add(num_files.saturating_mul(ENTRY_SIZE));
+        if table_end > mmap.len() {
+            anyhow::bail!(
+                "Truncated file index (index_offset={}, num_files={}, mmap.len()={})",
+                index_offset,
+                num_files,
+                mmap.len()
+            );
         }
-
-        Ok(Self {
+        let reader = Self {
             _file: file,
             mmap,
-            files,
+            num_files,
+            index_offset,
+        };
+        if num_files > 0 {
+            for id in [0u32, (num_files - 1) as u32] {
+                if reader.entry(id).is_none() {
+                    anyhow::bail!("Truncated file entry at file {}", id);
+                }
+            }
+        }
+        Ok(reader)
+    }
+
+    /// The file-index entry for `file_id`, read in place. `None` when the id is
+    /// out of range or the entry points outside the file.
+    fn entry(&self, file_id: u32) -> Option<Entry<'_>> {
+        let id = file_id as usize;
+        if id >= self.num_files {
+            return None;
+        }
+        let at = self.index_offset + id * ENTRY_SIZE;
+        let b = self.mmap.get(at..at + ENTRY_SIZE)?;
+        let u64_at = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        let offset = u64_at(0);
+        let length = u64_at(8);
+        let path_pos = u64_at(16) as usize;
+        let path_len = u32::from_le_bytes(b[24..28].try_into().unwrap()) as usize;
+        let path = std::str::from_utf8(self.mmap.get(path_pos..path_pos + path_len)?).ok()?;
+        Some(Entry {
+            offset,
+            length,
+            path,
         })
     }
 
     /// Get file content by file_id
     pub fn get_file_content(&self, file_id: u32) -> Result<&str> {
         let entry = self
-            .files
-            .get(file_id as usize)
+            .entry(file_id)
             .ok_or_else(|| anyhow::anyhow!("Invalid file_id: {}", file_id))?;
 
         let start = HEADER_SIZE + entry.offset as usize;
@@ -461,12 +464,12 @@ impl ContentReader {
 
     /// Get file path by file_id
     pub fn get_file_path(&self, file_id: u32) -> Option<&Path> {
-        self.files.get(file_id as usize).map(|e| e.path.as_path())
+        self.entry(file_id).map(|e| Path::new(e.path))
     }
 
     /// Get number of files
     pub fn file_count(&self) -> usize {
-        self.files.len()
+        self.num_files
     }
 
     /// Get file_id (array index) by path
@@ -479,15 +482,12 @@ impl ContentReader {
         // Normalize the input path (strip ./ prefix if present)
         let normalized_input = path.strip_prefix("./").unwrap_or(path);
 
-        self.files
-            .iter()
-            .position(|entry| {
+        (0..self.num_files as u32).find(|&id| {
+            self.entry(id).is_some_and(|entry| {
                 // Normalize the stored path (strip ./ prefix if present)
-                let stored_path = entry.path.to_string_lossy();
-                let normalized_stored = stored_path.strip_prefix("./").unwrap_or(&stored_path);
-                normalized_stored == normalized_input
+                entry.path.strip_prefix("./").unwrap_or(entry.path) == normalized_input
             })
-            .map(|idx| idx as u32)
+        })
     }
 
     /// Get content at a specific byte offset
@@ -498,8 +498,7 @@ impl ContentReader {
         length: usize,
     ) -> Result<&str> {
         let entry = self
-            .files
-            .get(file_id as usize)
+            .entry(file_id)
             .ok_or_else(|| anyhow::anyhow!("Invalid file_id: {}", file_id))?;
 
         let start = HEADER_SIZE + entry.offset as usize + byte_offset as usize;

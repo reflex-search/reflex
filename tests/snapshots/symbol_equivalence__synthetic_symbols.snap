@@ -1,0 +1,218 @@
+---
+source: tests/symbol_equivalence.rs
+expression: out
+---
+== crlf.rs (Rust, 3 symbols)
+[
+  {
+    "path": "crlf.rs",
+    "kind": "Function",
+    "symbol": "alpha",
+    "span": {
+      "start_line": 2,
+      "end_line": 4
+    },
+    "preview": "fn alpha() {\n    let x = 1;\n}\n\nstruct Beta {\n    a: u32,\n}"
+  },
+  {
+    "path": "crlf.rs",
+    "kind": "Struct",
+    "symbol": "Beta",
+    "span": {
+      "start_line": 6,
+      "end_line": 8
+    },
+    "preview": "struct Beta {\n    a: u32,\n}"
+  },
+  {
+    "path": "crlf.rs",
+    "kind": "Variable",
+    "symbol": "x",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "    let x = 1;\n}\n\nstruct Beta {\n    a: u32,\n}"
+  }
+]
+== lone_cr.py (Python, 3 symbols)
+[
+  {
+    "path": "lone_cr.py",
+    "kind": "Function",
+    "symbol": "first",
+    "span": {
+      "start_line": 1,
+      "end_line": 1
+    },
+    "preview": "def first():\r    pass\n\ndef second():\n    value = 1\n    return value"
+  },
+  {
+    "path": "lone_cr.py",
+    "kind": "Function",
+    "symbol": "second",
+    "span": {
+      "start_line": 3,
+      "end_line": 5
+    },
+    "preview": "def second():\n    value = 1\n    return value"
+  },
+  {
+    "path": "lone_cr.py",
+    "kind": "Variable",
+    "symbol": "value",
+    "span": {
+      "start_line": 4,
+      "end_line": 4
+    },
+    "preview": "    value = 1\n    return value"
+  }
+]
+== no_newline.go (Go, 1 symbols)
+[
+  {
+    "path": "no_newline.go",
+    "kind": "Function",
+    "symbol": "last",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "func last() int { return 1 }"
+  }
+]
+== byte_zero.ts (TypeScript, 4 symbols)
+[
+  {
+    "path": "byte_zero.ts",
+    "kind": "Function",
+    "symbol": "atZero",
+    "span": {
+      "start_line": 1,
+      "end_line": 1
+    },
+    "preview": "function atZero() {}\nconst k = 1;\n\n\n\nexport class Late {\n  m() {}"
+  },
+  {
+    "path": "byte_zero.ts",
+    "kind": "Class",
+    "symbol": "Late",
+    "span": {
+      "start_line": 6,
+      "end_line": 8
+    },
+    "preview": "export class Late {\n  m() {}\n}"
+  },
+  {
+    "path": "byte_zero.ts",
+    "kind": "Constant",
+    "symbol": "k",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "const k = 1;\n\n\n\nexport class Late {\n  m() {}\n}"
+  },
+  {
+    "path": "byte_zero.ts",
+    "kind": "Method",
+    "symbol": "m",
+    "span": {
+      "start_line": 7,
+      "end_line": 7
+    },
+    "preview": "  m() {}\n}"
+  }
+]
+== unicode.rs (Rust, 2 symbols)
+[
+  {
+    "path": "unicode.rs",
+    "kind": "Function",
+    "symbol": "after_unicode",
+    "span": {
+      "start_line": 5,
+      "end_line": 5
+    },
+    "preview": "pub fn after_unicode(名前: &str) -> usize { 名前.len() }\nconst Ω: u32 = 1;"
+  },
+  {
+    "path": "unicode.rs",
+    "kind": "Constant",
+    "symbol": "Ω",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "const Ω: u32 = 1;"
+  }
+]
+== widget.vue (Vue, 2 symbols)
+[
+  {
+    "path": "widget.vue",
+    "kind": "Function",
+    "symbol": "greet",
+    "span": {
+      "start_line": 9,
+      "end_line": 11
+    },
+    "preview": "function greet(name: string) {\n  return `hi ${name}`\n}"
+  },
+  {
+    "path": "widget.vue",
+    "kind": "Constant",
+    "symbol": "msg",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "const msg = ref('hi')\nfunction greet(name: string) {\n  return `hi ${name}`\n}"
+  }
+]
+== widget.svelte (Svelte, 2 symbols)
+[
+  {
+    "path": "widget.svelte",
+    "kind": "Function",
+    "symbol": "increment",
+    "span": {
+      "start_line": 3,
+      "end_line": 5
+    },
+    "preview": "  function increment() {\n    count += 1;\n  }"
+  },
+  {
+    "path": "widget.svelte",
+    "kind": "Variable",
+    "symbol": "count",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "  export let count = 0;\n  function increment() {\n    count += 1;\n  }"
+  }
+]
+== long_lines.js (JavaScript, 2 symbols)
+[
+  {
+    "path": "long_lines.js",
+    "kind": "Function",
+    "symbol": "afterBig",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "function afterBig() { return big; }"
+  },
+  {
+    "path": "long_lines.js",
+    "kind": "Constant",
+    "symbol": "big",
+    "span": {
+      "start_line": 1,
+      "end_line": 1
+    },
+    "preview": "const big = \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+]

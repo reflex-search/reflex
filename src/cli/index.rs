@@ -132,6 +132,7 @@ pub(super) fn handle_index_build(
     // failing at once (MCP/watcher/HTTP callers keep the fail-fast default).
     config.lock_wait_secs = 30;
 
+    let hidden_paths_indexed = config.hidden;
     let indexer = Indexer::new(cache, config);
     // Show progress by default, unless quiet mode is enabled
     let show_progress = !quiet;
@@ -169,15 +170,31 @@ pub(super) fn handle_index_build(
             "  Cache size: {}",
             super::format_bytes(stats.index_size_bytes)
         );
+        if stats.corpus_bytes > 0 {
+            let ratio = stats.trigram_index_bytes as f64 / stats.corpus_bytes as f64;
+            println!(
+                "  Index/corpus ratio: {:.1}x (trigrams.bin {}, content.bin {})",
+                ratio,
+                super::format_bytes(stats.trigram_index_bytes),
+                super::format_bytes(stats.corpus_bytes)
+            );
+        }
         println!("  Last updated: {}", stats.last_updated);
 
         // Show incremental breakdown if available (REF-100)
-        let has_breakdown =
-            stats.new_files > 0 || stats.modified_files > 0 || stats.unchanged_files > 0;
+        let has_breakdown = stats.new_files > 0
+            || stats.modified_files > 0
+            || stats.unchanged_files > 0
+            || stats.deleted_files > 0;
         if has_breakdown {
+            let deleted = if stats.deleted_files > 0 {
+                format!(", {} deleted", stats.deleted_files)
+            } else {
+                String::new()
+            };
             println!(
-                "  Breakdown:     {} new, {} modified, {} unchanged",
-                stats.new_files, stats.modified_files, stats.unchanged_files
+                "  Breakdown:     {} new, {} modified, {} unchanged{}",
+                stats.new_files, stats.modified_files, stats.unchanged_files, deleted
             );
         }
 
@@ -189,6 +206,32 @@ pub(super) fn handle_index_build(
                 super::format_bytes(stats.skipped_bytes_too_large)
             );
         }
+        if stats.skipped_binary > 0 {
+            println!(
+                "  Binary files skipped: {} (NUL byte in the file)",
+                stats.skipped_binary
+            );
+        }
+
+        // The non-code tiers. `language` is stored as the Debug name.
+        let tier = |name: &str| stats.files_by_language.get(name).copied().unwrap_or(0);
+        let (text, lock, generated) = (tier("Text"), tier("Lock"), tier("Generated"));
+        if text + lock + generated > 0 {
+            println!(
+                "  Text: {} files, Lock: {}, Generated: {} (lock and generated are excluded \
+                 from searches unless asked for)",
+                text, lock, generated
+            );
+        }
+        let hidden_note = if hidden_paths_indexed {
+            "dot-directories included ([index] hidden = true)"
+        } else {
+            "not under a dot-directory ([index] hidden = true to include them)"
+        };
+        println!(
+            "  Coverage: ripgrep defaults — not gitignored, not binary, {}",
+            hidden_note
+        );
 
         // Display language breakdown if we have indexed files
         if !stats.files_by_language.is_empty() {

@@ -49,6 +49,7 @@ pub mod regex_trigrams;
 pub mod semantic;
 pub mod symbol_cache;
 pub mod trigram;
+pub mod trigram_build;
 pub mod watcher;
 
 // Re-export commonly used types

@@ -79,13 +79,40 @@ pub fn truncate_bytes(s: &str, max: usize) -> &str {
 ///
 /// Returns `""` when `start_line_idx` is past the end of `source`, rather than
 /// panicking as the old per-parser copies did.
+///
+/// `skip(n)` walks the file from byte 0, so this is O(file size) per call; the
+/// symbol extractors use [`extract_preview_from_byte`] instead, which starts at
+/// the node.
 pub fn extract_preview_at(source: &str, start_line_idx: usize) -> String {
+    collect_preview(source.lines().skip(start_line_idx))
+}
+
+/// Preview of the line containing `start_byte` and the lines after it: up to 7
+/// lines or [`PREVIEW_MAX_BYTES`], whichever ends first.
+///
+/// Same output as [`extract_preview_at`] for the line that holds `start_byte`:
+/// tree-sitter counts rows on `\n` alone, and `str::lines` splits on `\n` alone
+/// (stripping one trailing `\r`), so "the line that starts after the last `\n`
+/// before `start_byte`" and "line number `row`" are the same line. Finding it with
+/// `memrchr` costs the length of one line instead of a scan from byte 0 — which
+/// made symbol extraction quadratic in the file size (2.0.0).
+pub fn extract_preview_from_byte(source: &str, start_byte: usize) -> String {
+    let at = start_byte.min(source.len());
+    let line_start = memchr::memrchr(b'\n', &source.as_bytes()[..at]).map_or(0, |i| i + 1);
+    collect_preview(source[line_start..].lines())
+}
+
+/// Preview for the symbol a tree-sitter node starts.
+pub fn extract_preview_for_node(source: &str, node: &tree_sitter::Node) -> String {
+    extract_preview_from_byte(source, node.start_byte())
+}
+
+/// Join up to 7 lines within the byte budget.
+fn collect_preview<'a>(lines: impl Iterator<Item = &'a str>) -> String {
     let mut out = String::new();
 
-    // `skip().take()` rather than `lines().collect()`: for a one-line file the skip is
-    // free, and we stop reading as soon as the byte budget is spent. The old code
-    // allocated a Vec of every line in the file, for every symbol in the file.
-    for line in source.lines().skip(start_line_idx).take(PREVIEW_MAX_LINES) {
+    // Stop reading as soon as the byte budget is spent.
+    for line in lines.take(PREVIEW_MAX_LINES) {
         if !out.is_empty() {
             if out.len() + 1 > PREVIEW_MAX_BYTES {
                 break;
@@ -340,5 +367,37 @@ mod line_preview_tests {
         assert!(out.len() <= EXPAND_MAX_BYTES + 4);
         assert!(out.len() > LINE_PREVIEW_MAX_BYTES, "expand must show more");
         assert_eq!(expand_preview("fn a() {}"), "fn a() {}");
+    }
+
+    /// `extract_preview_from_byte` must agree with `extract_preview_at` for every
+    /// byte offset, across `\n`, `\r\n`, lone `\r`, and multi-byte characters.
+    #[test]
+    fn preview_from_byte_matches_preview_at_for_every_offset() {
+        let samples = [
+            "",
+            "a",
+            "one line no newline",
+            "a\nb\nc\n",
+            "a\r\nb\r\nc",
+            "lone\rcr\nnext\n",
+            "é😀日本語\n  indented ✓\n\n\nafter blanks\n",
+            &"x".repeat(2000),
+            &("line\n".repeat(20) + "tail"),
+        ];
+        for source in samples {
+            let bytes = source.as_bytes();
+            for at in 0..=source.len() {
+                if !source.is_char_boundary(at) {
+                    continue;
+                }
+                // The 0-indexed line that holds byte `at`: number of `\n` before it.
+                let row = bytes[..at].iter().filter(|&&b| b == b'\n').count();
+                assert_eq!(
+                    extract_preview_from_byte(source, at),
+                    extract_preview_at(source, row),
+                    "source {source:?} at {at}"
+                );
+            }
+        }
     }
 }

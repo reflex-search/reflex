@@ -47,6 +47,7 @@ pub(super) fn handle_query(
     use_regex: bool,
     as_json: bool,
     pretty_json: bool,
+    timing: bool,
     ai_mode: bool,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -54,6 +55,9 @@ pub(super) fn handle_query(
     file_pattern: Option<String>,
     exact: bool,
     use_contains: bool,
+    ignore_case: bool,
+    include_locks: bool,
+    include_generated: bool,
     count_only: bool,
     timeout_secs: u64,
     plain: bool,
@@ -333,6 +337,10 @@ No dependency data will be included for {} files.",
         file_pattern,
         exact,
         use_contains,
+        ignore_case,
+        include_locks,
+        include_generated,
+        count_only,
         timeout_secs,
         glob_patterns: glob_patterns.clone(),
         exclude_patterns,
@@ -342,6 +350,7 @@ No dependency data will be included for {} files.",
         suppress_output: as_json, // Suppress warnings in JSON mode
         include_dependencies,
         context_lines,
+        collect_timings: timing,
         ..Default::default()
     };
 
@@ -355,7 +364,7 @@ No dependency data will be included for {} files.",
         match engine.search_ast_all_files(&pattern, filter.clone()) {
             Ok(ast_results) => {
                 let count = ast_results.len();
-                (None, ast_results, count, false)
+                (None, ast_results, Some(count), false)
             }
             Err(e) => {
                 if as_json {
@@ -380,7 +389,9 @@ No dependency data will be included for {} files.",
         // Use metadata-aware search for all queries (to get pagination info)
         match engine.search_with_metadata(&pattern, filter.clone()) {
             Ok(response) => {
-                let total = response.pagination.total;
+                // `None` when verification stopped early; the plain summary and the
+                // count object must not print the verified-so-far number as a total.
+                let total = response.pagination.exact_total();
                 let has_more = response.pagination.has_more;
 
                 // Flatten grouped results to SearchResult vec for plain text formatting
@@ -425,6 +436,30 @@ No dependency data will be included for {} files.",
         }
     };
 
+    // What the engine wants the user to know: a bracket rewrite (`warnings`) or a
+    // zero explained by substring matches (`hint`). Plain mode prints them to stderr;
+    // JSON modes carry them as fields where the shape allows, else stderr.
+    let engine_warnings: Vec<String> = query_response
+        .as_ref()
+        .map(|r| r.warnings.clone())
+        .unwrap_or_default();
+    let engine_hint: Option<String> = query_response.as_ref().and_then(|r| r.hint.clone());
+    // For AI-instruction thresholds only: exact total, else the estimate, else the
+    // end of this page. Never printed as a total.
+    let best_total: usize = query_response
+        .as_ref()
+        .map(|r| r.pagination.best_total())
+        .or(total_results)
+        .unwrap_or(0);
+    let notes_to_stderr = || {
+        for w in &engine_warnings {
+            eprintln!("{}: {}", "Warning".yellow().bold(), w);
+        }
+        if let Some(h) = &engine_hint {
+            eprintln!("{}: {}", "Hint".cyan().bold(), h);
+        }
+    };
+
     // Apply preview truncation unless --no-truncate is set
     if !no_truncate {
         const MAX_PREVIEW_LENGTH: usize = 100;
@@ -434,6 +469,24 @@ No dependency data will be included for {} files.",
     }
 
     let elapsed = start.elapsed();
+
+    if timing {
+        let ms = |us: u64| us as f64 / 1000.0;
+        match query_response.as_ref().and_then(|r| r.timings.as_ref()) {
+            Some(t) => eprintln!(
+                "timing: open {:.2}ms | candidates {:.2}ms | verify {:.2}ms | status wait {:.2}ms (compute {:.2}ms) | group {:.2}ms | engine {:.2}ms | wall {:.2}ms",
+                ms(t.open_us),
+                ms(t.candidates_us),
+                ms(t.verify_us),
+                ms(t.status_us),
+                ms(t.status_compute_us),
+                ms(t.group_us),
+                ms(t.total_us),
+                elapsed.as_secs_f64() * 1000.0
+            ),
+            None => eprintln!("timing: wall {:.2}ms", elapsed.as_secs_f64() * 1000.0),
+        }
+    }
 
     // Format timing string
     let timing_str = if elapsed.as_millis() < 1 {
@@ -445,10 +498,21 @@ No dependency data will be included for {} files.",
     if as_json {
         if count_only {
             // Count-only JSON mode: output simple count object
-            let count_response = serde_json::json!({
-                "count": total_results,
+            // `--count` runs without a limit, so the total is exact; the fallback
+            // only guards the type.
+            let mut count_response = serde_json::json!({
+                "count": total_results.unwrap_or(flat_results.len()),
                 "timing_ms": elapsed.as_millis()
             });
+            if !engine_warnings.is_empty() {
+                count_response["warnings"] = serde_json::json!(engine_warnings);
+            }
+            if let Some(h) = &engine_hint {
+                count_response["hint"] = serde_json::json!(h);
+            }
+            if let Some(reason) = query_response.as_ref().and_then(|r| r.excluded_reason) {
+                count_response["excluded_reason"] = serde_json::json!(reason);
+            }
             let json_output = if pretty_json {
                 serde_json::to_string_pretty(&count_response)?
             } else {
@@ -473,7 +537,7 @@ No dependency data will be included for {} files.",
                 // REF-59: wrap with ai_instruction when --ai flag is used
                 let ai_instruction = crate::query::generate_ai_instruction(
                     unique_paths.len(),
-                    total_results,
+                    best_total,
                     has_more,
                     symbols_mode,
                     true,
@@ -501,6 +565,8 @@ No dependency data will be included for {} files.",
                 }
             };
             println!("{}", json_output);
+            // A bare array has no room for the notes; stderr keeps stdout pure JSON.
+            notes_to_stderr();
         } else {
             // Get or build QueryResponse for JSON output
             let mut response = if let Some(resp) = query_response {
@@ -596,13 +662,22 @@ No dependency data will be included for {} files.",
                     can_trust_results: true,
                     warning: None,
                     pagination: PaginationInfo {
-                        total: flat_results.len(),
+                        total: Some(flat_results.len()),
                         count: flat_results.len(),
                         offset: offset.unwrap_or(0),
                         limit,
                         has_more: false, // AST already applied pagination
+                        total_is_exact: true,
+                        approx_total: None,
                     },
                     results: file_results,
+                    substring_hint_count: None,
+                    excluded_reason: None,
+                    excluded_by_default: None,
+                    file_count: None,
+                    warnings: Vec::new(),
+                    hint: None,
+                    timings: None,
                 }
             };
 
@@ -612,7 +687,7 @@ No dependency data will be included for {} files.",
 
                 response.ai_instruction = crate::query::generate_ai_instruction(
                     result_count,
-                    response.pagination.total,
+                    response.pagination.best_total(),
                     response.pagination.has_more,
                     symbols_mode,
                     paths_only,
@@ -641,8 +716,11 @@ No dependency data will be included for {} files.",
         }
     } else {
         // Standard output with formatting
+        notes_to_stderr();
         if count_only {
-            let n = flat_results.len();
+            // `--count` runs without a limit, so the total is exact and, in
+            // count-only mode, nothing was materialised to count by hand.
+            let n = total_results.unwrap_or(flat_results.len());
             println!(
                 "Found {} result{} in {}",
                 n,
@@ -679,27 +757,41 @@ No dependency data will be included for {} files.",
 
                 // Print summary at the bottom with pagination details
                 let n = flat_results.len();
-                if total_results > n {
-                    // Results were paginated - show detailed count
-                    println!(
-                        "\nFound {} result{} ({} total) in {}",
-                        n,
-                        if n == 1 { "" } else { "s" },
-                        total_results,
-                        timing_str
-                    );
-                    // Show pagination hint if there are more results available
-                    if has_more {
-                        println!("Use --limit and --offset to paginate");
+                let plural = if n == 1 { "" } else { "s" };
+                let approx = query_response
+                    .as_ref()
+                    .and_then(|r| r.pagination.approx_total);
+                match total_results {
+                    // Verification stopped once the page was full. The verified-so-far
+                    // number is not a total and is never printed as one.
+                    None => {
+                        match approx {
+                            Some(est) => println!(
+                                "\nFound {} result{} (~{} total, estimated) in {}",
+                                n, plural, est, timing_str
+                            ),
+                            None => println!(
+                                "\nFound {} result{} (more available, total unknown) in {}",
+                                n, plural, timing_str
+                            ),
+                        }
+                        println!(
+                            "Use --limit/--offset to paginate, or --count for the exact total"
+                        );
                     }
-                } else {
-                    // All results shown - simple count
-                    println!(
-                        "\nFound {} result{} in {}",
-                        n,
-                        if n == 1 { "" } else { "s" },
-                        timing_str
-                    );
+                    Some(total) if total > n => {
+                        println!(
+                            "\nFound {} result{} ({} total) in {}",
+                            n, plural, total, timing_str
+                        );
+                        if has_more {
+                            println!("Use --limit and --offset to paginate");
+                        }
+                    }
+                    Some(_) => {
+                        // All results shown - simple count
+                        println!("\nFound {} result{} in {}", n, plural, timing_str);
+                    }
                 }
             }
         }

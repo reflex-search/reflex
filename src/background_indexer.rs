@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
@@ -246,7 +246,6 @@ pub struct BackgroundIndexer {
     workspace_path: PathBuf,
     cache_path: PathBuf,
     status: IndexingStatus,
-    batch_size: usize,
 }
 
 impl BackgroundIndexer {
@@ -281,10 +280,6 @@ impl BackgroundIndexer {
                 write_failed_files: 0,
                 skipped_minified: 0,
             },
-            // 128, not 500: a chunk is the unit of both progress reporting and
-            // cancellation, so a wide chunk means a status frozen for minutes and a
-            // slow yield to a waiting `rfx index`.
-            batch_size: 128,
         })
     }
 
@@ -541,35 +536,43 @@ impl BackgroundIndexer {
         result
     }
 
-    /// Internal indexing implementation with parallel processing
+    /// Internal indexing implementation: a streaming pipeline.
+    ///
+    /// Workers parse files from `content.bin` and hand encoded blobs to ONE writer
+    /// thread that owns the database connection and commits in large batches, so
+    /// parsing never waits on SQLite and SQLite never waits on parsing. Until
+    /// 2.0.0 the pass ran 128-file `par_iter` chunks separated by a serial write,
+    /// opened a connection per file to ask whether it was cached, and recompiled
+    /// every tree-sitter query per file: 45 s on a 27k-file tree, 90% of it
+    /// avoidable.
     fn run_internal(&mut self) -> Result<()> {
         log::info!("Starting background symbol indexing");
 
-        // Calculate thread pool size (25-30% of available CPUs)
-        let num_cpus = num_cpus::get();
-        let num_threads = ((num_cpus as f32 * 0.275).ceil() as usize).max(1);
-
+        let cache_mgr = CacheManager::new(&self.workspace_path);
+        let config = cache_mgr.load_index_config().unwrap_or_default();
+        let num_threads = crate::models::resolve_symbol_thread_count(config.symbol_threads);
         log::info!(
-            "Using {} threads for background indexing ({} CPUs available, ~27.5% utilization)",
+            "Using {} threads for background indexing ({} CPUs available)",
             num_threads,
-            num_cpus
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
         );
-
-        // Create custom thread pool with limited threads
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()
             .context("Failed to create thread pool")?;
 
-        // Open cache manager and symbol cache
-        let cache_mgr = CacheManager::new(&self.workspace_path);
-        let symbol_cache =
-            SymbolCache::open(&self.cache_path).context("Failed to open symbol cache")?;
+        // Schema (and the format-version guard) first, then one connection for
+        // the whole pass.
+        SymbolCache::open(&self.cache_path).context("Failed to open symbol cache")?;
+        let mut conn = crate::cache::open_meta_db(self.cache_path.join("meta.db"))
+            .context("Failed to open meta.db for the symbol pass")?;
+        // WAL + NORMAL is crash-safe for a cache that is rebuilt from content.bin.
+        conn.execute_batch("PRAGMA synchronous=NORMAL")
+            .context("Failed to set synchronous=NORMAL")?;
 
-        // Load content reader to iterate through all indexed files
         let content_path = self.cache_path.join("content.bin");
-
-        // If content.bin doesn't exist, index is empty - nothing to do
         if !content_path.exists() {
             log::info!("No content.bin found - index is empty, nothing to process");
             self.status.total_files = 0;
@@ -577,25 +580,22 @@ impl BackgroundIndexer {
             self.write_status()?;
             return Ok(());
         }
-
         let content_reader =
             ContentReader::open(&content_path).context("Failed to open content.bin")?;
 
-        // Get file hashes across all branches (background indexer processes all files)
-        let file_hashes = cache_mgr
-            .load_all_hashes()
-            .context("Failed to load file hashes")?;
+        // `path → (file_id, hash)` for every indexed file and the set of cached
+        // keys: two queries, instead of two queries plus a connection per file.
+        let file_rows = cache_mgr
+            .load_all_file_rows()
+            .context("Failed to load file rows")?;
+        let cached_keys =
+            SymbolCache::load_cached_keys_on(&conn).context("Failed to load cached symbol keys")?;
 
         let total_files = content_reader.file_count();
         self.status.total_files = total_files;
         log::info!("Found {} indexed files to process", total_files);
-        log::debug!(
-            "Loaded {} file hashes from file_branches table",
-            file_hashes.len()
-        );
 
-        // DEFENSIVE CHECK: If file_hashes is empty but we have files, this indicates a problem
-        if file_hashes.is_empty() && total_files > 0 {
+        if file_rows.is_empty() && total_files > 0 {
             log::error!(
                 "CRITICAL: No file hashes found in file_branches table, but {} files exist in content.bin!",
                 total_files
@@ -604,9 +604,6 @@ impl BackgroundIndexer {
             log::error!("  1. The main indexer failed to populate file_branches table");
             log::error!("  2. WAL checkpoint didn't flush data before background indexer started");
             log::error!("  3. Database transaction was rolled back");
-
-            // Try to diagnose by checking database directly
-            log::error!("Attempting diagnostic query to check file_branches table...");
             anyhow::bail!(
                 "No file hashes available - cannot index symbols. \
                  This is a database synchronization issue. \
@@ -614,191 +611,167 @@ impl BackgroundIndexer {
             );
         }
 
-        // Write initial status
+        // Partition the tree once: cached, no parser, no hash, or to parse.
+        let mut work: Vec<WorkItem> = Vec::new();
+        let mut cached = 0usize;
+        let mut no_parser = 0usize;
+        let mut no_hash = 0usize;
+        for content_id in 0..total_files as u32 {
+            let Some(path) = content_reader.get_file_path(content_id) else {
+                no_hash += 1;
+                continue;
+            };
+            let path_str = path.to_string_lossy();
+            // content.bin may store "./src/main.rs"; the database stores "src/main.rs".
+            let path_str = path_str.strip_prefix("./").unwrap_or(&path_str).to_string();
+            let Some((db_id, hash)) = file_rows.get(&path_str) else {
+                no_hash += 1;
+                continue;
+            };
+            if cached_keys.contains(&(*db_id, hash.clone())) {
+                cached += 1;
+                continue;
+            }
+            let language = crate::models::Language::from_path(std::path::Path::new(&path_str));
+            if !ParserFactory::has_symbol_parser(language) {
+                no_parser += 1;
+                continue;
+            }
+            work.push(WorkItem {
+                content_id,
+                db_id: *db_id,
+                path: path_str,
+                hash: hash.clone(),
+            });
+        }
+        drop(cached_keys);
+        drop(file_rows);
+        log::info!(
+            "Symbol pass: {} to parse, {} cached, {} without a symbol parser, {} not in the database",
+            work.len(),
+            cached,
+            no_parser,
+            no_hash
+        );
+
+        // Files that need no parsing count as processed from the start.
+        let base_processed = cached + no_parser + no_hash;
+        self.status.cached_files = cached;
+        self.status.processed_files = base_processed;
+        self.status.phase = "parsing".to_string();
         self.write_status()?;
 
-        // Shared state for status tracking
-        // (cached, parsed, failed-to-parse, skipped-minified)
-        let status_mutex = Arc::new(Mutex::new((0usize, 0usize, 0usize, 0usize)));
+        let counters = PassCounters::default();
+        let cancel = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedFile>(256);
 
-        // Process files in batches
-        let batch_size = self.batch_size;
-        let mut processed = 0;
+        let mut writer_status = self.status.clone();
+        let cache_path = self.cache_path.clone();
+        let counters_ref = &counters;
+        let cancel_ref = &cancel;
+        let content_ref = &content_reader;
+        let this = &*self;
 
-        // Iterate through all files in content.bin
-        let file_ids: Vec<u32> = (0..total_files as u32).collect();
-
-        // DIAGNOSTIC: Log sample paths to debug hash lookup failures
-        if !file_ids.is_empty() && !file_hashes.is_empty() {
-            // Log first 3 paths from content.bin
-            log::debug!("=== Path Comparison Diagnostic ===");
-            for sample_id in file_ids.iter().take(3) {
-                if let Some(path) = content_reader.get_file_path(*sample_id) {
-                    log::debug!(
-                        "  content.bin path[{}]: '{}'",
-                        sample_id,
-                        path.to_string_lossy()
-                    );
-                }
-            }
-            // Log first 3 keys from file_hashes HashMap
-            let sample_keys: Vec<_> = file_hashes.keys().take(3).collect();
-            for key in sample_keys {
-                log::debug!("  file_hashes key: '{}'", key);
-            }
-            log::debug!("=================================");
-        }
-
-        for chunk in file_ids.chunks(batch_size) {
-            // Yield the database if an `rfx index` is waiting. Cooperative, so the
-            // batch just written stays consistent and the lock is released cleanly.
-            if Self::cancel_requested(&self.cache_path) {
-                log::info!(
-                    "Symbol indexing cancelled at {}/{} files (an indexer asked for the database)",
-                    processed,
-                    total_files
-                );
-                self.status.state = IndexerState::Cancelled;
-                self.status.phase = "cancelled".to_string();
-                self.write_status()?;
-                return Ok(());
-            }
-
-            let chunk_start = Instant::now();
-            self.status.phase = "filtering".to_string();
-
-            // Build list of files to parse (with cache check)
-            let files_to_parse: Vec<_> = chunk
-                .iter()
-                .filter_map(|&file_id| {
-                    let path = content_reader.get_file_path(file_id)?;
-                    let mut path_str = path.to_string_lossy().to_string();
-
-                    // NORMALIZE: Strip "./" prefix to match database paths
-                    // content.bin stores paths like "./src/main.rs"
-                    // but database stores paths like "src/main.rs"
-                    if path_str.starts_with("./") {
-                        path_str = path_str[2..].to_string();
-                    }
-
-                    let file_hash = file_hashes.get(&path_str)?;
-
-                    // Check if already cached
-                    if symbol_cache
-                        .get(&path_str, file_hash)
-                        .ok()
-                        .flatten()
-                        .is_some()
-                    {
-                        // Update cached count
-                        let mut status = status_mutex.lock().unwrap();
-                        status.0 += 1;
-                        None
-                    } else {
-                        Some((file_id, path_str, file_hash.clone()))
-                    }
-                })
-                .collect();
-
-            // Parse files in parallel using custom thread pool
-            let parsed_results: Vec<_> = thread_pool.install(|| {
-                files_to_parse
-                    .par_iter()
-                    .map(|(file_id, path_str, file_hash)| {
-                        match self.parse_symbols(&content_reader, *file_id, path_str) {
-                            Ok(ParseOutcome::Parsed(symbols)) => {
-                                // Update parsed count
-                                let mut status = status_mutex.lock().unwrap();
-                                status.1 += 1;
-                                Some((path_str.clone(), file_hash.clone(), symbols))
-                            }
-                            Ok(ParseOutcome::SkippedMinified) => {
-                                let mut status = status_mutex.lock().unwrap();
-                                status.3 += 1;
-                                None
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to parse symbols from {}: {}", path_str, e);
-                                // Update failed count
-                                let mut status = status_mutex.lock().unwrap();
-                                status.2 += 1;
-                                None
-                            }
-                        }
-                    })
-                    .flatten()
-                    .collect()
+        let writer_result = std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                Self::writer_loop(
+                    rx,
+                    &mut conn,
+                    &cache_path,
+                    &mut writer_status,
+                    base_processed,
+                    counters_ref,
+                    cancel_ref,
+                )
             });
 
-            // Write batch to cache (sequential - SQLite limitation)
-            let parse_done = Instant::now();
+            thread_pool.install(|| {
+                work.par_iter().for_each(|item| {
+                    if cancel_ref.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let parse_start = Instant::now();
+                    let outcome = this.parse_symbols(content_ref, item.content_id, &item.path);
+                    counters_ref
+                        .parse_ns
+                        .fetch_add(parse_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    match outcome {
+                        Ok(ParseOutcome::Parsed(symbols)) => {
+                            let encode_start = Instant::now();
+                            let encoded = crate::symbol_cache::encode_symbols(&symbols);
+                            counters_ref.encode_ns.fetch_add(
+                                encode_start.elapsed().as_nanos() as u64,
+                                Ordering::Relaxed,
+                            );
+                            counters_ref
+                                .symbols
+                                .fetch_add(symbols.len(), Ordering::Relaxed);
+                            match encoded {
+                                Ok(blob) => {
+                                    counters_ref.parsed.fetch_add(1, Ordering::Relaxed);
+                                    // The writer only goes away after the pool
+                                    // finishes, so a send error means it died.
+                                    if tx
+                                        .send(ParsedFile {
+                                            db_id: item.db_id,
+                                            hash: item.hash.clone(),
+                                            path: item.path.clone(),
+                                            blob,
+                                        })
+                                        .is_err()
+                                    {
+                                        cancel_ref.store(true, Ordering::Relaxed);
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to encode symbols for {}: {}", item.path, e);
+                                    counters_ref.failed.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        Ok(ParseOutcome::SkippedMinified) => {
+                            counters_ref
+                                .skipped_minified
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse symbols from {}: {}", item.path, e);
+                            counters_ref.failed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            });
+            drop(tx);
 
-            // Announce the write BEFORE it starts. This is the step that blocks on a
-            // meta.db write lock, so a status frozen in "writing" says where the time
-            // is going instead of looking like a hang.
-            self.status.phase = "writing".to_string();
-            let _ = self.write_status();
+            writer
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("symbol writer thread panicked")))
+        });
 
-            if !parsed_results.is_empty()
-                && let Err(e) = symbol_cache.batch_set(&parsed_results)
-            {
-                // A WRITE failure is not a PARSE failure. This used to do
-                // `status.2 += parsed_results.len()` without decrementing the parsed
-                // count, so 27 successful parses plus one failed batch write reported
-                // `parsed_files: 27, failed_files: 27` — a reading that looks like
-                // every file failed, and which hid a 34 GiB memory bug from an earlier
-                // investigation. Count it separately, and name a file.
-                self.status.write_failed_files += parsed_results.len();
-                self.status.error = Some(format!(
-                    "{} file(s) parsed but not persisted (first: {}): {}",
-                    parsed_results.len(),
-                    parsed_results
-                        .first()
-                        .map(|(p, _, _)| p.as_str())
-                        .unwrap_or("unknown"),
-                    e
-                ));
-                log::error!(
-                    "Failed to write symbol batch of {} file(s), first {}: {}",
-                    parsed_results.len(),
-                    parsed_results
-                        .first()
-                        .map(|(p, _, _)| p.as_str())
-                        .unwrap_or("unknown"),
-                    e
-                );
-            }
+        // Fold the writer's view (counts, error text) back into ours.
+        self.status = writer_status;
+        writer_result?;
+        log::info!(
+            "Symbol pass CPU: parse {} ms, encode {} ms across {} threads; {} symbols, {} blob bytes",
+            counters.parse_ns.load(Ordering::Relaxed) / 1_000_000,
+            counters.encode_ns.load(Ordering::Relaxed) / 1_000_000,
+            num_threads,
+            counters.symbols.load(Ordering::Relaxed),
+            counters.blob_bytes.load(Ordering::Relaxed)
+        );
 
-            // Update status counters
-            processed += chunk.len();
-            {
-                let status = status_mutex.lock().unwrap();
-                self.status.cached_files = status.0;
-                self.status.parsed_files = status.1;
-                self.status.failed_files = status.2;
-                self.status.skipped_minified = status.3;
-                self.status.processed_files = processed;
-            }
-
-            // Unconditionally, once per chunk. The old `processed % 500 < batch_size`
-            // guard was a no-op (batch_size was itself 500, so it was always true),
-            // and the real staleness came from the chunk being 500 files wide.
-            self.status.phase = "parsing".to_string();
-            self.status.current_file = None;
-            if let Err(e) = self.write_status() {
-                log::warn!("Failed to write status: {}", e);
-            }
-
-            let total_ms = chunk_start.elapsed().as_millis();
+        let cancelled =
+            cancel.load(Ordering::Relaxed) && counters.processed() + base_processed < total_files;
+        if cancelled {
             log::info!(
-                "Symbol batch {}/{}: {}ms total ({}ms parse, {}ms write), {} files parsed",
-                processed,
-                total_files,
-                total_ms,
-                parse_done.duration_since(chunk_start).as_millis(),
-                parse_done.elapsed().as_millis(),
-                parsed_results.len()
+                "Symbol indexing cancelled at {}/{} files (an indexer asked for the database)",
+                self.status.processed_files,
+                total_files
             );
+            self.status.state = IndexerState::Cancelled;
+            self.status.phase = "cancelled".to_string();
+            self.write_status()?;
+            return Ok(());
         }
 
         // Final status update
@@ -814,9 +787,8 @@ impl BackgroundIndexer {
         let _ = self.write_status();
         let cleanup_start = Instant::now();
 
-        let removed = symbol_cache
-            .cleanup_stale()
-            .context("Failed to cleanup stale symbols")?;
+        let removed =
+            SymbolCache::cleanup_stale_on(&conn).context("Failed to cleanup stale symbols")?;
 
         let cleanup_ms = cleanup_start.elapsed().as_millis();
         if cleanup_ms > 1000 {
@@ -837,6 +809,166 @@ impl BackgroundIndexer {
         Ok(())
     }
 
+    /// The single writer: drains parsed files, commits them in large batches,
+    /// keeps the status file current and relays a cancel request to the workers.
+    #[allow(clippy::too_many_arguments)]
+    fn writer_loop(
+        rx: std::sync::mpsc::Receiver<ParsedFile>,
+        conn: &mut rusqlite::Connection,
+        cache_path: &Path,
+        status: &mut IndexingStatus,
+        base_processed: usize,
+        counters: &PassCounters,
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        use std::sync::mpsc::RecvTimeoutError;
+
+        const BATCH_FILES: usize = 1024;
+        const BATCH_BYTES: usize = 16 * 1024 * 1024;
+        const POLL: std::time::Duration = std::time::Duration::from_millis(200);
+        const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+        let mut batch: Vec<ParsedFile> = Vec::new();
+        let mut batch_bytes = 0usize;
+        let mut last_status = Instant::now();
+
+        let refresh = |status: &mut IndexingStatus, phase: &str| {
+            status.parsed_files = counters.parsed.load(Ordering::Relaxed);
+            status.failed_files = counters.failed.load(Ordering::Relaxed);
+            status.skipped_minified = counters.skipped_minified.load(Ordering::Relaxed);
+            status.write_failed_files = counters.write_failed.load(Ordering::Relaxed);
+            status.processed_files = base_processed + counters.processed();
+            status.phase = phase.to_string();
+            status.current_file = None;
+        };
+
+        loop {
+            let mut done = false;
+            match rx.recv_timeout(POLL) {
+                Ok(item) => {
+                    batch_bytes += item.blob.len();
+                    counters
+                        .blob_bytes
+                        .fetch_add(item.blob.len(), Ordering::Relaxed);
+                    batch.push(item);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => done = true,
+            }
+
+            if done || batch.len() >= BATCH_FILES || batch_bytes >= BATCH_BYTES {
+                if !batch.is_empty() {
+                    refresh(status, "writing");
+                    Self::write_status_file(cache_path, status);
+                    Self::commit_batch(conn, &mut batch, counters, status);
+                    batch_bytes = 0;
+                    refresh(status, "parsing");
+                    Self::write_status_file(cache_path, status);
+                    last_status = Instant::now();
+                }
+                if done {
+                    break;
+                }
+            }
+
+            // Relay a cancel request (an `rfx index` waiting for the database) to
+            // the workers; the batch in hand is still committed on the way out.
+            if !cancel.load(Ordering::Relaxed) && Self::cancel_requested(cache_path) {
+                log::info!("Cancel requested; finishing in-flight files and stopping");
+                cancel.store(true, Ordering::Relaxed);
+            }
+
+            if last_status.elapsed() >= STATUS_EVERY {
+                refresh(status, "parsing");
+                Self::write_status_file(cache_path, status);
+                last_status = Instant::now();
+            }
+        }
+
+        refresh(status, "parsing");
+        Ok(())
+    }
+
+    /// Commit `batch` in one transaction; on failure wait briefly and retry once,
+    /// then count the batch as not persisted (never as a parse failure).
+    fn commit_batch(
+        conn: &mut rusqlite::Connection,
+        batch: &mut Vec<ParsedFile>,
+        counters: &PassCounters,
+        status: &mut IndexingStatus,
+    ) {
+        let started = Instant::now();
+        let n = batch.len();
+        let mut result = Self::try_commit(conn, batch);
+        if let Err(e) = &result {
+            log::warn!(
+                "Symbol batch of {} files failed to commit ({}); retrying once",
+                n,
+                e
+            );
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            result = Self::try_commit(conn, batch);
+        }
+        match result {
+            Ok(()) => {
+                counters.persisted.fetch_add(n, Ordering::Relaxed);
+                log::info!(
+                    "Symbol batch committed: {} files, {} ms (parsed so far {})",
+                    n,
+                    started.elapsed().as_millis(),
+                    counters.parsed.load(Ordering::Relaxed)
+                );
+            }
+            Err(e) => {
+                // A WRITE failure is not a PARSE failure: the files were parsed;
+                // they are just not in the cache. Count them apart and name one.
+                counters.write_failed.fetch_add(n, Ordering::Relaxed);
+                let first = batch.first().map(|f| f.path.as_str()).unwrap_or("unknown");
+                status.error = Some(format!(
+                    "{} file(s) parsed but not persisted (first: {}): {:#}",
+                    n, first, e
+                ));
+                log::error!(
+                    "Failed to write symbol batch of {} file(s) after {} ms, first {}: {:#}",
+                    n,
+                    started.elapsed().as_millis(),
+                    first,
+                    e
+                );
+            }
+        }
+        batch.clear();
+    }
+
+    fn try_commit(conn: &mut rusqlite::Connection, batch: &[ParsedFile]) -> Result<()> {
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("begin")?;
+        let now = chrono::Utc::now().timestamp().to_string();
+        {
+            let mut stmt = tx.prepare_cached(SymbolCache::INSERT_SYMBOLS_SQL)?;
+            for item in batch {
+                stmt.execute(rusqlite::params![item.db_id, item.hash, item.blob, now])?;
+            }
+        }
+        tx.commit().context("commit")?;
+        Ok(())
+    }
+
+    /// Write `status` to `indexing.status` (best effort; a failure is logged).
+    fn write_status_file(cache_path: &Path, status: &mut IndexingStatus) {
+        status.updated_at = chrono::Utc::now().to_rfc3339();
+        let status_path = cache_path.join(STATUS_FILE);
+        match serde_json::to_string_pretty(status) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&status_path, json) {
+                    log::warn!("Failed to write status: {}", e);
+                }
+            }
+            Err(e) => log::warn!("Failed to serialize status: {}", e),
+        }
+    }
+
     /// Parse symbols from a file using content.bin
     fn parse_symbols(
         &self,
@@ -850,12 +982,7 @@ impl BackgroundIndexer {
             .with_context(|| format!("Failed to read file from content.bin: {}", path))?;
 
         // Detect language from file extension
-        let extension = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-
-        let language = crate::models::Language::from_extension(extension);
+        let language = crate::models::Language::from_path(std::path::Path::new(path));
 
         // Ask before parsing, so a declined file can be COUNTED rather than looking
         // like a parser that found nothing. `ParserFactory::parse` checks this too and
@@ -869,6 +996,48 @@ impl BackgroundIndexer {
             .with_context(|| format!("Failed to parse symbols from: {}", path))?;
 
         Ok(ParseOutcome::Parsed(symbols))
+    }
+}
+
+/// A file the pass must parse.
+struct WorkItem {
+    /// Index into content.bin.
+    content_id: u32,
+    /// `files.id` in meta.db.
+    db_id: i64,
+    path: String,
+    hash: String,
+}
+
+/// A parsed file on its way to the writer.
+struct ParsedFile {
+    db_id: i64,
+    hash: String,
+    path: String,
+    blob: Vec<u8>,
+}
+
+/// Counts shared between workers and the writer.
+#[derive(Default)]
+struct PassCounters {
+    parsed: AtomicUsize,
+    failed: AtomicUsize,
+    skipped_minified: AtomicUsize,
+    persisted: AtomicUsize,
+    write_failed: AtomicUsize,
+    /// Diagnostics: worker time in parse/extract and in encode, symbols and bytes.
+    parse_ns: std::sync::atomic::AtomicU64,
+    encode_ns: std::sync::atomic::AtomicU64,
+    symbols: AtomicUsize,
+    blob_bytes: AtomicUsize,
+}
+
+impl PassCounters {
+    /// Files the workers have finished with, whatever the outcome.
+    fn processed(&self) -> usize {
+        self.parsed.load(Ordering::Relaxed)
+            + self.failed.load(Ordering::Relaxed)
+            + self.skipped_minified.load(Ordering::Relaxed)
     }
 }
 
@@ -1040,5 +1209,183 @@ mod tests {
             .expect("stale lock should not block acquire_lock");
 
         assert!(lock_path.exists(), "new lock file should be created");
+    }
+
+    fn workspace(files: usize) -> TempDir {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for i in 0..files {
+            std::fs::write(
+                src.join(format!("m{i}.rs")),
+                format!(
+                    "pub fn func_{i}(x: u32) -> u32 {{\n    let local_{i} = x + {i};\n    local_{i}\n}}\n\npub struct S{i} {{\n    pub a: u32,\n}}\n"
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(temp.path().join("README.md"), "# no symbols here\n").unwrap();
+        std::fs::write(temp.path().join("notes.txt"), "plain text\n").unwrap();
+        temp
+    }
+
+    fn index_workspace(root: &Path) {
+        let cache = CacheManager::new(root);
+        crate::indexer::Indexer::new(cache, crate::models::IndexConfig::default())
+            .index(root, false)
+            .unwrap();
+    }
+
+    fn symbol_rows(root: &Path) -> i64 {
+        let conn = crate::cache::open_meta_db(root.join(".reflex").join("meta.db")).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn full_run_parses_every_code_file_then_reports_them_cached() {
+        let temp = workspace(40);
+        index_workspace(temp.path());
+
+        let mut first = BackgroundIndexer::new(temp.path()).unwrap();
+        first.run().unwrap();
+        assert_eq!(first.status.state, IndexerState::Completed);
+        assert_eq!(
+            first.status.total_files, 42,
+            "40 .rs + README.md + notes.txt"
+        );
+        assert_eq!(first.status.processed_files, 42);
+        assert_eq!(first.status.parsed_files, 40);
+        assert_eq!(first.status.cached_files, 0);
+        assert_eq!(first.status.failed_files, 0);
+        assert_eq!(first.status.write_failed_files, 0);
+        assert!(first.status.error.is_none(), "{:?}", first.status.error);
+        // Text-tier files are skipped, not stored as empty rows.
+        assert_eq!(symbol_rows(temp.path()), 40);
+
+        let mut second = BackgroundIndexer::new(temp.path()).unwrap();
+        second.run().unwrap();
+        assert_eq!(second.status.state, IndexerState::Completed);
+        assert_eq!(second.status.cached_files, 40);
+        assert_eq!(second.status.parsed_files, 0);
+        assert_eq!(second.status.processed_files, 42);
+
+        // The rows decode to the symbols the parser produces.
+        let symbol_cache = SymbolCache::open(temp.path().join(".reflex").as_path()).unwrap();
+        let conn = crate::cache::open_meta_db(temp.path().join(".reflex").join("meta.db")).unwrap();
+        let hash: String = conn
+            .query_row(
+                "SELECT fb.hash FROM file_branches fb JOIN files f ON f.id = fb.file_id WHERE f.path = 'src/m7.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let cached = symbol_cache.get("src/m7.rs", &hash).unwrap().unwrap();
+        let names: Vec<_> = cached.iter().filter_map(|s| s.symbol.as_deref()).collect();
+        assert!(names.contains(&"func_7"), "{names:?}");
+        assert!(names.contains(&"S7"), "{names:?}");
+        assert!(cached.iter().all(|s| s.path == "src/m7.rs"));
+    }
+
+    #[test]
+    fn cancel_request_stops_the_pass_and_keeps_what_was_parsed() {
+        let temp = workspace(1500);
+        index_workspace(temp.path());
+        let cache_path = temp.path().join(".reflex");
+
+        let canceller = {
+            let cache_path = cache_path.clone();
+            std::thread::spawn(move || {
+                // Wait for the pass to start parsing, then ask it to stop.
+                for _ in 0..500 {
+                    if let Ok(Some(st)) = BackgroundIndexer::get_status(&cache_path)
+                        && st.phase == "parsing"
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                BackgroundIndexer::request_cancel(&cache_path).unwrap();
+            })
+        };
+
+        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
+        indexer.run().unwrap();
+        canceller.join().unwrap();
+
+        let st = &indexer.status;
+        assert!(
+            matches!(st.state, IndexerState::Cancelled | IndexerState::Completed),
+            "{:?}",
+            st.state
+        );
+        // Everything parsed before the stop was committed, nothing was lost.
+        assert_eq!(symbol_rows(temp.path()), st.parsed_files as i64);
+        assert_eq!(st.write_failed_files, 0);
+        if st.state == IndexerState::Cancelled {
+            assert!(st.processed_files < st.total_files, "{st:?}");
+            assert_eq!(st.phase, "cancelled");
+        }
+        assert!(!cache_path.join(LOCK_FILE).exists());
+
+        // A later run finishes the remainder.
+        BackgroundIndexer::clear_cancel(&cache_path);
+        let mut again = BackgroundIndexer::new(temp.path()).unwrap();
+        again.run().unwrap();
+        assert_eq!(again.status.state, IndexerState::Completed);
+        assert_eq!(symbol_rows(temp.path()), 1500);
+        assert_eq!(again.status.cached_files + again.status.parsed_files, 1500);
+    }
+
+    /// A batch the writer cannot commit is retried once, then counted apart from
+    /// parse failures and named in `error`. Holds the database for the whole run
+    /// (two busy timeouts of 5 s), so this test takes ~11 s.
+    #[test]
+    fn write_failure_is_counted_apart_from_parse_failures() {
+        let temp = workspace(5);
+        index_workspace(temp.path());
+        let db = temp.path().join(".reflex").join("meta.db");
+
+        // Let the pass read its file rows first, then take the write lock.
+        let blocker = crate::cache::open_meta_db(&db).unwrap();
+        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
+        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        // With the lock held from the start, the pass cannot even read. Instead,
+        // block only the writer: release, start the pass in a thread, re-lock once
+        // it is parsing.
+        blocker.execute_batch("COMMIT").unwrap();
+
+        let cache_path = temp.path().join(".reflex");
+        let blocker_thread = {
+            let db = db.clone();
+            let cache_path = cache_path.clone();
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    if let Ok(Some(st)) = BackgroundIndexer::get_status(&cache_path)
+                        && st.phase == "parsing"
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                let conn = crate::cache::open_meta_db(&db).unwrap();
+                conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+                // Hold it longer than two busy timeouts plus the retry pause.
+                std::thread::sleep(std::time::Duration::from_millis(11_500));
+                conn.execute_batch("COMMIT").unwrap();
+            })
+        };
+        let result = indexer.run();
+        blocker_thread.join().unwrap();
+
+        assert!(result.is_ok(), "{result:?}");
+        let st = &indexer.status;
+        assert_eq!(st.state, IndexerState::Completed);
+        assert_eq!(st.parsed_files, 5, "parsing succeeded");
+        assert_eq!(st.failed_files, 0, "a write failure is not a parse failure");
+        assert_eq!(st.write_failed_files, 5, "{st:?}");
+        let err = st.error.as_deref().unwrap_or("");
+        assert!(err.contains("5 file(s) parsed but not persisted"), "{err}");
+        assert!(err.contains("src/m"), "{err}");
     }
 }

@@ -220,10 +220,10 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
         "SELECT s.symbols_json, f.path, f.line_count \
          FROM symbols s JOIN files f ON s.file_id = f.id",
     )?;
-    let rows: Vec<(String, String, usize)> = stmt
+    let rows: Vec<(Vec<u8>, String, usize)> = stmt
         .query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                crate::symbol_cache::read_symbols_column(row, 0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, usize>(2).unwrap_or(0),
             ))
@@ -248,7 +248,7 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
         let bucket = by_module.entry(module.clone()).or_default();
         bucket.file_count += 1;
 
-        let symbols: Vec<SearchResult> = match serde_json::from_str(&symbols_json) {
+        let symbols: Vec<SearchResult> = match crate::symbol_cache::decode_symbols(&symbols_json) {
             Ok(s) => s,
             Err(_) => continue,
         };

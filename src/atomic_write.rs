@@ -100,6 +100,17 @@ pub fn remove_stale_tmp(dir: &Path) {
                 Err(e) => log::warn!("Could not remove stale temp file {}: {}", path.display(), e),
             }
         }
+        // Partial trigram batches of an indexer that died between two batches.
+        if path.is_dir() && path.file_name().and_then(|n| n.to_str()) == Some("trigram_temp") {
+            match fs::remove_dir_all(&path) {
+                Ok(()) => log::info!("Removed stale partial index directory {}", path.display()),
+                Err(e) => log::warn!(
+                    "Could not remove stale partial index directory {}: {}",
+                    path.display(),
+                    e
+                ),
+            }
+        }
     }
 }
 

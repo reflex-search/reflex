@@ -1,0 +1,407 @@
+//! A shared, reusable handle on the open index files.
+//!
+//! Before this module, every query re-opened `content.bin` and `trigrams.bin`
+//! (three to four times per query, once per phase), parsed the whole trigram
+//! directory on each open, and ran `PRAGMA quick_check` over `meta.db`. On a
+//! 29 MB corpus that put a ~50 ms floor under every call, including a zero-hit
+//! search through the resident `rfx mcp` server.
+//!
+//! [`OpenIndex`] holds both memory maps, a path→file-id map, and a rayon pool
+//! sized from `[performance] parallel_threads`. Handles live in a process-wide
+//! registry keyed by the canonical cache directory, so the MCP server, the HTTP
+//! server, and the CLI all share one open per index. A handle is reused while
+//! the on-disk files carry the same fingerprint (device, inode, size, mtime);
+//! an indexer run invalidates it explicitly, and an `rfx index` from another
+//! process is caught by the fingerprint compare on the next lookup.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use anyhow::{Context, Result};
+
+use crate::cache::CacheManager;
+use crate::content_store::ContentReader;
+use crate::errors::ReflexError;
+use crate::trigram::TrigramIndex;
+
+/// Identity of one on-disk file, cheap to read (one `stat`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> std::io::Result<Self> {
+        let md = std::fs::metadata(path)?;
+        #[cfg(unix)]
+        let (dev, ino) = {
+            use std::os::unix::fs::MetadataExt;
+            (md.dev(), md.ino())
+        };
+        #[cfg(not(unix))]
+        let (dev, ino) = (0u64, 0u64);
+        Ok(Self {
+            dev,
+            ino,
+            size: md.len(),
+            mtime: md.modified().ok(),
+        })
+    }
+}
+
+/// Fingerprint of the two binary stores a handle was opened from.
+///
+/// `trigrams` is `None` when `trigrams.bin` is absent and the index was rebuilt
+/// in memory from `content.bin`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fingerprint {
+    content: FileStamp,
+    trigrams: Option<FileStamp>,
+}
+
+impl Fingerprint {
+    fn current(cache_dir: &Path) -> std::io::Result<Self> {
+        let content = FileStamp::of(&cache_dir.join("content.bin"))?;
+        let trigrams = FileStamp::of(&cache_dir.join("trigrams.bin")).ok();
+        Ok(Self { content, trigrams })
+    }
+}
+
+/// Everything a query needs from the index, opened once.
+pub struct OpenIndex {
+    cache_dir: PathBuf,
+    /// Memory-mapped `content.bin`.
+    pub content: ContentReader,
+    /// Memory-mapped `trigrams.bin` (or an in-memory rebuild when the file is absent).
+    pub trigrams: TrigramIndex,
+    /// `path → file_id`, with any leading `./` stripped, built on first use.
+    /// Only symbol and AST queries need it; a full-text query never pays for it.
+    path_to_id: OnceLock<HashMap<String, u32>>,
+    /// Query-side thread pool, sized from `[performance] parallel_threads`, built
+    /// on first parallel use: a zero-hit query (no candidates to verify) never
+    /// spawns a thread, and neither does a `check_index_status` call.
+    pool: OnceLock<rayon::ThreadPool>,
+    threads: usize,
+    /// `IndexConfig::max_posting_list_entries` at open time (0 = unlimited).
+    posting_cap: usize,
+    fingerprint: Fingerprint,
+    /// One `meta.db` connection for the query path, opened on first use with the
+    /// symbol-cache schema ensured. Symbol queries opened three to four
+    /// connections per call (each running the WAL and foreign-key pragmas) and
+    /// re-ran the schema migration every time.
+    meta: OnceLock<Mutex<rusqlite::Connection>>,
+    /// Every indexed file's fingerprint, loaded on first use by the freshness walk
+    /// (outside git). Dropped with the handle when the index is rewritten.
+    fingerprints: OnceLock<Arc<HashMap<String, crate::cache::FileFingerprint>>>,
+}
+
+impl std::fmt::Debug for OpenIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenIndex")
+            .field("cache_dir", &self.cache_dir)
+            .field("files", &self.content.file_count())
+            .field("threads", &self.threads)
+            .finish()
+    }
+}
+
+/// Upper bound on the automatic thread count for query-time verification.
+///
+/// The indexer caps itself at 8 to limit cache contention while it writes; a
+/// read-only verification pass scales further, and ripgrep's 5x from 16 threads
+/// on the field-test box is the number to match.
+const QUERY_AUTO_THREAD_CAP: usize = 32;
+
+impl OpenIndex {
+    fn open(cache: &CacheManager, fingerprint: Fingerprint) -> Result<Self> {
+        let cache_dir = cache.path().to_path_buf();
+
+        let content = ContentReader::open(cache_dir.join("content.bin"))
+            .map_err(|e| ReflexError::CacheCorrupted(format!("content.bin: {e:#}")))?;
+
+        let trigrams_path = cache_dir.join("trigrams.bin");
+        let trigrams = if trigrams_path.exists() {
+            match TrigramIndex::load(&trigrams_path) {
+                Ok(index) => index,
+                // A format from another Reflex version is not corruption (see
+                // `ReflexError::CacheVersionMismatch`): serve from an in-memory
+                // rebuild, and let the schema-hash check report the index stale
+                // so the caller re-indexes.
+                Err(e) if e.to_string().contains("Unsupported trigrams.bin version") => {
+                    log::warn!("{}; rebuilding trigram index in memory for this process", e);
+                    super::result::rebuild_trigram_index(&content)?
+                }
+                Err(e) => {
+                    return Err(ReflexError::CacheCorrupted(format!("trigrams.bin: {e:#}")).into());
+                }
+            }
+        } else {
+            log::debug!("trigrams.bin not found, rebuilding from content store");
+            super::result::rebuild_trigram_index(&content)?
+        };
+
+        if trigrams.file_count() != content.file_count() {
+            return Err(ReflexError::CacheCorrupted(format!(
+                "trigrams.bin lists {} files but content.bin holds {} (index written by two runs?)",
+                trigrams.file_count(),
+                content.file_count()
+            ))
+            .into());
+        }
+
+        let config = cache.load_index_config().unwrap_or_else(|e| {
+            log::debug!("Using default index config for query pool: {}", e);
+            crate::models::IndexConfig::default()
+        });
+        let threads =
+            crate::models::resolve_thread_count(config.parallel_threads, QUERY_AUTO_THREAD_CAP);
+
+        log::debug!(
+            "Opened index {}: {} files, {} trigrams, {} query threads",
+            cache_dir.display(),
+            content.file_count(),
+            trigrams.trigram_count(),
+            threads
+        );
+
+        Ok(Self {
+            cache_dir,
+            content,
+            trigrams,
+            path_to_id: OnceLock::new(),
+            pool: OnceLock::new(),
+            threads,
+            posting_cap: config.max_posting_list_entries,
+            fingerprint,
+            meta: OnceLock::new(),
+            fingerprints: OnceLock::new(),
+        })
+    }
+
+    /// The fingerprint table, read once per handle.
+    pub fn fingerprints(
+        &self,
+        cache: &CacheManager,
+    ) -> Result<Arc<HashMap<String, crate::cache::FileFingerprint>>> {
+        if let Some(fp) = self.fingerprints.get() {
+            return Ok(Arc::clone(fp));
+        }
+        let loaded = Arc::new(cache.load_fingerprints()?);
+        // A concurrent first caller may have won the race; either table is fine.
+        let _ = self.fingerprints.set(Arc::clone(&loaded));
+        Ok(Arc::clone(self.fingerprints.get().expect("set above")))
+    }
+
+    /// The shared `meta.db` connection, opened on first use.
+    ///
+    /// Lives as long as this handle, which is invalidated whenever the index files
+    /// change on disk or an index run finishes, so it never outlives the index it
+    /// was opened against. WAL readers coexist with a running indexer, and
+    /// `open_meta_db` sets the busy timeout.
+    pub fn meta_conn(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
+        if self.meta.get().is_none() {
+            let conn = crate::cache::open_meta_db(self.cache_dir.join(crate::cache::META_DB))
+                .context("Failed to open meta.db")?;
+            crate::symbol_cache::SymbolCache::ensure_schema(&conn)
+                .context("Failed to initialise the symbol cache schema")?;
+            // A concurrent first caller may have won the race; either connection is fine.
+            let _ = self.meta.set(Mutex::new(conn));
+        }
+        let m = self.meta.get().expect("set above");
+        Ok(m.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    /// Number of files in the index.
+    pub fn file_count(&self) -> usize {
+        self.content.file_count()
+    }
+
+    /// Array file id for a path as stored in the index (a leading `./` is ignored).
+    pub fn file_id_for(&self, path: &str) -> Option<u32> {
+        let normalized = path.strip_prefix("./").unwrap_or(path);
+        let map = self.path_to_id.get_or_init(|| {
+            let mut map = HashMap::with_capacity(self.content.file_count());
+            for id in 0..self.content.file_count() {
+                if let Some(p) = self
+                    .content
+                    .get_file_path(id as u32)
+                    .and_then(|p| p.to_str())
+                {
+                    map.entry(p.strip_prefix("./").unwrap_or(p).to_string())
+                        .or_insert(id as u32);
+                }
+            }
+            map
+        });
+        map.get(normalized).copied()
+    }
+
+    /// Path for an array file id, without a leading `./`.
+    pub fn path_of(&self, file_id: u32) -> Option<&str> {
+        self.content
+            .get_file_path(file_id)
+            .and_then(|p| p.to_str())
+            .map(|p| p.strip_prefix("./").unwrap_or(p))
+    }
+
+    /// The query-side thread pool, built on first use.
+    pub fn pool(&self) -> &rayon::ThreadPool {
+        self.pool.get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(self.threads)
+                .thread_name(|i| format!("rfx-query-{i}"))
+                .build()
+                .unwrap_or_else(|e| {
+                    // A pool that cannot be built (thread limit hit) degrades to
+                    // the global pool rather than failing the query.
+                    log::warn!("Failed to create query thread pool: {}; using default", e);
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(1)
+                        .build()
+                        .expect("a single-thread pool")
+                })
+        })
+    }
+
+    /// `max_posting_list_entries` the index was configured with (0 = unlimited).
+    pub fn posting_cap(&self) -> usize {
+        self.posting_cap
+    }
+
+    /// The cache directory this handle was opened from.
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+}
+
+fn registry() -> &'static Mutex<HashMap<PathBuf, Arc<OpenIndex>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Arc<OpenIndex>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn registry_key(cache_dir: &Path) -> PathBuf {
+    cache_dir
+        .canonicalize()
+        .unwrap_or_else(|_| cache_dir.to_path_buf())
+}
+
+/// The shared handle for `cache`, opening it if no current one exists.
+///
+/// Cost on a hit: one lock, two `stat` calls, one `canonicalize`. A handle whose
+/// files have been replaced on disk is dropped and reopened.
+pub fn get_or_open(cache: &CacheManager) -> Result<Arc<OpenIndex>> {
+    let cache_dir = cache.path();
+    let key = registry_key(cache_dir);
+
+    let fingerprint = match Fingerprint::current(cache_dir) {
+        Ok(fp) => fp,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ReflexError::CacheCorrupted(format!(
+                "content.bin: missing from {}",
+                cache_dir.display()
+            ))
+            .into());
+        }
+        Err(e) => return Err(e).context("Failed to stat index files"),
+    };
+
+    if let Ok(map) = registry().lock()
+        && let Some(existing) = map.get(&key)
+        && existing.fingerprint == fingerprint
+    {
+        return Ok(Arc::clone(existing));
+    }
+
+    let opened = Arc::new(OpenIndex::open(cache, fingerprint)?);
+    if let Ok(mut map) = registry().lock() {
+        map.insert(key, Arc::clone(&opened));
+    }
+    Ok(opened)
+}
+
+/// Drop the registry entry for `cache_dir`, so the next lookup reopens.
+///
+/// Called before and after an index write; also safe to call when nothing is open.
+pub fn invalidate(cache_dir: &Path) {
+    let key = registry_key(cache_dir);
+    if let Ok(mut map) = registry().lock() {
+        map.remove(&key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::Indexer;
+    use crate::models::IndexConfig;
+    use tempfile::TempDir;
+
+    fn indexed_project() -> TempDir {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("a.rs"), "fn alpha() {}\n").unwrap();
+        std::fs::write(temp.path().join("b.rs"), "fn beta() { alpha() }\n").unwrap();
+        Indexer::new(CacheManager::new(temp.path()), IndexConfig::default())
+            .index(temp.path(), false)
+            .unwrap();
+        temp
+    }
+
+    #[test]
+    fn second_lookup_returns_same_handle() {
+        let temp = indexed_project();
+        let cache = CacheManager::new(temp.path());
+        let first = get_or_open(&cache).unwrap();
+        let second = get_or_open(&cache).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn file_id_lookup_ignores_dot_slash() {
+        let temp = indexed_project();
+        let open = get_or_open(&CacheManager::new(temp.path())).unwrap();
+        let id = open.file_id_for("a.rs").expect("a.rs is indexed");
+        assert_eq!(open.file_id_for("./a.rs"), Some(id));
+        assert_eq!(open.path_of(id), Some("a.rs"));
+        assert_eq!(open.file_id_for("missing.rs"), None);
+    }
+
+    #[test]
+    fn reindex_yields_new_handle() {
+        let temp = indexed_project();
+        let cache = CacheManager::new(temp.path());
+        let first = get_or_open(&cache).unwrap();
+        assert_eq!(first.file_count(), 2);
+
+        std::fs::write(temp.path().join("c.rs"), "fn gamma() {}\n").unwrap();
+        Indexer::new(CacheManager::new(temp.path()), IndexConfig::default())
+            .index(temp.path(), false)
+            .unwrap();
+
+        let second = get_or_open(&cache).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(second.file_count(), 3);
+    }
+
+    #[test]
+    fn truncated_content_bin_is_reported_as_corruption() {
+        let temp = indexed_project();
+        let content = temp.path().join(".reflex/content.bin");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&content)
+            .unwrap()
+            .set_len(2)
+            .unwrap();
+
+        let err = get_or_open(&CacheManager::new(temp.path())).unwrap_err();
+        let typed = err
+            .downcast_ref::<ReflexError>()
+            .expect("typed CacheCorrupted");
+        assert!(matches!(typed, ReflexError::CacheCorrupted(_)));
+        assert!(err.to_string().contains("content.bin"), "{err}");
+    }
+}

@@ -460,7 +460,7 @@ fn format_exploration_results(response: &crate::models::QueryResponse, pattern: 
     let mut output = Vec::new();
     output.push(format!(
         "Found {} total matches across {} files for pattern '{}':\n",
-        response.pagination.total,
+        response.pagination.best_total(),
         response.results.len(),
         pattern
     ));

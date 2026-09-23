@@ -14,8 +14,41 @@ use crate::ImportType;
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 use crate::parsers::{DependencyExtractor, ImportInfo};
 use anyhow::{Context, Result};
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::Parser;
+
+const SYMQ_0: &str = r#"
+        (function_declaration
+            (identifier) @name) @function
+    "#;
+const SYMQ_1: &str = r#"
+        (variable_declaration
+            (identifier) @name
+            (struct_declaration)) @struct
+    "#;
+const SYMQ_2: &str = r#"
+        (variable_declaration
+            (identifier) @name
+            (enum_declaration)) @enum
+    "#;
+const SYMQ_3: &str = r#"
+        (variable_declaration
+            "const"
+            (identifier) @name) @const
+    "#;
+const SYMQ_4: &str = r#"
+        (variable_declaration
+            "var"
+            (identifier) @name) @var
+    "#;
+const SYMQ_5: &str = r#"
+        (test_declaration
+            (string) @name) @test
+    "#;
+
+/// Every symbol query of this module, run as ONE query per file (see
+/// `crate::parsers::LanguageQueries`).
+static SYMBOL_QUERIES: crate::parsers::LanguageQueries =
+    crate::parsers::LanguageQueries::new(&[SYMQ_0, SYMQ_1, SYMQ_2, SYMQ_3, SYMQ_4, SYMQ_5]);
 
 /// Parse Zig source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -31,16 +64,17 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
         .context("Failed to parse Zig source")?;
 
     let root_node = tree.root_node();
+    let table = SYMBOL_QUERIES.run(&language.into(), &root_node, source)?;
 
     let mut symbols = Vec::new();
 
     // Extract different types of symbols using Tree-sitter queries
-    symbols.extend(extract_functions(source, &root_node, &language.into())?);
-    symbols.extend(extract_structs(source, &root_node, &language.into())?);
-    symbols.extend(extract_enums(source, &root_node, &language.into())?);
-    symbols.extend(extract_constants(source, &root_node, &language.into())?);
-    symbols.extend(extract_variables(source, &root_node, &language.into())?);
-    symbols.extend(extract_tests(source, &root_node, &language.into())?);
+    symbols.extend(extract_functions(source, &table)?);
+    symbols.extend(extract_structs(source, &table)?);
+    symbols.extend(extract_enums(source, &table)?);
+    symbols.extend(extract_constants(source, &table)?);
+    symbols.extend(extract_variables(source, &table)?);
+    symbols.extend(extract_tests(source, &table)?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -54,122 +88,70 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
 /// Extract function declarations
 fn extract_functions(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (function_declaration
-            (identifier) @name) @function
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create function query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Function, None)
+    extract_symbols(source, table, 0, SymbolKind::Function, None)
 }
 
 /// Extract struct (container) declarations
 fn extract_structs(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (variable_declaration
-            (identifier) @name
-            (struct_declaration)) @struct
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create struct query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Struct, None)
+    extract_symbols(source, table, 1, SymbolKind::Struct, None)
 }
 
 /// Extract enum declarations
 fn extract_enums(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (variable_declaration
-            (identifier) @name
-            (enum_declaration)) @enum
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create enum query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Enum, None)
+    extract_symbols(source, table, 2, SymbolKind::Enum, None)
 }
 
 /// Extract constant declarations (const - immutable bindings)
 fn extract_constants(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (variable_declaration
-            "const"
-            (identifier) @name) @const
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create constant query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Constant, None)
+    extract_symbols(source, table, 3, SymbolKind::Constant, None)
 }
 
 /// Extract variable declarations (var - mutable bindings)
 fn extract_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (variable_declaration
-            "var"
-            (identifier) @name) @var
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create variable query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+    extract_symbols(source, table, 4, SymbolKind::Variable, None)
 }
 
 /// Extract test declarations
 fn extract_tests(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (test_declaration
-            (string) @name) @test
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create test query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Function, None)
+    extract_symbols(source, table, 5, SymbolKind::Function, None)
 }
 
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
-    root: &tree_sitter::Node,
-    query: &Query,
+    table: &crate::parsers::MatchTable<'_>,
+    sub: usize,
     kind: SymbolKind,
     scope: Option<String>,
 ) -> Result<Vec<SearchResult>> {
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(sub);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         // Find the name capture and the full node
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(
@@ -187,7 +169,7 @@ fn extract_symbols(
 
         if let (Some(name), Some(node)) = (name, full_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -218,10 +200,9 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
 }
 
 /// Extract a preview (7 lines) around the symbol
-fn extract_preview(source: &str, span: &Span) -> String {
-    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
-    // line-only bound cost 34 GiB on a minified bundle.
-    crate::parsers::preview::extract_preview(source, span)
+fn extract_preview(source: &str, node: &tree_sitter::Node) -> String {
+    // Starts at the node, not at byte 0: see `crate::parsers::preview`.
+    crate::parsers::preview::extract_preview_for_node(source, node)
 }
 
 /// Zig dependency extractor

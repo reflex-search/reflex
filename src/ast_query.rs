@@ -155,11 +155,7 @@ pub fn execute_ast_query(
                 let (symbol_name, symbol_kind) = extract_symbol_info(&node, content);
 
                 // Detect language from file extension
-                let ext = std::path::Path::new(&file_path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                let detected_lang = Language::from_extension(ext);
+                let detected_lang = Language::from_path(std::path::Path::new(&file_path));
 
                 matched_results.push(SearchResult {
                     path: file_path.clone(),

@@ -1,0 +1,921 @@
+---
+source: tests/symbol_equivalence.rs
+expression: out
+---
+== shapes.cpp (Cpp, 7 symbols)
+[
+  {
+    "path": "shapes.cpp",
+    "kind": "Function",
+    "symbol": "total",
+    "span": {
+      "start_line": 11,
+      "end_line": 15
+    },
+    "preview": "double total(const Points& ps) {\n  double sum = 0;\n  for (auto& p : ps) { sum += p.x; }\n  return sum;\n}\n}"
+  },
+  {
+    "path": "shapes.cpp",
+    "kind": "Class",
+    "symbol": "Shape",
+    "span": {
+      "start_line": 3,
+      "end_line": 7
+    },
+    "preview": "class Shape {\npublic:\n  virtual double area() const = 0;\n  int sides = 0;\n};\nstruct Point { double x, y; };\nenum class Kind { Circle, Square };"
+  },
+  {
+    "path": "shapes.cpp",
+    "kind": "Struct",
+    "symbol": "Point",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "struct Point { double x, y; };\nenum class Kind { Circle, Square };\nusing Points = std::vector<Point>;\ndouble total(const Points& ps) {\n  double sum = 0;\n  for (auto& p : ps) { sum += p.x; }\n  return sum;"
+  },
+  {
+    "path": "shapes.cpp",
+    "kind": "Namespace",
+    "symbol": "geo",
+    "span": {
+      "start_line": 2,
+      "end_line": 16
+    },
+    "preview": "namespace geo {\nclass Shape {\npublic:\n  virtual double area() const = 0;\n  int sides = 0;\n};\nstruct Point { double x, y; };"
+  },
+  {
+    "path": "shapes.cpp",
+    "kind": "Enum",
+    "symbol": "Kind",
+    "span": {
+      "start_line": 9,
+      "end_line": 9
+    },
+    "preview": "enum class Kind { Circle, Square };\nusing Points = std::vector<Point>;\ndouble total(const Points& ps) {\n  double sum = 0;\n  for (auto& p : ps) { sum += p.x; }\n  return sum;\n}"
+  },
+  {
+    "path": "shapes.cpp",
+    "kind": "Variable",
+    "symbol": "sum",
+    "span": {
+      "start_line": 12,
+      "end_line": 12
+    },
+    "preview": "  double sum = 0;\n  for (auto& p : ps) { sum += p.x; }\n  return sum;\n}\n}"
+  },
+  {
+    "path": "shapes.cpp",
+    "kind": "Type",
+    "symbol": "Points",
+    "span": {
+      "start_line": 10,
+      "end_line": 10
+    },
+    "preview": "using Points = std::vector<Point>;\ndouble total(const Points& ps) {\n  double sum = 0;\n  for (auto& p : ps) { sum += p.x; }\n  return sum;\n}\n}"
+  }
+]
+== Service.cs (CSharp, 14 symbols)
+[
+  {
+    "path": "Service.cs",
+    "kind": "Namespace",
+    "symbol": "App.Core",
+    "span": {
+      "start_line": 2,
+      "end_line": 15
+    },
+    "preview": "namespace App.Core {\n  [Serializable]\n  public class Service : IService {\n    public string Name { get; set; }\n    public event EventHandler Changed;\n    public int this[int i] => i;\n    public void Run() { var local = 1; Console.WriteLine(local); }"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Class",
+    "symbol": "Service",
+    "span": {
+      "start_line": 3,
+      "end_line": 9
+    },
+    "preview": "  [Serializable]\n  public class Service : IService {\n    public string Name { get; set; }\n    public event EventHandler Changed;\n    public int this[int i] => i;\n    public void Run() { var local = 1; Console.WriteLine(local); }\n  }"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Interface",
+    "symbol": "IService",
+    "span": {
+      "start_line": 10,
+      "end_line": 10
+    },
+    "preview": "  public interface IService { void Run(); }\n  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }\n  public record Person(string First);\n  public delegate void Handler(int x);\n}"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Struct",
+    "symbol": "Pair",
+    "span": {
+      "start_line": 11,
+      "end_line": 11
+    },
+    "preview": "  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }\n  public record Person(string First);\n  public delegate void Handler(int x);\n}"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Enum",
+    "symbol": "Mode",
+    "span": {
+      "start_line": 12,
+      "end_line": 12
+    },
+    "preview": "  public enum Mode { Fast, Slow }\n  public record Person(string First);\n  public delegate void Handler(int x);\n}"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Type",
+    "symbol": "Person",
+    "span": {
+      "start_line": 13,
+      "end_line": 13
+    },
+    "preview": "  public record Person(string First);\n  public delegate void Handler(int x);\n}"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Type",
+    "symbol": "Handler",
+    "span": {
+      "start_line": 14,
+      "end_line": 14
+    },
+    "preview": "  public delegate void Handler(int x);\n}"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Attribute",
+    "symbol": "Serializable",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "  [Serializable]\n  public class Service : IService {\n    public string Name { get; set; }\n    public event EventHandler Changed;\n    public int this[int i] => i;\n    public void Run() { var local = 1; Console.WriteLine(local); }\n  }"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Method",
+    "symbol": "Run",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "    public void Run() { var local = 1; Console.WriteLine(local); }\n  }\n  public interface IService { void Run(); }\n  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }\n  public record Person(string First);\n  public delegate void Handler(int x);"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Method",
+    "symbol": "Run",
+    "span": {
+      "start_line": 10,
+      "end_line": 10
+    },
+    "preview": "  public interface IService { void Run(); }\n  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }\n  public record Person(string First);\n  public delegate void Handler(int x);\n}"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Variable",
+    "symbol": "Name",
+    "span": {
+      "start_line": 5,
+      "end_line": 5
+    },
+    "preview": "    public string Name { get; set; }\n    public event EventHandler Changed;\n    public int this[int i] => i;\n    public void Run() { var local = 1; Console.WriteLine(local); }\n  }\n  public interface IService { void Run(); }\n  public struct Pair { public int A; }"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Event",
+    "symbol": "Changed",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "    public event EventHandler Changed;\n    public int this[int i] => i;\n    public void Run() { var local = 1; Console.WriteLine(local); }\n  }\n  public interface IService { void Run(); }\n  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Property",
+    "symbol": "this[]",
+    "span": {
+      "start_line": 7,
+      "end_line": 7
+    },
+    "preview": "    public int this[int i] => i;\n    public void Run() { var local = 1; Console.WriteLine(local); }\n  }\n  public interface IService { void Run(); }\n  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }\n  public record Person(string First);"
+  },
+  {
+    "path": "Service.cs",
+    "kind": "Variable",
+    "symbol": "local",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "    public void Run() { var local = 1; Console.WriteLine(local); }\n  }\n  public interface IService { void Run(); }\n  public struct Pair { public int A; }\n  public enum Mode { Fast, Slow }\n  public record Person(string First);\n  public delegate void Handler(int x);"
+  }
+]
+== model.rb (Ruby, 9 symbols)
+[
+  {
+    "path": "model.rb",
+    "kind": "Module",
+    "symbol": "Shop",
+    "span": {
+      "start_line": 2,
+      "end_line": 15
+    },
+    "preview": "module Shop\n  class Cart\n    attr_accessor :items\n    @@count = 0\n    LIMIT = 10\n    def initialize\n      @items = []"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Class",
+    "symbol": "Cart",
+    "span": {
+      "start_line": 3,
+      "end_line": 14
+    },
+    "preview": "  class Cart\n    attr_accessor :items\n    @@count = 0\n    LIMIT = 10\n    def initialize\n      @items = []\n      total = 0"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Method",
+    "symbol": "initialize",
+    "span": {
+      "start_line": 7,
+      "end_line": 10
+    },
+    "preview": "    def initialize\n      @items = []\n      total = 0\n    end\n    def self.build\n      Cart.new\n    end"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Method",
+    "symbol": "self.build",
+    "span": {
+      "start_line": 11,
+      "end_line": 13
+    },
+    "preview": "    def self.build\n      Cart.new\n    end\n  end\nend"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Constant",
+    "symbol": "LIMIT",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "    LIMIT = 10\n    def initialize\n      @items = []\n      total = 0\n    end\n    def self.build\n      Cart.new"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Variable",
+    "symbol": "@items",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "      @items = []\n      total = 0\n    end\n    def self.build\n      Cart.new\n    end\n  end"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Variable",
+    "symbol": "@@count",
+    "span": {
+      "start_line": 5,
+      "end_line": 5
+    },
+    "preview": "    @@count = 0\n    LIMIT = 10\n    def initialize\n      @items = []\n      total = 0\n    end\n    def self.build"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Property",
+    "symbol": "items",
+    "span": {
+      "start_line": 4,
+      "end_line": 4
+    },
+    "preview": "    attr_accessor :items\n    @@count = 0\n    LIMIT = 10\n    def initialize\n      @items = []\n      total = 0\n    end"
+  },
+  {
+    "path": "model.rb",
+    "kind": "Variable",
+    "symbol": "total",
+    "span": {
+      "start_line": 9,
+      "end_line": 9
+    },
+    "preview": "      total = 0\n    end\n    def self.build\n      Cart.new\n    end\n  end\nend"
+  }
+]
+== Main.kt (Kotlin, 6 symbols)
+[
+  {
+    "path": "Main.kt",
+    "kind": "Class",
+    "symbol": "Account",
+    "span": {
+      "start_line": 5,
+      "end_line": 12
+    },
+    "preview": "@Tag\nclass Account(val id: Int) {\n  val balance: Double = 0.0\n  fun deposit(amount: Double): Double {\n    val next = balance + amount\n    return next\n  }"
+  },
+  {
+    "path": "Main.kt",
+    "kind": "Attribute",
+    "symbol": "Target",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "@Target(AnnotationTarget.CLASS)\nannotation class Tag\n@Tag\nclass Account(val id: Int) {\n  val balance: Double = 0.0\n  fun deposit(amount: Double): Double {\n    val next = balance + amount"
+  },
+  {
+    "path": "Main.kt",
+    "kind": "Attribute",
+    "symbol": "Tag",
+    "span": {
+      "start_line": 5,
+      "end_line": 5
+    },
+    "preview": "@Tag\nclass Account(val id: Int) {\n  val balance: Double = 0.0\n  fun deposit(amount: Double): Double {\n    val next = balance + amount\n    return next\n  }"
+  },
+  {
+    "path": "Main.kt",
+    "kind": "Method",
+    "symbol": "deposit",
+    "span": {
+      "start_line": 8,
+      "end_line": 11
+    },
+    "preview": "  fun deposit(amount: Double): Double {\n    val next = balance + amount\n    return next\n  }\n}\ninterface Ledger { fun post() }\nobject Registry { val all = listOf<Account>() }"
+  },
+  {
+    "path": "Main.kt",
+    "kind": "Variable",
+    "symbol": "balance",
+    "span": {
+      "start_line": 7,
+      "end_line": 7
+    },
+    "preview": "  val balance: Double = 0.0\n  fun deposit(amount: Double): Double {\n    val next = balance + amount\n    return next\n  }\n}\ninterface Ledger { fun post() }"
+  },
+  {
+    "path": "Main.kt",
+    "kind": "Constant",
+    "symbol": "next",
+    "span": {
+      "start_line": 9,
+      "end_line": 9
+    },
+    "preview": "    val next = balance + amount\n    return next\n  }\n}\ninterface Ledger { fun post() }\nobject Registry { val all = listOf<Account>() }\nfun main() { println(abs(-1)) }"
+  }
+]
+== lib.zig (Zig, 9 symbols)
+[
+  {
+    "path": "lib.zig",
+    "kind": "Function",
+    "symbol": "add",
+    "span": {
+      "start_line": 5,
+      "end_line": 8
+    },
+    "preview": "pub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;\n}\ntest \"add works\" {\n    try std.testing.expect(add(1, 2) == 3);\n}"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Struct",
+    "symbol": "Point",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "const Point = struct { x: i32, y: i32 };\nconst Color = enum { red, green };\nvar counter: u32 = 0;\npub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;\n}"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Enum",
+    "symbol": "Color",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "const Color = enum { red, green };\nvar counter: u32 = 0;\npub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;\n}\ntest \"add works\" {"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Constant",
+    "symbol": "std",
+    "span": {
+      "start_line": 1,
+      "end_line": 1
+    },
+    "preview": "const std = @import(\"std\");\nconst Point = struct { x: i32, y: i32 };\nconst Color = enum { red, green };\nvar counter: u32 = 0;\npub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Constant",
+    "symbol": "Point",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "const Point = struct { x: i32, y: i32 };\nconst Color = enum { red, green };\nvar counter: u32 = 0;\npub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;\n}"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Constant",
+    "symbol": "Color",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "const Color = enum { red, green };\nvar counter: u32 = 0;\npub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;\n}\ntest \"add works\" {"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Constant",
+    "symbol": "sum",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "    const sum = a + b;\n    return sum;\n}\ntest \"add works\" {\n    try std.testing.expect(add(1, 2) == 3);\n}"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Variable",
+    "symbol": "counter",
+    "span": {
+      "start_line": 4,
+      "end_line": 4
+    },
+    "preview": "var counter: u32 = 0;\npub fn add(a: i32, b: i32) i32 {\n    const sum = a + b;\n    return sum;\n}\ntest \"add works\" {\n    try std.testing.expect(add(1, 2) == 3);"
+  },
+  {
+    "path": "lib.zig",
+    "kind": "Function",
+    "symbol": "\"add works\"",
+    "span": {
+      "start_line": 9,
+      "end_line": 11
+    },
+    "preview": "test \"add works\" {\n    try std.testing.expect(add(1, 2) == 3);\n}"
+  }
+]
+== Widget.java (Java, 11 symbols)
+[
+  {
+    "path": "Widget.java",
+    "kind": "Class",
+    "symbol": "Widget",
+    "span": {
+      "start_line": 4,
+      "end_line": 10
+    },
+    "preview": "@Marker\npublic class Widget implements Runnable {\n  private int size = 0;\n  public Widget() { size = 1; }\n  @Override\n  public void run() { int local = size; }\n}"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Interface",
+    "symbol": "Runnable2",
+    "span": {
+      "start_line": 11,
+      "end_line": 11
+    },
+    "preview": "interface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Enum",
+    "symbol": "State",
+    "span": {
+      "start_line": 12,
+      "end_line": 12
+    },
+    "preview": "enum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Attribute",
+    "symbol": "Marker",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "@interface Marker {}\n@Marker\npublic class Widget implements Runnable {\n  private int size = 0;\n  public Widget() { size = 1; }\n  @Override\n  public void run() { int local = size; }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Attribute",
+    "symbol": "Marker",
+    "span": {
+      "start_line": 4,
+      "end_line": 4
+    },
+    "preview": "@Marker\npublic class Widget implements Runnable {\n  private int size = 0;\n  public Widget() { size = 1; }\n  @Override\n  public void run() { int local = size; }\n}"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Attribute",
+    "symbol": "Override",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "  @Override\n  public void run() { int local = size; }\n}\ninterface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Method",
+    "symbol": "run",
+    "span": {
+      "start_line": 8,
+      "end_line": 9
+    },
+    "preview": "  @Override\n  public void run() { int local = size; }\n}\ninterface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Method",
+    "symbol": "go",
+    "span": {
+      "start_line": 11,
+      "end_line": 11
+    },
+    "preview": "interface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Variable",
+    "symbol": "size",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "  private int size = 0;\n  public Widget() { size = 1; }\n  @Override\n  public void run() { int local = size; }\n}\ninterface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Method",
+    "symbol": "Widget",
+    "span": {
+      "start_line": 7,
+      "end_line": 7
+    },
+    "preview": "  public Widget() { size = 1; }\n  @Override\n  public void run() { int local = size; }\n}\ninterface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  },
+  {
+    "path": "Widget.java",
+    "kind": "Variable",
+    "symbol": "local",
+    "span": {
+      "start_line": 9,
+      "end_line": 9
+    },
+    "preview": "  public void run() { int local = size; }\n}\ninterface Runnable2 { void go(); }\nenum State { ON, OFF }"
+  }
+]
+== app.php (PHP, 15 symbols)
+[
+  {
+    "path": "app.php",
+    "kind": "Function",
+    "symbol": "helper",
+    "span": {
+      "start_line": 14,
+      "end_line": 14
+    },
+    "preview": "function helper() {}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Class",
+    "symbol": "Route",
+    "span": {
+      "start_line": 4,
+      "end_line": 5
+    },
+    "preview": "#[Attribute]\nclass Route {}\ninterface Handler { public function handle(); }\ntrait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {"
+  },
+  {
+    "path": "app.php",
+    "kind": "Class",
+    "symbol": "Controller",
+    "span": {
+      "start_line": 10,
+      "end_line": 13
+    },
+    "preview": "class Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }\n}\nfunction helper() {}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Interface",
+    "symbol": "Handler",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "interface Handler { public function handle(); }\ntrait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }"
+  },
+  {
+    "path": "app.php",
+    "kind": "Trait",
+    "symbol": "Loggable",
+    "span": {
+      "start_line": 7,
+      "end_line": 7
+    },
+    "preview": "trait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }\n}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Attribute",
+    "symbol": "Route",
+    "span": {
+      "start_line": 4,
+      "end_line": 5
+    },
+    "preview": "#[Attribute]\nclass Route {}\ninterface Handler { public function handle(); }\ntrait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {"
+  },
+  {
+    "path": "app.php",
+    "kind": "Attribute",
+    "symbol": "Attribute",
+    "span": {
+      "start_line": 4,
+      "end_line": 4
+    },
+    "preview": "#[Attribute]\nclass Route {}\ninterface Handler { public function handle(); }\ntrait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {"
+  },
+  {
+    "path": "app.php",
+    "kind": "Method",
+    "symbol": "handle",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "interface Handler { public function handle(); }\ntrait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }"
+  },
+  {
+    "path": "app.php",
+    "kind": "Method",
+    "symbol": "log",
+    "span": {
+      "start_line": 7,
+      "end_line": 7
+    },
+    "preview": "trait Loggable { public function log() {} }\nenum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }\n}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Method",
+    "symbol": "index",
+    "span": {
+      "start_line": 12,
+      "end_line": 12
+    },
+    "preview": "  public function index() { $local = 1; return $local; }\n}\nfunction helper() {}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Variable",
+    "symbol": "name",
+    "span": {
+      "start_line": 11,
+      "end_line": 11
+    },
+    "preview": "  public $name = 'x';\n  public function index() { $local = 1; return $local; }\n}\nfunction helper() {}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Variable",
+    "symbol": "local",
+    "span": {
+      "start_line": 12,
+      "end_line": 12
+    },
+    "preview": "  public function index() { $local = 1; return $local; }\n}\nfunction helper() {}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Constant",
+    "symbol": "VERSION",
+    "span": {
+      "start_line": 9,
+      "end_line": 9
+    },
+    "preview": "const VERSION = '1';\nclass Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }\n}\nfunction helper() {}"
+  },
+  {
+    "path": "app.php",
+    "kind": "Namespace",
+    "symbol": "App",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "namespace App;\nuse App\\Base;\n#[Attribute]\nclass Route {}\ninterface Handler { public function handle(); }\ntrait Loggable { public function log() {} }\nenum Status { case Active; }"
+  },
+  {
+    "path": "app.php",
+    "kind": "Enum",
+    "symbol": "Status",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "enum Status { case Active; }\nconst VERSION = '1';\nclass Controller extends Base {\n  public $name = 'x';\n  public function index() { $local = 1; return $local; }\n}\nfunction helper() {}"
+  }
+]
+== util.c (C, 9 symbols)
+[
+  {
+    "path": "util.c",
+    "kind": "Function",
+    "symbol": "sum",
+    "span": {
+      "start_line": 7,
+      "end_line": 10
+    },
+    "preview": "int sum(int a, int b) {\n  int local = a + b;\n  return local;\n}"
+  },
+  {
+    "path": "util.c",
+    "kind": "Struct",
+    "symbol": "Node",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "typedef struct Node { int v; struct Node *next; } Node;\nunion U { int i; float f; };\nenum E { A, B };\nstatic int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;\n  return local;"
+  },
+  {
+    "path": "util.c",
+    "kind": "Struct",
+    "symbol": "Node",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "typedef struct Node { int v; struct Node *next; } Node;\nunion U { int i; float f; };\nenum E { A, B };\nstatic int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;\n  return local;"
+  },
+  {
+    "path": "util.c",
+    "kind": "Enum",
+    "symbol": "E",
+    "span": {
+      "start_line": 5,
+      "end_line": 5
+    },
+    "preview": "enum E { A, B };\nstatic int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;\n  return local;\n}"
+  },
+  {
+    "path": "util.c",
+    "kind": "Type",
+    "symbol": "U",
+    "span": {
+      "start_line": 4,
+      "end_line": 4
+    },
+    "preview": "union U { int i; float f; };\nenum E { A, B };\nstatic int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;\n  return local;\n}"
+  },
+  {
+    "path": "util.c",
+    "kind": "Type",
+    "symbol": "Node",
+    "span": {
+      "start_line": 3,
+      "end_line": 3
+    },
+    "preview": "typedef struct Node { int v; struct Node *next; } Node;\nunion U { int i; float f; };\nenum E { A, B };\nstatic int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;\n  return local;"
+  },
+  {
+    "path": "util.c",
+    "kind": "Variable",
+    "symbol": "counter",
+    "span": {
+      "start_line": 6,
+      "end_line": 6
+    },
+    "preview": "static int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;\n  return local;\n}"
+  },
+  {
+    "path": "util.c",
+    "kind": "Variable",
+    "symbol": "local",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "  int local = a + b;\n  return local;\n}"
+  },
+  {
+    "path": "util.c",
+    "kind": "Macro",
+    "symbol": "MAX",
+    "span": {
+      "start_line": 2,
+      "end_line": 3
+    },
+    "preview": "#define MAX 10\ntypedef struct Node { int v; struct Node *next; } Node;\nunion U { int i; float f; };\nenum E { A, B };\nstatic int counter = 0;\nint sum(int a, int b) {\n  int local = a + b;"
+  }
+]
+== script.py (Python, 9 symbols)
+[
+  {
+    "path": "script.py",
+    "kind": "Function",
+    "symbol": "method",
+    "span": {
+      "start_line": 4,
+      "end_line": 6
+    },
+    "preview": "    def method(self):\n        local = 1\n        return local\ndef func(a, b=2):\n    inner = a\n    return inner\nsquare = lambda x: x * x"
+  },
+  {
+    "path": "script.py",
+    "kind": "Function",
+    "symbol": "func",
+    "span": {
+      "start_line": 7,
+      "end_line": 9
+    },
+    "preview": "def func(a, b=2):\n    inner = a\n    return inner\nsquare = lambda x: x * x"
+  },
+  {
+    "path": "script.py",
+    "kind": "Class",
+    "symbol": "Thing",
+    "span": {
+      "start_line": 3,
+      "end_line": 6
+    },
+    "preview": "class Thing:\n    def method(self):\n        local = 1\n        return local\ndef func(a, b=2):\n    inner = a\n    return inner"
+  },
+  {
+    "path": "script.py",
+    "kind": "Method",
+    "symbol": "method",
+    "span": {
+      "start_line": 4,
+      "end_line": 6
+    },
+    "preview": "    def method(self):\n        local = 1\n        return local\ndef func(a, b=2):\n    inner = a\n    return inner\nsquare = lambda x: x * x"
+  },
+  {
+    "path": "script.py",
+    "kind": "Constant",
+    "symbol": "GLOBAL",
+    "span": {
+      "start_line": 2,
+      "end_line": 2
+    },
+    "preview": "GLOBAL = 1\nclass Thing:\n    def method(self):\n        local = 1\n        return local\ndef func(a, b=2):\n    inner = a"
+  },
+  {
+    "path": "script.py",
+    "kind": "Variable",
+    "symbol": "square",
+    "span": {
+      "start_line": 10,
+      "end_line": 10
+    },
+    "preview": "square = lambda x: x * x"
+  },
+  {
+    "path": "script.py",
+    "kind": "Variable",
+    "symbol": "local",
+    "span": {
+      "start_line": 5,
+      "end_line": 5
+    },
+    "preview": "        local = 1\n        return local\ndef func(a, b=2):\n    inner = a\n    return inner\nsquare = lambda x: x * x"
+  },
+  {
+    "path": "script.py",
+    "kind": "Variable",
+    "symbol": "inner",
+    "span": {
+      "start_line": 8,
+      "end_line": 8
+    },
+    "preview": "    inner = a\n    return inner\nsquare = lambda x: x * x"
+  },
+  {
+    "path": "script.py",
+    "kind": "Function",
+    "symbol": "square",
+    "span": {
+      "start_line": 10,
+      "end_line": 10
+    },
+    "preview": "square = lambda x: x * x"
+  }
+]

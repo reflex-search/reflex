@@ -16,133 +16,27 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 
-/// Parse Swift source code and extract symbols
-pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
-    let mut parser = Parser::new();
-    let language = tree_sitter_swift::LANGUAGE;
-
-    parser
-        .set_language(&language.into())
-        .context("Failed to set Swift language")?;
-
-    let tree = parser
-        .parse(source, None)
-        .context("Failed to parse Swift source")?;
-
-    let root_node = tree.root_node();
-
-    let mut symbols = Vec::new();
-
-    // Extract different types of symbols using Tree-sitter queries
-    symbols.extend(extract_classes(source, &root_node, &language.into())?);
-    symbols.extend(extract_structs(source, &root_node, &language.into())?);
-    symbols.extend(extract_enums(source, &root_node, &language.into())?);
-    symbols.extend(extract_protocols(source, &root_node, &language.into())?);
-    symbols.extend(extract_extensions(source, &root_node, &language.into())?);
-    symbols.extend(extract_functions(source, &root_node, &language.into())?);
-    symbols.extend(extract_properties(source, &root_node, &language.into())?);
-
-    // Add file path to all symbols
-    for symbol in &mut symbols {
-        symbol.path = path.to_string();
-        symbol.lang = Language::Swift;
-    }
-
-    Ok(symbols)
-}
-
-/// Extract class declarations
-fn extract_classes(
-    source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
-) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
+const SYMQ_0: &str = r#"
         (class_declaration
             name: (type_identifier) @name) @class
     "#;
-
-    let query = Query::new(language, query_str)
-        .context("Failed to create class query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Class, None)
-}
-
-/// Extract struct declarations
-fn extract_structs(
-    source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
-) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
+const SYMQ_1: &str = r#"
         (struct_declaration
             name: (type_identifier) @name) @struct
     "#;
-
-    let query = Query::new(language, query_str)
-        .context("Failed to create struct query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Struct, None)
-}
-
-/// Extract enum declarations
-fn extract_enums(
-    source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
-) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
+const SYMQ_2: &str = r#"
         (enum_declaration
             name: (type_identifier) @name) @enum
     "#;
-
-    let query = Query::new(language, query_str)
-        .context("Failed to create enum query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Enum, None)
-}
-
-/// Extract protocol declarations
-fn extract_protocols(
-    source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
-) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
+const SYMQ_3: &str = r#"
         (protocol_declaration
             name: (type_identifier) @name) @protocol
     "#;
-
-    let query = Query::new(language, query_str)
-        .context("Failed to create protocol query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Trait, None)
-}
-
-/// Extract extension declarations
-fn extract_extensions(
-    source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
-) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
+const SYMQ_4: &str = r#"
         (extension_declaration
             (type_identifier) @name) @extension
     "#;
-
-    let query = Query::new(language, query_str)
-        .context("Failed to create extension query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Type, None)
-}
-
-/// Extract function and method declarations
-fn extract_functions(
-    source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
-) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
+const SYMQ_5: &str = r#"
         (class_declaration
             name: (type_identifier) @class_name
             body: (class_body
@@ -167,22 +61,134 @@ fn extract_functions(
                 (function_declaration
                     name: (simple_identifier) @method_name))) @extension
     "#;
+const SYMQ_6: &str = r#"
+        (class_declaration
+            name: (type_identifier) @class_name
+            body: (class_body
+                (property_declaration
+                    (pattern (simple_identifier) @property_name)))) @class
 
-    let query = Query::new(language, query_str)
-        .context("Failed to create function query")?;
+        (struct_declaration
+            name: (type_identifier) @struct_name
+            body: (struct_body
+                (property_declaration
+                    (pattern (simple_identifier) @property_name)))) @struct
+    "#;
 
-    let mut cursor = QueryCursor::new();
+/// Every symbol query of this module, run as ONE query per file (see
+/// `crate::parsers::LanguageQueries`).
+static SYMBOL_QUERIES: crate::parsers::LanguageQueries =
+    crate::parsers::LanguageQueries::new(&[SYMQ_0, SYMQ_1, SYMQ_2, SYMQ_3, SYMQ_4, SYMQ_5, SYMQ_6]);
+
+/// Parse Swift source code and extract symbols
+pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
+    let mut parser = Parser::new();
+    let language = tree_sitter_swift::LANGUAGE;
+
+    parser
+        .set_language(&language.into())
+        .context("Failed to set Swift language")?;
+
+    let tree = parser
+        .parse(source, None)
+        .context("Failed to parse Swift source")?;
+
+    let root_node = tree.root_node();
+    let table = SYMBOL_QUERIES.run(&language.into(), &root_node, source)?;
+
+    let mut symbols = Vec::new();
+
+    // Extract different types of symbols using Tree-sitter queries
+    symbols.extend(extract_classes(source, &table)?);
+    symbols.extend(extract_structs(source, &table)?);
+    symbols.extend(extract_enums(source, &table)?);
+    symbols.extend(extract_protocols(source, &table)?);
+    symbols.extend(extract_extensions(source, &table)?);
+    symbols.extend(extract_functions(source, &table)?);
+    symbols.extend(extract_properties(source, &table)?);
+
+    // Add file path to all symbols
+    for symbol in &mut symbols {
+        symbol.path = path.to_string();
+        symbol.lang = Language::Swift;
+    }
+
+    Ok(symbols)
+}
+
+/// Extract class declarations
+fn extract_classes(
+    source: &str,
+    table: &crate::parsers::MatchTable<'_>,
+) -> Result<Vec<SearchResult>> {
+
+    let query = table.query();
+
+    extract_symbols(source, root, &query, SymbolKind::Class, None)
+}
+
+/// Extract struct declarations
+fn extract_structs(
+    source: &str,
+    table: &crate::parsers::MatchTable<'_>,
+) -> Result<Vec<SearchResult>> {
+
+    let query = table.query();
+
+    extract_symbols(source, root, &query, SymbolKind::Struct, None)
+}
+
+/// Extract enum declarations
+fn extract_enums(
+    source: &str,
+    table: &crate::parsers::MatchTable<'_>,
+) -> Result<Vec<SearchResult>> {
+
+    let query = table.query();
+
+    extract_symbols(source, root, &query, SymbolKind::Enum, None)
+}
+
+/// Extract protocol declarations
+fn extract_protocols(
+    source: &str,
+    table: &crate::parsers::MatchTable<'_>,
+) -> Result<Vec<SearchResult>> {
+
+    let query = table.query();
+
+    extract_symbols(source, root, &query, SymbolKind::Trait, None)
+}
+
+/// Extract extension declarations
+fn extract_extensions(
+    source: &str,
+    table: &crate::parsers::MatchTable<'_>,
+) -> Result<Vec<SearchResult>> {
+
+    let query = table.query();
+
+    extract_symbols(source, root, &query, SymbolKind::Type, None)
+}
+
+/// Extract function and method declarations
+fn extract_functions(
+    source: &str,
+    table: &crate::parsers::MatchTable<'_>,
+) -> Result<Vec<SearchResult>> {
+
+    let query = table.query();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut method_name = None;
         let mut method_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -221,7 +227,7 @@ fn extract_functions(
             (scope_name, scope_type, method_name, method_node) {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -241,38 +247,21 @@ fn extract_functions(
 /// Extract property declarations
 fn extract_properties(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_declaration
-            name: (type_identifier) @class_name
-            body: (class_body
-                (property_declaration
-                    (pattern (simple_identifier) @property_name)))) @class
 
-        (struct_declaration
-            name: (type_identifier) @struct_name
-            body: (struct_body
-                (property_declaration
-                    (pattern (simple_identifier) @property_name)))) @struct
-    "#;
-
-    let query = Query::new(language, query_str)
-        .context("Failed to create property query")?;
-
-    let mut cursor = QueryCursor::new();
+    let query = table.query();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut property_name = None;
         let mut property_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -303,7 +292,7 @@ fn extract_properties(
             (scope_name, scope_type, property_name, property_node) {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -323,22 +312,22 @@ fn extract_properties(
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
-    root: &tree_sitter::Node,
-    query: &Query,
+    table: &crate::parsers::MatchTable<'_>,
+    sub: usize,
     kind: SymbolKind,
     scope: Option<String>,
 ) -> Result<Vec<SearchResult>> {
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(sub);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         // Find the name capture and the full node
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
@@ -350,7 +339,7 @@ fn extract_symbols(
 
         if let (Some(name), Some(node)) = (name, full_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -381,14 +370,9 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
 }
 
 /// Extract a preview (7 lines) around the symbol
-fn extract_preview(source: &str, span: &Span) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-
-    // Extract 7 lines: the start line and 6 following lines
-    let start_idx = (span.start_line - 1) as usize; // Convert back to 0-indexed
-    let end_idx = (start_idx + 7).min(lines.len());
-
-    lines[start_idx..end_idx].join("\n")
+fn extract_preview(source: &str, node: &tree_sitter::Node) -> String {
+    // Starts at the node, not at byte 0: see `crate::parsers::preview`.
+    crate::parsers::preview::extract_preview_for_node(source, node)
 }
 
 #[cfg(test)]

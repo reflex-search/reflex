@@ -1,0 +1,32 @@
+---
+source: tests/dependency_equivalence.rs
+expression: dump_dependencies(corpus)
+---
+c/structs.c | stdio.h | - | stdlib | 24 | -
+c/structs.c | stdlib.h | - | stdlib | 25 | -
+filtered/examples/advanced.rs | std::error::Error | - | stdlib | 2 | -
+filtered/src/parser.rs | std::collections::HashMap | - | stdlib | 1 | -
+filtered/src/utils.rs | super::* | - | internal | 15 | -
+filtered/tests/parser_test.rs | corpus_filtered::Parser | - | external | 1 | -
+go/functions.go | fmt | - | stdlib | 27 | -
+go/functions.go | time | - | stdlib | 27 | -
+go/structs.go | encoding/json | - | stdlib | 22 | -
+java/classes.java | java.util.ArrayList | - | stdlib | 28 | -
+java/classes.java | java.util.List | - | stdlib | 29 | -
+python/classes.py | abc | - | stdlib | 25 | ["abc","ABC","abstractmethod"]
+python/classes.py | dataclasses | - | stdlib | 26 | ["dataclasses","dataclass"]
+python/classes.py | typing | - | stdlib | 27 | ["typing","Optional","List"]
+python/functions.py | asyncio | - | stdlib | 29 | -
+python/functions.py | typing | - | stdlib | 30 | ["typing","List","Dict","Optional"]
+python/functions.py | functools | - | stdlib | 31 | ["functools","wraps"]
+rust/async_patterns.rs | std::future::Future | - | stdlib | 11 | -
+rust/error_handling.rs | std::fs::File | - | stdlib | 11 | -
+rust/error_handling.rs | std::io | - | stdlib | 12 | ["self","Read"]
+rust/modules.rs | inner::inner_function | - | external | 39 | -
+rust/modules.rs | utils::util_fn | - | external | 47 | -
+svelte/component.svelte | svelte | - | external | 2 | ["onMount"]
+svelte/stores.svelte | svelte/store | - | external | 2 | ["writable"]
+svelte/stores.svelte | svelte/store | - | external | 12 | ["derived"]
+typescript/react_class.tsx | react | - | external | 11 | ["React","Component"]
+typescript/react_hooks.tsx | react | - | external | 11 | ["React","useState","useEffect","useMemo","useCallback"]
+vue/composition_api.vue | vue | - | external | 10 | ["ref","computed","watch","onMounted"]

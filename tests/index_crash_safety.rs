@@ -181,3 +181,64 @@ fn reindex_replaces_binaries_atomically_and_keeps_old_readable() {
     drop(held);
     assert!(CacheManager::new(root).validate().is_ok());
 }
+
+/// A partial-batch directory left by an indexer that died between two trigram
+/// batches (2.0.0) is removed on the next start, like a stale `.tmp`.
+#[test]
+fn stale_partial_batch_dir_removed_on_index_start() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+    let reflex_dir = root.join(".reflex");
+    let partials = reflex_dir.join("trigram_temp");
+    fs::create_dir_all(&partials).unwrap();
+    fs::write(partials.join("partial_0.bin"), b"half-written").unwrap();
+
+    let cache = CacheManager::new(root);
+    Indexer::new(cache, IndexConfig::default())
+        .index(root, false)
+        .unwrap();
+
+    assert!(!partials.exists(), "trigram_temp must be removed");
+    assert!(CacheManager::new(root).validate().is_ok());
+}
+
+/// Killing a multi-batch build (tiny batches force on-disk partials) never
+/// leaves a short binary or a foreign-key violation behind.
+#[test]
+fn killed_multi_batch_indexer_never_leaves_truncated_index() {
+    let temp = big_workspace(300);
+    let root = temp.path();
+    let reflex_dir = root.join(".reflex");
+
+    for iteration in 0..4 {
+        let mut child = Command::new(RFX)
+            .arg("index")
+            .arg(root)
+            .arg("--quiet")
+            .env("REFLEX_INDEX_BATCH_FILES", "40")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn rfx index");
+        std::thread::sleep(Duration::from_millis(jitter_ms(30, 400, iteration as u64)));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_never_short(root, iteration);
+    }
+
+    // A clean run afterwards leaves no partials behind and a valid cache.
+    let cache = CacheManager::new(root);
+    let mut indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.set_batch_limits(40, u64::MAX);
+    indexer.index(root, false).unwrap();
+    assert!(!reflex_dir.join("trigram_temp").exists());
+    assert!(CacheManager::new(root).validate().is_ok());
+    let conn = reflex::cache::open_meta_db(reflex_dir.join("meta.db")).unwrap();
+    let violations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0, "foreign_key_check reported violations");
+}

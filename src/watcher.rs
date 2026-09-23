@@ -11,7 +11,6 @@ use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 use crate::indexer::Indexer;
-use crate::models::Language;
 use crate::output;
 
 /// Configuration for file watching
@@ -59,6 +58,7 @@ impl Default for WatchConfig {
 /// t=20s: Timer expires    [reindex A, B, C]
 /// ```
 pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
+    let policy = indexer.path_policy(path);
     log::info!(
         "Starting file watcher for {:?} with {}ms debounce",
         path,
@@ -105,18 +105,14 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                         // but we must still reindex so the deleted entry is removed.
                         // Accept any path whose extension suggests a code file OR has no
                         // extension at all (e.g. a deleted directory triggers a broad Remove).
-                        let ext = changed_path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("");
-                        let is_indexed = ext.is_empty()
-                            || crate::models::Language::from_extension(ext).is_indexable();
+                        let is_indexed = changed_path.extension().is_none()
+                            || crate::models::Language::from_path(&changed_path).is_indexable();
                         if is_indexed {
                             log::debug!("Detected removal: {:?}", changed_path);
                             pending_deletions.insert(changed_path);
                             last_event_time = Some(Instant::now());
                         }
-                    } else if should_watch_file(&changed_path) {
+                    } else if should_watch_file_with(&changed_path, Some(&policy)) {
                         log::debug!("Detected change: {:?}", changed_path);
                         pending_files.insert(changed_path);
                         last_event_time = Some(Instant::now());
@@ -215,9 +211,24 @@ fn process_event(event: &Event) -> Option<PathBuf> {
 /// Check if a file should trigger a reindex
 ///
 /// Returns true if the file has a supported language extension
+#[cfg(test)]
 fn should_watch_file(path: &Path) -> bool {
-    // Skip hidden files and directories
-    if let Some(file_name) = path.file_name()
+    should_watch_file_with(path, None)
+}
+
+/// [`should_watch_file`] under the workspace's `[index] include/exclude` policy.
+fn should_watch_file_with(path: &Path, policy: Option<&crate::indexer::PathPolicy>) -> bool {
+    let default_policy;
+    let policy = match policy {
+        Some(p) => p,
+        None => {
+            default_policy = crate::indexer::PathPolicy::default();
+            &default_policy
+        }
+    };
+    // Skip hidden files and directories, unless `[index] hidden` walks them.
+    if !policy.hidden()
+        && let Some(file_name) = path.file_name()
         && file_name.to_string_lossy().starts_with('.')
     {
         return false;
@@ -228,23 +239,10 @@ fn should_watch_file(path: &Path) -> bool {
         return false;
     }
 
-    // Check if file extension is supported
-    if let Some(ext) = path.extension() {
-        let ext_str = ext.to_string_lossy();
-        let lang = Language::from_extension(&ext_str);
-        // is_indexable, not is_supported: the text tier is watched too, so editing a
-        // README or a config file triggers a reindex like any other indexed file.
-        if lang.is_text() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
-            return crate::models::is_text_tier_file(&name);
-        }
-        return lang.is_supported();
-    }
-
-    false
+    // The same classifier as the walker: the text tier is watched too, so editing
+    // a README, a config file or a Makefile triggers a reindex like any other
+    // indexed file, and a lock file is watched exactly when the mode indexes it.
+    policy.classify(path).is_some()
 }
 
 #[cfg(test)]
@@ -265,15 +263,34 @@ mod tests {
     #[test]
     fn test_should_not_watch_unsupported_file() {
         let temp = TempDir::new().unwrap();
-        // .txt is watched since 1.7.2 (plain-text tier); use an unclaimed extension.
+        // Since 2.0.0 (tracked mode) every non-binary file is indexed, so every
+        // file is watched; only allowlist mode leaves an unclaimed extension out.
         let unknown = temp.path().join("test.xyz");
         fs::write(&unknown, "mystery format").unwrap();
-        assert!(!should_watch_file(&unknown));
+        assert!(should_watch_file(&unknown));
+        let allowlist_policy = crate::indexer::PathPolicy::from_config(
+            temp.path(),
+            &crate::models::IndexConfig {
+                mode: crate::models::IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(!should_watch_file_with(&unknown, Some(&allowlist_policy)));
 
         // A lock file matches a text extension but must not trigger a reindex.
+        // Tracked mode (the default) indexes lock files, so it watches them too;
+        // allowlist mode does neither.
         let lock = temp.path().join("package-lock.json");
         fs::write(&lock, "{}").unwrap();
-        assert!(!should_watch_file(&lock));
+        assert!(should_watch_file(&lock));
+        let allowlist = crate::indexer::PathPolicy::from_config(
+            temp.path(),
+            &crate::models::IndexConfig {
+                mode: crate::models::IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(!should_watch_file_with(&lock, Some(&allowlist)));
     }
 
     #[test]

@@ -43,3 +43,4 @@ reflex
 /benches/efficacy/corpus/
 benches/efficacy/__pycache__/
 *.pyc
+.claude/worktrees/

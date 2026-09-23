@@ -13,7 +13,7 @@ pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
     println!(
-        "  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true"
+        "  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&ignore_case=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true"
     );
     println!("  GET  /stats");
     println!("  GET  /health");
@@ -63,6 +63,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         exact: bool,
         #[serde(default)]
         contains: bool,
+        #[serde(default)]
+        ignore_case: bool,
         #[serde(default)]
         expand: bool,
         #[serde(default)]
@@ -177,6 +179,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             file_pattern: params.file,
             exact: params.exact,
             use_contains: params.contains,
+            ignore_case: params.ignore_case,
             timeout_secs: params.timeout,
             glob_patterns: params.glob,
             exclude_patterns: params.exclude,

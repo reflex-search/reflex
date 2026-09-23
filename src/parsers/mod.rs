@@ -108,8 +108,8 @@ impl ParserFactory {
             Language::Svelte => Err(anyhow!(
                 "Svelte uses line-based parsing, not tree-sitter (tree-sitter-svelte incompatible with tree-sitter 0.24+)"
             )),
-            Language::Text => Err(anyhow!(
-                "The text tier (markdown, YAML, JSON, TOML, HTML, shell, proto) is \
+            Language::Text | Language::Lock | Language::Generated => Err(anyhow!(
+                "The text tier (docs, config, templates, lock and generated files) is \
                  trigram-indexed only and has no grammar. Use full-text or regex \
                  search on these files, not --symbols or --ast."
             )),
@@ -168,7 +168,7 @@ impl ParserFactory {
             Language::Swift => &["class", "struct", "enum", "protocol", "func", "var", "let"],
             Language::Vue | Language::Svelte => &["function", "const", "let", "var"],
             // No symbols, so no keyword shortcuts.
-            Language::Text => &[],
+            Language::Text | Language::Lock | Language::Generated => &[],
             Language::Unknown => &[],
         }
     }
@@ -223,6 +223,21 @@ impl ParserFactory {
     ///
     /// Minified files are skipped — see [`is_minified`]. They stay fully
     /// text-searchable via trigrams; only SYMBOL extraction is declined.
+    /// Whether [`parse`](Self::parse) can produce symbols for `language`.
+    ///
+    /// `false` for the text tiers, unknown files and Swift (disabled): the
+    /// background pass skips those instead of storing an empty entry per file.
+    pub fn has_symbol_parser(language: Language) -> bool {
+        !matches!(
+            language,
+            Language::Swift
+                | Language::Text
+                | Language::Lock
+                | Language::Generated
+                | Language::Unknown
+        )
+    }
+
     pub fn parse(path: &str, source: &str, language: Language) -> Result<Vec<SearchResult>> {
         if is_minified(source) {
             // Not a correctness guard — `preview::PREVIEW_MAX_BYTES` already makes the
@@ -265,7 +280,7 @@ impl ParserFactory {
             Language::Zig => zig::parse(path, source),
             // debug!, not warn!: the text tier is indexed deliberately, and a repo
             // with thousands of markdown files would otherwise flood the log.
-            Language::Text => {
+            Language::Text | Language::Lock | Language::Generated => {
                 log::debug!("No symbol extraction for text-tier file: {}", path);
                 Ok(vec![])
             }
@@ -388,5 +403,217 @@ mod minified_tests {
         let src = "export function realOne(a: number) {\n  return a;\n}\n".repeat(50);
         let out = ParserFactory::parse("real.ts", &src, Language::TypeScript).unwrap();
         assert!(!out.is_empty(), "normal source must still parse");
+    }
+}
+
+/// A tree-sitter [`Query`](tree_sitter::Query) compiled once per process.
+///
+/// Dependency extraction runs on every file of every index pass, and until 2.0.0
+/// each call recompiled its (constant) query. `Query` is `Send + Sync`, so one
+/// compiled copy in a `static` cell serves every thread of the indexing pool. A
+/// compile failure is stored too and reported on every call, exactly as the
+/// per-call `Query::new` did.
+///
+/// ```ignore
+/// static QUERY: CachedQuery = CachedQuery::new();
+/// let query = cached_query(&QUERY, tree_sitter_c::LANGUAGE, QUERY_SRC)
+///     .context("Failed to create C include query")?;
+/// ```
+pub type CachedQuery = std::sync::OnceLock<std::result::Result<tree_sitter::Query, String>>;
+
+/// Compile `source` for `language` on the first call; return the cached query after.
+pub fn cached_query<'a>(
+    cell: &'a CachedQuery,
+    language: impl Into<tree_sitter::Language>,
+    source: &str,
+) -> Result<&'a tree_sitter::Query> {
+    match cell.get_or_init(|| {
+        tree_sitter::Query::new(&language.into(), source).map_err(|e| e.to_string())
+    }) {
+        Ok(query) => Ok(query),
+        Err(e) => Err(anyhow!("{e}")),
+    }
+}
+
+/// Compiled queries for a call site whose grammar can differ between calls.
+///
+/// `typescript.rs` runs the same queries against the TypeScript grammar for `.ts`
+/// and the TSX grammar for `.js`/`.jsx`; a query compiled for one is not valid for
+/// the other. Each grammar seen at the site gets its own compiled copy, keyed by
+/// the grammar pointer (`tree_sitter::Language` compares by identity).
+pub struct KeyedQueries {
+    cells: std::sync::Mutex<Vec<(tree_sitter::Language, &'static tree_sitter::Query)>>,
+}
+
+impl KeyedQueries {
+    /// An empty cache.
+    pub const fn new() -> Self {
+        Self {
+            cells: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Compile `source` for `language` on the first call with that grammar; return
+    /// the cached query after. A compile error is not cached and is returned as is.
+    pub fn get(
+        &'static self,
+        language: &tree_sitter::Language,
+        source: &str,
+    ) -> Result<&'static tree_sitter::Query> {
+        let mut cells = self.cells.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, query)) = cells.iter().find(|(l, _)| l == language) {
+            return Ok(query);
+        }
+        let query = tree_sitter::Query::new(language, source).map_err(|e| anyhow!("{e}"))?;
+        let query: &'static tree_sitter::Query = Box::leak(Box::new(query));
+        cells.push((language.clone(), query));
+        Ok(query)
+    }
+}
+
+impl Default for KeyedQueries {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A capture of one match, as [`MatchTable`] stores it.
+///
+/// Field names mirror `tree_sitter::QueryCapture` so the extractors' per-capture
+/// code (`capture.index`, `capture.node`) is unchanged.
+pub struct CaptureRec<'t> {
+    pub index: u32,
+    pub node: tree_sitter::Node<'t>,
+}
+
+/// One match of the combined query.
+pub struct MatchRec<'t> {
+    /// Pattern index within the combined query.
+    pub pattern_index: usize,
+    pub captures: Vec<CaptureRec<'t>>,
+}
+
+/// Every match of a language's combined query over one tree, bucketed by the
+/// sub-query (the original per-kind query) each pattern came from.
+///
+/// Until 2.0.0 each of a module's 6–14 extractors ran its own `QueryCursor` over
+/// the whole tree, so a file was walked 6–14 times; on Kubernetes that was 70% of
+/// symbol-extraction CPU, more than parsing itself. One walk per file now.
+pub struct MatchTable<'t> {
+    query: &'static tree_sitter::Query,
+    subs: Vec<Vec<MatchRec<'t>>>,
+}
+
+impl<'t> MatchTable<'t> {
+    /// The combined query: `capture_names()` indexes are the ones in
+    /// [`CaptureRec::index`].
+    pub fn query(&self) -> &'static tree_sitter::Query {
+        self.query
+    }
+
+    /// Matches of sub-query `k` (its position in [`LanguageQueries::new`]), in the
+    /// order a standalone run of that query would have produced them.
+    pub fn sub(&self, k: usize) -> &[MatchRec<'t>] {
+        self.subs.get(k).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+/// A combined query per grammar: pattern index → sub-query.
+struct CombinedQuery {
+    query: &'static tree_sitter::Query,
+    /// `sub_of[pattern_index]`.
+    sub_of: Vec<usize>,
+}
+
+/// A language module's symbol queries, compiled into one query per grammar on
+/// first use.
+///
+/// ```ignore
+/// static SYMBOL_QUERIES: LanguageQueries = LanguageQueries::new(&[Q_FUNCTIONS, Q_TYPES]);
+/// let table = SYMBOL_QUERIES.run(&language, &root, source)?;
+/// for m in table.sub(0) { /* function matches */ }
+/// ```
+pub struct LanguageQueries {
+    sources: &'static [&'static str],
+    compiled: std::sync::Mutex<Vec<(tree_sitter::Language, &'static CombinedQuery)>>,
+}
+
+impl LanguageQueries {
+    /// The sub-queries, in the order [`MatchTable::sub`] indexes them.
+    pub const fn new(sources: &'static [&'static str]) -> Self {
+        Self {
+            sources,
+            compiled: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn compiled_for(
+        &'static self,
+        language: &tree_sitter::Language,
+    ) -> Result<&'static CombinedQuery> {
+        let mut cells = self.compiled.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, c)) = cells.iter().find(|(l, _)| l == language) {
+            return Ok(c);
+        }
+        // Pattern counts per sub-query come from compiling each alone, once.
+        let mut sub_of = Vec::new();
+        let mut combined = String::new();
+        for (k, src) in self.sources.iter().enumerate() {
+            let alone =
+                tree_sitter::Query::new(language, src).map_err(|e| anyhow!("query {k}: {e}"))?;
+            sub_of.extend(std::iter::repeat_n(k, alone.pattern_count()));
+            combined.push_str(src);
+            combined.push('\n');
+        }
+        let query = tree_sitter::Query::new(language, &combined)
+            .map_err(|e| anyhow!("combined query: {e}"))?;
+        if query.pattern_count() != sub_of.len() {
+            anyhow::bail!(
+                "combined query has {} patterns, sub-queries have {}",
+                query.pattern_count(),
+                sub_of.len()
+            );
+        }
+        let c: &'static CombinedQuery = Box::leak(Box::new(CombinedQuery {
+            query: Box::leak(Box::new(query)),
+            sub_of,
+        }));
+        cells.push((language.clone(), c));
+        Ok(c)
+    }
+
+    /// Run the combined query over `root` once and bucket the matches.
+    pub fn run<'t>(
+        &'static self,
+        language: &tree_sitter::Language,
+        root: &tree_sitter::Node<'t>,
+        source: &str,
+    ) -> Result<MatchTable<'t>> {
+        use streaming_iterator::StreamingIterator;
+
+        let c = self.compiled_for(language)?;
+        let mut subs: Vec<Vec<MatchRec<'t>>> =
+            (0..self.sources.len()).map(|_| Vec::new()).collect();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(c.query, *root, source.as_bytes());
+        while let Some(m) = matches.next() {
+            let pattern_index = m.pattern_index;
+            let captures = m
+                .captures
+                .iter()
+                .map(|cap| CaptureRec {
+                    index: cap.index,
+                    node: cap.node,
+                })
+                .collect();
+            subs[c.sub_of[pattern_index]].push(MatchRec {
+                pattern_index,
+                captures,
+            });
+        }
+        Ok(MatchTable {
+            query: c.query,
+            subs,
+        })
     }
 }

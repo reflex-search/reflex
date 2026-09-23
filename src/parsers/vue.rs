@@ -17,8 +17,37 @@ use crate::models::{Language, SearchResult, Span, SymbolKind};
 use crate::parsers::typescript::TypeScriptDependencyExtractor;
 use crate::parsers::{DependencyExtractor, ImportInfo};
 use anyhow::{Context, Result};
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::Parser;
+
+const SYMQ_0: &str = r#"
+        (function_declaration
+            name: (identifier) @name) @function
+    "#;
+const SYMQ_1: &str = r#"
+        (lexical_declaration
+            (variable_declarator
+                name: (identifier) @name
+                value: (arrow_function))) @arrow_fn
+
+        (variable_declaration
+            (variable_declarator
+                name: (identifier) @name
+                value: (arrow_function))) @arrow_fn
+    "#;
+const SYMQ_2: &str = r#"
+        (lexical_declaration
+            (variable_declarator
+                name: (identifier) @name)) @decl
+
+        (variable_declaration
+            (variable_declarator
+                name: (identifier) @name)) @decl
+    "#;
+
+/// Every symbol query of this module, run as ONE query per file (see
+/// `crate::parsers::LanguageQueries`).
+static SYMBOL_QUERIES: crate::parsers::LanguageQueries =
+    crate::parsers::LanguageQueries::new(&[SYMQ_0, SYMQ_1, SYMQ_2]);
 
 /// Parse Vue SFC and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -121,28 +150,14 @@ fn parse_script_block(
         .context("Failed to parse script block")?;
 
     let root_node = tree.root_node();
+    let table = SYMBOL_QUERIES.run(&ts_language, &root_node, script_source)?;
 
     let mut symbols = Vec::new();
 
     // Extract symbols from the script block
-    symbols.extend(extract_functions(
-        script_source,
-        &root_node,
-        &ts_language,
-        line_offset,
-    )?);
-    symbols.extend(extract_arrow_functions(
-        script_source,
-        &root_node,
-        &ts_language,
-        line_offset,
-    )?);
-    symbols.extend(extract_variables(
-        script_source,
-        &root_node,
-        &ts_language,
-        line_offset,
-    )?);
+    symbols.extend(extract_functions(script_source, &table, line_offset)?);
+    symbols.extend(extract_arrow_functions(script_source, &table, line_offset)?);
+    symbols.extend(extract_variables(script_source, &table, line_offset)?);
 
     // Add file path and language to all symbols
     for symbol in &mut symbols {
@@ -156,88 +171,38 @@ fn parse_script_block(
 /// Extract regular function declarations
 fn extract_functions(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
     line_offset: usize,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (function_declaration
-            name: (identifier) @name) @function
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create function query")?;
-
-    extract_symbols(
-        source,
-        root,
-        &query,
-        SymbolKind::Function,
-        None,
-        line_offset,
-    )
+    extract_symbols(source, table, 0, SymbolKind::Function, None, line_offset)
 }
 
 /// Extract arrow functions
 fn extract_arrow_functions(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
     line_offset: usize,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (lexical_declaration
-            (variable_declarator
-                name: (identifier) @name
-                value: (arrow_function))) @arrow_fn
-
-        (variable_declaration
-            (variable_declarator
-                name: (identifier) @name
-                value: (arrow_function))) @arrow_fn
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create arrow function query")?;
-
-    extract_symbols(
-        source,
-        root,
-        &query,
-        SymbolKind::Function,
-        None,
-        line_offset,
-    )
+    extract_symbols(source, table, 1, SymbolKind::Function, None, line_offset)
 }
 
 /// Extract variable and constant declarations (const, let, var at all scopes)
 fn extract_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
     line_offset: usize,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (lexical_declaration
-            (variable_declarator
-                name: (identifier) @name)) @decl
-
-        (variable_declaration
-            (variable_declarator
-                name: (identifier) @name)) @decl
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create variable query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(2);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut name = None;
         let mut declarator_node = None;
         let mut decl_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
@@ -283,7 +248,7 @@ fn extract_variables(
                 };
 
                 let span = node_to_span(&decl, line_offset);
-                let preview = extract_preview(source, &span, line_offset);
+                let preview = extract_preview(source, &decl);
 
                 symbols.push(SearchResult::new(
                     String::new(),
@@ -304,22 +269,22 @@ fn extract_variables(
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
-    root: &tree_sitter::Node,
-    query: &Query,
+    table: &crate::parsers::MatchTable<'_>,
+    sub: usize,
     kind: SymbolKind,
     scope: Option<String>,
     line_offset: usize,
 ) -> Result<Vec<SearchResult>> {
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(sub);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(
@@ -336,7 +301,7 @@ fn extract_symbols(
 
         if let (Some(name), Some(node)) = (name, full_node) {
             let span = node_to_span(&node, line_offset);
-            let preview = extract_preview(source, &span, line_offset);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -367,10 +332,9 @@ fn node_to_span(node: &tree_sitter::Node, line_offset: usize) -> Span {
 }
 
 /// Extract a preview (7 lines) around the symbol
-fn extract_preview(source: &str, span: &Span, line_offset: usize) -> String {
-    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
-    // line-only bound cost 34 GiB on a minified bundle.
-    crate::parsers::preview::extract_preview_offset(source, span, line_offset)
+fn extract_preview(source: &str, node: &tree_sitter::Node) -> String {
+    // Starts at the node, not at byte 0: see `crate::parsers::preview`.
+    crate::parsers::preview::extract_preview_for_node(source, node)
 }
 
 /// Vue dependency extractor
@@ -421,6 +385,47 @@ impl VueDependencyExtractor {
         }
 
         Ok(all_imports)
+    }
+
+    /// Imports and re-exports of every `<script>` block, each block parsed once.
+    ///
+    /// Same rows as `extract_dependencies_with_alias_map` followed by
+    /// `extract_export_declarations`.
+    pub fn extract_dependencies_and_exports(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<(Vec<ImportInfo>, Vec<crate::parsers::ExportInfo>)> {
+        let script_blocks = extract_script_blocks(source)?;
+
+        let mut all_imports = Vec::new();
+        let mut all_exports = Vec::new();
+
+        for (script_source, line_offset) in script_blocks {
+            match TypeScriptDependencyExtractor::extract_dependencies_and_exports(
+                &script_source,
+                alias_map,
+            ) {
+                Ok((mut imports, mut exports)) => {
+                    // Adjust line numbers to account for the script block offset in the Vue file
+                    for import in &mut imports {
+                        import.line_number += line_offset;
+                    }
+                    for export in &mut exports {
+                        export.line_number += line_offset;
+                    }
+                    all_imports.extend(imports);
+                    all_exports.extend(exports);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to extract dependencies from Vue script block: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok((all_imports, all_exports))
     }
 
     /// Extract export/re-export statements for barrel export tracking

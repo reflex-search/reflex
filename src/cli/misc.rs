@@ -227,18 +227,8 @@ pub(super) fn handle_list_files(
     };
 
     // Build globset for --glob filtering
-    let glob_set = if !glob_patterns.is_empty() {
-        let mut builder = globset::GlobSetBuilder::new();
-        for pat in &glob_patterns {
-            builder.add(
-                globset::Glob::new(pat)
-                    .with_context(|| format!("Invalid glob pattern: {}", pat))?,
-            );
-        }
-        Some(builder.build().context("Failed to build glob set")?)
-    } else {
-        None
-    };
+    // Same gitignore rules as `rfx query --glob`.
+    let glob_set = crate::query::result::build_glob_set(&glob_patterns, "glob");
 
     let all_files = cache.list_files()?;
 

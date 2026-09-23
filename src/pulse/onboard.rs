@@ -230,22 +230,22 @@ fn extract_key_symbols_for_entry(conn: &Connection, path: &str) -> Vec<String> {
     };
 
     // Query the symbols table for this file's serialized symbols
-    let symbols_json: Option<String> = conn
+    let symbols_blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT symbols_json FROM symbols WHERE file_id = ?1",
             [file_id],
-            |row| row.get(0),
+            |row| crate::symbol_cache::read_symbols_column(row, 0),
         )
         .optional()
         .ok()
         .flatten();
 
-    let Some(json) = symbols_json else {
+    let Some(blob) = symbols_blob else {
         return vec![];
     };
 
     // Deserialize and filter to key symbol kinds
-    let symbols: Vec<SearchResult> = match serde_json::from_str(&json) {
+    let symbols: Vec<SearchResult> = match crate::symbol_cache::decode_symbols(&blob) {
         Ok(s) => s,
         Err(_) => return vec![],
     };

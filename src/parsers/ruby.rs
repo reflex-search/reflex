@@ -16,7 +16,63 @@ use crate::models::{ImportType, Language, SearchResult, Span, SymbolKind};
 use crate::parsers::{DependencyExtractor, ImportInfo};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, QueryCursor};
+
+const SYMQ_0: &str = r#"
+        (module
+            name: (constant) @name) @module
+    "#;
+const SYMQ_1: &str = r#"
+        (class
+            name: (constant) @name) @class
+    "#;
+const SYMQ_2: &str = r#"
+        (class
+            name: (constant) @class_name
+            (body_statement
+                (method
+                    name: (_) @method_name))) @class
+
+        (module
+            name: (constant) @module_name
+            (body_statement
+                (method
+                    name: (_) @method_name))) @module
+    "#;
+const SYMQ_3: &str = r#"
+        (singleton_method
+            object: (_) @class_name
+            name: (_) @method_name) @method
+    "#;
+const SYMQ_4: &str = r#"
+        (assignment
+            left: (constant) @name
+            right: (_)) @const
+    "#;
+const SYMQ_5: &str = r#"
+        (assignment
+            left: (identifier) @name) @assignment
+    "#;
+const SYMQ_6: &str = r#"
+        (instance_variable) @name
+    "#;
+const SYMQ_7: &str = r#"
+        (class_variable) @name
+    "#;
+const SYMQ_8: &str = r#"
+        (call
+            method: (identifier) @method_type
+            arguments: (argument_list
+                (simple_symbol) @name))
+
+        (#match? @method_type "^(attr_reader|attr_writer|attr_accessor)$")
+    "#;
+
+/// Every symbol query of this module, run as ONE query per file (see
+/// `crate::parsers::LanguageQueries`).
+static SYMBOL_QUERIES: crate::parsers::LanguageQueries = crate::parsers::LanguageQueries::new(&[
+    SYMQ_0, SYMQ_1, SYMQ_2, SYMQ_3, SYMQ_4, SYMQ_5, SYMQ_6, SYMQ_7, SYMQ_8,
+]);
 
 /// Parse Ruby source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -32,39 +88,20 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
         .context("Failed to parse Ruby source")?;
 
     let root_node = tree.root_node();
+    let table = SYMBOL_QUERIES.run(&language.into(), &root_node, source)?;
 
     let mut symbols = Vec::new();
 
     // Extract different types of symbols using Tree-sitter queries
-    symbols.extend(extract_modules(source, &root_node, &language.into())?);
-    symbols.extend(extract_classes(source, &root_node, &language.into())?);
-    symbols.extend(extract_methods(source, &root_node, &language.into())?);
-    symbols.extend(extract_singleton_methods(
-        source,
-        &root_node,
-        &language.into(),
-    )?);
-    symbols.extend(extract_constants(source, &root_node, &language.into())?);
-    symbols.extend(extract_instance_variables(
-        source,
-        &root_node,
-        &language.into(),
-    )?);
-    symbols.extend(extract_class_variables(
-        source,
-        &root_node,
-        &language.into(),
-    )?);
-    symbols.extend(extract_attr_accessors(
-        source,
-        &root_node,
-        &language.into(),
-    )?);
-    symbols.extend(extract_local_variables(
-        source,
-        &root_node,
-        &language.into(),
-    )?);
+    symbols.extend(extract_modules(source, &table)?);
+    symbols.extend(extract_classes(source, &table)?);
+    symbols.extend(extract_methods(source, &table)?);
+    symbols.extend(extract_singleton_methods(source, &table)?);
+    symbols.extend(extract_constants(source, &table)?);
+    symbols.extend(extract_instance_variables(source, &table)?);
+    symbols.extend(extract_class_variables(source, &table)?);
+    symbols.extend(extract_attr_accessors(source, &table)?);
+    symbols.extend(extract_local_variables(source, &table)?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -78,69 +115,36 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
 /// Extract module declarations
 fn extract_modules(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (module
-            name: (constant) @name) @module
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create module query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Module, None)
+    extract_symbols(source, table, 0, SymbolKind::Module, None)
 }
 
 /// Extract class declarations
 fn extract_classes(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class
-            name: (constant) @name) @class
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create class query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Class, None)
+    extract_symbols(source, table, 1, SymbolKind::Class, None)
 }
 
 /// Extract method definitions
 fn extract_methods(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class
-            name: (constant) @class_name
-            (body_statement
-                (method
-                    name: (_) @method_name))) @class
-
-        (module
-            name: (constant) @module_name
-            (body_statement
-                (method
-                    name: (_) @method_name))) @module
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create method query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(2);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut method_name = None;
         let mut method_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -190,7 +194,7 @@ fn extract_methods(
         {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -210,29 +214,19 @@ fn extract_methods(
 /// Extract singleton (class) methods
 fn extract_singleton_methods(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (singleton_method
-            object: (_) @class_name
-            name: (_) @method_name) @method
-    "#;
-
-    let query =
-        Query::new(language, query_str).context("Failed to create singleton method query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(3);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut class_name = None;
         let mut method_name = None;
         let mut method_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -265,7 +259,7 @@ fn extract_singleton_methods(
         {
             let scope = format!("class {}", class_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -285,43 +279,26 @@ fn extract_singleton_methods(
 /// Extract constants
 fn extract_constants(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (assignment
-            left: (constant) @name
-            right: (_)) @const
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create constant query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Constant, None)
+    extract_symbols(source, table, 4, SymbolKind::Constant, None)
 }
 
 /// Extract local variables (inside methods)
 fn extract_local_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (assignment
-            left: (identifier) @name) @assignment
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(5);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut name = None;
         let mut assignment_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
@@ -362,7 +339,7 @@ fn extract_local_variables(
 
             if is_in_method {
                 let span = node_to_span(&node);
-                let preview = extract_preview(source, &span);
+                let preview = extract_preview(source, &node);
 
                 symbols.push(SearchResult::new(
                     String::new(),
@@ -383,24 +360,15 @@ fn extract_local_variables(
 /// Extract instance variables (@variable)
 fn extract_instance_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (instance_variable) @name
-    "#;
-
-    let query =
-        Query::new(language, query_str).context("Failed to create instance variable query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let matches = table.sub(6);
 
     let mut symbols = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    while let Some(match_) = matches.next() {
-        for capture in match_.captures {
+    for match_ in matches {
+        for capture in &match_.captures {
             let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
 
             // Only capture the first occurrence of each instance variable
@@ -408,7 +376,7 @@ fn extract_instance_variables(
                 seen.insert(name_text.to_string());
 
                 let span = node_to_span(&capture.node);
-                let preview = extract_preview(source, &span);
+                let preview = extract_preview(source, &capture.node);
 
                 symbols.push(SearchResult::new(
                     String::new(),
@@ -429,23 +397,15 @@ fn extract_instance_variables(
 /// Extract class variables (@@variable)
 fn extract_class_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_variable) @name
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create class variable query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let matches = table.sub(7);
 
     let mut symbols = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    while let Some(match_) = matches.next() {
-        for capture in match_.captures {
+    for match_ in matches {
+        for capture in &match_.captures {
             let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
 
             // Only capture the first occurrence of each class variable
@@ -453,7 +413,7 @@ fn extract_class_variables(
                 seen.insert(name_text.to_string());
 
                 let span = node_to_span(&capture.node);
-                let preview = extract_preview(source, &span);
+                let preview = extract_preview(source, &capture.node);
 
                 symbols.push(SearchResult::new(
                     String::new(),
@@ -474,31 +434,19 @@ fn extract_class_variables(
 /// Extract attr_accessor, attr_reader, attr_writer declarations
 fn extract_attr_accessors(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (call
-            method: (identifier) @method_type
-            arguments: (argument_list
-                (simple_symbol) @name))
-
-        (#match? @method_type "^(attr_reader|attr_writer|attr_accessor)$")
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create attr accessor query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(8);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut method_type = None;
         let mut name = None;
         let mut call_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "method_type" => {
@@ -531,7 +479,7 @@ fn extract_attr_accessors(
 
         if let (Some(_method_type), Some(name), Some(node)) = (method_type, name, call_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -551,22 +499,22 @@ fn extract_attr_accessors(
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
-    root: &tree_sitter::Node,
-    query: &Query,
+    table: &crate::parsers::MatchTable<'_>,
+    sub: usize,
     kind: SymbolKind,
     scope: Option<String>,
 ) -> Result<Vec<SearchResult>> {
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(sub);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         // Find the name capture and the full node
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(
@@ -584,7 +532,7 @@ fn extract_symbols(
 
         if let (Some(name), Some(node)) = (name, full_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -615,10 +563,9 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
 }
 
 /// Extract a preview (7 lines) around the symbol
-fn extract_preview(source: &str, span: &Span) -> String {
-    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
-    // line-only bound cost 34 GiB on a minified bundle.
-    crate::parsers::preview::extract_preview(source, span)
+fn extract_preview(source: &str, node: &tree_sitter::Node) -> String {
+    // Starts at the node, not at byte 0: see `crate::parsers::preview`.
+    crate::parsers::preview::extract_preview_for_node(source, node)
 }
 
 /// Ruby dependency extractor for require and require_relative statements
@@ -649,11 +596,12 @@ impl DependencyExtractor for RubyDependencyExtractor {
             (#match? @method_name "^(require|require_relative|load)$")
         "#;
 
-        let query = Query::new(&language.into(), query_str)
+        static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+        let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
             .context("Failed to create Ruby require query")?;
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, root_node, source.as_bytes());
+        let mut matches = cursor.matches(query, root_node, source.as_bytes());
 
         let mut imports = Vec::new();
         let mut seen = std::collections::HashSet::new(); // Deduplicate by (path, line_number)

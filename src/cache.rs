@@ -4,7 +4,7 @@
 //! - `meta.db`: Metadata, file hashes, and configuration (SQLite)
 //! - `tokens.bin`: Compressed lexical tokens (binary)
 //! - `content.bin`: Memory-mapped file contents (binary)
-//! - `trigrams.bin`: Trigram inverted index (custom varint+zstd binary, V3 format)
+//! - `trigrams.bin`: Trigram inverted index (per-file varint blocks, V4 format)
 //! - `config.toml`: Index settings (TOML text)
 
 use anyhow::{Context, Result};
@@ -136,7 +136,16 @@ impl CacheManager {
         conn.execute_batch("BEGIN IMMEDIATE")
             .context("Failed to begin meta.db schema transaction")?;
 
-        // Create files table
+        // Create files table.
+        //
+        // The last four columns are the working-tree fingerprint: what freshness
+        // compares the tree against. Before 2.0.0 the baseline was the indexed
+        // COMMIT, so a dirty tree could never be reported fresh, however many times
+        // it was re-indexed. `hash` is the blake3 of the bytes that went into
+        // content.bin; `size`/`mtime_ns` let a status check skip the hash for files
+        // that have not been touched; `dirty_at_index` marks paths `git status`
+        // listed at index time, which must be re-checked even once git reports them
+        // clean again (an edit reverted after it was indexed).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,10 +153,15 @@ impl CacheManager {
                 last_indexed INTEGER NOT NULL,
                 language TEXT NOT NULL,
                 token_count INTEGER DEFAULT 0,
-                line_count INTEGER DEFAULT 0
+                line_count INTEGER DEFAULT 0,
+                size INTEGER NOT NULL DEFAULT 0,
+                mtime_ns INTEGER NOT NULL DEFAULT 0,
+                hash TEXT NOT NULL DEFAULT '',
+                dirty_at_index INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
+        Self::migrate_files_columns(&conn)?;
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
@@ -316,6 +330,125 @@ impl CacheManager {
         Ok(())
     }
 
+    /// Add the fingerprint columns to a `files` table written before 2.0.0.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, and the first
+    /// non-`--force` `rfx index` on an old cache would otherwise fail its INSERT.
+    /// The schema hash already forces that index to rebuild every row, so the
+    /// columns only need to exist; their defaults are overwritten immediately.
+    fn migrate_files_columns(conn: &Connection) -> Result<()> {
+        const WANTED: [(&str, &str); 4] = [
+            ("size", "INTEGER NOT NULL DEFAULT 0"),
+            ("mtime_ns", "INTEGER NOT NULL DEFAULT 0"),
+            ("hash", "TEXT NOT NULL DEFAULT ''"),
+            ("dirty_at_index", "INTEGER NOT NULL DEFAULT 0"),
+        ];
+        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('files')")?;
+        let present: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        for (name, decl) in WANTED {
+            if !present.contains(name) {
+                log::info!("meta.db: adding files.{} (pre-2.0.0 cache)", name);
+                conn.execute(
+                    &format!("ALTER TABLE files ADD COLUMN {} {}", name, decl),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `path → fingerprint` for exactly the given paths, in 900-path chunks.
+    ///
+    /// The git freshness path asks only about the paths `git status` (and the
+    /// dirty-at-index set) name, never the whole table.
+    pub fn fingerprints_for(&self, paths: &[&str]) -> Result<HashMap<String, FileFingerprint>> {
+        let db_path = self.cache_path.join(META_DB);
+        if paths.is_empty() || !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        const BATCH_SIZE: usize = 900;
+        let mut out = HashMap::with_capacity(paths.len());
+        for chunk in paths.chunks(BATCH_SIZE) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "SELECT path, size, mtime_ns, hash FROM files WHERE path IN ({})",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    FileFingerprint {
+                        size: row.get::<_, i64>(1)? as u64,
+                        mtime_ns: row.get::<_, i64>(2)?,
+                        hash: row.get::<_, String>(3)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (path, fp) = row?;
+                out.insert(path, fp);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every indexed path with its fingerprint.
+    ///
+    /// Used outside git, where the tree is walked and every file compared; the
+    /// query handle memoises the result until the index is rewritten.
+    pub fn load_fingerprints(&self) -> Result<HashMap<String, FileFingerprint>> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        let mut stmt = conn.prepare("SELECT path, size, mtime_ns, hash FROM files")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                FileFingerprint {
+                    size: row.get::<_, i64>(1)? as u64,
+                    mtime_ns: row.get::<_, i64>(2)?,
+                    hash: row.get::<_, String>(3)?,
+                },
+            ))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .context("Failed to read file fingerprints")
+    }
+
+    /// Refresh `size`/`mtime_ns`/`dirty_at_index` for files whose content is
+    /// unchanged.
+    ///
+    /// The incremental skip path re-reads every file and finds every hash equal, so
+    /// content.bin is left alone — but a `touch`, or an edit that was later reverted,
+    /// has moved the mtime. Without this update every later status check would
+    /// re-hash those files to prove them unchanged.
+    pub fn refresh_fingerprints(
+        &self,
+        rows: &[(String, u64, i64)],
+        dirty: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let mut conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE files SET size = ?, mtime_ns = ?, dirty_at_index = ? WHERE path = ?",
+            )?;
+            for (path, size, mtime_ns) in rows {
+                let is_dirty = dirty.contains(path) as i64;
+                stmt.execute(rusqlite::params![*size as i64, mtime_ns, is_dirty, path])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Initialize config.toml with defaults
     fn init_config_toml(&self) -> Result<()> {
         let config_path = self.cache_path.join(CONFIG_TOML);
@@ -326,7 +459,13 @@ impl CacheManager {
 
         let default_config = r#"[index]
 languages = []  # Empty = all supported languages
-text_tier = true  # Also index docs and config: md, yaml, toml, json, proto, html, sh, sql
+text_tier = true  # Also index docs, config and every other non-binary file
+# "tracked" (default): every non-binary file that is not gitignored and not under a
+#   dot-directory — ripgrep's defaults (hidden = true walks dot-directories). Lock and generated files are indexed but excluded from
+#   searches unless asked for (include_locks / include_generated / lang).
+# "allowlist": the pre-2.0.0 rule — code plus a fixed docs/config extension list.
+mode = "tracked"
+hidden = false  # true also walks dot-directories (.githooks/), never .git/ or .reflex/
 max_file_size = 10485760  # 10 MB
 follow_symlinks = false
 
@@ -575,6 +714,19 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             if let Some(text_tier) = index_tbl.get("text_tier").and_then(|v| v.as_bool()) {
                 cfg.text_tier = text_tier;
             }
+            if let Some(mode) = index_tbl.get("mode").and_then(|v| v.as_str()) {
+                match crate::models::IndexMode::from_name(mode) {
+                    Some(m) => cfg.mode = m,
+                    None => log::warn!(
+                        "Unknown [index] mode '{}' in config.toml (expected \"tracked\" or \
+                         \"allowlist\") — using \"tracked\"",
+                        mode
+                    ),
+                }
+            }
+            if let Some(hidden) = index_tbl.get("hidden").and_then(|v| v.as_bool()) {
+                cfg.hidden = hidden;
+            }
 
             if let Some(max_size) = index_tbl.get("max_file_size").and_then(|v| v.as_integer()) {
                 cfg.max_file_size = max_size as usize;
@@ -609,6 +761,11 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         {
             cfg.parallel_threads = threads as usize;
         }
+        if let Some(perf) = toml_val.get("performance")
+            && let Some(threads) = perf.get("symbol_threads").and_then(|v| v.as_integer())
+        {
+            cfg.symbol_threads = threads.max(0) as usize;
+        }
 
         log::debug!("Loaded IndexConfig from config.toml: {:?}", cfg);
         Ok(cfg)
@@ -621,6 +778,9 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         if !self.cache_path.exists() {
             return Ok(());
         }
+
+        // No query in this process may keep serving from the files about to go.
+        crate::query::invalidate_caches(&self.workspace_root());
 
         // Hold the workspace index lock while deleting so we never pull
         // content.bin out from under a running indexer. Everything except the
@@ -701,6 +861,32 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     ///
     /// Used by background indexer to get hashes for all indexed files.
     /// Returns the most recent hash for each file across all branches.
+    /// `path → (file_id, hash)` for every file on every branch, in one query.
+    ///
+    /// What the background symbol pass needs to decide, without touching SQLite
+    /// again, which files are already cached and which ids to write.
+    pub fn load_all_file_rows(&self) -> Result<HashMap<String, (i64, String)>> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, f.id, fb.hash
+             FROM file_branches fb
+             JOIN files f ON fb.file_id = f.id",
+        )?;
+        let rows: HashMap<String, (i64, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    (row.get::<_, i64>(1)?, row.get::<_, String>(2)?),
+                ))
+            })?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn load_all_hashes(&self) -> Result<HashMap<String, String>> {
         let db_path = self.cache_path.join(META_DB);
 
@@ -760,6 +946,46 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             branch
         );
         Ok(hashes)
+    }
+
+    /// `path → (file_id, hash)` on `branch` for the given paths only.
+    ///
+    /// The symbol path used to load every hash on the branch (a three-way join over
+    /// the whole index) and then look up every candidate's file id in a second
+    /// query. A `--symbols` query touches tens of files; this asks for exactly
+    /// those, in 900-path chunks, on a connection the caller already holds.
+    pub fn branch_file_rows_on(
+        conn: &Connection,
+        branch: &str,
+        paths: &[String],
+    ) -> Result<HashMap<String, (i64, String)>> {
+        const BATCH_SIZE: usize = 900;
+        let mut out = HashMap::with_capacity(paths.len());
+        for chunk in paths.chunks(BATCH_SIZE) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "SELECT f.path, f.id, fb.hash
+                 FROM files f
+                 JOIN file_branches fb ON fb.file_id = f.id
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE b.name = ? AND f.path IN ({})",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params = std::iter::once(branch).chain(chunk.iter().map(String::as_str));
+            let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (path, id, hash) = row?;
+                out.insert(path, (id, hash));
+            }
+        }
+        Ok(out)
     }
 
     /// Save file hashes for incremental indexing
@@ -828,8 +1054,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     /// if files are inserted, their branch hashes are guaranteed to be inserted too.
     pub fn batch_update_files_and_branch(
         &self,
-        files: &[(String, String, usize)], // (path, language, line_count)
-        branch_files: &[(String, String)], // (path, hash)
+        files: &[FileRow],
         branch: &str,
         commit_sha: Option<&str>,
     ) -> Result<()> {
@@ -844,23 +1069,29 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             .context("Failed to open meta.db for batch update and branch recording")?;
 
         let now = chrono::Utc::now().timestamp();
-        let now_str = now.to_string();
 
         // Use a SINGLE transaction for both operations
         let tx = conn.transaction()?;
 
-        // Step 1: Insert/update files table
-        for (path, language, line_count) in files {
-            tx.execute(
-                "INSERT OR REPLACE INTO files (path, last_indexed, language, line_count)
-                 VALUES (?, ?, ?, ?)",
-                [
-                    path.as_str(),
-                    &now_str,
-                    language.as_str(),
-                    &line_count.to_string(),
-                ],
+        // Step 1: Insert/update files table, fingerprint included.
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO files
+                     (path, last_indexed, language, line_count, size, mtime_ns, hash, dirty_at_index)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
+            for row in files {
+                stmt.execute(rusqlite::params![
+                    row.path,
+                    now,
+                    row.language,
+                    row.line_count as i64,
+                    row.size as i64,
+                    row.mtime_ns,
+                    row.hash,
+                    row.dirty as i64,
+                ])?;
+            }
         }
         log::info!("Inserted {} files into files table", files.len());
 
@@ -870,21 +1101,24 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Step 3: Insert file_branches entries (within same transaction)
         let mut inserted = 0;
-        for (path, hash) in branch_files {
+        for row in files {
             // Lookup file_id from path (will find it because we just inserted above)
             let file_id: i64 = tx
                 .query_row(
                     "SELECT id FROM files WHERE path = ?",
-                    [path.as_str()],
-                    |row| row.get(0),
+                    [row.path.as_str()],
+                    |r| r.get(0),
                 )
-                .context(format!("File not found in index after insert: {}", path))?;
+                .context(format!(
+                    "File not found in index after insert: {}",
+                    row.path
+                ))?;
 
             // Insert into file_branches using INTEGER values (not strings!)
             tx.execute(
                 "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
                  VALUES (?, ?, ?, ?)",
-                rusqlite::params![file_id, branch_id, hash.as_str(), now],
+                rusqlite::params![file_id, branch_id, row.hash.as_str(), now],
             )?;
             inserted += 1;
         }
@@ -909,8 +1143,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             {
                 let mut stmt =
                     tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
-                for (path, _) in branch_files {
-                    stmt.execute([path.as_str()])?;
+                for row in files {
+                    stmt.execute([row.path.as_str()])?;
                 }
             }
 
@@ -1038,6 +1272,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return Ok(false);
         }
         let conn = open_meta_db(&db_path)?;
+        Self::check_schema_hash_on(&conn)
+    }
+
+    fn check_schema_hash_on(conn: &Connection) -> Result<bool> {
         let current = env!("CACHE_SCHEMA_HASH");
         let stored: Option<String> = conn
             .query_row(
@@ -1049,6 +1287,72 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         Ok(stored.as_deref() == Some(current))
     }
 
+    /// Everything the freshness check reads from `meta.db`, on ONE connection.
+    ///
+    /// The per-query status check used to open three connections (`check_schema_hash`,
+    /// `branch_exists`, `get_branch_info`); on a 35 MB database each open is not free.
+    /// `branch` is `None` outside git, in which case only the schema is read.
+    pub fn status_reads(&self, branch: Option<&str>) -> Result<StatusReads> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(StatusReads {
+                schema_ok: false,
+                owner: None,
+                branch_indexed: false,
+                branch_info: None,
+                dirty_at_index: Vec::new(),
+            });
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+
+        let schema_ok = Self::check_schema_hash_on(&conn).unwrap_or(true);
+        if !schema_ok {
+            return Ok(StatusReads {
+                schema_ok,
+                owner: Self::cache_owner_on(&conn),
+                branch_indexed: false,
+                branch_info: None,
+                dirty_at_index: Vec::new(),
+            });
+        }
+
+        let Some(branch) = branch else {
+            return Ok(StatusReads {
+                schema_ok,
+                owner: None,
+                branch_indexed: false,
+                branch_info: None,
+                dirty_at_index: Vec::new(),
+            });
+        };
+
+        let branch_indexed = Self::branch_exists_on(&conn, branch);
+        // The `files` table (and content.bin) is global, so an index written on
+        // another branch is still the baseline here; its row says which commit and
+        // when. Freshness is judged by file content, so a branch switch that leaves
+        // every file's bytes unchanged is not staleness.
+        let branch_info = if branch_indexed {
+            Self::get_branch_info_on(&conn, branch).ok()
+        } else {
+            Self::latest_branch_info_on(&conn).ok()
+        };
+
+        Ok(StatusReads {
+            schema_ok,
+            owner: None,
+            branch_indexed,
+            branch_info,
+            dirty_at_index: Self::dirty_at_index_on(&conn).unwrap_or_default(),
+        })
+    }
+
+    /// Paths that `git status` listed when the index was last written.
+    fn dirty_at_index_on(conn: &Connection) -> Result<Vec<String>> {
+        let mut stmt = conn.prepare("SELECT path FROM files WHERE dirty_at_index = 1")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// Who wrote this cache: `(version, git_sha)`, when the cache records it.
     ///
     /// `None` for a cache written before 1.7.2, or none at all.
@@ -1058,6 +1362,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             return None;
         }
         let conn = open_meta_db(&db_path).ok()?;
+        Self::cache_owner_on(&conn)
+    }
+
+    fn cache_owner_on(conn: &Connection) -> Option<(String, Option<String>)> {
         let get = |key: &str| -> Option<String> {
             conn.query_row("SELECT value FROM statistics WHERE key = ?", [key], |row| {
                 row.get(0)
@@ -1300,6 +1608,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
 
         // Calculate total cache size (all binary files)
         let mut index_size_bytes: u64 = 0;
+        let mut trigram_index_bytes: u64 = 0;
 
         for file_name in [
             META_DB,
@@ -1311,8 +1620,30 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 index_size_bytes += metadata.len();
+                if file_name == "trigrams.bin" {
+                    trigram_index_bytes = metadata.len();
+                }
             }
         }
+
+        // Raw corpus size: content.bin stores the concatenated file bytes
+        // directly after its 32-byte header, and `index_offset` (bytes 16..24)
+        // marks where they end. Read just the header; never load the store.
+        let corpus_bytes: u64 = {
+            use std::io::Read;
+            std::fs::File::open(self.cache_path.join("content.bin"))
+                .ok()
+                .and_then(|mut f| {
+                    let mut header = [0u8; 32];
+                    f.read_exact(&mut header).ok()?;
+                    if &header[..4] != b"RFCT" {
+                        return None;
+                    }
+                    let index_offset = u64::from_le_bytes(header[16..24].try_into().ok()?);
+                    Some(index_offset.saturating_sub(32))
+                })
+                .unwrap_or(0)
+        };
 
         // Get file count breakdown by language (branch-aware if possible)
         let mut files_by_language = std::collections::HashMap::new();
@@ -1396,6 +1727,8 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             last_updated,
             files_by_language,
             lines_by_language,
+            corpus_bytes,
+            trigram_index_bytes,
             ..Default::default()
         })
     }
@@ -1574,7 +1907,10 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        Ok(Self::branch_exists_on(&conn, branch))
+    }
 
+    fn branch_exists_on(conn: &Connection, branch: &str) -> bool {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*)
@@ -1586,8 +1922,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
                 |row| row.get(0),
             )
             .unwrap_or(0);
-
-        Ok(count > 0)
+        count > 0
     }
 
     /// Get branch metadata (commit, last_indexed, file_count, dirty status)
@@ -1599,7 +1934,29 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
+        Self::get_branch_info_on(&conn, branch)
+    }
 
+    /// The most recently written branch row, whatever its name.
+    fn latest_branch_info_on(conn: &Connection) -> Result<BranchInfo> {
+        let info = conn.query_row(
+            "SELECT name, commit_sha, last_indexed, file_count, is_dirty FROM branches
+             ORDER BY last_indexed DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(BranchInfo {
+                    branch: row.get(0)?,
+                    commit_sha: row.get(1)?,
+                    last_indexed: row.get(2)?,
+                    file_count: row.get(3)?,
+                    is_dirty: row.get::<_, i64>(4)? != 0,
+                })
+            },
+        )?;
+        Ok(info)
+    }
+
+    fn get_branch_info_on(conn: &Connection, branch: &str) -> Result<BranchInfo> {
         let info = conn.query_row(
             "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE name = ?",
             [branch],
@@ -2020,6 +2377,79 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         }
 
         Ok(total_size)
+    }
+}
+
+/// Result of [`CacheManager::status_reads`].
+#[derive(Debug, Clone)]
+pub struct StatusReads {
+    /// The stored schema hash matches this binary.
+    pub schema_ok: bool,
+    /// `(version, git_sha)` of the writer, read only when `schema_ok` is false.
+    pub owner: Option<(String, Option<String>)>,
+    /// The current branch has indexed files.
+    pub branch_indexed: bool,
+    /// Branch metadata, when the branch is indexed.
+    pub branch_info: Option<BranchInfo>,
+    /// Paths `git status` listed when the index was written. They must be
+    /// re-checked by content even when git now reports them clean.
+    pub dirty_at_index: Vec<String>,
+}
+
+/// One `files` row as the indexer writes it.
+#[derive(Debug, Clone)]
+pub struct FileRow {
+    /// Workspace-relative path with forward slashes.
+    pub path: String,
+    /// blake3 of the bytes written to content.bin.
+    pub hash: String,
+    /// `format!("{:?}", Language)`.
+    pub language: String,
+    pub line_count: usize,
+    pub size: u64,
+    /// See [`mtime_ns`]; `0` when unknown, which forces a hash on the next check.
+    pub mtime_ns: i64,
+    /// `git status` listed this path when it was indexed.
+    pub dirty: bool,
+}
+
+/// What freshness compares a file on disk against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileFingerprint {
+    pub size: u64,
+    pub mtime_ns: i64,
+    pub hash: String,
+}
+
+impl FileFingerprint {
+    /// Whether `md` describes a file that has not been touched since indexing.
+    ///
+    /// A mismatch is not proof of change (a `touch`, an edit reverted byte for
+    /// byte); the caller then hashes. `mtime_ns == 0` means "unknown", never equal.
+    pub fn stat_matches(&self, md: &std::fs::Metadata) -> bool {
+        self.mtime_ns != 0 && self.size == md.len() && self.mtime_ns == mtime_ns(md)
+    }
+}
+
+/// Modification time as nanoseconds since the Unix epoch, `0` when unavailable.
+pub fn mtime_ns(md: &std::fs::Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+/// The mtime to record for a file read during an index run that began at `run_start`.
+///
+/// A write landing in the same clock tick as the read could leave the index with the
+/// old bytes and the new mtime (git's "racy" case). A file modified at or after the
+/// run started records `0`, so the next status check hashes it instead of trusting
+/// the stat.
+pub fn recorded_mtime_ns(md: &std::fs::Metadata, run_start: std::time::SystemTime) -> i64 {
+    match md.modified() {
+        Ok(t) if t < run_start => mtime_ns(md),
+        _ => 0,
     }
 }
 

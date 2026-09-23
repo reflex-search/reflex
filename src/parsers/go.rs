@@ -11,7 +11,7 @@
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, QueryCursor};
 
 /// Parse Go source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -27,16 +27,17 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
         .context("Failed to parse Go source")?;
 
     let root_node = tree.root_node();
+    let table = SYMBOL_QUERIES.run(&language.into(), &root_node, source)?;
 
     let mut symbols = Vec::new();
 
     // Extract different types of symbols using Tree-sitter queries
-    symbols.extend(extract_functions(source, &root_node, &language.into())?);
-    symbols.extend(extract_types(source, &root_node, &language.into())?);
-    symbols.extend(extract_interfaces(source, &root_node, &language.into())?);
-    symbols.extend(extract_methods(source, &root_node, &language.into())?);
-    symbols.extend(extract_constants(source, &root_node, &language.into())?);
-    symbols.extend(extract_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_functions(source, &table)?);
+    symbols.extend(extract_types(source, &table)?);
+    symbols.extend(extract_interfaces(source, &table)?);
+    symbols.extend(extract_methods(source, &table)?);
+    symbols.extend(extract_constants(source, &table)?);
+    symbols.extend(extract_variables(source, &table)?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -50,82 +51,43 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
 /// Extract function declarations
 fn extract_functions(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (function_declaration
-            name: (identifier) @name) @function
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create function query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Function, None)
+    extract_symbols(source, table, 0, SymbolKind::Function, None)
 }
 
 /// Extract type declarations (structs)
 fn extract_types(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (type_declaration
-            (type_spec
-                name: (type_identifier) @name
-                type: (struct_type))) @struct
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create struct query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Struct, None)
+    extract_symbols(source, table, 1, SymbolKind::Struct, None)
 }
 
 /// Extract interface declarations
 fn extract_interfaces(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (type_declaration
-            (type_spec
-                name: (type_identifier) @name
-                type: (interface_type))) @interface
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create interface query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Interface, None)
+    extract_symbols(source, table, 2, SymbolKind::Interface, None)
 }
 
 /// Extract method declarations (functions with receivers)
 fn extract_methods(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (method_declaration
-            receiver: (parameter_list
-                (parameter_declaration
-                    type: [(type_identifier) (pointer_type (type_identifier))] @receiver_type))
-            name: (field_identifier) @method_name) @method
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create method query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(3);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut receiver_type = None;
         let mut method_name = None;
         let mut method_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "receiver_type" => {
@@ -160,7 +122,7 @@ fn extract_methods(
             let clean_receiver = receiver_type.trim_start_matches('*');
             let scope = format!("type {}", clean_receiver);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -180,47 +142,28 @@ fn extract_methods(
 /// Extract constant declarations
 fn extract_constants(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (const_declaration
-            (const_spec
-                name: (identifier) @name)) @const
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create const query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Constant, None)
+    extract_symbols(source, table, 4, SymbolKind::Constant, None)
 }
 
 /// Extract variable declarations (var and := short declarations)
 fn extract_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
     // Match both var_spec and short_var_declaration to capture all variable declarations
-    let query_str = r#"
-        (var_spec
-            name: (identifier) @name) @var
 
-        (short_var_declaration
-            left: (expression_list (identifier) @name)) @short_var
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create var query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(5);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut name = None;
         let mut decl_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
@@ -241,7 +184,7 @@ fn extract_variables(
 
         if let (Some(name), Some(node)) = (name, decl_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -261,22 +204,22 @@ fn extract_variables(
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
-    root: &tree_sitter::Node,
-    query: &Query,
+    table: &crate::parsers::MatchTable<'_>,
+    sub: usize,
     kind: SymbolKind,
     scope: Option<String>,
 ) -> Result<Vec<SearchResult>> {
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(sub);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         // Find the name capture and the full node
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(
@@ -294,7 +237,7 @@ fn extract_symbols(
 
         if let (Some(name), Some(node)) = (name, full_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -325,10 +268,9 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
 }
 
 /// Extract a preview (7 lines) around the symbol
-fn extract_preview(source: &str, span: &Span) -> String {
-    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
-    // line-only bound cost 34 GiB on a minified bundle.
-    crate::parsers::preview::extract_preview(source, span)
+fn extract_preview(source: &str, node: &tree_sitter::Node) -> String {
+    // Starts at the node, not at byte 0: see `crate::parsers::preview`.
+    crate::parsers::preview::extract_preview_for_node(source, node)
 }
 
 #[cfg(test)]
@@ -1038,6 +980,47 @@ func main() {
 use crate::models::ImportType;
 use crate::parsers::{DependencyExtractor, ImportInfo};
 
+const SYMQ_0: &str = r#"
+        (function_declaration
+            name: (identifier) @name) @function
+    "#;
+const SYMQ_1: &str = r#"
+        (type_declaration
+            (type_spec
+                name: (type_identifier) @name
+                type: (struct_type))) @struct
+    "#;
+const SYMQ_2: &str = r#"
+        (type_declaration
+            (type_spec
+                name: (type_identifier) @name
+                type: (interface_type))) @interface
+    "#;
+const SYMQ_3: &str = r#"
+        (method_declaration
+            receiver: (parameter_list
+                (parameter_declaration
+                    type: [(type_identifier) (pointer_type (type_identifier))] @receiver_type))
+            name: (field_identifier) @method_name) @method
+    "#;
+const SYMQ_4: &str = r#"
+        (const_declaration
+            (const_spec
+                name: (identifier) @name)) @const
+    "#;
+const SYMQ_5: &str = r#"
+        (var_spec
+            name: (identifier) @name) @var
+
+        (short_var_declaration
+            left: (expression_list (identifier) @name)) @short_var
+    "#;
+
+/// Every symbol query of this module, run as ONE query per file (see
+/// `crate::parsers::LanguageQueries`).
+static SYMBOL_QUERIES: crate::parsers::LanguageQueries =
+    crate::parsers::LanguageQueries::new(&[SYMQ_0, SYMQ_1, SYMQ_2, SYMQ_3, SYMQ_4, SYMQ_5]);
+
 /// Go dependency extractor
 pub struct GoDependencyExtractor;
 
@@ -1081,11 +1064,12 @@ fn extract_go_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<Impo
                     path: (interpreted_string_literal) @import_path))) @import
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create Go import query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create Go import query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

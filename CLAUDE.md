@@ -65,8 +65,15 @@ rfx query "extract_symbols" --symbols
 # Filter by language, file patterns
 rfx query "unwrap" --lang rust --glob "src/**/*.rs"
 
+# Case-insensitive (rg -i); with --contains it is rg -i -F. Still uses the index.
+rfx query "realmid" -i
+rfx query "(?i)realm_?id" --regex
+
 # JSON output for AI agents
 rfx query "format!" --json
+
+# Patterns that start with `-` (clap would read them as flags)
+rfx query --pattern '-> Result<'      # or: rfx query -- '-> Result<'
 ```
 
 **AST Queries** (⚠️ SLOW - use --symbols in 95% of cases):
@@ -104,20 +111,31 @@ did-you-mean error, and numeric strings like `"40"` are coerced.
 ### Matching semantics (1.7.2)
 
 Literal search matches **whole identifiers** by default. `verify_csrf` does **not**
-match `verify_csrf_form_field`. Three modes:
+match `verify_csrf_form_field`. Three modes, each with a case-insensitive variant:
 
 | Mode | How | Behaves like |
 | --- | --- | --- |
 | whole identifier | default | `grep -w` |
 | substring | `contains: true` | `grep -F` |
 | regular expression | `search_regex` | `grep -E` |
+| any of the above, case-insensitive | `ignore_case: true` (`-i` / `--ignore-case` on the CLI) | `rg -i` (+ `contains` = `rg -i -F`) |
 
 - `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
   `find_references` (not `search_regex`, which is already substring-based).
+- `ignore_case` is available on those four **and** `search_regex` (where it prepends
+  `(?i)`). Since 2.0.0 a `(?i)` literal is looked up in the trigram index under every
+  case variant, so it costs about what the case-sensitive query costs; before, any `i`
+  flag forced a scan of every line. A whole-identifier `ignore_case` search keeps
+  whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
+  `kind: text_match`, and produces no zero-result substring `hint`. Counts match
+  ripgrep `-i` exactly, including the Unicode folds of `k` (KELVIN SIGN) and `s`
+  (LONG S); a non-ASCII literal under `(?i)` still scans, and says so in `warnings`.
 - A pattern containing brackets (`()`, `[]`, `<>`) is regex-escaped and run through the
   regex path automatically, with the rewrite reported in `warnings`. Whole-identifier
   matching wraps the pattern as `\b…\b`, which a pattern ending in `)` or `>` can
-  never satisfy — `unwrap()` used to return a silent `0`.
+  never satisfy — `unwrap()` used to return a silent `0`. Since 2.0.0 the rewrite lives
+  in the engine, so `rfx query`, `rfx serve` and MCP all apply it: the CLI prints
+  `Warning:` on stderr and carries `warnings[]` / `hint` in `--json` output.
 - A zero result carries a `hint` naming the substring count:
   `"0 whole-identifier matches; 89 substring matches — pass contains:true"`.
 
@@ -186,9 +204,19 @@ repeats `path`/`language` per row):
   "rows": [
     ["src/mcp.rs", "rust", 955, 957, "fn make_tool_result", "Function", "make_tool_result"]
   ],
-  "pagination": { "total": 1, "has_more": false },
-  "status": "fresh", "total_count": 1, "returned_count": 1, "has_more": false
+  "pagination": { "total": 1, "has_more": false, "total_is_exact": true },
+  "status": "fresh", "total_count": 1, "returned_count": 1, "has_more": false,
+  "total_is_exact": true
 }
+```
+
+When the page filled before every candidate was verified, `total` and `total_count`
+are **`null`** and `approx_total` carries an estimate:
+
+```json
+{ "pagination": { "total": null, "count": 1, "has_more": true, "total_is_exact": false,
+                  "approx_total": 26580 },
+  "total_count": null, "total_is_exact": false, "approx_total": 26580, "has_more": true }
 ```
 
 Each `rows[i]` is one match; element `j` corresponds to `columns[j]`. The five base
@@ -197,6 +225,78 @@ columns (`path`, `language`, `start_line`, `end_line`, `preview`) are always pre
 a match carries them. Top-level metadata (`status`, `pagination`, `total_count`, …) is
 unchanged. Set env `REFLEX_MCP_COLUMNAR=0` to restore the legacy `results[]` object
 shape. `count` mode (`{count, pattern}`) and the other tools are unaffected.
+`paths: true` returns `{status, can_trust_results, paths, total_files}` (plus
+`has_more` when a `limit` cut the list) with no rows at all.
+
+### Early termination and totals (2.0.0)
+
+A list-mode `search_code` / `search_regex` call verifies candidates in path order
+and **stops once the page is full** (`offset + limit` results). The page is identical
+to the same slice of a full run, but the total is not always exact:
+
+| field | meaning |
+| --- | --- |
+| `total_is_exact: true` | `total_count` / `pagination.total` counts every match (count mode, no `limit`, symbol/AST searches, `find_references`) |
+| `total_is_exact: false` | verification stopped early: `total_count` / `pagination.total` are **`null`** (never the verified-so-far number), `approx_total` is a **sampled estimate** (32 files spread over the remaining candidates, ≤16 lines each; typically within ±30%, omitted for a regex with no literal), and `has_more` is `true` |
+
+When 32 files or 128 candidate lines or fewer remain after the page fills, the search
+finishes instead and the total is exact. `mode: "count"`, `count_occurrences`,
+`list_locations` and `find_references` always verify everything. The CLI prints an
+inexact total as `Found 10 results (~1234 total, estimated)` and points at `--count`.
+Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
+`best_total()` (exact, else estimate, else page end; for thresholds only).
+
+### Glob rules (2.0.0)
+
+`glob` / `exclude` (every MCP search tool), `rfx query --glob` / `--exclude` and
+`[index] include.patterns` / `exclude.patterns` follow **gitignore / ripgrep rules**:
+
+| pattern | matches |
+| --- | --- |
+| `src/**/*.rs` | `.rs` files under `src/` **at the index root only** (a `/` anchors) |
+| `**/src/**/*.rs` | `.rs` files under any `src/` directory |
+| `*.rs`, `Makefile` | at any depth (no `/` in the pattern) |
+| `target/` | any `target/` directory and everything under it |
+| `src/*.rs` | directly in `src/`; `*` never crosses `/` |
+
+Before 2.0.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also matched
+`vendor/src/`. `./` and a leading `/` are dropped.
+
+### Latency diagnostics
+
+- `rfx query <pattern> --timing` prints per-phase timings (open, candidates, verify,
+  status, group) to stderr; with `--json` they appear as a `timings` object.
+- `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` /
+  `search_regex` responses from `rfx mcp`.
+- `timings.index_path` is `"trigram"` (candidates from the inverted index) or `"scan"`
+  (every line verified: a pattern under 3 chars, a regex with no 3-byte literal such
+  as `\w+_?id`, a non-ASCII literal under `(?i)`, or a keyword symbol query). A scan
+  also puts its reason in `warnings[]`. `(?i)<literal>` is `"trigram"`.
+- `rfx mcp` and `rfx serve` keep the index open across calls (memory maps, path map,
+  thread pool) and reopen only when the index files change on disk or after
+  `index_project`. The freshness verdict is memoised for `REFLEX_FRESHNESS_TTL_MS`.
+- Query-time verification runs on a pool sized by `[performance] parallel_threads`
+  (`0` = 80% of cores, up to 32).
+- The background symbol pass (`rfx index-symbols-internal`, spawned by `rfx index`) runs
+  on `[performance] symbol_threads` (`0` = 50% of cores, up to 32; `REFLEX_SYMBOL_THREADS`
+  overrides). It is a streaming pipeline: workers parse files from `content.bin`, run
+  ONE combined tree-sitter query per language per file (`parsers::LanguageQueries`), and
+  hand zstd-compressed symbol blobs to a single writer thread that commits in 1024-file
+  batches. `rfx index status` shows `parsed`/`cached`/`write_failed` counts and the phase.
+  Files with no symbol parser (text tiers, Swift) are skipped, not stored as empty rows.
+  Kubernetes (27k files, 15k with a parser): 45 s → ~5 s on 8 threads.
+- `rfx index` uses the same pool rule. It reads, hashes, extracts imports and trigram
+  postings in the pool, builds each batch per trigram shard in parallel, and merges
+  partials by byte copy (`src/trigram_build.rs`); output is byte-identical whatever
+  the batch boundaries. Batches are bounded by files and bytes
+  (`REFLEX_INDEX_BATCH_FILES`, default 5000; `REFLEX_INDEX_BATCH_BYTES`, default
+  48 MiB). `RUST_LOG=info rfx index` prints per-phase timings. Kubernetes (27k files,
+  245 MB) indexes from scratch in ~8 s on 16 cores (2.0.0: 532 s, 95% of it in
+  per-import SQLite lookups).
+- `tests/latency_budget.rs` (`cargo test --release --test latency_budget -- --ignored
+  --nocapture --test-threads=1`) measures the field-test query shapes in-process and
+  through a real `rfx mcp` stdio round-trip; CI asserts budgets with
+  `REFLEX_LATENCY_BUDGET=1`.
 
 **MCP efficiency — measured A/B results:**
 - **Columnar format saves 16–24% per-call bytes** on `search_code`/`search_regex` payloads.
@@ -256,34 +356,61 @@ rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 
 **Coverage**: 90%+ of all codebases across web, mobile, systems, enterprise, and AI/ML development.
 
-### Plain-Text Tier (docs, config, templates)
+### Plain-Text Tier (every non-binary file)
 
-Reflex also indexes non-code files, because **agents do not partition searches by file
+Reflex indexes non-code files, because **agents do not partition searches by file
 type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
 returning only the struct and a confident `0` for the rest is a wrong answer.
 
-**Extensions**: `md mdx txt yaml yml toml json proto html htm sh bash ini cfg sql graphql`
+**Coverage rule (2.0.0, `[index] mode = "tracked"`, the default)**: ripgrep's defaults —
+every non-binary file (no NUL byte anywhere) that is not excluded by `.gitignore` /
+`.ignore` / `.rgignore` / `[index] exclude` and not under a dot-directory (`.github/`,
+`.githooks/`, `.cargo/`; `[index] hidden = true` walks them). So `OWNERS`, `SECURITY_CONTACTS`,
+`foo.po`, `a.css`, `data.jsonl`, `Makefile`, `Dockerfile` and every other extensionless
+or unlisted name are `language: "text"`. Code is still classified by extension
+(`.mjs` / `.cjs` are JavaScript, with symbols). Non-UTF-8 text (Latin-1 `.po`) is
+decoded lossily, not dropped. `Language::from_path` plus `PathPolicy::classify` is the
+one classifier the indexer, watcher, freshness check and query engine share.
+
+**Two more tiers, indexed but excluded from every search unless asked for:**
+
+| tier | judged by | `lang` | widen with |
+| --- | --- | --- | --- |
+| `lock` | name: `Cargo.lock`, `package-lock.json`, `*-lock.json`, `*.lock`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `flake.lock`, `uv.lock`, `bun.lock` | `"lock"` | `include_locks: true` / `--include-locks` |
+| `generated` | name: `*.pb.go`, `*_generated.*`, `*.generated.*`, `*.min.js`, `*.min.css`, `*.map` | `"generated"` | `include_generated: true` / `--include-generated` |
+
+A zero result whose candidates were only such files says so: `excluded_by_default: N`
+plus a `hint`. "Which lockfile pins serde 1.0.190?" is a real query, and a confident
+zero with no way in is the failure this tier exists to fix. A `@generated` content
+marker is **not** read (the query engine derives language from the path).
 
 **Trigram-indexed only.** No tree-sitter, no symbol extraction, no import extraction. So:
 
-| Tool / flag | Text tier |
+| Tool / flag | Text / lock / generated tiers |
 | --- | --- |
-| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | **included by default** |
+| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | text **included by default**; lock and generated on request |
 | `--symbols`, `--kind`, `--ast`, `search_ast` | excluded (there is no grammar) |
 | `find_references`, `get_dependents`, structural tools | excluded (a mention in a changelog is not a call site) |
 
-- **Select it**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
+- **Select the text tier**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
 - **Exclude it**: `exclude_text: true` on the four full-text MCP tools.
 - **Turn it off**: `[index] text_tier = false` in `.reflex/config.toml`.
-- **Never indexed**: lock files (`package-lock.json`, `*-lock.json`, `yarn.lock`,
-  `pnpm-lock.yaml`, `Cargo.lock`, `*.lock`) — 100k+ lines of near-random trigrams that
-  bloat posting lists without ever being searched for.
+- **Old rule**: `[index] mode = "allowlist"` restores the pre-2.0.0 behaviour — code by
+  extension plus the fixed list `md mdx txt yaml yml toml json proto html htm sh bash
+  ini cfg sql graphql bru` and the names `Makefile`, `Dockerfile`, `Justfile`; lock and
+  generated files are not indexed. For trees where the long tail of data files is not
+  worth the index size.
+- **Hidden files**: dot-directories and dotfiles are skipped, like ripgrep without
+  `--hidden`. `[index] hidden = true` walks them (`.githooks/pre-commit`); `.git/` and
+  `.reflex/` are never walked.
 - **Not subject to `[index] languages`.** That option means "which parsers do I care
   about"; a user with `languages = ["rust"]` keeps their documentation searchable.
   `text_tier = false` is the way to turn the tier off.
+- `rfx index` prints `Text: N files, Lock: N, Generated: N` and the count of binary
+  files it skipped.
 
-**Note**: files outside both tiers (binaries, unknown extensions, dot-directories such
-as `.reflex/` itself) are not indexed.
+**Note**: files outside every tier (binaries, files over `max_file_size`, hidden paths
+unless `hidden = true`) are not indexed, and a change to one never makes the index stale.
 
 ---
 
@@ -495,12 +622,16 @@ Located in the workspace's `.reflex/` directory.
 languages = []  # Empty = all supported languages
 text_tier = true  # Also index docs and config (md, yaml, toml, json, proto, html, sh, sql)
 max_file_size = 10485760  # 10 MB
+# gitignore rules: a pattern with `/` is anchored at the root, a bare name matches anywhere.
+# include.patterns = ["src/**/*.rs", "docs/**"]   # whitelist (directories are still walked)
+# exclude.patterns = ["vendor/**", "*.generated.rs"]
 
 [search]
 default_limit = 100
 
 [performance]
 parallel_threads = 0  # 0 = auto (80% of cores)
+symbol_threads = 0  # background symbol pass (rfx index-symbols-internal); 0 = auto (50% of cores, max 32)
 ```
 
 **Git tracking**: Should be committed for team-wide consistency.

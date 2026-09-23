@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-09-22
+**Last Updated:** 2026-09-23
 **Project Status:** Testing & Quality Phase Complete - Production Ready
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
@@ -60,6 +60,117 @@
 **Implementation Status:** ✅ COMPLETED
 
 **See:** This change obsoletes previous symbol storage research. New architecture is pure trigram + runtime parsing.
+
+---
+
+## ⚡ 2.0.0 background symbol pass (2026-09-23) — COMPLETED
+
+Goal: ≥10x on `rfx index-symbols-internal` with identical symbols. Scratch Kubernetes
+clone (27,448 files in content.bin, 15,436 with a parser), release, 16 cores:
+
+| | 2.0.0 | now |
+| --- | ---: | ---: |
+| wall | 44.9 s (5 threads) | **3.4 s** (8 threads, 50% policy) |
+| user CPU | 131 s | 25 s |
+| `symbols` blob bytes | 256 MB (JSON) | 28.6 MB (zstd) |
+| peak RSS | 444 MB | ~400 MB |
+| harness `symbol_lookup` / `find_references` | 7.1 / 14.2 ms | 2.9 / 6.2 ms |
+
+Identity: per-file sha256 of canonical JSON for all 15,436 parsed files equals the
+baseline (`scratchpad/baseline/symbols-before.tsv`); 12,007 text-tier rows are no
+longer stored (were `[]`). Snapshots in `tests/symbol_equivalence.rs` (corpus +
+synthetic + nine more languages) were generated on the old extractors.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | Cached compiled queries at all ~130 sites (`cached_query`, `KeyedQueries` for the two TS grammars) | `src/parsers/*` |
+| 2 | Preview from the node's byte offset (`extract_preview_from_byte`) — removed the quadratic `lines().skip()` | `src/parsers/preview.rs` + 15 module wrappers |
+| 3 | One combined query per language per file (`LanguageQueries`, `MatchTable`); extractors take `&MatchTable` and read `table.sub(k)` | `src/parsers/mod.rs`, all modules (converter script kept in the session scratchpad) |
+| 4 | Streaming pipeline: rayon workers → `sync_channel(256)` → one writer, 1024-file commits, retry once, `write_failed_files`; one up-front `load_cached_keys_on` + `load_all_file_rows` | `src/background_indexer.rs`, `src/symbol_cache.rs`, `src/cache.rs` |
+| 5 | `[performance] symbol_threads` (50% default), `REFLEX_SYMBOL_THREADS` | `src/models.rs`, `src/cache.rs` |
+| 6 | zstd blobs, `SYMBOL_FORMAT_VERSION` 3, `encode_symbols`/`decode_symbols`/`read_symbols_column` used by every reader incl. Pulse | `src/symbol_cache.rs`, `src/pulse/{glossary,onboard}.rs` |
+| 7 | `ParserFactory::has_symbol_parser`; text tiers skipped | `src/parsers/mod.rs` |
+
+Measured split before step 3 (bench over 4,000 Go files): tree-sitter parse 3.25 s,
+extraction 7.40 s (70%) → after: 1.73 s. The pass is now bound by tree-sitter parsing
+itself (~1 ms per 10 KB).
+
+Observed once, not solved: a spawned pass reported `128 file(s) parsed but not
+persisted: database is locked` under 2.0.0's per-file connections; the single-writer
+design logs commit duration and retries once — watch `rfx index status` `error`.
+
+---
+
+## ⚡ 2.0.0 indexing throughput (2026-09-23) — COMPLETED
+
+Goal: orders-of-magnitude faster `rfx index` from scratch on huge trees (Linux kernel
+~10 min) with no regression in resources, portability or query behaviour. Measured on a
+scratch Kubernetes clone (27,448 files, 245 MB, 16 cores, NVMe), `RUST_LOG=info`:
+
+| phase | 2.0.0 | now |
+| --- | ---: | ---: |
+| discovery walk | 1 s | 0.8 s |
+| read + hash + import extraction + trigram build (+ partial flushes) | 22 s (serial trigram build) | 4.2 s (3.4 s pool, 0.6 s sharded build) |
+| files + branch transaction | 1 s | 0.9 s |
+| dependency + export recording | **504 s** | 1.1 s |
+| trigram merge + write | 5 s | 0.2 s |
+| **total wall** | **532 s** | **7.7 s** |
+| peak RSS | 1.37 GB | 1.05 GB |
+
+`trigrams.bin` and `content.bin` are byte-identical before/after (`cmp`), so query results
+and latency are unchanged by construction; the latency harness stays green.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | In-memory `PathResolver` (exact + binary-searched unique-suffix) replaces a SQLite connection + `LIKE '%' \|\| ?` full scan per import lookup; one `DependencyWriter` transaction with prepared statements replaces per-file autocommits | `src/dependency.rs`, `src/indexer.rs` (Steps 2.5/2.6) |
+| 2 | Trigram extraction in the read pool (`extract_trigram_run`); per-batch sharded build with no sort/dedup; V4-encoded partials; single-pass byte-copy merge with the directory size known up front | `src/trigram_build.rs` (new), `src/trigram.rs` (batch machinery removed, `scan_line_trigrams` shared) |
+| 3 | Batches bounded by files AND bytes (`plan_batches`, `REFLEX_INDEX_BATCH_FILES/BYTES`, `Indexer::set_batch_limits` for tests); single batch stays in memory; stale `trigram_temp/` reaped | `src/indexer.rs`, `src/atomic_write.rs` |
+| 4 | tree-sitter dependency queries compiled once per process (`parsers::cached_query`); TS/JS/Vue parsed once for imports + exports; tsconfigs parsed once per run | `src/parsers/*` |
+| 5 | Indexing pool auto cap 8 → 32 (query pool rule); per-phase `log::info!` timings | `src/indexer.rs` |
+
+Decision: the resolver's suffix match treats `_`/`%` literally (SQLite `LIKE` made them
+wildcards, producing false ambiguity for `foo_bar.h`-style names). Agreed with the user;
+noted in CHANGELOG.
+
+Tests: `tests/dependency_equivalence.rs` (insta snapshot of every dependency/export row
+of `tests/corpus`, generated on the 2.0.0 code; workspace test with relative imports, an
+underscore name and a duplicate basename), `tests/index_batch_identity.rs` (one batch vs
+50-file batches vs 2 KB batches → identical files and results; `plan_batches`),
+`src/trigram_build.rs` unit tests (byte identity against `TrigramIndex::write`, cap,
+empty/tiny inputs), `tests/index_crash_safety.rs` (multi-batch kill, `trigram_temp`
+reaping, `foreign_key_check`).
+
+Follow-ups (not done; each changes behaviour or is a separate feature):
+- The pool phase is now the floor (3.4 s on k8s; tree-sitter parsing every file for
+  imports). A line-scan `#include`/`import` extractor needs an equivalence test first.
+- Lexical `..` resolution instead of `canonicalize()` in `c.rs`/`cpp.rs` (resolves more
+  includes; changes `rfx deps` output).
+- Incremental rebuild: any change still rewrites `content.bin`/`trigrams.bin` in full.
+- `batch_update_files_and_branch` still SELECTs each id after insert (0.9 s on k8s);
+  `RETURNING id` would trim it.
+
+---
+
+## 🔧 2.0.0 post-perf-round defects (2026-09-22) — COMPLETED
+
+Field test of the perf round (b18ae06 → 11ba6de) against ripgrep surfaced four defects
+plus two small items. All fixed on `feat/perf-enhancements`, in the order below; the
+latency harness stays green with budgets enforced (`REFLEX_LATENCY_BUDGET=1`).
+
+| # | Defect | Status | Where |
+| --- | --- | --- | --- |
+| 1 | CLI bracket literals (`unwrap()`) returned a silent 0; rewrite lived only in MCP | ✅ done | rewrite moved into `QueryEngine::search_with_metadata`; `QueryResponse.warnings` / `hint`; `tests/cli_query_bracket.rs` (CLI ⇄ MCP parity) |
+| 2 | Inexact list-mode `total` reported the verified-so-far count; `approx_total` was a 2x upper bound | ✅ done (breaking) | `PaginationInfo.total: Option<usize>` (`null` when inexact); sampled estimate in `verify_files_streaming` (32 files / ≤16 lines each; finishes when ≤32 files or ≤128 lines remain); synthetic corpus error 0–1.4% |
+| 3 | Globs unanchored (`src/**/*.rs` matched `vendor/src/`) | ✅ done (breaking) | gitignore rules in `query::result::normalize_glob_pattern` + `build_glob_set` (`literal_separator`); `[index] include/exclude` now applied via `indexer::PathPolicy` (walker, freshness check, watcher); `tests/glob_anchoring.rs` |
+| 4 | `--symbols` 40 ms vs 16–25 ms floor | ✅ done | one `meta.db` connection on `OpenIndex` (`meta_conn`), `.git/HEAD` instead of `git rev-parse`, candidate-only hash query (`branch_file_rows_on`), parallel candidate-line pre-filter, batched cache writes; hash-verified cache reads (correctness); harness shapes `symbol_lookup` (7.1 ms) + `find_references` (14.2 ms) |
+| 5a | `->` patterns need `--` | ✅ done | `rfx query --pattern <p>` (`allow_hyphen_values`), `--help` note |
+| 5b | `.bru`, `Makefile`, `Dockerfile`, `Justfile` outside both tiers | ✅ done | `TEXT_EXTENSIONS` + `TEXT_FILENAMES`; `Language::from_path` is the one classifier |
+
+Not done / follow-ups:
+- The first `--symbols` call in a fresh process on a cache miss is ~60 ms (tree-sitter
+  parser + query compilation, one-time per process); `rfx mcp` pays it once.
+- `estimate_is_within_band_on_synthetic_corpus` is `#[ignore]` (builds the 30 MB corpus);
+  run with `cargo test --release --test query_early_termination -- --ignored`.
 
 ---
 
@@ -1800,7 +1911,8 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] Fallback to full scan when no literals present
 - [x] Handle regex metacharacters and escapes
 - [x] Support for alternation, quantifiers, groups
-- [x] Case-insensitive flag detection (triggers full scan)
+- [x] Case-insensitive flags: literals under `(?i)` are kept and looked up under every case variant (2.0.0; was a full scan)
+- [x] Extractor soundness: alternation branch without a literal, optional group, char class, unknown escapes, `x` flag (2.0.0)
 - [x] Comprehensive tests (13 test cases)
 - [x] Integration with query engine (search_with_regex)
 
@@ -2076,15 +2188,80 @@ Verified by hand. Same class as the 1.7.2 defects: a silently wrong answer. Affe
 every language filter using the `//` rule, and is far worse on minified JS, where one
 early URL hides every later match on that 1.4 MB line.
 
+## ⚡ Latency: close the gap to ripgrep (2026-09-22, branch `feat/perf-enhancements`)
+
+Plan: `~/.claude/plans/reflex-handoff-close-immutable-globe.md`. Field test (29 MB / 1875
+files / 16 cores): ripgrep wins 6–10x on plain queries and 45–56x on common words.
+Root causes found by code reading, **not** the handoff's guesses: `content.bin` is
+uncompressed and no SQLite runs per hit. The real costs are a quadratic posting-list
+intersection (`trigram.rs` `intersect_by_file_owned`: HashSet retain then a linear
+`find` per candidate), `PRAGMA quick_check` + `cache.stats()` (spawns git) + two more
+git spawns on every query, 3–4 re-opens of the index per query, and a per-byte
+posting format carrying an unused `byte_offset`.
+
+| WP | Scope | Status |
+|---|---|---|
+| WP0 | `tests/latency_budget.rs` + synthetic 30 MB corpus generator + MCP stdio round-trip; fix CI perf step (`--test` was after `--`, ran nothing) | completed (2a20431) |
+| WP1 | Linear-time sorted-merge intersection + streaming posting cursor (`src/trigram.rs`) | completed (da731e0): 23–90x on Criterion intersection cases |
+| WP2 | `OpenIndex` shared handle (registry keyed by cache dir, fingerprint invalidation), drop `quick_check`/`stats()`/git spawns from the query path, `--timing`; also: whole-identifier regex compiled once per query (was once per candidate line), zero-result hint counted in-search | completed (b18ae06) |
+| WP3 | Early termination for list mode (`total_is_exact` / `approx_total`), chunked parallel verify honouring `[performance] parallel_threads`, line-restricted parallel regex, quantifier fix in `regex_trigrams.rs` | completed |
+| WP4 | `trigrams.bin` V4: drop `byte_offset`, per-line dedup, per-file blocks, zero-copy directory, `Index/corpus ratio` line; plus `search_candidates` stop rule (skip a list > 2 B per surviving candidate) | completed |
+
+Acceptance (same box): MCP zero-hit < 5 ms, CLI zero-hit < 15 ms, `RealmId` first
+page < 15 ms, `realm --limit 1` < 20 ms, `realm --count` < 100 ms, `trigrams.bin` < 40 MB.
+Counts must stay equal to ripgrep on the 1.7.2 parity set.
+
+Result on the synthetic 30 MB corpus (medians, `.context/PERFORMANCE_RESEARCH.md`): MCP
+zero-hit 0.09 ms, rare identifier 0.23 ms, common identifier first page 2.6 ms, common word
+first page 3.6 ms, common word count 32 ms, regex 12 ms, `trigrams.bin` 30 MB (0.9x).
+Still to confirm on the field-test repo itself (not available here): the parity set counts
+and the ~10 ms `git status` share of the CLI floor. Open follow-ups: count-mode result
+building (`verify`+`group` ~30 ms for 52k rows) and the `max_posting_list_entries` cap
+silently dropping files past the cap.
+
 ### Still open
 
 - **REF-219-style hybrid columnar format** — optional backlog, unchanged.
 - **Incremental index path** (prerequisite for auto-refresh, decision 1 above).
-- **Text tier v2**: extension-less names (`Dockerfile`, `Makefile`) were deliberately
-  deferred; `should_index_lang` early-returns on a missing extension, so they need a
-  second lookup path, and both plausibly want real parsers later.
 - **`cleanup_stale` tail profiling**: instrumented and logged, but not yet measured on
   a large repo now that the meta.db lock contention is gone.
+- ~~Text tier v2 (extension-less names)~~ — superseded by tracked mode (below).
+
+---
+
+## 🧭 2.0.0 handoff: content-based freshness + tracked-file coverage (2026-09-23, branch `feat/perf-enhancements`)
+
+| WP | Scope | Status |
+| --- | --- | --- |
+| WP5 | Freshness by file content: `files.size/mtime_ns/hash/dirty_at_index` fingerprint; candidates = `git status` ∪ dirty-at-index ∪ `git diff indexed..HEAD`, confirmed by stat then blake3; non-git tree walk; status thread overlaps the search; `details.indexed_at/checked_by` | completed (3a420f6) |
+| WP6 | `[index] mode = "tracked"` (every non-ignored, non-binary file; NUL anywhere = binary, ripgrep's rule), `hidden`, lossy UTF-8, `Lock` / `Generated` tiers excluded by default with `include_locks` / `include_generated` / `lang`, `excluded_by_default` hint, `rfx index` tier counts | completed (1b2061f) |
+| WP7 | Perf: count-only verification (`QueryFilter.count_only`, `file_count`), single-round verify without a budget, lazy rayon pool, lazy path tables (content.bin V2 fixed-width index, trigram paths left in the mmap) | completed |
+
+Decisions (with the user): dot-directories stay skipped unless `[index] hidden = true`;
+non-UTF-8 is decoded lossily; generated detection is by name only (`@generated` marker
+deferred — the query side derives language from the path).
+
+Measured (this box, warm):
+
+| | Hearth (1875 files) | Kubernetes (24k files) |
+| --- | --- | --- |
+| CLI zero-hit wall | 11–13 ms, all `git status` (open 0.24 ms) | see CHANGELOG (open was 12 ms before V2) |
+| `--count` common word | `realm` 6 ms (was ~30) | `(?i)kubernetes` 55 ms (was 159; rg 80) |
+| parity, include lock+generated | equal to rg on every pattern | equal to rg after the NUL-anywhere rule |
+| index ratio (trigrams.bin / corpus) | 1.3x | 1.2x |
+
+Finding: prose costs ~2.5x its bytes in trigrams.bin, code ~1.4x (one posting per
+distinct trigram per LINE; a prose line is nearly all distinct trigrams). That is why
+Kubernetes sits above Hearth, and why a 1.5x *total* gate cannot hold on a text-heavy
+fixture; `tests/index_stats_ratio.rs` gates each store at the format's bound instead.
+
+Still open after this handoff:
+- `@generated` content marker (needs language persisted in the index).
+- Bytes-per-line minified guard (V4 per-line postings bound the cost; deferred).
+- First symbol query after a re-index fills the symbol cache (Hearth `RealmId --symbols`:
+  4 s cold, ~105 ms warm) — pre-existing, worth a background warm-up.
+- Parallel fold decode of very common trigrams (`trigram.rs`): candidates phase is
+  8–9 ms on Kubernetes, verify now dominates; not needed.
 
 ---
 

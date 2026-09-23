@@ -84,9 +84,14 @@ pub type Trigram = u32; // pack 3 bytes into 32-bit int
 pub struct FileLocation {
     file_id: u32,      // Index into file list
     line_no: u32,      // Line number (1-indexed)
-    byte_offset: u32,  // Byte offset in file (for context extraction)
 }
 ```
+
+One posting per **(trigram, file, line)**. Until V4 (2.0.0) the struct also carried
+`byte_offset` and a posting was emitted for every byte position, so a line with
+`"aaaa"` held two identical `(file, line)` keys that intersection then threw away.
+Nothing on the query path ever read `byte_offset` — line verification re-scans the
+line from content.bin — so it was pure index bloat (see "Binary Format" below).
 
 #### 3. Inverted Index
 ```rust
@@ -99,26 +104,68 @@ pub struct TrigramIndex {
 }
 ```
 
-### Binary Format (trigrams.bin)
+### Binary Format (trigrams.bin) — V4 (2.0.0)
 
 ```
 Header (32 bytes):
-  magic: "RFTG" (4 bytes)
-  version: 1 (u32)
-  num_trigrams: N (u64)
-  num_files: F (u64)
-  index_offset: offset to trigram index (u64)
-  reserved: 8 bytes
+  magic:        "RFTG" (4 bytes)
+  version:      4 (u32 LE)
+  num_trigrams: N (u64 LE)          -- bytes 8..16, also read by `rfx stats` (cli/misc.rs)
+  num_files:    F (u64 LE)
+  paths_offset: (u64 LE)            -- absolute offset of the paths section
 
-File List (variable):
-  [F file paths, length-prefixed strings]
+Directory (N × 16 bytes, sorted by trigram, binary-searched IN the mmap):
+  trigram:         u32 LE
+  data_offset:     u64 LE           -- absolute
+  compressed_size: u32 LE
 
-Trigram Index (variable):
-  For each trigram:
-    trigram: 3 bytes
-    count: u32 (number of locations)
-    locations: [count × FileLocation structs]
+Data (one posting list per directory entry), a sequence of FILE BLOCKS:
+  varint(file_id - prev_file_id)    -- first block: delta from 0
+  varint(n_lines << 1 | enc)        -- enc bit RESERVED (writer emits 0; reader errors on 1)
+  enc=0: n_lines × varint(line - prev_line), prev_line restarts at 0 in every block
+
+Paths @ paths_offset (F entries):
+  varint(len), utf8 bytes
 ```
+
+Implementation: `src/trigram.rs` — `encode_posting_list` (writer, shared by the
+in-memory `write` and the streaming k-way merge), `PostingCursor` (streaming
+decoder; `seek` skips the tail of a block by scanning varint continuation bits
+when the target file id is larger), `TrigramIndex::find_entry` (directory probe).
+
+**What changed from V3 and why**
+
+| | V3 | V4 |
+|---|---|---|
+| Posting granularity | every byte position | one per distinct trigram per line |
+| Per posting | 3 varints (file Δ, line Δ, byte-offset Δ) | 1 varint (line Δ) inside a file block |
+| File boundary cost | line/offset deltas `wrapping_sub` across files → ~5-byte varints | 2 small varints per (trigram, file) block |
+| Header | 24 B, no paths offset | 32 B with `paths_offset` |
+| `load` | decode whole directory into a `Vec`, re-sort, sum sizes to find paths | header check + bounds check + paths; O(files) |
+
+**Measured (release build, 2026-09-22)**
+
+| Corpus | corpus bytes | V3 trigrams.bin | V4 trigrams.bin | V4 ratio |
+|---|---|---|---|---|
+| synthetic latency corpus (`synthetic_corpus::indexed(7)`, 2000 `.rs`, 2 611 distinct trigrams) | 32 350 466 | 127 420 820 (3.94x) | 30 281 814 | **0.94x** |
+| Reflex repo itself (272 files, 44 246 distinct trigrams) | 3 822 333 | — | 5 313 892 | **1.39x** |
+
+V4 byte breakdown (Reflex repo): directory 13.3 %, block headers 19.9 %, line
+deltas 66.6 %, paths 0.1 %. Avg 6.0 lines per block. The synthetic corpus has a tiny
+alphabet, so its ratio flatters; the real-code number is the one to watch.
+
+**Reserved `enc=1` (bitmap blocks) — not implemented.** Design if ever needed:
+`varint(first_line) varint(nbytes) bitmap[nbytes]` (bit k ⇒ line `first_line+k`
+present), chosen by the writer when `n_lines * 8 > max_line - min_line + 1`. Measured
+gain on the Reflex repo: 7 789 of 514 563 blocks would qualify, saving ~192 KB
+(**3.6 %**, 1.39x → 1.34x); 21 % on the synthetic corpus. Not worth a second decoder
+path today. The reader rejects `enc=1` with "unsupported block encoding" rather than
+misreading it.
+
+**Compatibility.** `build.rs` hashes `src/trigram.rs` into `CACHE_SCHEMA_HASH`, so a V3
+cache reports stale and `rfx index` rebuilds it. `TrigramIndex::load` rejects a V3 file
+with "Unsupported trigrams.bin version: 3 (expected 4)…"; `query/open_index.rs` keys on
+that message to serve the process from an in-memory rebuild until `rfx index` runs.
 
 ### Content Store (content.bin)
 
@@ -161,38 +208,40 @@ fn extract_trigrams(text: &str) -> Vec<Trigram> {
 }
 ```
 
-### With Line/Offset Tracking
+### With Line Tracking (per-line dedup, V4)
 
 ```rust
 fn extract_trigrams_with_locations(text: &str, file_id: u32) -> Vec<(Trigram, FileLocation)> {
-    let mut result = Vec::new();
     let bytes = text.as_bytes();
-
+    let mut result = Vec::with_capacity(bytes.len().saturating_sub(2));
+    let mut line_trigrams: Vec<Trigram> = Vec::with_capacity(128); // scratch for one line
     let mut line_no = 1;
-    let mut line_start = 0;
 
     for (i, &byte) in bytes.iter().enumerate() {
-        // Track newlines
         if byte == b'\n' {
+            // flush: sort_unstable + dedup, emit one (trigram, {file_id, line_no}) each
+            flush(&mut line_trigrams, file_id, line_no, &mut result);
             line_no += 1;
-            line_start = i + 1;
         }
-
-        // Extract trigram
         if i + 2 < bytes.len() {
-            let trigram = [bytes[i], bytes[i+1], bytes[i+2]];
-            let location = FileLocation {
-                file_id,
-                line_no,
-                byte_offset: i as u32,
-            };
-            result.push((trigram, location));
+            line_trigrams.push(bytes_to_trigram(&bytes[i..i + 3]));
         }
     }
-
+    flush(&mut line_trigrams, file_id, line_no, &mut result);
     result
 }
 ```
+
+**Decision (V4): deduplicate per line at extraction, not at `finalize`.** A trigram
+that occurs k times on one line is one posting. The intersection key was always
+`(file_id, line_no)`, so the duplicates never contributed a result; they only
+inflated posting lists (16 spaces of indentation alone repeated `"   "` 14 times per
+line). Dedup here means `finalize`'s `dedup()` is a no-op and the sort is cheaper.
+
+Line attribution is unchanged from V3: a trigram belongs to the line of its first
+byte, except that a trigram *starting* on `\n` belongs to the next line (the `\n` is
+consumed before the trigram is pushed). Trigrams spanning a newline are still
+indexed, so a query such as `"lo\n"` keeps working.
 
 ---
 
@@ -351,8 +400,12 @@ fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
 
 - **Trigram count**: ~20-30 trigrams per 100 characters of code
 - **Posting list size**: Avg 10-100 locations per trigram
-- **Total index size**: ~20% of source code size
-- **Example**: 100MB source → 20MB trigram index
+- **Total index size (measured, V4)**: ~0.9x–1.4x of source bytes — 0.94x on the
+  synthetic latency corpus, 1.39x on the Reflex repo. V3 was 3.9x. `rfx index` prints
+  the live number as `Index/corpus ratio: 1.4x (trigrams.bin …, content.bin …)`
+  (`IndexStats::{corpus_bytes, trigram_index_bytes}`).
+- The original ~20 % estimate assumed file-level postings; Reflex keeps line-level
+  postings so intersection yields lines, not files.
 
 ### Query Performance
 

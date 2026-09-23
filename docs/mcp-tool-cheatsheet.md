@@ -172,13 +172,16 @@ get_dependents(path: "src/auth.rs")
 | Filter | Type | Example |
 |--------|------|---------|
 | `lang` | string | `"rust"`, `"typescript"`, `"python"` |
-| `glob` | array | `["src/**/*.rs"]` |
-| `exclude` | array | `["target/**", "node_modules/**"]` |
+| `glob` | array | `["src/**/*.rs"]` — gitignore rules: a `/` anchors at the root; `**/src/**/*.rs` for any `src/`; `*.rs` at any depth; `*` never crosses `/` |
+| `exclude` | array | `["target/**", "node_modules/**"]` — same rules |
 | `file` | string | `"Controllers"` (substring match) |
+| `contains` | bool | `true` = substring match (`grep -F`); default matches whole identifiers only. Not on `search_regex` |
+| `ignore_case` | bool | `true` = `rg -i` (with `contains`: `rg -i -F`). On `search_code`, `search_regex`, `count_occurrences`, `list_locations`, `find_references`. Uses the trigram index, so it costs about the same as a case-sensitive search |
+| `paths` | bool | `true` = `{status, can_trust_results, paths, total_files}`, no rows — the cheapest "which files" answer |
 | `symbols` | bool | `true` = definitions only |
 | `kind` | string | `"function"`, `"class"`, `"struct"` |
 | `expand` | bool | `true` = show full symbol body |
-| `limit` / `offset` | int | Pagination (check `has_more` in response) |
+| `limit` / `offset` | int | Pagination (check `has_more`). List mode stops verifying once the page is full: when `total_is_exact` is `false`, `total_count` / `pagination.total` are `null` and `approx_total` is a sampled estimate (typically ±30%) — use `mode: "count"` for the exact number |
 
 ---
 

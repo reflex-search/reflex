@@ -18,7 +18,7 @@
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, QueryCursor};
 
 /// Parse C# source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -34,27 +34,24 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
         .context("Failed to parse C# source")?;
 
     let root_node = tree.root_node();
+    let table = SYMBOL_QUERIES.run(&language.into(), &root_node, source)?;
 
     let mut symbols = Vec::new();
 
     // Extract different types of symbols using Tree-sitter queries
-    symbols.extend(extract_namespaces(source, &root_node, &language.into())?);
-    symbols.extend(extract_classes(source, &root_node, &language.into())?);
-    symbols.extend(extract_interfaces(source, &root_node, &language.into())?);
-    symbols.extend(extract_structs(source, &root_node, &language.into())?);
-    symbols.extend(extract_enums(source, &root_node, &language.into())?);
-    symbols.extend(extract_records(source, &root_node, &language.into())?);
-    symbols.extend(extract_delegates(source, &root_node, &language.into())?);
-    symbols.extend(extract_attributes(source, &root_node, &language.into())?);
-    symbols.extend(extract_methods(source, &root_node, &language.into())?);
-    symbols.extend(extract_properties(source, &root_node, &language.into())?);
-    symbols.extend(extract_events(source, &root_node, &language.into())?);
-    symbols.extend(extract_indexers(source, &root_node, &language.into())?);
-    symbols.extend(extract_local_variables(
-        source,
-        &root_node,
-        &language.into(),
-    )?);
+    symbols.extend(extract_namespaces(source, &table)?);
+    symbols.extend(extract_classes(source, &table)?);
+    symbols.extend(extract_interfaces(source, &table)?);
+    symbols.extend(extract_structs(source, &table)?);
+    symbols.extend(extract_enums(source, &table)?);
+    symbols.extend(extract_records(source, &table)?);
+    symbols.extend(extract_delegates(source, &table)?);
+    symbols.extend(extract_attributes(source, &table)?);
+    symbols.extend(extract_methods(source, &table)?);
+    symbols.extend(extract_properties(source, &table)?);
+    symbols.extend(extract_events(source, &table)?);
+    symbols.extend(extract_indexers(source, &table)?);
+    symbols.extend(extract_local_variables(source, &table)?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -68,116 +65,57 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
 /// Extract namespace declarations
 fn extract_namespaces(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (namespace_declaration
-            name: (_) @name) @namespace
-
-        (file_scoped_namespace_declaration
-            name: (_) @name) @namespace
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create namespace query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Namespace, None)
+    extract_symbols(source, table, 0, SymbolKind::Namespace, None)
 }
 
 /// Extract class declarations
 fn extract_classes(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_declaration
-            name: (identifier) @name) @class
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create class query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Class, None)
+    extract_symbols(source, table, 1, SymbolKind::Class, None)
 }
 
 /// Extract interface declarations
 fn extract_interfaces(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (interface_declaration
-            name: (identifier) @name) @interface
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create interface query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Interface, None)
+    extract_symbols(source, table, 2, SymbolKind::Interface, None)
 }
 
 /// Extract struct declarations
 fn extract_structs(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (struct_declaration
-            name: (identifier) @name) @struct
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create struct query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Struct, None)
+    extract_symbols(source, table, 3, SymbolKind::Struct, None)
 }
 
 /// Extract enum declarations
 fn extract_enums(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (enum_declaration
-            name: (identifier) @name) @enum
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create enum query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Enum, None)
+    extract_symbols(source, table, 4, SymbolKind::Enum, None)
 }
 
 /// Extract record declarations (C# 9+)
 fn extract_records(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (record_declaration
-            name: (identifier) @name) @record
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create record query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Type, None)
+    extract_symbols(source, table, 5, SymbolKind::Type, None)
 }
 
 /// Extract delegate declarations
 fn extract_delegates(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (delegate_declaration
-            name: (identifier) @name) @delegate
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create delegate query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Type, None)
+    extract_symbols(source, table, 6, SymbolKind::Type, None)
 }
 
 /// Extract attributes: BOTH definitions and uses
@@ -185,28 +123,20 @@ fn extract_delegates(
 /// Uses: [Test] public void TestMethod() { ... }
 fn extract_attributes(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
     let mut symbols = Vec::new();
 
     // Part 1: Extract attribute class DEFINITIONS
-    let def_query_str = r#"
-        (class_declaration
-            name: (identifier) @name) @class
-    "#;
 
-    let def_query = Query::new(language, def_query_str)
-        .context("Failed to create attribute definition query")?;
+    let def_query = table.query();
+    let matches = table.sub(8);
 
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&def_query, *root, source.as_bytes());
-
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = def_query.capture_names()[capture.index as usize];
             match capture_name {
                 "name" => {
@@ -248,7 +178,7 @@ fn extract_attributes(
 
             if is_attribute {
                 let span = node_to_span(&node);
-                let preview = extract_preview(source, &span);
+                let preview = extract_preview(source, &node);
 
                 symbols.push(SearchResult::new(
                     String::new(),
@@ -264,19 +194,11 @@ fn extract_attributes(
     }
 
     // Part 2: Extract attribute USES ([Test], [Obsolete], etc.)
-    let use_query_str = r#"
-        (attribute_list
-            (attribute
-                name: (_) @name)) @attr
-    "#;
-
-    let use_query =
-        Query::new(language, use_query_str).context("Failed to create attribute use query")?;
 
     symbols.extend(extract_symbols(
         source,
-        root,
-        &use_query,
+        table,
+        7,
         SymbolKind::Attribute,
         None,
     )?);
@@ -287,49 +209,20 @@ fn extract_attributes(
 /// Extract method declarations from classes, structs, and interfaces
 fn extract_methods(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_declaration
-            name: (identifier) @class_name
-            body: (declaration_list
-                (method_declaration
-                    name: (identifier) @method_name))) @class
-
-        (struct_declaration
-            name: (identifier) @struct_name
-            body: (declaration_list
-                (method_declaration
-                    name: (identifier) @method_name))) @struct
-
-        (interface_declaration
-            name: (identifier) @interface_name
-            body: (declaration_list
-                (method_declaration
-                    name: (identifier) @method_name))) @interface
-
-        (record_declaration
-            name: (identifier) @record_name
-            body: (declaration_list
-                (method_declaration
-                    name: (identifier) @method_name))) @record
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create method query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(9);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut method_name = None;
         let mut method_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -399,7 +292,7 @@ fn extract_methods(
         {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -419,49 +312,20 @@ fn extract_methods(
 /// Extract property declarations
 fn extract_properties(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_declaration
-            name: (identifier) @class_name
-            body: (declaration_list
-                (property_declaration
-                    name: (identifier) @property_name))) @class
-
-        (struct_declaration
-            name: (identifier) @struct_name
-            body: (declaration_list
-                (property_declaration
-                    name: (identifier) @property_name))) @struct
-
-        (interface_declaration
-            name: (identifier) @interface_name
-            body: (declaration_list
-                (property_declaration
-                    name: (identifier) @property_name))) @interface
-
-        (record_declaration
-            name: (identifier) @record_name
-            body: (declaration_list
-                (property_declaration
-                    name: (identifier) @property_name))) @record
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create property query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(10);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut property_name = None;
         let mut property_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -531,7 +395,7 @@ fn extract_properties(
         {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -551,49 +415,20 @@ fn extract_properties(
 /// Extract event declarations from classes, structs, and interfaces
 fn extract_events(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_declaration
-            name: (identifier) @class_name
-            body: (declaration_list
-                (event_field_declaration
-                    (variable_declaration
-                        (variable_declarator
-                            (identifier) @event_name))))) @class
-
-        (struct_declaration
-            name: (identifier) @struct_name
-            body: (declaration_list
-                (event_field_declaration
-                    (variable_declaration
-                        (variable_declarator
-                            (identifier) @event_name))))) @struct
-
-        (interface_declaration
-            name: (identifier) @interface_name
-            body: (declaration_list
-                (event_field_declaration
-                    (variable_declaration
-                        (variable_declarator
-                            (identifier) @event_name))))) @interface
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create event query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(11);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut event_name = None;
         let mut event_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -653,7 +488,7 @@ fn extract_events(
         {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -673,34 +508,19 @@ fn extract_events(
 /// Extract indexer declarations from classes and structs
 fn extract_indexers(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (class_declaration
-            name: (identifier) @class_name
-            body: (declaration_list
-                (indexer_declaration) @indexer_name)) @class
-
-        (struct_declaration
-            name: (identifier) @struct_name
-            body: (declaration_list
-                (indexer_declaration) @indexer_name)) @struct
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create indexer query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(12);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         let mut scope_name = None;
         let mut scope_type = None;
         let mut indexer_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             match capture_name {
                 "class_name" => {
@@ -735,7 +555,7 @@ fn extract_indexers(
         {
             let scope = format!("{} {}", scope_type, scope_name);
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             // Use "this[]" as the indexer name (C# convention)
             symbols.push(SearchResult::new(
@@ -756,40 +576,30 @@ fn extract_indexers(
 /// Extract local variable declarations inside methods
 fn extract_local_variables(
     source: &str,
-    root: &tree_sitter::Node,
-    language: &tree_sitter::Language,
+    table: &crate::parsers::MatchTable<'_>,
 ) -> Result<Vec<SearchResult>> {
-    let query_str = r#"
-        (local_declaration_statement
-            (variable_declaration
-                (variable_declarator
-                    (identifier) @name))) @var
-    "#;
-
-    let query = Query::new(language, query_str).context("Failed to create local variable query")?;
-
-    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+    extract_symbols(source, table, 13, SymbolKind::Variable, None)
 }
 
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
-    root: &tree_sitter::Node,
-    query: &Query,
+    table: &crate::parsers::MatchTable<'_>,
+    sub: usize,
     kind: SymbolKind,
     scope: Option<String>,
 ) -> Result<Vec<SearchResult>> {
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
+    let query = table.query();
+    let matches = table.sub(sub);
 
     let mut symbols = Vec::new();
 
-    while let Some(match_) = matches.next() {
+    for match_ in matches {
         // Find the name capture and the full node
         let mut name = None;
         let mut full_node = None;
 
-        for capture in match_.captures {
+        for capture in &match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(
@@ -807,7 +617,7 @@ fn extract_symbols(
 
         if let (Some(name), Some(node)) = (name, full_node) {
             let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+            let preview = extract_preview(source, &node);
 
             symbols.push(SearchResult::new(
                 String::new(),
@@ -838,10 +648,9 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
 }
 
 /// Extract a preview (7 lines) around the symbol
-fn extract_preview(source: &str, span: &Span) -> String {
-    // Shared, byte-bounded. See `crate::parsers::preview` for why the old
-    // line-only bound cost 34 GiB on a minified bundle.
-    crate::parsers::preview::extract_preview(source, span)
+fn extract_preview(source: &str, node: &tree_sitter::Node) -> String {
+    // Starts at the node, not at byte 0: see `crate::parsers::preview`.
+    crate::parsers::preview::extract_preview_for_node(source, node)
 }
 
 #[cfg(test)]
@@ -1485,6 +1294,146 @@ public class LegacyClass
 use crate::models::ImportType;
 use crate::parsers::{DependencyExtractor, ImportInfo};
 
+const SYMQ_0: &str = r#"
+        (namespace_declaration
+            name: (_) @name) @namespace
+
+        (file_scoped_namespace_declaration
+            name: (_) @name) @namespace
+    "#;
+const SYMQ_1: &str = r#"
+        (class_declaration
+            name: (identifier) @name) @class
+    "#;
+const SYMQ_2: &str = r#"
+        (interface_declaration
+            name: (identifier) @name) @interface
+    "#;
+const SYMQ_3: &str = r#"
+        (struct_declaration
+            name: (identifier) @name) @struct
+    "#;
+const SYMQ_4: &str = r#"
+        (enum_declaration
+            name: (identifier) @name) @enum
+    "#;
+const SYMQ_5: &str = r#"
+        (record_declaration
+            name: (identifier) @name) @record
+    "#;
+const SYMQ_6: &str = r#"
+        (delegate_declaration
+            name: (identifier) @name) @delegate
+    "#;
+const SYMQ_7: &str = r#"
+        (attribute_list
+            (attribute
+                name: (_) @name)) @attr
+    "#;
+const SYMQ_8: &str = r#"
+        (class_declaration
+            name: (identifier) @name) @class
+    "#;
+const SYMQ_9: &str = r#"
+        (class_declaration
+            name: (identifier) @class_name
+            body: (declaration_list
+                (method_declaration
+                    name: (identifier) @method_name))) @class
+
+        (struct_declaration
+            name: (identifier) @struct_name
+            body: (declaration_list
+                (method_declaration
+                    name: (identifier) @method_name))) @struct
+
+        (interface_declaration
+            name: (identifier) @interface_name
+            body: (declaration_list
+                (method_declaration
+                    name: (identifier) @method_name))) @interface
+
+        (record_declaration
+            name: (identifier) @record_name
+            body: (declaration_list
+                (method_declaration
+                    name: (identifier) @method_name))) @record
+    "#;
+const SYMQ_10: &str = r#"
+        (class_declaration
+            name: (identifier) @class_name
+            body: (declaration_list
+                (property_declaration
+                    name: (identifier) @property_name))) @class
+
+        (struct_declaration
+            name: (identifier) @struct_name
+            body: (declaration_list
+                (property_declaration
+                    name: (identifier) @property_name))) @struct
+
+        (interface_declaration
+            name: (identifier) @interface_name
+            body: (declaration_list
+                (property_declaration
+                    name: (identifier) @property_name))) @interface
+
+        (record_declaration
+            name: (identifier) @record_name
+            body: (declaration_list
+                (property_declaration
+                    name: (identifier) @property_name))) @record
+    "#;
+const SYMQ_11: &str = r#"
+        (class_declaration
+            name: (identifier) @class_name
+            body: (declaration_list
+                (event_field_declaration
+                    (variable_declaration
+                        (variable_declarator
+                            (identifier) @event_name))))) @class
+
+        (struct_declaration
+            name: (identifier) @struct_name
+            body: (declaration_list
+                (event_field_declaration
+                    (variable_declaration
+                        (variable_declarator
+                            (identifier) @event_name))))) @struct
+
+        (interface_declaration
+            name: (identifier) @interface_name
+            body: (declaration_list
+                (event_field_declaration
+                    (variable_declaration
+                        (variable_declarator
+                            (identifier) @event_name))))) @interface
+    "#;
+const SYMQ_12: &str = r#"
+        (class_declaration
+            name: (identifier) @class_name
+            body: (declaration_list
+                (indexer_declaration) @indexer_name)) @class
+
+        (struct_declaration
+            name: (identifier) @struct_name
+            body: (declaration_list
+                (indexer_declaration) @indexer_name)) @struct
+    "#;
+const SYMQ_13: &str = r#"
+        (local_declaration_statement
+            (variable_declaration
+                (variable_declarator
+                    (identifier) @name))) @var
+    "#;
+
+/// Every symbol query of this module, run as ONE query per file (see
+/// `crate::parsers::LanguageQueries`).
+static SYMBOL_QUERIES: crate::parsers::LanguageQueries = crate::parsers::LanguageQueries::new(&[
+    SYMQ_0, SYMQ_1, SYMQ_2, SYMQ_3, SYMQ_4, SYMQ_5, SYMQ_6, SYMQ_7, SYMQ_8, SYMQ_9, SYMQ_10,
+    SYMQ_11, SYMQ_12, SYMQ_13,
+]);
+
 /// C# dependency extractor
 pub struct CSharpDependencyExtractor;
 
@@ -1524,11 +1473,12 @@ fn extract_csharp_usings(source: &str, root: &tree_sitter::Node) -> Result<Vec<I
             ])
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create C# using query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create C# using query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

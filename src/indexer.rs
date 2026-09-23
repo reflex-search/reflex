@@ -15,8 +15,7 @@ use std::time::Instant;
 
 use crate::cache::CacheManager;
 use crate::content_store::{ContentReader, ContentWriter};
-use crate::dependency::DependencyIndex;
-use crate::models::{Dependency, ImportType, IndexConfig, IndexStats, Language};
+use crate::models::{Dependency, ImportType, IndexConfig, IndexMode, IndexStats, Language};
 #[cfg(unix)]
 use crate::output;
 use crate::parsers::c::CDependencyExtractor;
@@ -34,7 +33,7 @@ use crate::parsers::typescript::TypeScriptDependencyExtractor;
 use crate::parsers::vue::VueDependencyExtractor;
 use crate::parsers::zig::ZigDependencyExtractor;
 use crate::parsers::{DependencyExtractor, ExportInfo, ImportInfo};
-use crate::trigram::TrigramIndex;
+use crate::trigram_build::{TrigramIndexBuilder, TrigramRun};
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
 /// Uses Arc to allow cloning for multi-threaded progress updates
@@ -47,8 +46,14 @@ struct FileProcessingResult {
     content: String,
     language: Language,
     line_count: usize,
+    /// On-disk size and mtime, taken BEFORE the read so a write that lands
+    /// between the two is caught by the next status check, not hidden by it.
+    size: u64,
+    mtime_ns: i64,
     dependencies: Vec<ImportInfo>,
     exports: Vec<ExportInfo>,
+    /// The file's trigram postings, extracted in the pool (no file id yet).
+    trigram_run: TrigramRun,
 }
 
 /// Find the nearest tsconfig.json for a given source file
@@ -92,12 +97,290 @@ fn find_nearest_tsconfig<'a>(
 pub struct Indexer {
     cache: CacheManager,
     config: IndexConfig,
+    /// `(max_files, max_bytes)` per batch; `None` = defaults / env overrides.
+    batch_limits: Option<(usize, u64)>,
+}
+
+/// Default cap on files per batch.
+pub const BATCH_MAX_FILES: usize = 5000;
+/// Default cap on bytes of text per batch. Bounds the per-batch memory of the
+/// read pool (file contents) and of the trigram build (postings), whatever the
+/// file count: a 9,000-file tree of large files no longer builds one giant
+/// in-memory index.
+pub const BATCH_MAX_BYTES: u64 = 48 << 20;
+
+/// Cut `sizes` (in file order) into consecutive batches of at most `max_files`
+/// files and, past the first file of a batch, at most `max_bytes` bytes.
+pub fn plan_batches(
+    sizes: &[u64],
+    max_files: usize,
+    max_bytes: u64,
+) -> Vec<std::ops::Range<usize>> {
+    let max_files = max_files.max(1);
+    let mut batches = Vec::new();
+    let mut start = 0usize;
+    let mut bytes = 0u64;
+    for (i, &size) in sizes.iter().enumerate() {
+        let count = i - start;
+        if count > 0 && (count >= max_files || bytes.saturating_add(size) > max_bytes) {
+            batches.push(start..i);
+            start = i;
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(size);
+    }
+    if start < sizes.len() {
+        batches.push(start..sizes.len());
+    }
+    batches
+}
+
+/// The `[index] include.patterns` / `exclude.patterns` policy, compiled once.
+///
+/// Built on `ignore::overrides::Override`, so the patterns follow gitignore rules
+/// exactly as the walker applies them: a pattern containing `/` is anchored at the
+/// workspace root, a bare name matches at any depth, `*` does not cross `/`.
+/// Includes are whitelist globs, excludes are `!`-prefixed. With only includes,
+/// non-matching *files* are dropped but directories are still walked, so
+/// `include = ["src/**/*.rs"]` works without listing `src/`.
+///
+/// The same policy must answer "would Reflex index this path?" everywhere: the
+/// walker, the working-tree freshness check and the watcher. If they disagree, an
+/// edit to an excluded file marks the index permanently stale.
+#[derive(Clone, Debug)]
+pub struct PathPolicy {
+    overrides: Option<ignore::overrides::Override>,
+    /// `[index] text_tier`.
+    text_tier: bool,
+    /// `[index] languages`; empty = every supported language.
+    languages: Vec<Language>,
+    /// `[index] mode`.
+    mode: IndexMode,
+    /// `[index] hidden`.
+    hidden: bool,
+}
+
+impl Default for PathPolicy {
+    fn default() -> Self {
+        Self {
+            overrides: None,
+            text_tier: true,
+            languages: Vec::new(),
+            mode: IndexMode::Tracked,
+            hidden: false,
+        }
+    }
+}
+
+impl PathPolicy {
+    /// Compile the policy from an index config. No patterns → a policy that admits
+    /// every path the language rules allow. An invalid pattern is logged and skipped.
+    pub fn from_config(root: &Path, config: &IndexConfig) -> Self {
+        let mut policy = Self {
+            overrides: None,
+            text_tier: config.text_tier,
+            languages: config.languages.clone(),
+            mode: config.mode,
+            hidden: config.hidden,
+        };
+        if config.include_patterns.is_empty() && config.exclude_patterns.is_empty() {
+            return policy;
+        }
+        let mut builder = ignore::overrides::OverrideBuilder::new(root);
+        for pat in &config.include_patterns {
+            if let Err(e) = builder.add(pat) {
+                log::warn!("Invalid [index] include pattern '{}': {}", pat, e);
+            }
+        }
+        for pat in &config.exclude_patterns {
+            let negated = format!("!{}", pat.trim_start_matches('!'));
+            if let Err(e) = builder.add(&negated) {
+                log::warn!("Invalid [index] exclude pattern '{}': {}", pat, e);
+            }
+        }
+        match builder.build() {
+            Ok(ov) => policy.overrides = Some(ov),
+            Err(e) => log::warn!("Failed to build [index] include/exclude policy: {}", e),
+        }
+        policy
+    }
+
+    /// The language a file at `path` would be indexed as, or `None` when the
+    /// policy would not index it (excluded by pattern, tier off, parser not
+    /// wanted). Path only: no filesystem access, so it is the same answer for the
+    /// walker, the freshness check and the watcher.
+    pub fn classify(&self, path: &Path) -> Option<Language> {
+        if !self.admits(path, false) {
+            return None;
+        }
+        let lang = Language::from_path(path);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        match lang {
+            // Indexed only in tracked mode, and excluded from searches by default.
+            Language::Lock | Language::Generated => {
+                (self.mode == IndexMode::Tracked).then_some(lang)
+            }
+            // The plain-text tier: docs, config, templates and, in tracked mode,
+            // every other non-binary file. Deliberately NOT subject to `languages`.
+            // That option means "which PARSERS do I care about"; a user with
+            // languages = ["rust"] would otherwise lose the text tier silently,
+            // which is the very bug this tier exists to fix. `text_tier = false`
+            // is the way to turn it off.
+            Language::Text => {
+                if !self.text_tier {
+                    return None;
+                }
+                match self.mode {
+                    IndexMode::Tracked => Some(lang),
+                    IndexMode::Allowlist => crate::models::is_text_tier_file(name).then_some(lang),
+                }
+            }
+            Language::Unknown => None,
+            // Code without a working grammar (Swift): in tracked mode it is still a
+            // text file an agent greps, so it is indexed; symbol queries skip it.
+            code if !code.is_supported() => {
+                (self.mode == IndexMode::Tracked && self.text_tier).then_some(code)
+            }
+            code => {
+                if !self.languages.is_empty() && !self.languages.contains(&code) {
+                    log::debug!(
+                        "Skipping {} ({:?} not in configured languages)",
+                        path.display(),
+                        code
+                    );
+                    return None;
+                }
+                Some(code)
+            }
+        }
+    }
+
+    /// Whether a workspace-RELATIVE path is under a directory the walker would
+    /// descend into. With `hidden = false` (the default, like ripgrep) no dot
+    /// segment is; with `hidden = true` only `.git/` and `.reflex/` are skipped.
+    ///
+    /// Relative paths only: an absolute path's own ancestors (`/tmp/.cache/…`) are
+    /// none of the walker's business.
+    pub fn hidden_ok(&self, rel: &Path) -> bool {
+        rel.components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .all(|seg| {
+                if seg == "." || seg == ".." {
+                    return true;
+                }
+                if seg == ".git" || seg == crate::cache::CACHE_DIR {
+                    return false;
+                }
+                self.hidden || !is_hidden_segment(seg)
+            })
+    }
+
+    /// `[index] hidden`.
+    pub fn hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// Whether the policy admits this path. Directories are always admitted (the
+    /// walker descends; files decide), unless an exclude names them.
+    pub fn admits(&self, path: &Path, is_dir: bool) -> bool {
+        match &self.overrides {
+            None => true,
+            Some(ov) => !ov.matched(path, is_dir).is_ignore(),
+        }
+    }
+
+    /// The walker-side view of the policy.
+    pub fn overrides(&self) -> Option<&ignore::overrides::Override> {
+        self.overrides.as_ref()
+    }
+}
+
+/// What one directory walk found.
+#[derive(Debug, Default)]
+struct Discovered {
+    files: Vec<PathBuf>,
+    /// On-disk size of each entry of `files` (0 when unknown); drives batching.
+    sizes: Vec<u64>,
+    skipped_too_large: usize,
+    skipped_bytes_too_large: u64,
+    skipped_binary: usize,
+}
+
+/// A path segment the walker treats as hidden: a dot-name other than `.` / `..`.
+/// Shared by the walker policy, the freshness check and the zero-result hint.
+pub fn is_hidden_segment(seg: &str) -> bool {
+    seg.len() > 1 && seg.starts_with('.') && seg != ".."
+}
+
+/// ripgrep's binary rule: a NUL byte anywhere in the file.
+///
+/// Not "in the first 8 KB": a protobuf blob on the Kubernetes checkout
+/// (`swagger.pb`, 4109 word matches) carries its first NUL past that point, and
+/// ripgrep still skips it. The indexer holds the whole file in memory when it
+/// asks, so the full scan is free; `memchr` makes it a few GB/s.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    memchr::memchr(0, bytes).is_some()
+}
+
+/// [`is_binary`] on the file at `path`. A file that cannot be read is not called
+/// binary here; the read that follows reports the error. Callers apply this only
+/// to non-code files under `max_file_size`.
+pub fn looks_binary(path: &Path) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) => is_binary(&bytes),
+        Err(_) => false,
+    }
+}
+
+/// Drops the shared query handles for a workspace when an index run ends,
+/// on every exit path including errors and panics.
+struct InvalidateOnDrop(std::path::PathBuf);
+
+impl Drop for InvalidateOnDrop {
+    fn drop(&mut self) {
+        crate::query::invalidate_caches(&self.0);
+    }
 }
 
 impl Indexer {
     /// Create a new indexer with the given cache manager and config
     pub fn new(cache: CacheManager, config: IndexConfig) -> Self {
-        Self { cache, config }
+        Self {
+            cache,
+            config,
+            batch_limits: None,
+        }
+    }
+
+    /// Override the per-batch limits (files, bytes). For tests that need to
+    /// exercise multi-batch builds on small trees; production reads
+    /// `REFLEX_INDEX_BATCH_FILES` / `REFLEX_INDEX_BATCH_BYTES` or the defaults.
+    #[doc(hidden)]
+    pub fn set_batch_limits(&mut self, max_files: usize, max_bytes: u64) {
+        self.batch_limits = Some((max_files, max_bytes));
+    }
+
+    fn batch_limits(&self) -> (usize, u64) {
+        if let Some(limits) = self.batch_limits {
+            return limits;
+        }
+        let files = std::env::var("REFLEX_INDEX_BATCH_FILES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(BATCH_MAX_FILES);
+        let bytes = std::env::var("REFLEX_INDEX_BATCH_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(BATCH_MAX_BYTES);
+        (files, bytes)
+    }
+
+    /// The `[index] include/exclude` policy for a workspace root.
+    pub fn path_policy(&self, root: &Path) -> PathPolicy {
+        PathPolicy::from_config(root, &self.config)
     }
 
     /// Build or update the index for the given root directory
@@ -168,6 +451,9 @@ impl Indexer {
     ) -> Result<IndexStats> {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
+        // Files modified at or after this instant record an unknown mtime, so a
+        // write racing the read is caught by hash on the next status check.
+        let run_start = std::time::SystemTime::now();
 
         // Exclusive workspace lock for the whole run. Two indexers streaming
         // into the same content.bin/trigrams.bin is how a reader ends up with a
@@ -179,6 +465,12 @@ impl Indexer {
         )?;
         // A previous indexer that died mid-write leaves `*.tmp` behind.
         crate::atomic_write::remove_stale_tmp(&cache_dir);
+
+        // Any open handle on the stores about to be rewritten is dropped now, and
+        // again on every exit path below, so a query in this process never reads a
+        // mix of old and new files and never keeps a memo of a stale verdict.
+        crate::query::invalidate_caches(root);
+        let _invalidate_on_exit = InvalidateOnDrop(root.to_path_buf());
 
         // The detached symbol pass holds meta.db but NOT this lock, so acquiring
         // `index.lock` above proves nothing about SQLite. Yield to it here, before
@@ -204,18 +496,12 @@ impl Indexer {
             log::info!("Not a git repository, using default branch");
         }
 
-        // Configure thread pool for parallel processing
-        // 0 = auto (use 80% of available cores to avoid locking the system)
-        let num_threads = if self.config.parallel_threads == 0 {
-            let available_cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            // Use 80% of available cores (minimum 1, maximum 8)
-            // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
-            ((available_cores as f64 * 0.8).ceil() as usize).clamp(1, 8)
-        } else {
-            self.config.parallel_threads
-        };
+        // Configure thread pool for parallel processing.
+        // 0 = auto (80% of available cores, up to 32 — the query pool's rule).
+        // The pool reads, hashes, extracts imports and trigrams; the only serial
+        // work left is streaming file bytes into content.bin. Peak memory is set
+        // by the batch byte budget, not by the thread count.
+        let num_threads = crate::models::resolve_thread_count(self.config.parallel_threads, 32);
 
         log::info!(
             "Using {} threads for parallel indexing (out of {} available)",
@@ -244,20 +530,21 @@ impl Indexer {
         // otherwise make the incremental check see a matching file count and skip
         // the rebuild — leaving the deleted file in content.bin as a ghost hit. A
         // deletion always requires the binary stores to be rewritten.
-        let had_deletions = match self.cache.identify_deleted_files() {
+        let deleted_file_count = match self.cache.identify_deleted_files() {
             Ok(gone) if !gone.is_empty() => {
                 log::info!("Removing {} deleted files from meta.db", gone.len());
                 if let Err(e) = self.cache.delete_files_from_db(&gone) {
                     log::warn!("Failed to prune deleted files: {}", e);
                 }
-                true
+                gone.len()
             }
-            Ok(_) => false,
+            Ok(_) => 0,
             Err(e) => {
                 log::warn!("Could not identify deleted files: {}", e);
-                false
+                0
             }
         };
+        let had_deletions = deleted_file_count > 0;
 
         // Check available disk space after cache is initialized
         self.check_disk_space(root)?;
@@ -271,12 +558,21 @@ impl Indexer {
         );
 
         // Step 1: Walk directory tree and collect files
-        let (files, skipped_too_large, skipped_bytes_too_large) = self.discover_files(root)?;
+        let phase_start = Instant::now();
+        let Discovered {
+            files,
+            sizes,
+            skipped_too_large,
+            skipped_bytes_too_large,
+            skipped_binary,
+        } = self.discover_files(root)?;
         let total_files = files.len();
         log::info!(
-            "Discovered {} files to index ({} skipped: too large)",
+            "Discovered {} files to index ({} skipped: too large, {} binary) in {} ms",
             total_files,
-            skipped_too_large
+            skipped_too_large,
+            skipped_binary,
+            phase_start.elapsed().as_millis()
         );
 
         // Step 1.4: Parse tsconfig.json files for TypeScript/Vue path alias resolution
@@ -306,6 +602,9 @@ impl Indexer {
             // Every path we saw on disk this pass. Needed for the deletion check
             // below, which the hash loop alone cannot make.
             let mut current_paths = std::collections::HashSet::<String>::with_capacity(files.len());
+            // (path, size, mtime_ns) of every file proven unchanged, so the stored
+            // fingerprint can follow a `touch` or a reverted edit without a rebuild.
+            let mut stat_rows: Vec<(String, u64, i64)> = Vec::with_capacity(files.len());
 
             for file_path in &files {
                 // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
@@ -325,15 +624,21 @@ impl Indexer {
 
                 // Check if file exists in cache
                 if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
-                    // Read and hash file to check if changed
-                    match std::fs::read_to_string(file_path) {
-                        Ok(content) => {
-                            let current_hash = self.hash_content(content.as_bytes());
+                    // Stat before the read, for the same reason as the main pass.
+                    let stat = std::fs::metadata(file_path)
+                        .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
+                        .unwrap_or((0, 0));
+                    // Read and hash file to check if changed. Raw bytes, exactly as
+                    // the main pass and the freshness check hash them.
+                    match std::fs::read(file_path) {
+                        Ok(bytes) => {
+                            let current_hash = self.hash_content(&bytes);
                             if &current_hash != existing_hash {
                                 any_changed = true;
                                 log::debug!("File changed: {}", path_str);
                                 break; // Early exit - we know we need to rebuild
                             }
+                            stat_rows.push((normalized_path.clone(), stat.0, stat.1));
                         }
                         Err(_) => {
                             any_changed = true;
@@ -410,10 +715,26 @@ impl Indexer {
                                 log::warn!("Failed to refresh branch metadata: {}", e);
                             }
 
+                            // Same for the per-file fingerprint: the bytes are
+                            // current, but a `touch` or a reverted edit has moved
+                            // the mtime, and git's view of which paths are dirty
+                            // may have changed too.
+                            let dirty_paths = git_state
+                                .as_ref()
+                                .map(|s| s.dirty_paths.clone())
+                                .unwrap_or_default();
+                            if let Err(e) =
+                                self.cache.refresh_fingerprints(&stat_rows, &dirty_paths)
+                            {
+                                log::warn!("Failed to refresh file fingerprints: {}", e);
+                            }
+
                             let mut stats = self.cache.stats()?;
                             stats.unchanged_files = total_files;
+                            stats.deleted_files = deleted_file_count;
                             stats.skipped_too_large = skipped_too_large;
                             stats.skipped_bytes_too_large = skipped_bytes_too_large;
+                            stats.skipped_binary = skipped_binary;
                             return Ok(stats);
                         }
                         log::warn!(
@@ -442,22 +763,19 @@ impl Indexer {
         let mut new_file_count = 0usize;
         let mut modified_file_count = 0usize;
         let mut unchanged_file_count = 0usize;
-        let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
+        let mut file_metadata: Vec<crate::cache::FileRow> = Vec::new(); // For batch SQLite update
+        let dirty_paths: std::collections::HashSet<String> = git_state
+            .as_ref()
+            .map(|s| s.dirty_paths.clone())
+            .unwrap_or_default();
         let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
         let mut all_exports: Vec<(String, Vec<ExportInfo>)> = Vec::new(); // For batch export insertion
 
-        // Initialize trigram index and content store
-        let mut trigram_index = TrigramIndex::new();
+        // Initialize trigram builder and content store. The builder spills each
+        // batch to `<cache>/trigram_temp/` only when there is more than one batch;
+        // a single batch stays in memory and the directory is never created.
+        let mut trigram_builder = TrigramIndexBuilder::new(self.cache.path().join("trigram_temp"));
         let mut content_writer = ContentWriter::new();
-
-        // Enable batch-flush mode for trigram index if we have lots of files
-        if total_files > 10000 {
-            let temp_dir = self.cache.path().join("trigram_temp");
-            trigram_index
-                .enable_batch_flush(temp_dir)
-                .context("Failed to enable batch-flush mode for trigram index")?;
-            log::info!("Enabled batch-flush mode for {} files", total_files);
-        }
 
         // Initialize content writer to start streaming writes immediately
         let content_path = self.cache.path().join("content.bin");
@@ -487,7 +805,9 @@ impl Indexer {
         // Shared status message for progress callback
         let progress_status = Arc::new(Mutex::new("Indexing files...".to_string()));
 
-        let _start_time = Instant::now();
+        let batch_phase_start = Instant::now();
+        let mut pool_ms = 0u128;
+        let mut flush_ms = 0u128;
 
         // Spawn a background thread to update progress bar and call callback during parallel processing
         let counter_for_thread = Arc::clone(&progress_counter);
@@ -523,31 +843,39 @@ impl Indexer {
             .build()
             .context("Failed to create thread pool")?;
 
-        // Process files in batches to avoid OOM on huge codebases
-        // Batch size: process 5000 files at a time to limit memory usage
-        const BATCH_SIZE: usize = 5000;
-        let num_batches = total_files.div_ceil(BATCH_SIZE);
+        // Process files in batches to bound memory: a batch holds at most
+        // `max_files` files and about `max_bytes` bytes of text, so the pool's
+        // in-flight contents and the trigram build's postings stay bounded on
+        // any tree.
+        let (max_files, max_bytes) = self.batch_limits();
+        let batches = plan_batches(&sizes, max_files, max_bytes);
+        let num_batches = batches.len();
+        let spill_to_disk = num_batches > 1;
         log::info!(
-            "Processing {} files in {} batches of up to {} files",
+            "Processing {} files in {} batches (<= {} files, ~{} MB each)",
             total_files,
             num_batches,
-            BATCH_SIZE
+            max_files,
+            max_bytes >> 20
         );
 
-        for (batch_idx, batch_files) in files.chunks(BATCH_SIZE).enumerate() {
+        for (batch_idx, batch_range) in batches.into_iter().enumerate() {
+            let batch_files = &files[batch_range];
             log::info!(
                 "Processing batch {}/{} ({} files)",
                 batch_idx + 1,
                 num_batches,
                 batch_files.len()
             );
+            let pool_start = Instant::now();
 
-            // Process files in parallel using rayon with custom thread pool
+            // Process files in parallel using rayon with custom thread pool.
+            // `map_init` gives each worker one reusable trigram sort buffer.
             let counter_clone = Arc::clone(&progress_counter);
             let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
                 batch_files
                     .par_iter()
-                    .map(|file_path| {
+                    .map_init(Vec::<u64>::new, |trigram_scratch, file_path| {
                 // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
                 // Always emit forward slashes so the persisted path is deterministic across OSes.
                 let path_str = file_path.to_string_lossy().to_string();
@@ -559,9 +887,20 @@ impl Indexer {
                     path_str.trim_start_matches("./").replace('\\', "/")
                 };
 
-                // Read file content once (used for hashing, trigrams, and parsing)
-                let content = match std::fs::read_to_string(file_path) {
-                    Ok(c) => c,
+                // Stat BEFORE the read. If the file changes between the two, the
+                // recorded (size, mtime) is older than the bytes, so the next status
+                // check re-hashes it rather than trusting a stat that matches.
+                let (size, mtime_ns) = std::fs::metadata(file_path)
+                    .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
+                    .unwrap_or((0, 0));
+
+                // Read file content once (used for hashing, trigrams, and parsing).
+                // The hash is of the RAW bytes, so the freshness check can hash a
+                // file on disk and compare. Invalid UTF-8 (a Latin-1 `.po`, an old
+                // doc) is decoded lossily rather than dropped: ripgrep searches
+                // those bytes, and an agent expects the same.
+                let bytes = match std::fs::read(file_path) {
+                    Ok(b) => b,
                     Err(e) => {
                         log::warn!("Failed to read {}: {}", path_str, e);
                         // Update progress
@@ -569,20 +908,23 @@ impl Indexer {
                         return None;
                     }
                 };
-
-                // Compute hash from content (no duplicate file read!)
-                let hash = self.hash_content(content.as_bytes());
+                let hash = self.hash_content(&bytes);
+                let content = match String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                };
 
                 // Detect language
-                let ext = file_path.extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                let language = Language::from_extension(ext);
+                let language = Language::from_path(file_path);
 
                 // Count lines in the file
                 let line_count = content.lines().count();
 
+                // Trigram postings, sorted, without a file id (assigned serially below).
+                let trigram_run = crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
+
                 // Extract dependencies and exports for supported languages
+                let mut parsed_exports: Vec<ExportInfo> = Vec::new();
                 let dependencies = match language {
                     Language::Rust => {
                         match RustDependencyExtractor::extract_dependencies(&content) {
@@ -603,10 +945,14 @@ impl Indexer {
                         }
                     }
                     Language::TypeScript | Language::JavaScript => {
-                        // Find nearest tsconfig for path alias resolution
+                        // Find nearest tsconfig for path alias resolution. One parse
+                        // yields both the imports and the re-exports.
                         let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match TypeScriptDependencyExtractor::extract_dependencies_with_alias_map(&content, alias_map) {
-                            Ok(deps) => deps,
+                        match TypeScriptDependencyExtractor::extract_dependencies_and_exports(&content, alias_map) {
+                            Ok((deps, exports)) => {
+                                parsed_exports = exports;
+                                deps
+                            }
                             Err(e) => {
                                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
                                 Vec::new()
@@ -695,10 +1041,14 @@ impl Indexer {
                         }
                     }
                     Language::Vue => {
-                        // Find nearest tsconfig for path alias resolution
+                        // Find nearest tsconfig for path alias resolution. One parse
+                        // per script block yields both the imports and the re-exports.
                         let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match VueDependencyExtractor::extract_dependencies_with_alias_map(&content, alias_map) {
-                            Ok(deps) => deps,
+                        match VueDependencyExtractor::extract_dependencies_and_exports(&content, alias_map) {
+                            Ok((deps, exports)) => {
+                                parsed_exports = exports;
+                                deps
+                            }
                             Err(e) => {
                                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
                                 Vec::new()
@@ -718,33 +1068,9 @@ impl Indexer {
                     _ => Vec::new(),
                 };
 
-                // Extract exports (for barrel export tracking)
-                let exports = match language {
-                    Language::TypeScript | Language::JavaScript => {
-                        // Find nearest tsconfig for path alias resolution
-                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match TypeScriptDependencyExtractor::extract_export_declarations(&content, alias_map) {
-                            Ok(exports) => exports,
-                            Err(e) => {
-                                log::warn!("Failed to extract exports from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Vue => {
-                        // Find nearest tsconfig for path alias resolution
-                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match VueDependencyExtractor::extract_export_declarations(&content, alias_map) {
-                            Ok(exports) => exports,
-                            Err(e) => {
-                                log::warn!("Failed to extract exports from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    // Other languages not yet implemented for export tracking
-                    _ => Vec::new(),
-                };
+                // Exports (barrel re-export tracking) came out of the same parse
+                // as the dependencies above; only TypeScript/JavaScript/Vue have them.
+                let exports = parsed_exports;
 
                 // Update progress atomically
                 counter_clone.fetch_add(1, Ordering::Relaxed);
@@ -755,12 +1081,16 @@ impl Indexer {
                     content,
                     language,
                     line_count,
+                    size,
+                    mtime_ns,
                     dependencies,
                     exports,
+                    trigram_run,
                 })
                 })
                 .collect()
             });
+            pool_ms += pool_start.elapsed().as_millis();
 
             // Process batch results immediately (streaming approach to minimize memory)
             for result in results.into_iter().flatten() {
@@ -769,11 +1099,10 @@ impl Indexer {
                 // and downstream filters expect, regardless of host separator.
                 let normalized_pathbuf = PathBuf::from(&result.path_str);
 
-                // Add file to trigram index (get file_id)
-                let file_id = trigram_index.add_file(normalized_pathbuf.clone());
-
-                // Index file content directly (avoid accumulating all trigrams)
-                trigram_index.index_file(file_id, &result.content);
+                // Register the file with the trigram builder (assigns file_id in
+                // discovery order) and hand it the postings extracted in the pool.
+                let _file_id =
+                    trigram_builder.add_file(normalized_pathbuf.clone(), result.trigram_run);
 
                 // Add to content store
                 content_writer.add_file(normalized_pathbuf, &result.content);
@@ -788,12 +1117,15 @@ impl Indexer {
                 }
 
                 // Prepare file metadata for batch database update
-                file_metadata.push((
-                    result.path_str.clone(),
-                    result.hash.clone(),
-                    format!("{:?}", result.language),
-                    result.line_count,
-                ));
+                file_metadata.push(crate::cache::FileRow {
+                    path: result.path_str.clone(),
+                    hash: result.hash.clone(),
+                    language: format!("{:?}", result.language),
+                    line_count: result.line_count,
+                    size: result.size,
+                    mtime_ns: result.mtime_ns,
+                    dirty: dirty_paths.contains(&result.path_str),
+                });
 
                 // Collect dependencies for batch insertion (if any)
                 if !result.dependencies.is_empty() {
@@ -808,18 +1140,28 @@ impl Indexer {
                 new_hashes.insert(result.path_str, result.hash);
             }
 
-            // Flush trigram index batch to disk if batch-flush mode is enabled
-            if total_files > 10000 {
-                let flush_msg = format!("Flushing batch {}/{}...", batch_idx + 1, num_batches);
-                if show_progress {
-                    pb.set_message(flush_msg.clone());
-                }
-                *progress_status.lock().unwrap() = flush_msg;
-                trigram_index
-                    .flush_batch()
-                    .context("Failed to flush trigram batch")?;
+            // Build this batch's posting lists (sharded, parallel) into a partial.
+            let flush_msg = format!(
+                "Building trigram batch {}/{}...",
+                batch_idx + 1,
+                num_batches
+            );
+            if show_progress {
+                pb.set_message(flush_msg.clone());
             }
+            *progress_status.lock().unwrap() = flush_msg;
+            let flush_start = Instant::now();
+            trigram_builder
+                .flush_batch(&pool, spill_to_disk)
+                .context("Failed to build trigram batch")?;
+            flush_ms += flush_start.elapsed().as_millis();
         }
+        log::info!(
+            "phase read+extract: {} ms in pool, {} ms building trigram batches, {} ms total",
+            pool_ms,
+            flush_ms,
+            batch_phase_start.elapsed().as_millis()
+        );
 
         // Wait for progress thread to finish
         if let Some(thread) = progress_thread {
@@ -832,45 +1174,26 @@ impl Indexer {
             pb.set_position(final_count);
         }
 
-        // Finalize trigram index (sort and deduplicate posting lists)
-        *progress_status.lock().unwrap() = "Finalizing trigram index...".to_string();
-        if show_progress {
-            pb.set_message("Finalizing trigram index...".to_string());
-        }
-        trigram_index.finalize();
-
         // Update progress bar message for post-processing
         *progress_status.lock().unwrap() = "Writing file metadata to database...".to_string();
         if show_progress {
             pb.set_message("Writing file metadata to database...".to_string());
         }
 
+        let files_tx_start = Instant::now();
         // Batch write file metadata AND branch hashes in a SINGLE atomic transaction
         // This ensures that if files are inserted, their hashes are guaranteed to be inserted too
         if !file_metadata.is_empty() {
-            // Prepare files data (path, language, line_count)
-            let files_without_hash: Vec<(String, String, usize)> = file_metadata
-                .iter()
-                .map(|(path, _hash, lang, lines)| (path.clone(), lang.clone(), *lines))
-                .collect();
-
             // Record files for this branch (for branch-aware indexing)
             *progress_status.lock().unwrap() = "Recording branch files...".to_string();
             if show_progress {
                 pb.set_message("Recording branch files...".to_string());
             }
 
-            // Prepare branch files data (path, hash)
-            let branch_files: Vec<(String, String)> = file_metadata
-                .iter()
-                .map(|(path, hash, _, _)| (path.clone(), hash.clone()))
-                .collect();
-
             // Use atomic method that combines both operations
             self.cache
                 .batch_update_files_and_branch(
-                    &files_without_hash,
-                    &branch_files,
+                    &file_metadata,
                     &branch,
                     git_state.as_ref().map(|s| s.commit.as_str()),
                 )
@@ -896,6 +1219,22 @@ impl Indexer {
             .checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
         log::debug!("WAL checkpoint completed - database is fully synced");
+
+        log::info!(
+            "phase files+branch transaction: {} ms",
+            files_tx_start.elapsed().as_millis()
+        );
+        let deps_start = Instant::now();
+
+        // Steps 2.5 and 2.6 share one connection, one in-memory path resolver and
+        // one transaction. The resolver is built AFTER the files transaction above
+        // committed, because `INSERT OR REPLACE` hands every re-indexed file a new
+        // id and imports may target files that did not change.
+        let mut dep_conn = crate::cache::open_meta_db(self.cache.path().join("meta.db"))
+            .context("Failed to open meta.db for dependency recording")?;
+        let resolver = crate::dependency::PathResolver::from_conn(&dep_conn)
+            .context("Failed to load file paths for dependency resolution")?;
+        let mut dep_writer = crate::dependency::DependencyWriter::begin(&mut dep_conn)?;
 
         // Step 2.5: Insert dependencies (after files are inserted and have IDs)
         if !all_dependencies.is_empty() {
@@ -995,34 +1334,13 @@ impl Indexer {
                 }
             }
 
-            // Find and parse all tsconfig.json files for TypeScript/Vue projects (monorepo support)
-            let tsconfigs =
-                crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
-                    log::warn!("Failed to parse tsconfig.json files: {}", e);
-                    HashMap::new()
-                });
-            if !tsconfigs.is_empty() {
-                log::info!("Found {} tsconfig.json files", tsconfigs.len());
-                for (config_dir, alias_map) in &tsconfigs {
-                    log::debug!(
-                        "  {} (base_url: {:?}, {} aliases)",
-                        config_dir.display(),
-                        alias_map.base_url,
-                        alias_map.aliases.len()
-                    );
-                }
-            }
-
-            // Create dependency index to resolve paths and insert dependencies
-            let cache_for_deps = CacheManager::new(root);
-            let dep_index = DependencyIndex::new(cache_for_deps);
-
+            // `tsconfigs` (parsed once in Step 1.4) is reused here for alias resolution.
             let mut total_deps_inserted = 0;
 
             // Process each file's dependencies
             for (file_path, import_infos) in all_dependencies {
                 // Get file ID from database
-                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                let file_id = match resolver.get_file_id_by_path(&file_path)? {
                     Some(id) => id,
                     None => {
                         log::warn!(
@@ -1206,7 +1524,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved PHP dependency: {} -> {} (file_id={})",
@@ -1250,7 +1568,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Python dependency: {} -> {} (file_id={})",
@@ -1292,7 +1610,7 @@ impl Indexer {
                             Some(&file_path),
                         ) {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Go dependency: {} -> {} (file_id={})",
@@ -1367,7 +1685,7 @@ impl Indexer {
                                     normalized_candidate,
                                     candidate_path
                                 );
-                                match dep_index.get_file_id_by_path(&normalized_candidate) {
+                                match resolver.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
                                         log::debug!(
                                             "Resolved TS/JS dependency: {} -> {} (file_id={})",
@@ -1426,7 +1744,7 @@ impl Indexer {
 
                         if let Some(resolved_path) = resolved_path_opt {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Rust dependency: {} -> {} (file_id={})",
@@ -1470,7 +1788,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Java dependency: {} -> {} (file_id={})",
@@ -1516,7 +1834,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Kotlin dependency: {} -> {} (file_id={})",
@@ -1564,7 +1882,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Ruby dependency: {} -> {} (file_id={})",
@@ -1605,7 +1923,7 @@ impl Indexer {
                             Some(&file_path),
                         ) {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved C dependency: {} -> {} (file_id={})",
@@ -1656,7 +1974,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved C++ dependency: {} -> {} (file_id={})",
@@ -1699,7 +2017,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved C# dependency: {} -> {} (file_id={})",
@@ -1740,7 +2058,7 @@ impl Indexer {
                             Some(&file_path),
                         ) {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Zig dependency: {} -> {} (file_id={})",
@@ -1802,7 +2120,7 @@ impl Indexer {
                                     candidate_path.replace('\\', "/")
                                 };
 
-                                match dep_index.get_file_id_by_path(&normalized_candidate) {
+                                match resolver.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
                                         log::trace!(
                                             "Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
@@ -1860,14 +2178,10 @@ impl Indexer {
                     });
                 }
 
-                // Clear existing dependencies for this file (incremental reindex)
-                dep_index.clear_dependencies(file_id)?;
-
-                // Batch insert dependencies
-                if !resolved_deps.is_empty() {
-                    dep_index.batch_insert_dependencies(&resolved_deps)?;
-                    total_deps_inserted += resolved_deps.len();
-                }
+                // Clear existing dependencies for this file, then insert the new
+                // rows, inside the shared transaction.
+                dep_writer.replace_dependencies(file_id, &resolved_deps)?;
+                total_deps_inserted += resolved_deps.len();
             }
 
             log::info!("Extracted {} dependencies", total_deps_inserted);
@@ -1880,23 +2194,13 @@ impl Indexer {
                 pb.set_message("Extracting exports...".to_string());
             }
 
-            // Reuse the tsconfigs parsed earlier for TypeScript/Vue path alias resolution
-            let tsconfigs =
-                crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
-                    log::warn!("Failed to parse tsconfig.json files: {}", e);
-                    HashMap::new()
-                });
-
-            // Create dependency index to resolve paths and insert exports
-            let cache_for_exports = CacheManager::new(root);
-            let dep_index = DependencyIndex::new(cache_for_exports);
-
+            // `tsconfigs` (parsed once in Step 1.4) is reused here for alias resolution.
             let mut total_exports_inserted = 0;
 
             // Process each file's exports
             for (file_path, export_infos) in all_exports {
                 // Get file ID from database
-                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                let file_id = match resolver.get_file_id_by_path(&file_path)? {
                     Some(id) => id,
                     None => {
                         log::warn!(
@@ -1944,7 +2248,7 @@ impl Indexer {
                                     candidate_path.to_string()
                                 };
 
-                                match dep_index.get_file_id_by_path(&normalized_candidate) {
+                                match resolver.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
                                         log::trace!(
                                             "Resolved export source: {} -> {} (file_id={})",
@@ -1991,10 +2295,10 @@ impl Indexer {
                     };
 
                     // Insert export into database
-                    dep_index.insert_export(
+                    dep_writer.insert_export(
                         file_id,
-                        export_info.exported_symbol,
-                        export_info.source_path,
+                        export_info.exported_symbol.as_deref(),
+                        &export_info.source_path,
                         resolved_source_id,
                         export_info.line_number,
                     )?;
@@ -2005,6 +2309,20 @@ impl Indexer {
 
             log::info!("Extracted {} exports", total_exports_inserted);
         }
+
+        // One commit for every dependency and export row of this run.
+        let (deps_written, exports_written) = dep_writer.commit()?;
+        drop(dep_conn);
+        if deps_written + exports_written > 0 {
+            self.cache
+                .checkpoint_wal()
+                .context("Failed to checkpoint WAL after dependency recording")?;
+        }
+        log::info!(
+            "phase dependencies+exports: {} rows, {} ms",
+            deps_written + exports_written,
+            deps_start.elapsed().as_millis()
+        );
 
         log::info!("Indexed {} files", files_indexed);
 
@@ -2018,15 +2336,16 @@ impl Indexer {
             pb.set_message("Writing trigram index...".to_string());
         }
         let trigrams_path = self.cache.path().join("trigrams.bin");
-        log::info!(
-            "Writing trigram index with {} trigrams to trigrams.bin",
-            trigram_index.trigram_count()
-        );
-
-        trigram_index
-            .write(&trigrams_path)
+        let write_start = Instant::now();
+        trigram_builder
+            .write(&pool, &trigrams_path)
             .context("Failed to write trigram index")?;
-        log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
+        log::info!(
+            "phase trigram write: {} trigrams, {} files, {} ms",
+            trigram_builder.trigram_count(),
+            trigram_builder.file_count(),
+            write_start.elapsed().as_millis()
+        );
 
         // Step 4: Finalize content store (already been writing incrementally)
         *progress_status.lock().unwrap() = "Finalizing content store...".to_string();
@@ -2059,9 +2378,11 @@ impl Indexer {
         let mut stats = self.cache.stats()?;
         stats.new_files = new_file_count;
         stats.modified_files = modified_file_count;
+        stats.deleted_files = deleted_file_count;
         stats.unchanged_files = unchanged_file_count;
         stats.skipped_too_large = skipped_too_large;
         stats.skipped_bytes_too_large = skipped_bytes_too_large;
+        stats.skipped_binary = skipped_binary;
         log::info!(
             "Indexing complete: {} files (new={}, modified={}, unchanged={})",
             stats.total_files,
@@ -2076,21 +2397,11 @@ impl Indexer {
     /// Discover all indexable files in the directory tree.
     ///
     /// Returns `(files, skipped_too_large_count, skipped_too_large_bytes)`.
-    fn discover_files(&self, root: &Path) -> Result<(Vec<PathBuf>, usize, u64)> {
-        let mut files = Vec::new();
-        let mut skipped_count = 0usize;
-        let mut skipped_bytes = 0u64;
+    fn discover_files(&self, root: &Path) -> Result<Discovered> {
+        let mut out = Discovered::default();
 
-        // WalkBuilder from ignore crate automatically respects:
-        // - .gitignore (when in a git repo)
-        // - .ignore files
-        // - Hidden files (can be configured)
-        let walker = WalkBuilder::new(root)
-            .follow_links(self.config.follow_symlinks)
-            .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
-            .git_global(false) // Don't use global gitignore
-            .git_exclude(false) // Don't use .git/info/exclude
-            .build();
+        let policy = self.path_policy(root);
+        let walker = Self::walk_builder(root, &self.config, &policy).build();
 
         for entry in walker {
             let entry = entry?;
@@ -2102,25 +2413,69 @@ impl Indexer {
             }
 
             // Check extension / language eligibility first (cheap)
-            if !self.should_index_lang(path) {
+            let Some(lang) = policy.classify(path) else {
                 continue;
-            }
+            };
 
             // Check file size separately so we can report skipped counts
+            let mut size = 0u64;
             if let Ok(metadata) = std::fs::metadata(path) {
-                let size = metadata.len();
+                size = metadata.len();
                 if size > self.config.max_file_size as u64 {
                     log::debug!("Skipping {} (too large: {} bytes)", path.display(), size);
-                    skipped_count += 1;
-                    skipped_bytes += size;
+                    out.skipped_too_large += 1;
+                    out.skipped_bytes_too_large += size;
                     continue;
                 }
             }
 
-            files.push(path.to_path_buf());
+            // A code extension is trusted to be text. Anything else in the tracked
+            // tier (`image.png`, `OWNERS`, `data.bin`) is sniffed: ripgrep's rule, a
+            // NUL byte anywhere means binary, and a binary file is never in the
+            // index. Only the long tail pays the read (from the page cache, since
+            // the main pass reads it again a moment later).
+            if !lang.is_code() && looks_binary(path) {
+                log::debug!("Skipping {} (binary)", path.display());
+                out.skipped_binary += 1;
+                continue;
+            }
+
+            out.files.push(path.to_path_buf());
+            out.sizes.push(size);
         }
 
-        Ok((files, skipped_count, skipped_bytes))
+        Ok(out)
+    }
+
+    /// The directory walker every tree pass shares: the indexer, and the freshness
+    /// check outside git (which has no `git status` to name candidates and must
+    /// walk). One builder so the two can never disagree about what is in the tree.
+    pub fn walk_builder(root: &Path, config: &IndexConfig, policy: &PathPolicy) -> WalkBuilder {
+        // WalkBuilder from ignore crate automatically respects:
+        // - .gitignore (when in a git repo)
+        // - .ignore files
+        // - Hidden files (can be configured)
+        let mut builder = WalkBuilder::new(root);
+        builder
+            .follow_links(config.follow_symlinks)
+            .hidden(!policy.hidden())
+            .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
+            .git_global(false) // Don't use global gitignore
+            .git_exclude(false); // Don't use .git/info/exclude
+        if policy.hidden() {
+            // Dot-directories are walked, but never the repository's own and never
+            // Reflex's own cache: indexing `.reflex/content.bin` into content.bin
+            // is a loop, and `.git/objects` is binary noise by the thousand.
+            builder.filter_entry(|e| {
+                let name = e.file_name();
+                name != ".git" && name != crate::cache::CACHE_DIR
+            });
+        }
+        // `[index] include.patterns` / `exclude.patterns`, gitignore semantics.
+        if let Some(ov) = policy.overrides() {
+            builder.overrides(ov.clone());
+        }
+        builder
     }
 
     /// Whether a path is one Reflex would index, judged by extension alone.
@@ -2134,79 +2489,33 @@ impl Indexer {
     /// (git's own output is already filtered by that). Cheap enough to call per path
     /// in a `git status` listing.
     pub fn is_indexable_path(path: &Path) -> bool {
-        // Mirror the walker, which uses `ignore::WalkBuilder`'s `hidden(true)`
-        // default and so never descends into a dot-directory. Without this, Reflex's
-        // OWN `.reflex/config.toml` counts as an indexable change the moment the text
-        // tier claims `.toml`, and the index reports itself permanently stale.
-        if path
-            .components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .any(|seg| seg.starts_with('.') && seg != "." && seg != "..")
-        {
-            return false;
-        }
+        Self::is_indexable_path_with(path, None)
+    }
 
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy()) else {
-            return false;
+    /// [`Self::is_indexable_path`] under an `[index]` policy.
+    ///
+    /// The freshness check must apply the same policy as the walker: a file the
+    /// config excludes is not indexed, so editing it must not report staleness.
+    pub fn is_indexable_path_with(path: &Path, policy: Option<&PathPolicy>) -> bool {
+        let default_policy;
+        let policy = match policy {
+            Some(p) => p,
+            None => {
+                default_policy = PathPolicy::default();
+                &default_policy
+            }
         };
-        let Some(ext) = path.extension().map(|e| e.to_string_lossy()) else {
-            return false;
-        };
-        let lang = Language::from_extension(&ext);
-        // The text tier is judged by full NAME, so lock files stay out.
-        if lang.is_text() {
-            return crate::models::is_text_tier_file(&name);
-        }
-        lang.is_supported()
+        // Mirror the walker's hidden rule. Without this, Reflex's OWN
+        // `.reflex/config.toml` counts as an indexable change the moment the text
+        // tier claims `.toml`, and the index reports itself permanently stale.
+        policy.hidden_ok(path) && policy.classify(path).is_some()
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).
     fn should_index_lang(&self, path: &Path) -> bool {
-        let ext = match path.extension() {
-            Some(ext) => ext.to_string_lossy(),
-            None => return false,
-        };
-
-        let lang = Language::from_extension(&ext);
-
-        // The plain-text tier: docs, config and templates. Judged by full filename so
-        // lock files (100k+ lines of near-random trigrams) stay out.
-        if lang.is_text() {
-            if !self.config.text_tier {
-                return false;
-            }
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
-            // Deliberately NOT subject to `config.languages`. That option means "which
-            // PARSERS do I care about"; a user with languages = ["rust"] would
-            // otherwise lose the text tier silently, which is the very bug this tier
-            // exists to fix. `text_tier = false` is the way to turn it off.
-            return crate::models::is_text_tier_file(&name);
-        }
-
-        if !lang.is_supported() {
-            if !matches!(lang, Language::Unknown) {
-                log::debug!(
-                    "Skipping {} ({:?} parser not yet implemented)",
-                    path.display(),
-                    lang
-                );
-            }
-            return false;
-        }
-
-        if !self.config.languages.is_empty() && !self.config.languages.contains(&lang) {
-            log::debug!(
-                "Skipping {} ({:?} not in configured languages)",
-                path.display(),
-                lang
-            );
-            return false;
-        }
-
-        true
+        PathPolicy::from_config(Path::new("."), &self.config)
+            .classify(path)
+            .is_some()
     }
 
     /// Check if a file should be indexed based on config (language + size).
@@ -2228,9 +2537,9 @@ impl Indexer {
             return false;
         }
 
-        // TODO: Check include/exclude patterns when glob support is added
-        // For now, accept all files with supported language extensions
-
+        // `[index] include/exclude` patterns are applied by the walker
+        // (`discover_files`) and by `is_indexable_path_with`; this per-file check
+        // has no root to anchor them against.
         true
     }
 
@@ -2403,16 +2712,34 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        // .txt joined the plain-text tier in 1.7.2, so pick a genuinely unknown
-        // extension for this case.
+        // Tracked mode (the default) takes every file by path; whether a file is
+        // binary is decided from its bytes in `discover_files`, not here.
         let unsupported_file = temp.path().join("test.xyz");
         fs::write(&unsupported_file, "mystery format").unwrap();
-        assert!(!indexer.should_index(&unsupported_file));
+        assert!(indexer.should_index(&unsupported_file));
 
-        // A binary-ish extension stays out too.
+        // Allowlist mode keeps the pre-2.0.0 rule.
+        let allowlist = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                mode: IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(!allowlist.should_index(&unsupported_file));
         let binary_file = temp.path().join("logo.png");
         fs::write(&binary_file, "not really a png").unwrap();
-        assert!(!indexer.should_index(&binary_file));
+        assert!(!allowlist.should_index(&binary_file));
+    }
+
+    #[test]
+    fn test_binary_sniff() {
+        assert!(!is_binary(b"plain text\n"));
+        assert!(is_binary(b"\x89PNG\r\n\x1a\n\0\0"));
+        // Anywhere, not just the first 8 KB: ripgrep skips such a file too.
+        let mut late = vec![b'a'; 64 * 1024];
+        late.push(0);
+        assert!(is_binary(&late));
     }
 
     #[test]
@@ -2432,10 +2759,19 @@ mod tests {
             assert!(indexer.should_index(&path), "{name} should be indexed");
         }
 
-        // Lock files match a text extension but are excluded by name.
+        // Lock files are indexed in tracked mode (and left out of searches unless
+        // asked for); allowlist mode never indexes them.
         let lock = temp.path().join("package-lock.json");
         fs::write(&lock, "{}").unwrap();
-        assert!(!indexer.should_index(&lock));
+        assert!(indexer.should_index(&lock));
+        let allowlist = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                mode: IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(!allowlist.should_index(&lock));
     }
 
     #[test]
@@ -2465,10 +2801,25 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let no_ext_file = temp.path().join("Makefile");
-        fs::write(&no_ext_file, "all:\n\techo hello").unwrap();
+        // Tracked mode: every extensionless text file. Allowlist mode: only the
+        // names on the list (`Makefile`), not `README`.
+        let makefile = temp.path().join("Makefile");
+        fs::write(&makefile, "all:\n\techo hello").unwrap();
+        assert!(indexer.should_index(&makefile));
 
-        assert!(!indexer.should_index(&no_ext_file));
+        let readme = temp.path().join("README");
+        fs::write(&readme, "hello").unwrap();
+        assert!(indexer.should_index(&readme));
+
+        let allowlist = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                mode: IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(allowlist.should_index(&makefile));
+        assert!(!allowlist.should_index(&readme));
     }
 
     #[test]
@@ -2503,7 +2854,7 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
         assert_eq!(files.len(), 0);
     }
 
@@ -2518,7 +2869,7 @@ mod tests {
         let rust_file = temp.path().join("main.rs");
         fs::write(&rust_file, "fn main() {}").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("main.rs"));
     }
@@ -2536,11 +2887,14 @@ mod tests {
         fs::write(temp.path().join("app.js"), "console.log('hi')").unwrap();
         // Since 1.7.2 markdown IS indexed, in the plain-text tier.
         fs::write(temp.path().join("README.md"), "# Project").unwrap();
-        // Still skipped: no tier claims it.
+        // Since 2.0.0 (tracked mode) every non-binary file is indexed, whatever
+        // its extension; a binary one is sniffed out.
         fs::write(temp.path().join("mystery.xyz"), "?").unwrap();
+        fs::write(temp.path().join("blob.bin"), b"\0\x01\x02").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
-        assert_eq!(files.len(), 4, "3 code files plus the markdown");
+        let found = indexer.discover_files(temp.path()).unwrap();
+        assert_eq!(found.files.len(), 5, "3 code files, the markdown, the .xyz");
+        assert_eq!(found.skipped_binary, 1);
     }
 
     #[test]
@@ -2560,7 +2914,7 @@ mod tests {
         fs::create_dir(&tests_dir).unwrap();
         fs::write(tests_dir.join("test.rs"), "#[test] fn test() {}").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
         assert_eq!(files.len(), 3);
     }
 
@@ -2591,7 +2945,7 @@ mod tests {
         fs::create_dir(&ignored_dir).unwrap();
         fs::write(ignored_dir.join("excluded.rs"), "fn test() {}").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
 
         // Verify the expected files are found
         assert!(

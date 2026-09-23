@@ -162,17 +162,33 @@ fn gitignored_files_are_not_changes() {
 fn files_reflex_does_not_index_are_not_changes() {
     let temp = repo();
     // Editing something Reflex never indexes must not mark the index permanently
-    // stale. Note markdown, txt and json ARE indexed since 1.7.2 (the plain-text
-    // tier), so they belong in the test below, not here.
+    // stale. Since 2.0.0 (tracked mode) every non-binary path is indexable by
+    // PATH — a `.png` is kept out by its bytes, which the content-based freshness
+    // check sniffs (tests/freshness_no_git.rs). What stays out by path alone is
+    // the allowlist mode's old rule, checked here under that policy.
     fs::write(temp.path().join("logo.png"), "not really a png\n").unwrap();
     fs::write(temp.path().join("mystery.xyz"), "?\n").unwrap();
     fs::write(temp.path().join("package-lock.json"), "{}\n").unwrap();
 
-    let c = changes(temp.path());
+    let allowlist = reflex::indexer::PathPolicy::from_config(
+        temp.path(),
+        &reflex::models::IndexConfig {
+            mode: reflex::models::IndexMode::Allowlist,
+            ..Default::default()
+        },
+    );
+    let c = get_worktree_changes(temp.path(), |p| {
+        reflex::indexer::Indexer::is_indexable_path_with(Path::new(p), Some(&allowlist))
+    })
+    .unwrap();
     assert!(
         c.is_empty(),
-        "non-indexed file types must not count as staleness: {c:?}"
+        "allowlist mode: non-indexed file types must not count as staleness: {c:?}"
     );
+
+    // Tracked mode judges these by path as indexable; the content check decides.
+    let c = changes(temp.path());
+    assert_eq!(c.added_count, 3, "{c:?}");
 }
 
 #[test]

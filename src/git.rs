@@ -5,6 +5,7 @@
 //! for branch-aware indexing.
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -18,6 +19,9 @@ pub struct GitState {
     pub commit: String,
     /// Whether there are uncommitted changes (modified/added/deleted files)
     pub dirty: bool,
+    /// Every path `git status` lists (modified, added, deleted, untracked),
+    /// uncapped. The indexer records these as `dirty_at_index`.
+    pub dirty_paths: HashSet<String>,
 }
 
 /// Check if the current directory is inside a git repository
@@ -63,6 +67,39 @@ pub fn get_current_branch(root: impl AsRef<Path>) -> Result<String> {
         .to_string();
 
     Ok(branch)
+}
+
+/// The current branch, read from `.git/HEAD` without spawning `git`.
+///
+/// `git rev-parse --abbrev-ref HEAD` costs a process spawn (2–5 ms) and ran on
+/// every `--symbols` query. The answer is one small file: `ref: refs/heads/<name>`
+/// on a branch, or a bare SHA when detached (`HEAD`, matching `--abbrev-ref`).
+/// Worktrees and submodules keep a `.git` *file* holding `gitdir: <path>`, which is
+/// followed one level. `None` when there is no readable HEAD, in which case the
+/// caller falls back to what the indexer recorded (`_default`).
+pub fn read_head_branch(root: impl AsRef<Path>) -> Option<String> {
+    let mut git_dir = root.as_ref().join(".git");
+    if git_dir.is_file() {
+        let text = std::fs::read_to_string(&git_dir).ok()?;
+        let target = text.strip_prefix("gitdir:")?.trim();
+        let target = Path::new(target);
+        git_dir = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            root.as_ref().join(target)
+        };
+    }
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref:") {
+        let reference = reference.trim();
+        let name = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        return Some(name.to_string());
+    }
+    if !head.is_empty() && head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some("HEAD".to_string());
+    }
+    None
 }
 
 /// Get the current commit SHA
@@ -159,7 +196,129 @@ impl WorktreeChanges {
 }
 
 /// How many paths per category a [`WorktreeChanges`] will name.
-const MAX_REPORTED_PATHS: usize = 100;
+pub const MAX_REPORTED_PATHS: usize = 100;
+
+impl WorktreeChanges {
+    /// Count a path in a category, keeping the named list under the cap.
+    pub fn push_modified(&mut self, path: &str) {
+        self.modified_count += 1;
+        if self.modified.len() < MAX_REPORTED_PATHS {
+            self.modified.push(path.to_string());
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    pub fn push_added(&mut self, path: &str) {
+        self.added_count += 1;
+        if self.added.len() < MAX_REPORTED_PATHS {
+            self.added.push(path.to_string());
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    pub fn push_deleted(&mut self, path: &str) {
+        self.deleted_count += 1;
+        if self.deleted.len() < MAX_REPORTED_PATHS {
+            self.deleted.push(path.to_string());
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    /// Sort every list so the response is deterministic whatever order the
+    /// candidates arrived in.
+    pub fn sort(&mut self) {
+        self.modified.sort();
+        self.added.sort();
+        self.deleted.sort();
+    }
+}
+
+/// One `git status --porcelain=v1 -z` record: the two status columns and the path.
+fn porcelain_records(root: &Path) -> Result<Vec<(u8, u8, String)>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+            "--ignored=no",
+        ])
+        .output()
+        .context("Failed to execute git status")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let mut records = Vec::new();
+    // Records are NUL-terminated: "XY <path>\0". With --no-renames there is never a
+    // second path in a record, so a plain split is safe.
+    for record in output.stdout.split(|b| *b == 0) {
+        if record.len() < 4 {
+            continue;
+        }
+        let text = String::from_utf8_lossy(record);
+        let (status, path) = text.split_at(3);
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let mut bytes = status.bytes();
+        let x = bytes.next().unwrap_or(b' ');
+        let y = bytes.next().unwrap_or(b' ');
+        records.push((x, y, path.to_string()));
+    }
+    Ok(records)
+}
+
+/// Every path `git status` lists, uncapped and unfiltered.
+///
+/// The content-based freshness check uses this only as a CANDIDATE set: each path
+/// is then confirmed against the indexed fingerprint, so a file git calls modified
+/// whose bytes the index already holds is not stale.
+pub fn changed_paths(root: impl AsRef<Path>) -> Result<HashSet<String>> {
+    Ok(porcelain_records(root.as_ref())?
+        .into_iter()
+        .map(|(_, _, p)| p)
+        .collect())
+}
+
+/// Paths that differ between two commits (`git diff --name-only`).
+///
+/// When HEAD has moved since indexing, these are the tracked paths whose content
+/// may differ from what was indexed; each is then confirmed by fingerprint, so a
+/// commit of already-indexed content does not make the index stale.
+pub fn diff_names(root: impl AsRef<Path>, from: &str, to: &str) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root.as_ref())
+        .args(["diff", "--name-only", "-z", "--no-renames", from, to])
+        .output()
+        .context("Failed to execute git diff")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git diff {}..{} failed: {}",
+            from,
+            to,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(output
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
+}
 
 /// List working-tree changes against HEAD.
 ///
@@ -186,65 +345,46 @@ pub fn get_worktree_changes<F>(root: impl AsRef<Path>, keep: F) -> Result<Worktr
 where
     F: Fn(&str) -> bool,
 {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root.as_ref())
-        .args([
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--no-renames",
-            "--ignored=no",
-        ])
-        .output()
-        .context("Failed to execute git status")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "git status failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
     let mut changes = WorktreeChanges::default();
 
-    // Records are NUL-terminated: "XY <path>\0". With --no-renames there is never a
-    // second path in a record, so a plain split is safe.
-    for record in output.stdout.split(|b| *b == 0) {
-        if record.len() < 4 {
+    for (x, y, path) in porcelain_records(root.as_ref())? {
+        if !keep(&path) {
             continue;
         }
-        let text = String::from_utf8_lossy(record);
-        let (status, path) = text.split_at(3);
-        let path = path.trim();
-        if path.is_empty() || !keep(path) {
-            continue;
-        }
-
-        let mut bytes = status.bytes();
-        let x = bytes.next().unwrap_or(b' ');
-        let y = bytes.next().unwrap_or(b' ');
-
         // A delete in either column wins: the indexed row must go regardless of
         // whatever else the file did on the way there.
-        let (bucket, count) = if x == b'D' || y == b'D' {
-            (&mut changes.deleted, &mut changes.deleted_count)
+        if x == b'D' || y == b'D' {
+            changes.push_deleted(&path);
         } else if x == b'?' || x == b'A' {
-            (&mut changes.added, &mut changes.added_count)
+            changes.push_added(&path);
         } else {
-            (&mut changes.modified, &mut changes.modified_count)
-        };
-
-        *count += 1;
-        if bucket.len() < MAX_REPORTED_PATHS {
-            bucket.push(path.to_string());
-        } else {
-            changes.truncated = true;
+            changes.push_modified(&path);
         }
     }
 
     Ok(changes)
+}
+
+/// Whether `git check-ignore` says `path` (workspace-relative) is ignored.
+///
+/// `None` outside a git repository or when git cannot answer. Used only to explain
+/// a zero result, so a process spawn is acceptable here.
+pub fn is_ignored(root: impl AsRef<Path>, path: &str) -> Option<bool> {
+    let root = root.as_ref();
+    if !is_git_repo(root) || !is_git_available() {
+        return None;
+    }
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "-q", "--", path])
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Get complete git state for the current repository
@@ -260,12 +400,13 @@ pub fn get_git_state(root: impl AsRef<Path>) -> Result<GitState> {
 
     let branch = get_current_branch(root)?;
     let commit = get_current_commit(root)?;
-    let dirty = has_uncommitted_changes(root)?;
+    let dirty_paths = changed_paths(root)?;
 
     Ok(GitState {
         branch,
         commit,
-        dirty,
+        dirty: !dirty_paths.is_empty(),
+        dirty_paths,
     })
 }
 

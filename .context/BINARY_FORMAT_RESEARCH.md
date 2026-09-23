@@ -15,8 +15,14 @@ Reflex uses three distinct storage formats optimized for their specific use case
 3. **meta.db** - Structured metadata and statistics (SQLite)
 4. **hashes.json** - File hash cache for incremental indexing (JSON)
 5. **config.toml** - User configuration (TOML)
+6. **trigrams.bin** - Trigram inverted index, custom varint format (**V4 as of 2.0.0**, see §6 below)
 
 This hybrid approach balances performance, flexibility, and maintainability.
+
+> **2026-09-22 update.** symbols.bin was removed (runtime symbol detection, see
+> `RUNTIME_SYMBOL_DETECTION.md`). The live on-disk formats are `trigrams.bin`,
+> `content.bin`, `meta.db` and `config.toml`. Section 6 is the current
+> `trigrams.bin` specification; sections 1–5 are kept as design history.
 
 ---
 
@@ -298,6 +304,80 @@ compression_level = 3  # zstd level
 - ✅ Human-friendly (comments, clear syntax)
 - ✅ Rust ecosystem standard (Cargo.toml)
 - ✅ Type-safe deserialization with serde
+
+---
+
+### 6. trigrams.bin - Trigram Inverted Index (V4, 2026-09-22)
+
+**Purpose:** trigram → sorted `(file_id, line_no)` postings for candidate narrowing
+**Format:** custom; fixed-width header + directory, varint posting lists
+**Access:** memory-mapped; directory binary-searched in place, posting lists decoded on demand
+**Source:** `src/trigram.rs` (`encode_posting_list`, `PostingCursor`, `TrigramIndex::{write,load,find_entry}`)
+
+#### Structure
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Header (32 B)                                                        │
+│   "RFTG" | version u32 = 4 | num_trigrams u64 | num_files u64 |      │
+│   paths_offset u64                                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│ Directory: num_trigrams × 16 B, sorted by trigram                    │
+│   trigram u32 | data_offset u64 (absolute) | compressed_size u32     │
+├──────────────────────────────────────────────────────────────────────┤
+│ Data: per trigram, a sequence of FILE BLOCKS                         │
+│   varint(file_id − prev_file_id)        first block: delta from 0    │
+│   varint(n_lines << 1 | enc)            enc reserved, writer emits 0 │
+│   enc=0: n_lines × varint(line − prev_line), prev_line = 0 per block │
+├──────────────────────────────────────────────────────────────────────┤
+│ Paths @ paths_offset: num_files × { varint(len), utf8 }              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+All integers little-endian. Bytes 8..16 (`num_trigrams`) are read directly by
+`rfx stats` (`cli/misc.rs`); keep that offset stable across versions.
+
+#### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| **Drop `byte_offset` from postings** | Never read at query time (line verification re-scans the line from content.bin). It cost a third varint per posting and, worse, a wrapped ~5-byte delta at every file boundary. |
+| **One posting per distinct trigram per line** | The intersection key is `(file_id, line_no)`; per-byte duplicates were discarded at query time after being paid for on disk. Dedup happens in `extract_trigrams_with_locations` with a per-line scratch `Vec` (`sort_unstable` + `dedup`). |
+| **Per-file blocks with per-block line deltas** | Lines restart at 0 in each block, so the cross-file "wrap" never happens; a (trigram, file) pair costs 2 small varints of header. |
+| **`paths_offset` in the header** | `load` no longer decodes the whole directory to sum `compressed_size`s. Load is O(files) and allocates only the path list. |
+| **Directory searched in the mmap** | `find_entry` reads the 4-byte trigram at each probe (log₂ N probes, ≈16 for 44k trigrams) and decodes one 16-byte entry on a hit. No `Vec<DirectoryEntry>`, no re-sort. |
+| **`enc` bit reserved** | Leaves room for bitmap blocks (`varint(first_line) varint(nbytes) bitmap`) for dense trigrams without a version bump. Reader errors on `enc=1` ("unsupported block encoding"). Measured benefit today: 3.6 % on the Reflex repo, 21 % on the synthetic corpus — not implemented. |
+| **Bounds check at load** | `32 + 16·n ≤ paths_offset ≤ len`, else "layout out of bounds". This is the only guard the in-place directory search relies on. |
+
+#### Measured sizes
+
+| Corpus | corpus bytes | V3 | V4 | ratio |
+|---|---|---|---|---|
+| synthetic latency corpus (2000 files, 2 611 trigrams) | 32 350 466 | 127 420 820 (3.94x) | 30 281 814 | 0.94x |
+| Reflex repo (272 files, 44 246 trigrams) | 3 822 333 | — | 5 313 892 | 1.39x |
+
+V4 byte breakdown on the Reflex repo: directory 13 %, block headers 20 %, line
+deltas 67 %. `rfx index` prints `Index/corpus ratio: …` from
+`IndexStats::{trigram_index_bytes, corpus_bytes}` (corpus = content.bin
+`index_offset − 32`).
+
+#### Writers
+
+- `TrigramIndex::write` (in-memory): encodes every list first, so directory offsets
+  and `paths_offset` are known before the header is written; single pass.
+- `merge_partial_indices_to_file` (batch-flush k-way merge): writes a placeholder
+  32-byte header, streams data, then rewrites the file with the directory inserted;
+  `paths_offset = 32 + 16·n + data_len` is known before the rewrite. Partial-index
+  files use fixed 8-byte postings (`file_id u32, line_no u32`).
+
+#### Versioning
+
+`build.rs` folds `src/trigram.rs` into `CACHE_SCHEMA_HASH`; any format edit makes an
+existing cache report stale and forces a full rebuild on `rfx index`. `load` rejects
+other versions with `Unsupported trigrams.bin version: {v} (expected 4). Please
+re-index with 'reflex index'.` — `query/open_index.rs` matches on that text to fall
+back to an in-memory rebuild for the process, and treats any other load error as
+`CacheCorrupted`.
 
 ---
 

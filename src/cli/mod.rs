@@ -106,6 +106,11 @@ pub enum Command {
     ///   - Regex search: Pattern-controlled matching (opt-in with --regex)
     ///     Example: rfx query "^mb_.*" --regex → finds "mb_init", "mb_start", etc.
     ///
+    /// Patterns starting with `-` (clap reads them as flags): put them after `--`
+    /// or use --pattern:
+    ///   rfx query -- '-> Result<'
+    ///   rfx query --pattern '-> Result<'
+    ///
     /// Interactive mode:
     ///   - Launch with: rfx query
     ///   - Search, filter, and navigate code results in a live TUI
@@ -113,6 +118,16 @@ pub enum Command {
     Query {
         /// Search pattern (omit to launch interactive mode)
         pattern: Option<String>,
+
+        /// Search pattern, as a named flag: for patterns that start with `-`
+        /// (`--pattern '-> Result<'`), so agents never have to reach for `--`
+        #[arg(
+            long = "pattern",
+            value_name = "PATTERN",
+            conflicts_with = "pattern",
+            allow_hyphen_values = true
+        )]
+        pattern_flag: Option<String>,
 
         /// Search symbol definitions only (functions, classes, etc.)
         #[arg(short, long)]
@@ -172,6 +187,11 @@ pub enum Command {
         #[arg(long)]
         pretty: bool,
 
+        /// Print per-phase timings (open, candidates, verify, status, group) to stderr;
+        /// with --json they are included as a `timings` object
+        #[arg(long)]
+        timing: bool,
+
         /// AI-optimized mode: returns JSON with ai_instruction field
         /// Implies --json (minified by default, use --pretty for formatted output)
         /// Provides context-aware guidance to AI agents on response format and next actions
@@ -219,6 +239,29 @@ pub enum Command {
         #[arg(long)]
         contains: bool,
 
+        /// Match letters regardless of case (like `rg -i`)
+        ///
+        /// Works with the default whole-identifier search, with --contains and
+        /// with --regex. The literals are still looked up in the trigram index
+        /// under every case variant, so the query costs about the same as a
+        /// case-sensitive one.
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+
+        /// Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum)
+        ///
+        /// Lock files are indexed but left out of every search unless asked for.
+        /// `--lang lock` selects them alone.
+        #[arg(long)]
+        include_locks: bool,
+
+        /// Also search generated files (*.pb.go, *.min.js, *.map, *_generated.*)
+        ///
+        /// Judged by name; indexed but left out of every search unless asked for.
+        /// `--lang generated` selects them alone.
+        #[arg(long)]
+        include_generated: bool,
+
         /// Only show count and timing, not the actual results
         #[arg(short, long)]
         count: bool,
@@ -233,12 +276,15 @@ pub enum Command {
 
         /// Include files matching glob pattern (can be repeated)
         ///
-        /// Pattern syntax (NO shell quotes in the pattern itself):
+        /// Patterns follow gitignore rules (like ripgrep -g):
+        ///   a pattern containing / is anchored at the index root
+        ///   a bare name (*.rs, Makefile) matches at any depth
         ///   ** = recursive match (all subdirectories)
-        ///   *  = single level match (one directory)
+        ///   *  = single level match (never crosses /)
         ///
         /// Examples:
-        ///   --glob src/**/*.rs          All .rs files under src/ (recursive)
+        ///   --glob src/**/*.rs          All .rs files under src/ at the root only
+        ///   --glob **/src/**/*.rs       All .rs files under any src/ directory
         ///   --glob app/Models/*.php     PHP files directly in Models/ (not subdirs)
         ///   --glob tests/**/*_test.go   All test files under tests/
         ///
@@ -1052,6 +1098,7 @@ impl Cli {
             }
             Some(Command::Query {
                 pattern,
+                pattern_flag,
                 symbols,
                 lang,
                 kind,
@@ -1059,6 +1106,7 @@ impl Cli {
                 regex,
                 json,
                 pretty,
+                timing,
                 ai,
                 limit,
                 offset,
@@ -1066,6 +1114,9 @@ impl Cli {
                 file,
                 exact,
                 contains,
+                ignore_case,
+                include_locks,
+                include_generated,
                 count,
                 timeout,
                 plain,
@@ -1079,7 +1130,7 @@ impl Cli {
                 dependencies,
             }) => {
                 // If no pattern provided, launch interactive mode (REF-68: require TTY)
-                match pattern {
+                match pattern.or(pattern_flag) {
                     None => {
                         use crossterm::tty::IsTty;
                         if !std::io::stdin().is_tty() {
@@ -1098,6 +1149,7 @@ impl Cli {
                         regex,
                         json,
                         pretty,
+                        timing,
                         ai,
                         limit,
                         offset,
@@ -1105,6 +1157,9 @@ impl Cli {
                         file,
                         exact,
                         contains,
+                        ignore_case,
+                        include_locks,
+                        include_generated,
                         count,
                         timeout,
                         plain,

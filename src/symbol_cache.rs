@@ -27,7 +27,58 @@ pub struct SymbolCache {
 /// * v1 — pre-1.7.2: previews bounded in lines only, so a minified file cached
 ///   multi-megabyte previews.
 /// * v2 — 1.7.2: previews bounded at `parsers::preview::PREVIEW_MAX_BYTES`.
-const SYMBOL_FORMAT_VERSION: i64 = 2;
+/// * v3 — 2.0.0: `symbols_json` holds [`encode_symbols`] output — zstd-compressed
+///   JSON behind a 4-byte magic (raw JSON below 256 bytes). ~5x smaller on disk and
+///   ~5x less to write; decoding a candidate file costs microseconds.
+const SYMBOL_FORMAT_VERSION: i64 = 3;
+
+/// Marks a zstd-compressed symbol blob. Raw JSON starts with `[`, so the two
+/// encodings can never be confused.
+const BLOB_MAGIC: [u8; 4] = [0xFF, b'R', b'Z', 0x01];
+/// Blobs shorter than this are stored as raw JSON; compression would not pay.
+const BLOB_COMPRESS_MIN: usize = 256;
+/// zstd level: fast, and this JSON is repetitive enough that higher levels gain little.
+const BLOB_ZSTD_LEVEL: i32 = 3;
+
+/// Serialize symbols for the `symbols_json` column.
+pub fn encode_symbols(symbols: &[SearchResult]) -> Result<Vec<u8>> {
+    let json = serde_json::to_vec(symbols).context("Failed to serialize symbols")?;
+    if json.len() < BLOB_COMPRESS_MIN {
+        return Ok(json);
+    }
+    let compressed =
+        zstd::bulk::compress(&json, BLOB_ZSTD_LEVEL).context("Failed to compress symbols")?;
+    let mut out = Vec::with_capacity(BLOB_MAGIC.len() + compressed.len());
+    out.extend_from_slice(&BLOB_MAGIC);
+    out.extend_from_slice(&compressed);
+    Ok(out)
+}
+
+/// Deserialize a `symbols_json` column value written by [`encode_symbols`] (or a
+/// raw JSON array).
+pub fn decode_symbols(bytes: &[u8]) -> Result<Vec<SearchResult>> {
+    if let Some(body) = bytes.strip_prefix(&BLOB_MAGIC) {
+        let json = zstd::decode_all(body).context("Failed to decompress symbols")?;
+        return serde_json::from_slice(&json).context("Failed to deserialize cached symbols");
+    }
+    if bytes.first() == Some(&b'[') {
+        return serde_json::from_slice(bytes).context("Failed to deserialize cached symbols");
+    }
+    anyhow::bail!("Unrecognised symbol blob encoding ({} bytes)", bytes.len())
+}
+
+/// Read the `symbols_json` column at `idx`, whether stored as BLOB (v3) or TEXT.
+pub fn read_symbols_column(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Vec<u8>> {
+    use rusqlite::types::ValueRef;
+    match row.get_ref(idx)? {
+        ValueRef::Blob(b) | ValueRef::Text(b) => Ok(b.to_vec()),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            idx,
+            "symbols_json".to_string(),
+            other.data_type(),
+        )),
+    }
+}
 
 impl SymbolCache {
     /// Open a symbol cache at the given cache directory
@@ -47,7 +98,16 @@ impl SymbolCache {
     /// Initialize the symbols table schema if it doesn't exist
     fn init_schema(&self) -> Result<()> {
         let conn = crate::cache::open_meta_db(&self.db_path).context("Failed to open meta.db")?;
+        Self::ensure_schema(&conn)
+    }
 
+    /// Create or migrate the `symbols` table on an already-open connection.
+    ///
+    /// The query path calls this once per index handle (see
+    /// `OpenIndex::meta_conn`), not once per query: it is several statements
+    /// (`pragma_table_info`, `CREATE TABLE`, two `CREATE INDEX`, a version read)
+    /// that cost real milliseconds and never change between queries.
+    pub fn ensure_schema(conn: &rusqlite::Connection) -> Result<()> {
         // Check if we need to migrate to file_id-based schema
         let uses_file_id: bool = conn
             .query_row(
@@ -157,22 +217,22 @@ impl SymbolCache {
             return Ok(None);
         };
 
-        let symbols_json: Option<String> = conn
+        let symbols_blob: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT symbols_json FROM symbols WHERE file_id = ? AND file_hash = ?",
                 [&file_id.to_string(), file_hash],
-                |row| row.get(0),
+                |row| read_symbols_column(row, 0),
             )
             .optional()?;
 
-        match symbols_json {
-            Some(json) => {
-                let mut symbols: Vec<SearchResult> =
-                    serde_json::from_str(&json).context("Failed to deserialize cached symbols")?;
+        match symbols_blob {
+            Some(blob) => {
+                let mut symbols: Vec<SearchResult> = decode_symbols(&blob)?;
 
                 // Restore file_path (it was removed during serialization to save space)
                 for symbol in &mut symbols {
                     symbol.path = file_path.to_string();
+                    symbol.lang = crate::models::Language::from_path(Path::new(file_path));
                 }
 
                 log::debug!(
@@ -223,17 +283,21 @@ impl SymbolCache {
                 .optional()?;
 
             let symbols = if let Some(file_id) = file_id {
-                let symbols_json: Option<String> = symbols_stmt
-                    .query_row([&file_id.to_string(), file_hash.as_str()], |row| row.get(0))
+                let symbols_blob: Option<Vec<u8>> = symbols_stmt
+                    .query_row([&file_id.to_string(), file_hash.as_str()], |row| {
+                        read_symbols_column(row, 0)
+                    })
                     .optional()?;
 
-                match symbols_json {
-                    Some(json) => {
-                        match serde_json::from_str::<Vec<SearchResult>>(&json) {
+                match symbols_blob {
+                    Some(blob) => {
+                        match decode_symbols(&blob) {
                             Ok(mut symbols) => {
                                 // Restore file_path (it was removed during serialization to save space)
                                 for symbol in &mut symbols {
                                     symbol.path = file_path.clone();
+                                    symbol.lang =
+                                        crate::models::Language::from_path(Path::new(file_path));
                                 }
                                 hits += 1;
                                 Some(symbols)
@@ -288,13 +352,29 @@ impl SymbolCache {
         file_ids: &[(i64, String, String)], // (file_id, hash, path)
         kind_filter: Option<crate::models::SymbolKind>,
     ) -> Result<std::collections::HashMap<i64, Vec<SearchResult>>> {
+        if file_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let conn = crate::cache::open_meta_db(&self.db_path)?;
+        Self::batch_get_with_kind_on(&conn, file_ids, kind_filter)
+    }
+
+    /// [`Self::batch_get_with_kind`] on an already-open connection.
+    ///
+    /// Only rows whose stored `file_hash` equals the expected hash are returned.
+    /// `INSERT OR REPLACE` keys on `(file_id, file_hash)`, so a file that changed
+    /// keeps its old-hash row next to the new one; before 2.0.0 this read ignored
+    /// the hash and could serve a changed file its pre-change symbols.
+    pub fn batch_get_with_kind_on(
+        conn: &rusqlite::Connection,
+        file_ids: &[(i64, String, String)], // (file_id, hash, path)
+        kind_filter: Option<crate::models::SymbolKind>,
+    ) -> Result<std::collections::HashMap<i64, Vec<SearchResult>>> {
         use std::collections::HashMap;
 
         if file_ids.is_empty() {
             return Ok(HashMap::new());
         }
-
-        let conn = crate::cache::open_meta_db(&self.db_path)?;
 
         // SQLite has a limit of 999 parameters by default
         // Chunk requests to stay well under that limit
@@ -319,7 +399,7 @@ impl SymbolCache {
 
             // Always use simple query - filter by kind in Rust to avoid cache miss detection bug
             let query = format!(
-                "SELECT file_id, symbols_json
+                "SELECT file_id, file_hash, symbols_json
                  FROM symbols
                  WHERE file_id IN ({})",
                 id_placeholders
@@ -335,21 +415,30 @@ impl SymbolCache {
             let mut stmt = conn.prepare(&query)?;
             let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    read_symbols_column(row, 2)?,
+                ))
             })?;
 
             for row_result in rows {
-                let (file_id, symbols_json) = row_result?;
+                let (file_id, stored_hash, symbols_blob) = row_result?;
 
-                // Verify hash matches
-                if let Some((_hash, file_path)) = file_info.get(&file_id) {
-                    // Note: We can't verify hash here since symbols table doesn't include hash in result
-                    // This is OK - we'll verify by checking file_hash in a separate query if needed
-                    match serde_json::from_str::<Vec<SearchResult>>(&symbols_json) {
+                // Only the row for the CURRENT content counts as a hit.
+                if let Some((hash, file_path)) = file_info.get(&file_id) {
+                    if *hash != stored_hash {
+                        continue;
+                    }
+                    match decode_symbols(&symbols_blob) {
                         Ok(mut symbols) => {
-                            // Restore file_path (it was removed during serialization)
+                            // Restore file_path (it was removed during serialization). `lang` is
+                            // `#[serde(skip)]`, so it must be re-derived from the path too, or every
+                            // cached symbol comes back as the default language.
                             for symbol in &mut symbols {
                                 symbol.path = file_path.clone();
+                                symbol.lang =
+                                    crate::models::Language::from_path(Path::new(file_path));
                             }
 
                             // Filter symbols by kind if needed (Rust-side filtering)
@@ -418,23 +507,45 @@ impl SymbolCache {
             })
             .collect();
 
-        let symbols_json =
-            serde_json::to_string(&symbols_without_path).context("Failed to serialize symbols")?;
+        let symbols_blob = encode_symbols(&symbols_without_path)?;
 
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
             "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
              VALUES (?, ?, ?, ?)",
-            [
-                &file_id.to_string(),
-                file_hash,
-                &symbols_json,
-                &now.to_string(),
-            ],
+            rusqlite::params![file_id, file_hash, symbols_blob, now.to_string()],
         )?;
 
         log::debug!("Cached {} symbols for {}", symbols.len(), file_path);
+        Ok(())
+    }
+
+    /// Store parsed symbols for files already resolved to ids, in one transaction
+    /// on an open connection. Used by the query path for cache misses, which
+    /// previously opened a connection and ran an `INSERT` per file from inside the
+    /// parse pool.
+    pub fn batch_set_by_id_on(
+        conn: &mut rusqlite::Connection,
+        entries: &[(i64, String, Vec<SearchResult>)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        let now_str = chrono::Utc::now().timestamp().to_string();
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
+                 VALUES (?, ?, ?, ?)",
+            )?;
+            for (file_id, file_hash, symbols) in entries {
+                let symbols_blob = encode_symbols(symbols)?;
+                stmt.execute(rusqlite::params![file_id, file_hash, symbols_blob, now_str])?;
+            }
+        }
+        tx.commit()?;
+        log::debug!("Batch cached symbols for {} files (by id)", entries.len());
         Ok(())
     }
 
@@ -466,19 +577,13 @@ impl SymbolCache {
             // A caller that does set `path` costs a few bytes per symbol in the blob
             // and nothing else, since `get()` replaces it with the real path on read.
             // That is a far better trade than cloning the whole batch to save them.
-            let symbols_json =
-                serde_json::to_string(symbols).context("Failed to serialize symbols")?;
+            let symbols_blob = encode_symbols(symbols)?;
 
             // Insert into symbols table
             tx.execute(
                 "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
                  VALUES (?, ?, ?, ?)",
-                [
-                    &file_id.to_string(),
-                    file_hash.as_str(),
-                    &symbols_json,
-                    &now_str,
-                ],
+                rusqlite::params![file_id, file_hash.as_str(), symbols_blob, now_str],
             )?;
         }
 
@@ -509,7 +614,7 @@ impl SymbolCache {
             .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))
             .unwrap_or(0);
 
-        // Estimate cache size by summing length of symbols_json
+        // Cache size on disk: the sum of the stored (v3: compressed) blob lengths.
         let cache_size_bytes: u64 = conn
             .query_row("SELECT SUM(LENGTH(symbols_json)) FROM symbols", [], |row| {
                 row.get(0)
@@ -521,6 +626,39 @@ impl SymbolCache {
             total_entries,
             cache_size_bytes,
         })
+    }
+
+    /// Every `(file_id, file_hash)` pair with a cached entry, in one query.
+    ///
+    /// The background pass used to ask [`get`](Self::get) once per file — a fresh
+    /// connection and two queries each, on one thread, for every file in the tree.
+    pub fn load_cached_keys_on(
+        conn: &rusqlite::Connection,
+    ) -> Result<std::collections::HashSet<(i64, String)>> {
+        let mut stmt = conn.prepare("SELECT file_id, file_hash FROM symbols")?;
+        let keys = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<std::collections::HashSet<_>, _>>()
+            .context("Failed to read cached symbol keys")?;
+        Ok(keys)
+    }
+
+    /// The `INSERT` the background pass's writer prepares once.
+    pub const INSERT_SYMBOLS_SQL: &'static str = "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached) \
+         VALUES (?, ?, ?, ?)";
+
+    /// [`cleanup_stale`](Self::cleanup_stale) on an open connection.
+    pub fn cleanup_stale_on(conn: &rusqlite::Connection) -> Result<usize> {
+        let removed = conn.execute(
+            "DELETE FROM symbols WHERE file_id NOT IN (SELECT id FROM files)",
+            [],
+        )?;
+        if removed > 0 {
+            log::info!("Removed {} stale symbol cache entries", removed);
+        }
+        Ok(removed)
     }
 
     /// Remove symbols for files that are no longer in the index
@@ -879,5 +1017,76 @@ mod tests {
         // deleted.rs should be gone
         let cached2 = symbol_cache.get("deleted.rs", "hash2").unwrap();
         assert!(cached2.is_none());
+    }
+
+    #[test]
+    fn encode_decode_round_trip_raw_and_compressed() {
+        let small = vec![SearchResult::new(
+            String::new(),
+            Language::Rust,
+            SymbolKind::Function,
+            Some("f".to_string()),
+            Span::new(1, 0, 1, 0),
+            None,
+            "fn f() {}".to_string(),
+        )];
+        let raw = encode_symbols(&small).unwrap();
+        assert_eq!(raw.first(), Some(&b'['), "short blobs stay raw JSON");
+        assert_eq!(decode_symbols(&raw).unwrap().len(), 1);
+
+        let big: Vec<SearchResult> = (0..200)
+            .map(|i| {
+                SearchResult::new(
+                    String::new(),
+                    Language::Rust,
+                    SymbolKind::Function,
+                    Some(format!("function_number_{i}")),
+                    Span::new(i, 0, i + 3, 0),
+                    None,
+                    format!("fn function_number_{i}() {{\n    body {i}\n}}"),
+                )
+            })
+            .collect();
+        let json = serde_json::to_vec(&big).unwrap();
+        let blob = encode_symbols(&big).unwrap();
+        assert!(blob.starts_with(&BLOB_MAGIC), "long blobs are compressed");
+        assert!(
+            blob.len() < json.len() / 3,
+            "{} vs {}",
+            blob.len(),
+            json.len()
+        );
+        let back = decode_symbols(&blob).unwrap();
+        assert_eq!(serde_json::to_vec(&back).unwrap(), json);
+
+        // A legacy raw-JSON row still decodes; garbage does not.
+        assert_eq!(decode_symbols(&json).unwrap().len(), 200);
+        assert!(decode_symbols(b"\xFFRZ\x02nope").is_err());
+        assert!(decode_symbols(b"nope").is_err());
+    }
+
+    #[test]
+    fn load_cached_keys_matches_rows() {
+        let temp = TempDir::new().unwrap();
+        let cache_mgr = CacheManager::new(temp.path());
+        cache_mgr.init().unwrap();
+        cache_mgr.update_file("a.rs", "rust", 10).unwrap();
+        cache_mgr.update_file("b.rs", "rust", 10).unwrap();
+        let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
+        symbol_cache.set("a.rs", "h1", &[]).unwrap();
+        symbol_cache.set("b.rs", "h2", &[]).unwrap();
+
+        let conn = crate::cache::open_meta_db(cache_mgr.path().join("meta.db")).unwrap();
+        let keys = SymbolCache::load_cached_keys_on(&conn).unwrap();
+        let a: i64 = conn
+            .query_row("SELECT id FROM files WHERE path = 'a.rs'", [], |r| r.get(0))
+            .unwrap();
+        let b: i64 = conn
+            .query_row("SELECT id FROM files WHERE path = 'b.rs'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&(a, "h1".to_string())));
+        assert!(keys.contains(&(b, "h2".to_string())));
+        assert!(!keys.contains(&(a, "h2".to_string())));
     }
 }
