@@ -95,3 +95,94 @@ fn ratio_fields_serialize_only_when_nonzero() {
     assert_eq!(parsed.corpus_bytes, 0);
     assert_eq!(parsed.trigram_index_bytes, 0);
 }
+
+/// Tracked mode adds the long tail of small text files (docs, config,
+/// extensionless names, lock files). The two stores must stay within what the
+/// V4 format promises on a fixture shaped like that tail.
+#[test]
+fn tracked_mode_long_tail_keeps_the_index_within_the_format_bound() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let mut corpus = 0u64;
+    let mut write = |rel: &str, body: String| {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        corpus += body.len() as u64;
+        fs::write(p, body).unwrap();
+    };
+    // Code: the bulk.
+    for i in 0..20 {
+        let body: String = (0..120)
+            .map(|n| {
+                format!("pub fn handler_{i}_{n}(req: Request) -> Response {{ route(req, {n}) }}\n")
+            })
+            .collect();
+        write(&format!("src/mod_{i}.rs"), body);
+    }
+    // The long tail: many small files of many shapes, ≥ 200 KB in total.
+    for i in 0..60 {
+        write(
+            &format!("docs/page_{i}.md"),
+            format!("# Page {i}\n\nSee handler_{i}_0 and the config key realm_{i}.\n").repeat(12),
+        );
+        write(
+            &format!("config/svc_{i}.yaml"),
+            format!("service: svc_{i}\nrealm: realm_{i}\nreplicas: {i}\n").repeat(10),
+        );
+        write(
+            &format!("owners/OWNERS_{i}"),
+            format!("approvers:\n  - owner_{i}\nreviewers:\n  - reviewer_{i}\n"),
+        );
+        write(
+            &format!("i18n/msg_{i}.po"),
+            format!("msgid \"greeting_{i}\"\nmsgstr \"hello {i}\"\n").repeat(8),
+        );
+        write(
+            &format!("web/style_{i}.css"),
+            format!(".realm-{i} {{ color: #00{i:02x}00; margin: {i}px }}\n").repeat(6),
+        );
+        write(
+            &format!("data/rows_{i}.jsonl"),
+            format!("{{\"id\": {i}, \"realm\": \"realm_{i}\", \"ok\": true}}\n").repeat(10),
+        );
+    }
+    write("Cargo.lock", (0..300).map(|i| format!("[[package]]\nname = \"crate_{i}\"\nversion = \"1.0.{i}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n")).collect());
+    assert!(
+        corpus >= 200 * 1024,
+        "fixture must be at least 200 KB, is {corpus}"
+    );
+
+    let stats = Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .index(root, false)
+        .expect("index");
+    assert_eq!(stats.corpus_bytes, corpus);
+    assert_eq!(stats.files_by_language.get("Lock"), Some(&1));
+
+    // What the V4 format can promise. A posting is one per distinct trigram per
+    // LINE, so its cost tracks distinct-trigram density: a code line repeats its
+    // indentation and identifiers (Reflex's own source: 1.4x in trigrams.bin), a
+    // prose line is nearly all distinct trigrams (Reflex's docs alone: 2.5x). That
+    // is why a text-heavy tree (Kubernetes, 2.1x total) sits above a PHP-heavy one
+    // (Hearth, 1.3x). This mixed fixture is ~40% text by bytes, far more than any
+    // real repo, and lands near 1.25x trigrams / 1.05x content; the gate leaves
+    // headroom for the format, not for a regression.
+    let content_len = fs::metadata(root.join(".reflex/content.bin"))
+        .unwrap()
+        .len();
+    let trigram_ratio = stats.trigram_index_bytes as f64 / corpus as f64;
+    let content_ratio = content_len as f64 / corpus as f64;
+    assert!(
+        trigram_ratio <= 1.6,
+        "trigrams.bin is {trigram_ratio:.2}x the corpus (limit 1.6x): trigrams {} corpus {} files {}",
+        stats.trigram_index_bytes,
+        corpus,
+        stats.total_files
+    );
+    assert!(
+        content_ratio <= 1.15,
+        "content.bin is {content_ratio:.2}x the corpus (limit 1.15x): content {} corpus {} files {}",
+        content_len,
+        corpus,
+        stats.total_files
+    );
+}

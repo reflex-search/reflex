@@ -56,7 +56,7 @@ impl SyntaxHighlighter {
             Language::Svelte => ("svelte", Some("html")), // Fallback to HTML
             // The text tier spans markdown, YAML, shell and more, so no single
             // syntax fits. Render it plain, as Unknown already is.
-            Language::Text => return None,
+            Language::Text | Language::Lock | Language::Generated => return None,
             Language::Unknown => return None,
         };
 

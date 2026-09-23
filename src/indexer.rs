@@ -16,7 +16,7 @@ use std::time::Instant;
 use crate::cache::CacheManager;
 use crate::content_store::{ContentReader, ContentWriter};
 use crate::dependency::DependencyIndex;
-use crate::models::{Dependency, ImportType, IndexConfig, IndexStats, Language};
+use crate::models::{Dependency, ImportType, IndexConfig, IndexMode, IndexStats, Language};
 #[cfg(unix)]
 use crate::output;
 use crate::parsers::c::CDependencyExtractor;
@@ -117,6 +117,10 @@ pub struct PathPolicy {
     text_tier: bool,
     /// `[index] languages`; empty = every supported language.
     languages: Vec<Language>,
+    /// `[index] mode`.
+    mode: IndexMode,
+    /// `[index] hidden`.
+    hidden: bool,
 }
 
 impl Default for PathPolicy {
@@ -125,6 +129,8 @@ impl Default for PathPolicy {
             overrides: None,
             text_tier: true,
             languages: Vec::new(),
+            mode: IndexMode::Tracked,
+            hidden: false,
         }
     }
 }
@@ -137,6 +143,8 @@ impl PathPolicy {
             overrides: None,
             text_tier: config.text_tier,
             languages: config.languages.clone(),
+            mode: config.mode,
+            hidden: config.hidden,
         };
         if config.include_patterns.is_empty() && config.exclude_patterns.is_empty() {
             return policy;
@@ -168,40 +176,72 @@ impl PathPolicy {
         if !self.admits(path, false) {
             return None;
         }
-        // `from_path` judges the text tier by full filename, so lock files (100k+
-        // lines of near-random trigrams) stay out and `Makefile` gets in.
         let lang = Language::from_path(path);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // The plain-text tier: docs, config and templates.
-        if lang.is_text() {
-            // Deliberately NOT subject to `languages`. That option means "which
-            // PARSERS do I care about"; a user with languages = ["rust"] would
-            // otherwise lose the text tier silently, which is the very bug this tier
-            // exists to fix. `text_tier = false` is the way to turn it off.
-            return self.text_tier.then_some(lang);
-        }
-
-        if !lang.is_supported() {
-            if !matches!(lang, Language::Unknown) {
-                log::debug!(
-                    "Skipping {} ({:?} parser not yet implemented)",
-                    path.display(),
-                    lang
-                );
+        match lang {
+            // Indexed only in tracked mode, and excluded from searches by default.
+            Language::Lock | Language::Generated => {
+                (self.mode == IndexMode::Tracked).then_some(lang)
             }
-            return None;
+            // The plain-text tier: docs, config, templates and, in tracked mode,
+            // every other non-binary file. Deliberately NOT subject to `languages`.
+            // That option means "which PARSERS do I care about"; a user with
+            // languages = ["rust"] would otherwise lose the text tier silently,
+            // which is the very bug this tier exists to fix. `text_tier = false`
+            // is the way to turn it off.
+            Language::Text => {
+                if !self.text_tier {
+                    return None;
+                }
+                match self.mode {
+                    IndexMode::Tracked => Some(lang),
+                    IndexMode::Allowlist => crate::models::is_text_tier_file(name).then_some(lang),
+                }
+            }
+            Language::Unknown => None,
+            // Code without a working grammar (Swift): in tracked mode it is still a
+            // text file an agent greps, so it is indexed; symbol queries skip it.
+            code if !code.is_supported() => {
+                (self.mode == IndexMode::Tracked && self.text_tier).then_some(code)
+            }
+            code => {
+                if !self.languages.is_empty() && !self.languages.contains(&code) {
+                    log::debug!(
+                        "Skipping {} ({:?} not in configured languages)",
+                        path.display(),
+                        code
+                    );
+                    return None;
+                }
+                Some(code)
+            }
         }
+    }
 
-        if !self.languages.is_empty() && !self.languages.contains(&lang) {
-            log::debug!(
-                "Skipping {} ({:?} not in configured languages)",
-                path.display(),
-                lang
-            );
-            return None;
-        }
+    /// Whether a workspace-RELATIVE path is under a directory the walker would
+    /// descend into. With `hidden = false` (the default, like ripgrep) no dot
+    /// segment is; with `hidden = true` only `.git/` and `.reflex/` are skipped.
+    ///
+    /// Relative paths only: an absolute path's own ancestors (`/tmp/.cache/…`) are
+    /// none of the walker's business.
+    pub fn hidden_ok(&self, rel: &Path) -> bool {
+        rel.components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .all(|seg| {
+                if seg == "." || seg == ".." {
+                    return true;
+                }
+                if seg == ".git" || seg == crate::cache::CACHE_DIR {
+                    return false;
+                }
+                self.hidden || !seg.starts_with('.')
+            })
+    }
 
-        Some(lang)
+    /// `[index] hidden`.
+    pub fn hidden(&self) -> bool {
+        self.hidden
     }
 
     /// Whether the policy admits this path. Directories are always admitted (the
@@ -217,6 +257,43 @@ impl PathPolicy {
     pub fn overrides(&self) -> Option<&ignore::overrides::Override> {
         self.overrides.as_ref()
     }
+}
+
+/// What one directory walk found.
+#[derive(Debug, Default)]
+struct Discovered {
+    files: Vec<PathBuf>,
+    skipped_too_large: usize,
+    skipped_bytes_too_large: u64,
+    skipped_binary: usize,
+}
+
+/// How many leading bytes the binary sniff reads. ripgrep's number.
+pub const BINARY_SNIFF_BYTES: usize = 8192;
+
+/// ripgrep's binary rule: a NUL byte in the first 8 KB.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
+    memchr::memchr(0, head).is_some()
+}
+
+/// [`is_binary`] on the first 8 KB of the file at `path`. A file that cannot be
+/// read is not called binary here; the read that follows reports the error.
+pub fn looks_binary(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; BINARY_SNIFF_BYTES];
+    let mut filled = 0;
+    while filled < buf.len() {
+        match f.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return false,
+        }
+    }
+    is_binary(&buf[..filled])
 }
 
 /// Drops the shared query handles for a workspace when an index run ends,
@@ -413,12 +490,18 @@ impl Indexer {
         );
 
         // Step 1: Walk directory tree and collect files
-        let (files, skipped_too_large, skipped_bytes_too_large) = self.discover_files(root)?;
+        let Discovered {
+            files,
+            skipped_too_large,
+            skipped_bytes_too_large,
+            skipped_binary,
+        } = self.discover_files(root)?;
         let total_files = files.len();
         log::info!(
-            "Discovered {} files to index ({} skipped: too large)",
+            "Discovered {} files to index ({} skipped: too large, {} binary)",
             total_files,
-            skipped_too_large
+            skipped_too_large,
+            skipped_binary
         );
 
         // Step 1.4: Parse tsconfig.json files for TypeScript/Vue path alias resolution
@@ -474,10 +557,11 @@ impl Indexer {
                     let stat = std::fs::metadata(file_path)
                         .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
                         .unwrap_or((0, 0));
-                    // Read and hash file to check if changed
-                    match std::fs::read_to_string(file_path) {
-                        Ok(content) => {
-                            let current_hash = self.hash_content(content.as_bytes());
+                    // Read and hash file to check if changed. Raw bytes, exactly as
+                    // the main pass and the freshness check hash them.
+                    match std::fs::read(file_path) {
+                        Ok(bytes) => {
+                            let current_hash = self.hash_content(&bytes);
                             if &current_hash != existing_hash {
                                 any_changed = true;
                                 log::debug!("File changed: {}", path_str);
@@ -578,6 +662,7 @@ impl Indexer {
                             stats.unchanged_files = total_files;
                             stats.skipped_too_large = skipped_too_large;
                             stats.skipped_bytes_too_large = skipped_bytes_too_large;
+                            stats.skipped_binary = skipped_binary;
                             return Ok(stats);
                         }
                         log::warn!(
@@ -734,9 +819,13 @@ impl Indexer {
                     .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
                     .unwrap_or((0, 0));
 
-                // Read file content once (used for hashing, trigrams, and parsing)
-                let content = match std::fs::read_to_string(file_path) {
-                    Ok(c) => c,
+                // Read file content once (used for hashing, trigrams, and parsing).
+                // The hash is of the RAW bytes, so the freshness check can hash a
+                // file on disk and compare. Invalid UTF-8 (a Latin-1 `.po`, an old
+                // doc) is decoded lossily rather than dropped: ripgrep searches
+                // those bytes, and an agent expects the same.
+                let bytes = match std::fs::read(file_path) {
+                    Ok(b) => b,
                     Err(e) => {
                         log::warn!("Failed to read {}: {}", path_str, e);
                         // Update progress
@@ -744,9 +833,11 @@ impl Indexer {
                         return None;
                     }
                 };
-
-                // Compute hash from content (no duplicate file read!)
-                let hash = self.hash_content(content.as_bytes());
+                let hash = self.hash_content(&bytes);
+                let content = match String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                };
 
                 // Detect language
                 let language = Language::from_path(file_path);
@@ -2226,6 +2317,7 @@ impl Indexer {
         stats.unchanged_files = unchanged_file_count;
         stats.skipped_too_large = skipped_too_large;
         stats.skipped_bytes_too_large = skipped_bytes_too_large;
+        stats.skipped_binary = skipped_binary;
         log::info!(
             "Indexing complete: {} files (new={}, modified={}, unchanged={})",
             stats.total_files,
@@ -2240,10 +2332,8 @@ impl Indexer {
     /// Discover all indexable files in the directory tree.
     ///
     /// Returns `(files, skipped_too_large_count, skipped_too_large_bytes)`.
-    fn discover_files(&self, root: &Path) -> Result<(Vec<PathBuf>, usize, u64)> {
-        let mut files = Vec::new();
-        let mut skipped_count = 0usize;
-        let mut skipped_bytes = 0u64;
+    fn discover_files(&self, root: &Path) -> Result<Discovered> {
+        let mut out = Discovered::default();
 
         let policy = self.path_policy(root);
         let walker = Self::walk_builder(root, &self.config, &policy).build();
@@ -2258,25 +2348,35 @@ impl Indexer {
             }
 
             // Check extension / language eligibility first (cheap)
-            if policy.classify(path).is_none() {
+            let Some(lang) = policy.classify(path) else {
                 continue;
-            }
+            };
 
             // Check file size separately so we can report skipped counts
             if let Ok(metadata) = std::fs::metadata(path) {
                 let size = metadata.len();
                 if size > self.config.max_file_size as u64 {
                     log::debug!("Skipping {} (too large: {} bytes)", path.display(), size);
-                    skipped_count += 1;
-                    skipped_bytes += size;
+                    out.skipped_too_large += 1;
+                    out.skipped_bytes_too_large += size;
                     continue;
                 }
             }
 
-            files.push(path.to_path_buf());
+            // A code extension is trusted to be text. Anything else in the tracked
+            // tier (`image.png`, `OWNERS`, `data.bin`) is sniffed: ripgrep's rule, a
+            // NUL byte in the first 8 KB means binary, and a binary file is never
+            // in the index. Only the long tail pays the read.
+            if !lang.is_code() && looks_binary(path) {
+                log::debug!("Skipping {} (binary)", path.display());
+                out.skipped_binary += 1;
+                continue;
+            }
+
+            out.files.push(path.to_path_buf());
         }
 
-        Ok((files, skipped_count, skipped_bytes))
+        Ok(out)
     }
 
     /// The directory walker every tree pass shares: the indexer, and the freshness
@@ -2290,9 +2390,19 @@ impl Indexer {
         let mut builder = WalkBuilder::new(root);
         builder
             .follow_links(config.follow_symlinks)
+            .hidden(!policy.hidden())
             .git_ignore(true) // Explicitly enable gitignore support (enabled by default, but be explicit)
             .git_global(false) // Don't use global gitignore
             .git_exclude(false); // Don't use .git/info/exclude
+        if policy.hidden() {
+            // Dot-directories are walked, but never the repository's own and never
+            // Reflex's own cache: indexing `.reflex/content.bin` into content.bin
+            // is a loop, and `.git/objects` is binary noise by the thousand.
+            builder.filter_entry(|e| {
+                let name = e.file_name();
+                name != ".git" && name != crate::cache::CACHE_DIR
+            });
+        }
         // `[index] include.patterns` / `exclude.patterns`, gitignore semantics.
         if let Some(ov) = policy.overrides() {
             builder.overrides(ov.clone());
@@ -2319,22 +2429,18 @@ impl Indexer {
     /// The freshness check must apply the same policy as the walker: a file the
     /// config excludes is not indexed, so editing it must not report staleness.
     pub fn is_indexable_path_with(path: &Path, policy: Option<&PathPolicy>) -> bool {
-        // Mirror the walker, which uses `ignore::WalkBuilder`'s `hidden(true)`
-        // default and so never descends into a dot-directory. Without this, Reflex's
-        // OWN `.reflex/config.toml` counts as an indexable change the moment the text
+        let default_policy;
+        let policy = match policy {
+            Some(p) => p,
+            None => {
+                default_policy = PathPolicy::default();
+                &default_policy
+            }
+        };
+        // Mirror the walker's hidden rule. Without this, Reflex's OWN
+        // `.reflex/config.toml` counts as an indexable change the moment the text
         // tier claims `.toml`, and the index reports itself permanently stale.
-        if path
-            .components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .any(|seg| seg.starts_with('.') && seg != "." && seg != "..")
-        {
-            return false;
-        }
-
-        match policy {
-            Some(p) => p.classify(path).is_some(),
-            None => PathPolicy::default().classify(path).is_some(),
-        }
+        policy.hidden_ok(path) && policy.classify(path).is_some()
     }
 
     /// Check if a file's language/extension is eligible for indexing (without size check).
@@ -2538,16 +2644,34 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        // .txt joined the plain-text tier in 1.7.2, so pick a genuinely unknown
-        // extension for this case.
+        // Tracked mode (the default) takes every file by path; whether a file is
+        // binary is decided from its bytes in `discover_files`, not here.
         let unsupported_file = temp.path().join("test.xyz");
         fs::write(&unsupported_file, "mystery format").unwrap();
-        assert!(!indexer.should_index(&unsupported_file));
+        assert!(indexer.should_index(&unsupported_file));
 
-        // A binary-ish extension stays out too.
+        // Allowlist mode keeps the pre-1.8.0 rule.
+        let allowlist = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                mode: IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(!allowlist.should_index(&unsupported_file));
         let binary_file = temp.path().join("logo.png");
         fs::write(&binary_file, "not really a png").unwrap();
-        assert!(!indexer.should_index(&binary_file));
+        assert!(!allowlist.should_index(&binary_file));
+    }
+
+    #[test]
+    fn test_binary_sniff() {
+        assert!(!is_binary(b"plain text\n"));
+        assert!(is_binary(b"\x89PNG\r\n\x1a\n\0\0"));
+        // Only the first 8 KB is read.
+        let mut late = vec![b'a'; BINARY_SNIFF_BYTES];
+        late.push(0);
+        assert!(!is_binary(&late));
     }
 
     #[test]
@@ -2567,10 +2691,19 @@ mod tests {
             assert!(indexer.should_index(&path), "{name} should be indexed");
         }
 
-        // Lock files match a text extension but are excluded by name.
+        // Lock files are indexed in tracked mode (and left out of searches unless
+        // asked for); allowlist mode never indexes them.
         let lock = temp.path().join("package-lock.json");
         fs::write(&lock, "{}").unwrap();
-        assert!(!indexer.should_index(&lock));
+        assert!(indexer.should_index(&lock));
+        let allowlist = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                mode: IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(!allowlist.should_index(&lock));
     }
 
     #[test]
@@ -2600,15 +2733,25 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        // `Makefile` is in the text tier by name; `README` (no extension, not
-        // listed) is not.
+        // Tracked mode: every extensionless text file. Allowlist mode: only the
+        // names on the list (`Makefile`), not `README`.
         let makefile = temp.path().join("Makefile");
         fs::write(&makefile, "all:\n\techo hello").unwrap();
         assert!(indexer.should_index(&makefile));
 
         let readme = temp.path().join("README");
         fs::write(&readme, "hello").unwrap();
-        assert!(!indexer.should_index(&readme));
+        assert!(indexer.should_index(&readme));
+
+        let allowlist = Indexer::new(
+            CacheManager::new(temp.path()),
+            IndexConfig {
+                mode: IndexMode::Allowlist,
+                ..Default::default()
+            },
+        );
+        assert!(allowlist.should_index(&makefile));
+        assert!(!allowlist.should_index(&readme));
     }
 
     #[test]
@@ -2643,7 +2786,7 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
         assert_eq!(files.len(), 0);
     }
 
@@ -2658,7 +2801,7 @@ mod tests {
         let rust_file = temp.path().join("main.rs");
         fs::write(&rust_file, "fn main() {}").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("main.rs"));
     }
@@ -2676,11 +2819,14 @@ mod tests {
         fs::write(temp.path().join("app.js"), "console.log('hi')").unwrap();
         // Since 1.7.2 markdown IS indexed, in the plain-text tier.
         fs::write(temp.path().join("README.md"), "# Project").unwrap();
-        // Still skipped: no tier claims it.
+        // Since 1.8.0 (tracked mode) every non-binary file is indexed, whatever
+        // its extension; a binary one is sniffed out.
         fs::write(temp.path().join("mystery.xyz"), "?").unwrap();
+        fs::write(temp.path().join("blob.bin"), b"\0\x01\x02").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
-        assert_eq!(files.len(), 4, "3 code files plus the markdown");
+        let found = indexer.discover_files(temp.path()).unwrap();
+        assert_eq!(found.files.len(), 5, "3 code files, the markdown, the .xyz");
+        assert_eq!(found.skipped_binary, 1);
     }
 
     #[test]
@@ -2700,7 +2846,7 @@ mod tests {
         fs::create_dir(&tests_dir).unwrap();
         fs::write(tests_dir.join("test.rs"), "#[test] fn test() {}").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
         assert_eq!(files.len(), 3);
     }
 
@@ -2731,7 +2877,7 @@ mod tests {
         fs::create_dir(&ignored_dir).unwrap();
         fs::write(ignored_dir.join("excluded.rs"), "fn test() {}").unwrap();
 
-        let (files, _, _) = indexer.discover_files(temp.path()).unwrap();
+        let files = indexer.discover_files(temp.path()).unwrap().files;
 
         // Verify the expected files are found
         assert!(

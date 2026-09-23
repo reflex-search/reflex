@@ -44,6 +44,13 @@ pub struct QueryFilter {
     /// search is a plain trigram scan and would otherwise return the name in a
     /// changelog entry as a "call site".
     pub exclude_text: bool,
+    /// Search lock files too (`Cargo.lock`, `package-lock.json`, …). They are
+    /// indexed but left out of every search by default; `lang: "lock"` selects
+    /// them alone.
+    pub include_locks: bool,
+    /// Search generated files too (`*.pb.go`, `*.min.js`, `*.map`, …). Same
+    /// default as lock files; `lang: "generated"` selects them alone.
+    pub include_generated: bool,
     /// Query timeout in seconds (0 = no timeout)
     pub timeout_secs: u64,
     /// Glob patterns to include (empty = all files)
@@ -92,8 +99,10 @@ impl Default for QueryFilter {
             use_contains: false, // Default: word-boundary matching
             ignore_case: false,  // Default: case-sensitive
             rewritten_from: None,
-            exclude_text: false, // Default: docs and config are searched too
-            timeout_secs: 30,    // 30 seconds default timeout
+            exclude_text: false,      // Default: docs and config are searched too
+            include_locks: false,     // Default: lock files stay out
+            include_generated: false, // Default: generated files stay out
+            timeout_secs: 30,         // 30 seconds default timeout
             glob_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             paths_only: false,
@@ -108,6 +117,58 @@ impl Default for QueryFilter {
             test_short_pattern_threshold: None, // Default: use production threshold (4)
         }
     }
+}
+
+/// Whether a file of language `lang` belongs in this query's results.
+///
+/// An explicit `want` selects exactly that language (so `lang: "lock"` is how a
+/// caller asks for lock files alone). Otherwise the text tier is in unless
+/// `exclude_text`, and the lock / generated tiers are out unless asked for.
+pub fn tier_admits(
+    lang: crate::models::Language,
+    want: Option<crate::models::Language>,
+    exclude_text: bool,
+    include_locks: bool,
+    include_generated: bool,
+) -> bool {
+    use crate::models::Language;
+    if let Some(want) = want {
+        return lang == want;
+    }
+    match lang {
+        Language::Text => !exclude_text,
+        Language::Lock => include_locks,
+        Language::Generated => include_generated,
+        _ => true,
+    }
+}
+
+/// Whether `lang` was left out only because nothing asked for it: the count of
+/// such candidate files explains a zero result.
+pub fn excluded_by_default(
+    lang: crate::models::Language,
+    want: Option<crate::models::Language>,
+    include_locks: bool,
+    include_generated: bool,
+) -> bool {
+    use crate::models::Language;
+    want.is_none()
+        && match lang {
+            Language::Lock => !include_locks,
+            Language::Generated => !include_generated,
+            _ => false,
+        }
+}
+
+/// Explain a zero result when the only candidate files were excluded by default.
+pub fn excluded_by_default_hint_text(files: usize) -> String {
+    format!(
+        "{} candidate file(s) were lock or generated files, which every search leaves \
+         out by default — pass include_locks:true / include_generated:true \
+         (--include-locks / --include-generated on the CLI), or lang:\"lock\" / \
+         lang:\"generated\", to search them.",
+        files
+    )
 }
 
 /// Map a language keyword to its corresponding SymbolKind.

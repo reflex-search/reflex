@@ -459,7 +459,13 @@ impl CacheManager {
 
         let default_config = r#"[index]
 languages = []  # Empty = all supported languages
-text_tier = true  # Also index docs and config: md, yaml, toml, json, proto, html, sh, sql
+text_tier = true  # Also index docs, config and every other non-binary file
+# "tracked" (default): every file git tracks or does not ignore, unless binary —
+#   ripgrep's rule. Lock and generated files are indexed but excluded from
+#   searches unless asked for (include_locks / include_generated / lang).
+# "allowlist": the pre-1.8.0 rule — code plus a fixed docs/config extension list.
+mode = "tracked"
+hidden = false  # true also walks dot-directories (.githooks/), never .git/ or .reflex/
 max_file_size = 10485760  # 10 MB
 follow_symlinks = false
 
@@ -707,6 +713,19 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
             }
             if let Some(text_tier) = index_tbl.get("text_tier").and_then(|v| v.as_bool()) {
                 cfg.text_tier = text_tier;
+            }
+            if let Some(mode) = index_tbl.get("mode").and_then(|v| v.as_str()) {
+                match crate::models::IndexMode::from_name(mode) {
+                    Some(m) => cfg.mode = m,
+                    None => log::warn!(
+                        "Unknown [index] mode '{}' in config.toml (expected \"tracked\" or \
+                         \"allowlist\") — using \"tracked\"",
+                        mode
+                    ),
+                }
+            }
+            if let Some(hidden) = index_tbl.get("hidden").and_then(|v| v.as_bool()) {
+                cfg.hidden = hidden;
             }
 
             if let Some(max_size) = index_tbl.get("max_file_size").and_then(|v| v.as_integer()) {

@@ -85,7 +85,52 @@ pub enum Language {
     ///
     /// Serialises as `"text"` (the enum is `rename_all = "lowercase"`).
     Text,
+    /// Lock files (`Cargo.lock`, `package-lock.json`, `*.lock`, …).
+    ///
+    /// Indexed since 1.8.0 in `[index] mode = "tracked"`, but excluded from every
+    /// search by default: 100k lines of pinned versions are noise for almost every
+    /// query and the one real question ("which lockfile pins serde 1.0.190?") is
+    /// asked with `include_locks: true` or `lang: "lock"`.
+    Lock,
+    /// Generated files judged by name: `*.pb.go`, `*_generated.*`, `*.generated.*`,
+    /// `*.min.js`, `*.min.css`, `*.map`. Indexed, excluded by default,
+    /// `include_generated: true` or `lang: "generated"` to widen.
+    Generated,
+    /// Never produced by [`Language::from_path`] since 1.8.0 (every path classifies
+    /// as code, `Text`, `Lock` or `Generated`); kept as the miss value of
+    /// [`Language::from_extension`] and as the forward-compatible sentinel for
+    /// readers of the `language` field.
     Unknown,
+}
+
+/// Whether `file_name` is a dependency lock file.
+///
+/// Judged by full name: `package-lock.json` matches a text extension, and the
+/// name is the only thing that tells it apart from `settings.json`.
+pub fn is_lock_file(file_name: &str) -> bool {
+    if TEXT_FILENAME_EXCLUSIONS
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(file_name))
+    {
+        return true;
+    }
+    // `*-lock.json` and friends, beyond the names listed above.
+    file_name.ends_with("-lock.json") || file_name.ends_with(".lock")
+}
+
+/// Whether `file_name` looks like a generated file, judged by name only.
+///
+/// Content markers (`@generated` in the file head) are not read: the query engine
+/// derives a file's language from its path, so a content-based verdict at index
+/// time could not be honoured at query time.
+pub fn is_generated_name(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    lower.ends_with(".pb.go")
+        || lower.ends_with(".min.js")
+        || lower.ends_with(".min.css")
+        || lower.ends_with(".map")
+        || lower.contains("_generated.")
+        || lower.contains(".generated.")
 }
 
 /// Extensions in the plain-text tier.
@@ -104,33 +149,30 @@ const TEXT_EXTENSIONS: &[&str] = &[
 /// prefix in [`is_text_tier_file`].
 const TEXT_FILENAMES: &[&str] = &["Makefile", "makefile", "Dockerfile", "Justfile", "justfile"];
 
-/// Filenames excluded from the text tier despite a matching extension.
-///
-/// Lock files are the reason the tier needs an exclusion list at all: a
-/// `package-lock.json` is 100k+ lines of near-random trigrams, which bloats posting
-/// lists without ever being something a person searches for.
+/// Lock files, by exact name. See [`is_lock_file`] for the suffix rules.
 const TEXT_FILENAME_EXCLUSIONS: &[&str] = &[
     "package-lock.json",
+    "npm-shrinkwrap.json",
     "composer.lock",
     "yarn.lock",
     "pnpm-lock.yaml",
     "Cargo.lock",
     "poetry.lock",
     "Gemfile.lock",
+    "go.sum",
+    "flake.lock",
+    "uv.lock",
+    "deno.lock",
+    "bun.lock",
 ];
 
-/// Whether a file belongs in the text tier, judged by its full name.
+/// Whether a file belongs in the ALLOWLIST text tier, judged by its full name.
 ///
-/// Takes the file NAME, not just the extension, so lock files can be excluded.
+/// This is the pre-1.8.0 rule, kept for `[index] mode = "allowlist"`. In the
+/// default `tracked` mode every non-binary, non-ignored file is text unless it is
+/// code, a lock file or a generated file.
 pub fn is_text_tier_file(file_name: &str) -> bool {
-    if TEXT_FILENAME_EXCLUSIONS
-        .iter()
-        .any(|n| n.eq_ignore_ascii_case(file_name))
-    {
-        return false;
-    }
-    // `*-lock.json` and friends, beyond the names listed above.
-    if file_name.ends_with("-lock.json") || file_name.ends_with(".lock") {
+    if is_lock_file(file_name) {
         return false;
     }
     if TEXT_FILENAMES.contains(&file_name) || file_name.starts_with("Dockerfile.") {
@@ -143,31 +185,34 @@ pub fn is_text_tier_file(file_name: &str) -> bool {
 }
 
 impl Language {
-    /// Classify a file by its path: extension first, then full file name.
+    /// Classify a file by its path.
     ///
     /// This is the one classifier the indexer, watcher and query engine share, so a
-    /// file is either indexed, watched and searchable, or none of the three.
+    /// file is either indexed, watched and searchable, or none of the three. Path
+    /// only: whether the file is binary is decided from its bytes by the indexer,
+    /// and a binary file is simply never in the index.
     ///
-    /// * A recognised code extension wins (`main.rs`, `app.mjs`).
-    /// * A text-tier extension is accepted only if [`is_text_tier_file`] admits the
-    ///   full name, so `package-lock.json` is `Unknown` even though `.json` is text.
-    /// * An extensionless or unrecognised name is `Text` when the name itself is in
-    ///   the tier (`Makefile`, `Dockerfile`, `Dockerfile.dev`, `Justfile`).
+    /// * A lock file name wins (`Cargo.lock`, `package-lock.json`) → `Lock`.
+    /// * A generated name wins next (`x.pb.go`, `app.min.js`) → `Generated`.
+    /// * A recognised code extension → that language (`main.rs`, `app.mjs`).
+    /// * Everything else → `Text`: `README`, `OWNERS`, `foo.po`, `a.css`,
+    ///   `Makefile`, `.githooks/pre-commit`. Whether such a file is INDEXED is the
+    ///   `[index] mode` policy's decision (`PathPolicy::classify`).
     pub fn from_path(path: &std::path::Path) -> Self {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if is_lock_file(name) {
+            return Language::Lock;
+        }
+        if is_generated_name(name) {
+            return Language::Generated;
+        }
         let by_ext = path
             .extension()
             .and_then(|e| e.to_str())
             .map(Self::from_extension)
             .unwrap_or(Language::Unknown);
         match by_ext {
-            Language::Text | Language::Unknown => {
-                if is_text_tier_file(name) {
-                    Language::Text
-                } else {
-                    Language::Unknown
-                }
-            }
+            Language::Text | Language::Unknown => Language::Text,
             code => code,
         }
     }
@@ -219,6 +264,8 @@ impl Language {
             "kotlin" | "kt" => Some(Language::Kotlin),
             "zig" => Some(Language::Zig),
             "text" | "txt" | "plaintext" | "plain" => Some(Language::Text),
+            "lock" | "lockfile" | "lockfiles" => Some(Language::Lock),
+            "generated" | "gen" => Some(Language::Generated),
             _ => None,
         }
     }
@@ -227,8 +274,9 @@ impl Language {
     pub fn supported_names_help() -> &'static str {
         "rust (rs), python (py), javascript (js), typescript (ts), vue, svelte, \
          go, java, php, c, cpp (c++), csharp (cs, c#), ruby (rb), kotlin (kt), zig, \
-         text (docs and config: md, yaml, toml, json, proto, html, sh, sql, graphql, bru, \
-         Makefile, Dockerfile, Justfile)"
+         text (every other non-binary file: docs, config, templates, extensionless), \
+         lock (lock files, excluded by default), generated (*.pb.go, *.min.js, *.map, \
+         *_generated.*, excluded by default)"
     }
 
     /// Check if this language has a parser implementation
@@ -255,6 +303,8 @@ impl Language {
             Language::Zig => true,
             // No tree-sitter grammar, by design.
             Language::Text => false,
+            Language::Lock => false,
+            Language::Generated => false,
             Language::Unknown => false,
         }
     }
@@ -264,13 +314,56 @@ impl Language {
         matches!(self, Language::Text)
     }
 
-    /// Whether files of this language are indexed at all.
+    /// Whether files of this language are indexed but left out of every search
+    /// unless asked for (`include_locks` / `include_generated`, or `lang`).
+    pub fn is_excluded_by_default(&self) -> bool {
+        matches!(self, Language::Lock | Language::Generated)
+    }
+
+    /// Whether this is a code language, supported or not (Swift is code without a
+    /// working grammar). Code files are assumed to be text; every other file is
+    /// sniffed for a NUL byte before it is indexed.
+    pub fn is_code(&self) -> bool {
+        !matches!(
+            self,
+            Language::Text | Language::Lock | Language::Generated | Language::Unknown
+        )
+    }
+
+    /// Whether files of this language can be in the index at all.
     ///
     /// Distinct from [`Self::is_supported`], which means "has a tree-sitter parser".
     /// The text tier is indexed but never parsed, so symbol search, AST queries and
-    /// dependency analysis skip it while full-text search covers it.
+    /// dependency analysis skip it while full-text search covers it. Whether a given
+    /// path IS indexed also depends on `[index] mode` (`PathPolicy::classify`).
     pub fn is_indexable(&self) -> bool {
-        self.is_supported() || self.is_text()
+        !matches!(self, Language::Unknown)
+    }
+}
+
+/// Which files the indexer takes, beyond the code languages.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexMode {
+    /// Every file not ignored by `.gitignore` / `.ignore` / `[index] exclude`,
+    /// unless a NUL byte in its first 8 KB says it is binary. Lock and generated
+    /// files are indexed and excluded from searches by default. This is ripgrep's
+    /// rule, and what an agent that greps expects.
+    #[default]
+    Tracked,
+    /// The pre-1.8.0 rule: code by extension plus the fixed docs/config extension
+    /// list (`is_text_tier_file`). Lock and generated files are not indexed. For
+    /// trees where the long tail of data files is not worth the index size.
+    Allowlist,
+}
+
+impl IndexMode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "tracked" => Some(Self::Tracked),
+            "allowlist" => Some(Self::Allowlist),
+            _ => None,
+        }
     }
 }
 
@@ -462,6 +555,16 @@ pub struct IndexConfig {
     /// and gets the new default.
     #[serde(default = "default_true")]
     pub text_tier: bool,
+    /// Which non-code files the text tier takes: every non-binary tracked file
+    /// (`tracked`, the default since 1.8.0) or the fixed extension list
+    /// (`allowlist`, the pre-1.8.0 rule).
+    #[serde(default)]
+    pub mode: IndexMode,
+    /// Walk dot-directories and dotfiles too (`.githooks/pre-commit`, `.env.example`).
+    /// Off by default, like ripgrep without `--hidden`. `.git/` and `.reflex/` are
+    /// never walked.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// Serde default for boolean options that are on unless explicitly disabled.
@@ -481,6 +584,8 @@ impl Default for IndexConfig {
             query_timeout_secs: 30,            // 30 seconds default timeout
             max_posting_list_entries: 500_000, // cap at 500k to bound query latency
             text_tier: true,                   // docs and config are searchable by default
+            mode: IndexMode::Tracked,          // every non-binary tracked file
+            hidden: false,                     // dot-directories skipped, like ripgrep
             lock_wait_secs: 0,                 // fail fast when another indexer runs
         }
     }
@@ -582,6 +687,9 @@ pub struct IndexStats {
     /// Total bytes of files skipped due to max_file_size
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub skipped_bytes_too_large: u64,
+    /// Files skipped because a NUL byte in their first 8 KB says they are binary
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped_binary: usize,
     /// Raw bytes of indexed source held in content.bin (0 if unknown)
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub corpus_bytes: u64,
@@ -797,6 +905,11 @@ pub struct QueryResponse {
     /// whole-identifier one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// For a search that found nothing: how many candidate files were lock or
+    /// generated files, which every search leaves out unless `include_locks` /
+    /// `include_generated` (or `lang`) asks for them. The `hint` says so too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_by_default: Option<usize>,
     /// Per-phase timings, only when requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<QueryTimings>,

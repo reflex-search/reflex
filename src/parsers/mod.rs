@@ -108,8 +108,8 @@ impl ParserFactory {
             Language::Svelte => Err(anyhow!(
                 "Svelte uses line-based parsing, not tree-sitter (tree-sitter-svelte incompatible with tree-sitter 0.24+)"
             )),
-            Language::Text => Err(anyhow!(
-                "The text tier (markdown, YAML, JSON, TOML, HTML, shell, proto) is \
+            Language::Text | Language::Lock | Language::Generated => Err(anyhow!(
+                "The text tier (docs, config, templates, lock and generated files) is \
                  trigram-indexed only and has no grammar. Use full-text or regex \
                  search on these files, not --symbols or --ast."
             )),
@@ -168,7 +168,7 @@ impl ParserFactory {
             Language::Swift => &["class", "struct", "enum", "protocol", "func", "var", "let"],
             Language::Vue | Language::Svelte => &["function", "const", "let", "var"],
             // No symbols, so no keyword shortcuts.
-            Language::Text => &[],
+            Language::Text | Language::Lock | Language::Generated => &[],
             Language::Unknown => &[],
         }
     }
@@ -265,7 +265,7 @@ impl ParserFactory {
             Language::Zig => zig::parse(path, source),
             // debug!, not warn!: the text tier is indexed deliberately, and a repo
             // with thousands of markdown files would otherwise flood the log.
-            Language::Text => {
+            Language::Text | Language::Lock | Language::Generated => {
                 log::debug!("No symbol extraction for text-tier file: {}", path);
                 Ok(vec![])
             }

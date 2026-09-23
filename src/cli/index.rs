@@ -198,6 +198,23 @@ pub(super) fn handle_index_build(
                 super::format_bytes(stats.skipped_bytes_too_large)
             );
         }
+        if stats.skipped_binary > 0 {
+            println!(
+                "  Binary files skipped: {} (NUL byte in the first 8 KB)",
+                stats.skipped_binary
+            );
+        }
+
+        // The non-code tiers. `language` is stored as the Debug name.
+        let tier = |name: &str| stats.files_by_language.get(name).copied().unwrap_or(0);
+        let (text, lock, generated) = (tier("Text"), tier("Lock"), tier("Generated"));
+        if text + lock + generated > 0 {
+            println!(
+                "  Text: {} files, Lock: {}, Generated: {} (lock and generated are excluded \
+                 from searches unless asked for)",
+                text, lock, generated
+            );
+        }
 
         // Display language breakdown if we have indexed files
         if !stats.files_by_language.is_empty() {

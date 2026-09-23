@@ -248,6 +248,20 @@ pub enum Command {
         #[arg(short = 'i', long)]
         ignore_case: bool,
 
+        /// Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum)
+        ///
+        /// Lock files are indexed but left out of every search unless asked for.
+        /// `--lang lock` selects them alone.
+        #[arg(long)]
+        include_locks: bool,
+
+        /// Also search generated files (*.pb.go, *.min.js, *.map, *_generated.*)
+        ///
+        /// Judged by name; indexed but left out of every search unless asked for.
+        /// `--lang generated` selects them alone.
+        #[arg(long)]
+        include_generated: bool,
+
         /// Only show count and timing, not the actual results
         #[arg(short, long)]
         count: bool,
@@ -1101,6 +1115,8 @@ impl Cli {
                 exact,
                 contains,
                 ignore_case,
+                include_locks,
+                include_generated,
                 count,
                 timeout,
                 plain,
@@ -1142,6 +1158,8 @@ impl Cli {
                         exact,
                         contains,
                         ignore_case,
+                        include_locks,
+                        include_generated,
                         count,
                         timeout,
                         plain,

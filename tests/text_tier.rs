@@ -47,7 +47,7 @@ fn workspace() -> TempDir {
     std::fs::write(root.join("page.html"), "<b>realm_marker</b>\n").unwrap();
     std::fs::write(root.join("run.sh"), "echo realm_marker\n").unwrap();
     std::fs::write(root.join("notes.txt"), "realm_marker in prose\n").unwrap();
-    // Must never be indexed: 100k-line lock files are trigram noise.
+    // Indexed, but left out of every search unless asked for.
     std::fs::write(
         root.join("package-lock.json"),
         "{\"name\": \"realm_marker_in_a_lockfile\"}\n",
@@ -108,15 +108,27 @@ fn every_text_extension_is_searchable_by_default() {
 }
 
 #[test]
-fn lock_files_are_never_indexed() {
+fn lock_files_are_indexed_but_left_out_unless_asked_for() {
     let temp = workspace();
     index_with(temp.path(), IndexConfig::default());
 
     let found = paths(&search(temp.path(), "realm_marker", QueryFilter::default()));
     assert!(
         !found.iter().any(|p| p.contains("package-lock.json")),
-        "a lock file is 100k lines of trigram noise: {found:?}"
+        "a lock file is 100k lines of noise for almost every query: {found:?}"
     );
+
+    // But "which lockfile pins X" is a real question, and a confident zero with no
+    // way in is the failure the text tier exists to fix.
+    let found = paths(&search(
+        temp.path(),
+        "realm_marker_in_a_lockfile",
+        QueryFilter {
+            include_locks: true,
+            ..Default::default()
+        },
+    ));
+    assert_eq!(found, vec!["package-lock.json".to_string()], "{found:?}");
 }
 
 #[test]

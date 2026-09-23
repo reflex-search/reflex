@@ -172,12 +172,20 @@ fn reverting_an_indexed_edit_is_stale() {
     assert_eq!(listed(&s, "files_modified"), vec!["src/a.rs"], "{s}");
 }
 
+/// A binary file is never in the index, so its arrival cannot make the index
+/// stale; a lock file IS indexed (and left out of searches by default), so it can.
 #[test]
-fn a_change_to_a_file_reflex_does_not_index_is_not_staleness() {
+fn a_new_binary_is_not_staleness_but_a_new_lock_file_is() {
     let temp = indexed_dir();
     let root = temp.path();
-    fs::write(root.join("image.png"), b"\x89PNG\r\n\x1a\n").unwrap();
-    fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"x\"\n").unwrap();
+    fs::write(root.join("image.png"), b"\x89PNG\r\n\x1a\n\0\0").unwrap();
     let s = status(root);
     assert_eq!(s["status"], "fresh", "{s}");
+
+    fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"x\"\n").unwrap();
+    let s = status(root);
+    assert_eq!(s["status"], "stale", "{s}");
+    assert_eq!(listed(&s, "files_added"), vec!["Cargo.lock"], "{s}");
+    index(root);
+    assert_eq!(status(root)["status"], "fresh");
 }

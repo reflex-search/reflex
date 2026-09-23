@@ -201,6 +201,8 @@ Rules: the required argument is always "pattern", never "query", "symbol", or "t
 
 Use find_references for a definition plus every call site without string/comment noise. Use get_dependents for what imports a file.
 
+Coverage is every non-binary tracked file, like ripgrep; lock and generated files need include_locks / include_generated.
+
 On an "Index not found" or "corrupted" error, call index_project, then retry the failed tool. Only fall back to Grep/Glob after index_project has been called and the tool still fails."#;
 
 /// Handle initialize request
@@ -239,7 +241,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
         "tools": [
             {
                 "name": "list_locations",
-                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns an array of `{path, line}` objects — one per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns an array of `{path, line}` objects — one per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. COVERAGE: every file git tracks or does not ignore, unless it is binary — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile), the same set ripgrep searches. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`; a zero result says how many such files it skipped (`excluded_by_default`). Dot-directories are not indexed unless the project sets `[index] hidden = true`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -255,9 +257,17 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                             "type": "boolean",
                             "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
                         },
+                        "include_locks": {
+                            "type": "boolean",
+                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
+                        },
+                        "include_generated": {
+                            "type": "boolean",
+                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
+                        },
                         "lang": {
                             "type": "string",
-                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the docs/config tier (md, yaml, toml, json, proto, html, sh, sql, graphql)."
+                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the plain-text tier (every other non-binary file: docs, config, templates, extensionless), \"lock\" for lock files, \"generated\" for generated files (the last two are excluded unless named or include_locks / include_generated is set)."
                         },
                         "file": {
                             "type": "string",
@@ -287,7 +297,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "count_occurrences",
-                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. COVERAGE: every file git tracks or does not ignore, unless it is binary — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile), the same set ripgrep searches. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`; a zero result says how many such files it skipped (`excluded_by_default`). Dot-directories are not indexed unless the project sets `[index] hidden = true`. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -303,9 +313,17 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                             "type": "boolean",
                             "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
                         },
+                        "include_locks": {
+                            "type": "boolean",
+                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
+                        },
+                        "include_generated": {
+                            "type": "boolean",
+                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
+                        },
                         "lang": {
                             "type": "string",
-                            "description": "Filter by language"
+                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" (docs, config and every other non-binary file), \"lock\" (lock files), \"generated\" (generated files by name)."
                         },
                         "symbols": {
                             "type": "boolean",
@@ -343,7 +361,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
             },
             {
                 "name": "search_code",
-                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE: code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND docs/config (md, mdx, txt, yaml, yml, toml, json, proto, html, sh, bash, ini, cfg, sql, graphql). Use `lang: \"text\"` for docs and config only. Lock files are never indexed. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` is `rg -i`; combine with `contains` for `rg -i -F`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full: `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
+                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE: every file git tracks or does not ignore, unless it is binary — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile), the same set ripgrep searches. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`; a zero result says how many such files it skipped (`excluded_by_default`). Dot-directories are not indexed unless the project sets `[index] hidden = true`. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` is `rg -i`; combine with `contains` for `rg -i -F`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full: `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means the index does not yet include your uncommitted edits — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -359,6 +377,14 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                             "type": "boolean",
                             "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
                         },
+                        "include_locks": {
+                            "type": "boolean",
+                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
+                        },
+                        "include_generated": {
+                            "type": "boolean",
+                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
+                        },
                         "mode": {
                             "type": "string",
                             "enum": ["list", "count"],
@@ -366,7 +392,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         },
                         "lang": {
                             "type": "string",
-                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the docs/config tier (md, yaml, toml, json, proto, html, sh, sql, graphql)."
+                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the plain-text tier (every other non-binary file: docs, config, templates, extensionless), \"lock\" for lock files, \"generated\" for generated files (the last two are excluded unless named or include_locks / include_generated is set)."
                         },
                         "kind": {
                             "type": "string",
@@ -443,7 +469,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         },
                         "lang": {
                             "type": "string",
-                            "description": "Filter by language"
+                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" (docs, config and every other non-binary file), \"lock\" (lock files), \"generated\" (generated files by name)."
                         },
                         "file": {
                             "type": "string",
@@ -474,6 +500,14 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                         "ignore_case": {
                             "type": "boolean",
                             "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
+                        },
+                        "include_locks": {
+                            "type": "boolean",
+                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
+                        },
+                        "include_generated": {
+                            "type": "boolean",
+                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
                         },
                         "force": {
                             "type": "boolean",
@@ -951,6 +985,8 @@ const BOOL_ARG_KEYS: &[&str] = &[
     "exact",
     "contains",
     "ignore_case",
+    "include_locks",
+    "include_generated",
     "expand",
     "paths",
     "force",
@@ -1548,6 +1584,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
             let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
+            let include_locks = arguments["include_locks"].as_bool().unwrap_or(false);
+            let include_generated = arguments["include_generated"].as_bool().unwrap_or(false);
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let glob_patterns = arguments["glob"]
                 .as_array()
@@ -1582,6 +1620,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 exact: false,
                 use_contains: contains,
                 ignore_case,
+                include_locks,
+                include_generated,
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,
@@ -1641,6 +1681,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
             let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
+            let include_locks = arguments["include_locks"].as_bool().unwrap_or(false);
+            let include_generated = arguments["include_generated"].as_bool().unwrap_or(false);
             let kind = arguments["kind"].as_str().map(|s| s.to_string());
             let symbols = arguments["symbols"].as_bool();
             let file = arguments["file"].as_str().map(|s| s.to_string());
@@ -1679,6 +1721,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 exact: false,
                 use_contains: contains,
                 ignore_case,
+                include_locks,
+                include_generated,
                 timeout_secs: 30,
                 glob_patterns,
                 exclude_patterns,
@@ -1720,6 +1764,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
             let contains = arguments["contains"].as_bool().unwrap_or(false);
             let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
+            let include_locks = arguments["include_locks"].as_bool().unwrap_or(false);
+            let include_generated = arguments["include_generated"].as_bool().unwrap_or(false);
             let kind = arguments["kind"].as_str().map(|s| s.to_string());
             let symbols = arguments["symbols"].as_bool();
             let exact = arguments["exact"].as_bool();
@@ -1799,6 +1845,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     exact: exact.unwrap_or(false),
                     use_contains: contains,
                     ignore_case,
+                    include_locks,
+                    include_generated,
                     timeout_secs: 30,
                     glob_patterns,
                     exclude_patterns,
@@ -1830,6 +1878,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 exact: exact.unwrap_or(false),
                 use_contains: contains,
                 ignore_case,
+                include_locks,
+                include_generated,
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
@@ -1939,6 +1989,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
             let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
+            let include_locks = arguments["include_locks"].as_bool().unwrap_or(false);
+            let include_generated = arguments["include_generated"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
 
@@ -1970,6 +2022,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     exact: false,
                     use_contains: false,
                     ignore_case,
+                    include_locks,
+                    include_generated,
                     timeout_secs: 30,
                     glob_patterns,
                     exclude_patterns,
@@ -2001,6 +2055,8 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 exact: false,
                 use_contains: false, // Regex mode uses substring matching via use_regex flag
                 ignore_case,
+                include_locks,
+                include_generated,
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
@@ -2110,10 +2166,10 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
 
             // Reject the text tier explicitly rather than letting it fall through to
             // the grammar loader's generic error. There is no grammar, by design.
-            if language.is_text() {
+            if language.is_text() || language.is_excluded_by_default() {
                 anyhow::bail!(
-                    "lang \"{}\" is the plain-text tier (markdown, YAML, JSON, TOML, HTML, \
-                     shell, proto). These files are trigram-indexed only and have no AST. \
+                    "lang \"{}\" is the plain-text tier (docs, config, templates, lock and \
+                     generated files). These files are trigram-indexed only and have no AST. \
                      Use search_code or search_regex on them instead.",
                     lang_str
                 );

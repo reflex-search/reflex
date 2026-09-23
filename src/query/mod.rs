@@ -47,6 +47,9 @@ struct Internal {
     /// Candidate lines that contained the pattern only as a substring
     /// (whole-identifier searches only), for the zero-result hint.
     substring_only: Option<usize>,
+    /// Candidate files left out because they are lock/generated files nobody
+    /// asked for, for the zero-result hint.
+    excluded_by_default: usize,
     /// Time spent in trigram lookup and intersection.
     candidates_us: u64,
     /// Trigram index or full scan.
@@ -60,6 +63,8 @@ struct Internal {
 struct CandidateStats {
     candidates_us: u64,
     substring_only: Option<usize>,
+    /// See `Internal::excluded_by_default`.
+    excluded_by_default: usize,
     /// Every candidate was verified.
     exhausted: bool,
     /// Sample-based estimate of the total, only when not `exhausted`.
@@ -76,6 +81,7 @@ impl Default for CandidateStats {
         Self {
             candidates_us: 0,
             substring_only: None,
+            excluded_by_default: 0,
             exhausted: true,
             approx_total: None,
             index_path: IndexPath::Trigram,
@@ -100,6 +106,8 @@ struct FileFilter {
     exclude: Option<globset::GlobSet>,
     file_pattern: Option<String>,
     exclude_text: bool,
+    include_locks: bool,
+    include_generated: bool,
 }
 
 impl FileFilter {
@@ -110,16 +118,29 @@ impl FileFilter {
             exclude: result::build_glob_set(&filter.exclude_patterns, "exclude"),
             file_pattern: filter.file_pattern.clone(),
             exclude_text: filter.exclude_text,
+            include_locks: filter.include_locks,
+            include_generated: filter.include_generated,
         }
     }
 
+    /// The file is a lock/generated file nobody asked for. Counted, not searched.
+    fn excluded_by_default(&self, lang: Language) -> bool {
+        filter::excluded_by_default(
+            lang,
+            self.language,
+            self.include_locks,
+            self.include_generated,
+        )
+    }
+
     fn accept(&self, path: &str, lang: Language) -> bool {
-        if let Some(want) = self.language
-            && lang != want
-        {
-            return false;
-        }
-        if self.exclude_text && lang.is_text() {
+        if !filter::tier_admits(
+            lang,
+            self.language,
+            self.exclude_text,
+            self.include_locks,
+            self.include_generated,
+        ) {
             return false;
         }
         if let Some(set) = &self.include
@@ -154,6 +175,9 @@ struct VerifyOutcome {
     /// Whole-identifier searches only: candidate lines holding the pattern as a
     /// substring but not as a whole identifier.
     substring_only: usize,
+    /// Candidate files left out because they are lock/generated files and nothing
+    /// asked for them.
+    excluded_by_default: usize,
 }
 
 /// The per-line predicate for one query, built once.
@@ -274,15 +298,21 @@ fn verify_files_streaming(
 
     // Resolve path + language once per file, drop files the filters reject, and
     // sort by the path string the results will carry.
+    let mut excluded_by_default = 0usize;
     let mut accepted: Vec<(u32, String, Language, LineSet)> = files
         .into_iter()
         .filter_map(|(file_id, lines)| {
             let path = content.get_file_path(file_id)?;
             let lang = Language::from_path(path);
             let path_str = path.to_string_lossy().into_owned();
-            file_filter
-                .accept(&path_str, lang)
-                .then_some((file_id, path_str, lang, lines))
+            if file_filter.accept(&path_str, lang) {
+                Some((file_id, path_str, lang, lines))
+            } else {
+                if file_filter.excluded_by_default(lang) {
+                    excluded_by_default += 1;
+                }
+                None
+            }
         })
         .collect();
     accepted.sort_by(|a, b| a.1.cmp(&b.1));
@@ -451,6 +481,7 @@ fn verify_files_streaming(
         exhausted,
         estimated_total,
         substring_only: substring_only.into_inner(),
+        excluded_by_default,
     }
 }
 
@@ -764,6 +795,7 @@ impl QueryEngine {
             total_is_exact,
             approx_total,
             substring_only,
+            excluded_by_default,
             candidates_us,
             index_path,
             warnings: engine_warnings,
@@ -818,12 +850,23 @@ impl QueryEngine {
         // Only a whole-identifier search can be "explained"; a rewrite or an explicit
         // contains search already has substring semantics.
         let substring_hint_count = if total == 0 { substring_only } else { None };
-        let hint = match substring_hint_count {
+        let mut hint = match substring_hint_count {
             Some(n) if n > 0 && prepared.warning.is_none() && !filter.use_contains => {
                 Some(substring_hint_text(n, pattern))
             }
             _ => None,
         };
+        // A zero whose only candidates were lock/generated files: say so, or the
+        // agent concludes "nothing pins this version" and acts on it.
+        let excluded_by_default =
+            (total == 0 && excluded_by_default > 0).then_some(excluded_by_default);
+        if let Some(n) = excluded_by_default {
+            let text = filter::excluded_by_default_hint_text(n);
+            hint = Some(match hint {
+                Some(h) => format!("{} {}", h, text),
+                None => text,
+            });
+        }
 
         Ok(QueryResponse {
             ai_instruction: None, // AI instruction is generated by CLI/MCP layer, not here
@@ -839,6 +882,7 @@ impl QueryEngine {
                 .chain(engine_warnings)
                 .collect(),
             hint,
+            excluded_by_default,
             timings: filter.collect_timings.then_some(timings),
         })
     }
@@ -1010,6 +1054,7 @@ impl QueryEngine {
 
         // PHASE 1: Get initial candidates (choose search strategy)
         let mut substring_only = None;
+        let mut excluded_by_default = 0usize;
         let mut candidates_us = 0u64;
         let mut total_is_exact = true;
         let mut approx_total = None;
@@ -1043,6 +1088,7 @@ impl QueryEngine {
                 self.get_trigram_candidates(pattern, &filter, budget)?
             };
             substring_only = stats.substring_only;
+            excluded_by_default = stats.excluded_by_default;
             candidates_us = stats.candidates_us;
             total_is_exact = stats.exhausted;
             approx_total = (!stats.exhausted).then_some(stats.approx_total).flatten();
@@ -1359,9 +1405,15 @@ impl QueryEngine {
         // Drop text-tier results when the caller asked for code only. Applied BEFORE
         // the total is captured, so pagination counts what the caller will actually
         // receive rather than what was found and then discarded.
-        if filter.exclude_text {
-            results.retain(|r| !r.lang.is_text());
-        }
+        results.retain(|r| {
+            filter::tier_admits(
+                r.lang,
+                filter.language,
+                filter.exclude_text,
+                filter.include_locks,
+                filter.include_generated,
+            )
+        });
 
         // Step 5: Sort results deterministically (by path, then line number)
         results.sort_by(|a, b| {
@@ -1401,6 +1453,7 @@ impl QueryEngine {
             total_is_exact,
             approx_total,
             substring_only,
+            excluded_by_default,
             candidates_us,
             index_path,
             warnings: engine_warnings,
@@ -1627,9 +1680,15 @@ impl QueryEngine {
         // Drop text-tier results when the caller asked for code only. Applied BEFORE
         // the total is captured, so pagination counts what the caller will actually
         // receive rather than what was found and then discarded.
-        if filter.exclude_text {
-            results.retain(|r| !r.lang.is_text());
-        }
+        results.retain(|r| {
+            filter::tier_admits(
+                r.lang,
+                filter.language,
+                filter.exclude_text,
+                filter.include_locks,
+                filter.include_generated,
+            )
+        });
 
         // Sort results deterministically
         results.sort_by(|a, b| {
@@ -1782,9 +1841,15 @@ impl QueryEngine {
         // Drop text-tier results when the caller asked for code only. Applied BEFORE
         // the total is captured, so pagination counts what the caller will actually
         // receive rather than what was found and then discarded.
-        if filter.exclude_text {
-            results.retain(|r| !r.lang.is_text());
-        }
+        results.retain(|r| {
+            filter::tier_admits(
+                r.lang,
+                filter.language,
+                filter.exclude_text,
+                filter.include_locks,
+                filter.include_generated,
+            )
+        });
 
         // Sort results deterministically
         results.sort_by(|a, b| {
@@ -2434,6 +2499,7 @@ impl QueryEngine {
         let stats = CandidateStats {
             candidates_us,
             substring_only: matcher.is_word_boundary().then_some(outcome.substring_only),
+            excluded_by_default: outcome.excluded_by_default,
             exhausted: outcome.exhausted,
             approx_total: outcome.estimated_total,
             index_path: IndexPath::Trigram,
@@ -2694,6 +2760,7 @@ impl QueryEngine {
         let stats = CandidateStats {
             candidates_us,
             substring_only: None,
+            excluded_by_default: outcome.excluded_by_default,
             exhausted: outcome.exhausted,
             approx_total: outcome.estimated_total,
             index_path,
@@ -3725,8 +3792,8 @@ mod tests {
 mod status_cache {
     use crate::cache::{CacheManager, FileFingerprint};
     use crate::git::WorktreeChanges;
-    use crate::indexer::{Indexer, PathPolicy};
-    use crate::models::{IndexConfig, IndexStatus, IndexWarning, IndexWarningDetails};
+    use crate::indexer::{Indexer, PathPolicy, looks_binary};
+    use crate::models::{IndexConfig, IndexStatus, IndexWarning, IndexWarningDetails, Language};
     use anyhow::Result;
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
@@ -4049,7 +4116,14 @@ mod status_cache {
                     out.push_modified(path);
                 }
             }
-            (Ok(_), None) => out.push_added(path),
+            // A new non-code file is sniffed the way the indexer sniffs it: a
+            // binary is never indexed, so it can never be missing from the index.
+            (Ok(_), None) => {
+                if !Language::from_path(Path::new(path)).is_code() && looks_binary(&full) {
+                    return;
+                }
+                out.push_added(path);
+            }
             (Ok(md), Some(fp)) => {
                 if !content_matches(&full, &md, fp) {
                     out.push_modified(path);
@@ -4115,7 +4189,13 @@ mod status_cache {
         for (rel, md) in &seen {
             present.insert(rel.as_str());
             match fingerprints.get(rel) {
-                None => out.push_added(rel),
+                None => {
+                    let full = root.join(rel);
+                    if !Language::from_path(&full).is_code() && looks_binary(&full) {
+                        continue;
+                    }
+                    out.push_added(rel);
+                }
                 Some(fp) => {
                     if !content_matches(&root.join(rel), md, fp) {
                         out.push_modified(rel);

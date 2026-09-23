@@ -340,38 +340,60 @@ rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 
 **Coverage**: 90%+ of all codebases across web, mobile, systems, enterprise, and AI/ML development.
 
-### Plain-Text Tier (docs, config, templates)
+### Plain-Text Tier (every non-binary file)
 
-Reflex also indexes non-code files, because **agents do not partition searches by file
+Reflex indexes non-code files, because **agents do not partition searches by file
 type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
 returning only the struct and a confident `0` for the rest is a wrong answer.
 
-**Extensions**: `md mdx txt yaml yml toml json proto html htm sh bash ini cfg sql graphql bru`
+**Coverage rule (1.8.0, `[index] mode = "tracked"`, the default)**: ripgrep's — every
+file not excluded by `.gitignore` / `.ignore` / `.rgignore` / `[index] exclude`, unless
+a NUL byte in its first 8 KB says it is binary. So `OWNERS`, `SECURITY_CONTACTS`,
+`foo.po`, `a.css`, `data.jsonl`, `Makefile`, `Dockerfile` and every other extensionless
+or unlisted name are `language: "text"`. Code is still classified by extension
+(`.mjs` / `.cjs` are JavaScript, with symbols). Non-UTF-8 text (Latin-1 `.po`) is
+decoded lossily, not dropped. `Language::from_path` plus `PathPolicy::classify` is the
+one classifier the indexer, watcher, freshness check and query engine share.
 
-**Extensionless names**: `Makefile`, `Dockerfile` (and `Dockerfile.<variant>`), `Justfile`.
-(`.mjs` / `.cjs` are JavaScript, with symbols, not text.) `Language::from_path` is the one
-classifier the indexer, watcher and query engine share.
+**Two more tiers, indexed but excluded from every search unless asked for:**
+
+| tier | judged by | `lang` | widen with |
+| --- | --- | --- | --- |
+| `lock` | name: `Cargo.lock`, `package-lock.json`, `*-lock.json`, `*.lock`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `flake.lock`, `uv.lock`, `bun.lock` | `"lock"` | `include_locks: true` / `--include-locks` |
+| `generated` | name: `*.pb.go`, `*_generated.*`, `*.generated.*`, `*.min.js`, `*.min.css`, `*.map` | `"generated"` | `include_generated: true` / `--include-generated` |
+
+A zero result whose candidates were only such files says so: `excluded_by_default: N`
+plus a `hint`. "Which lockfile pins serde 1.0.190?" is a real query, and a confident
+zero with no way in is the failure this tier exists to fix. A `@generated` content
+marker is **not** read (the query engine derives language from the path).
 
 **Trigram-indexed only.** No tree-sitter, no symbol extraction, no import extraction. So:
 
-| Tool / flag | Text tier |
+| Tool / flag | Text / lock / generated tiers |
 | --- | --- |
-| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | **included by default** |
+| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | text **included by default**; lock and generated on request |
 | `--symbols`, `--kind`, `--ast`, `search_ast` | excluded (there is no grammar) |
 | `find_references`, `get_dependents`, structural tools | excluded (a mention in a changelog is not a call site) |
 
-- **Select it**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
+- **Select the text tier**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
 - **Exclude it**: `exclude_text: true` on the four full-text MCP tools.
 - **Turn it off**: `[index] text_tier = false` in `.reflex/config.toml`.
-- **Never indexed**: lock files (`package-lock.json`, `*-lock.json`, `yarn.lock`,
-  `pnpm-lock.yaml`, `Cargo.lock`, `*.lock`) — 100k+ lines of near-random trigrams that
-  bloat posting lists without ever being searched for.
+- **Old rule**: `[index] mode = "allowlist"` restores the pre-1.8.0 behaviour — code by
+  extension plus the fixed list `md mdx txt yaml yml toml json proto html htm sh bash
+  ini cfg sql graphql bru` and the names `Makefile`, `Dockerfile`, `Justfile`; lock and
+  generated files are not indexed. For trees where the long tail of data files is not
+  worth the index size.
+- **Hidden files**: dot-directories and dotfiles are skipped, like ripgrep without
+  `--hidden`. `[index] hidden = true` walks them (`.githooks/pre-commit`); `.git/` and
+  `.reflex/` are never walked.
 - **Not subject to `[index] languages`.** That option means "which parsers do I care
   about"; a user with `languages = ["rust"]` keeps their documentation searchable.
   `text_tier = false` is the way to turn the tier off.
+- `rfx index` prints `Text: N files, Lock: N, Generated: N` and the count of binary
+  files it skipped.
 
-**Note**: files outside both tiers (binaries, unknown extensions, dot-directories such
-as `.reflex/` itself) are not indexed.
+**Note**: files outside every tier (binaries, files over `max_file_size`, hidden paths
+unless `hidden = true`) are not indexed, and a change to one never makes the index stale.
 
 ---
 

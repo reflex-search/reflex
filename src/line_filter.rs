@@ -63,7 +63,11 @@ pub fn get_filter(lang: Language) -> Option<Box<dyn LineFilter>> {
         Language::Svelte => Some(Box::new(SvelteLineFilter)),
         // No filter for the text tier: "inside a string literal" is not a meaningful
         // idea in markdown or YAML, and guessing would drop real matches.
-        Language::Text | Language::Swift | Language::Unknown => None,
+        Language::Text
+        | Language::Lock
+        | Language::Generated
+        | Language::Swift
+        | Language::Unknown => None,
     }
 }
 
