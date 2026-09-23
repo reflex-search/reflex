@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use crate::cache::CacheManager;
 use crate::content_store::{ContentReader, ContentWriter};
-use crate::dependency::DependencyIndex;
 use crate::models::{Dependency, ImportType, IndexConfig, IndexMode, IndexStats, Language};
 #[cfg(unix)]
 use crate::output;
@@ -34,7 +33,7 @@ use crate::parsers::typescript::TypeScriptDependencyExtractor;
 use crate::parsers::vue::VueDependencyExtractor;
 use crate::parsers::zig::ZigDependencyExtractor;
 use crate::parsers::{DependencyExtractor, ExportInfo, ImportInfo};
-use crate::trigram::TrigramIndex;
+use crate::trigram_build::{TrigramIndexBuilder, TrigramRun};
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
 /// Uses Arc to allow cloning for multi-threaded progress updates
@@ -53,6 +52,8 @@ struct FileProcessingResult {
     mtime_ns: i64,
     dependencies: Vec<ImportInfo>,
     exports: Vec<ExportInfo>,
+    /// The file's trigram postings, extracted in the pool (no file id yet).
+    trigram_run: TrigramRun,
 }
 
 /// Find the nearest tsconfig.json for a given source file
@@ -96,6 +97,42 @@ fn find_nearest_tsconfig<'a>(
 pub struct Indexer {
     cache: CacheManager,
     config: IndexConfig,
+    /// `(max_files, max_bytes)` per batch; `None` = defaults / env overrides.
+    batch_limits: Option<(usize, u64)>,
+}
+
+/// Default cap on files per batch.
+pub const BATCH_MAX_FILES: usize = 5000;
+/// Default cap on bytes of text per batch. Bounds the per-batch memory of the
+/// read pool (file contents) and of the trigram build (postings), whatever the
+/// file count: a 9,000-file tree of large files no longer builds one giant
+/// in-memory index.
+pub const BATCH_MAX_BYTES: u64 = 48 << 20;
+
+/// Cut `sizes` (in file order) into consecutive batches of at most `max_files`
+/// files and, past the first file of a batch, at most `max_bytes` bytes.
+pub fn plan_batches(
+    sizes: &[u64],
+    max_files: usize,
+    max_bytes: u64,
+) -> Vec<std::ops::Range<usize>> {
+    let max_files = max_files.max(1);
+    let mut batches = Vec::new();
+    let mut start = 0usize;
+    let mut bytes = 0u64;
+    for (i, &size) in sizes.iter().enumerate() {
+        let count = i - start;
+        if count > 0 && (count >= max_files || bytes.saturating_add(size) > max_bytes) {
+            batches.push(start..i);
+            start = i;
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(size);
+    }
+    if start < sizes.len() {
+        batches.push(start..sizes.len());
+    }
+    batches
 }
 
 /// The `[index] include.patterns` / `exclude.patterns` policy, compiled once.
@@ -263,6 +300,8 @@ impl PathPolicy {
 #[derive(Debug, Default)]
 struct Discovered {
     files: Vec<PathBuf>,
+    /// On-disk size of each entry of `files` (0 when unknown); drives batching.
+    sizes: Vec<u64>,
     skipped_too_large: usize,
     skipped_bytes_too_large: u64,
     skipped_binary: usize,
@@ -307,7 +346,36 @@ impl Drop for InvalidateOnDrop {
 impl Indexer {
     /// Create a new indexer with the given cache manager and config
     pub fn new(cache: CacheManager, config: IndexConfig) -> Self {
-        Self { cache, config }
+        Self {
+            cache,
+            config,
+            batch_limits: None,
+        }
+    }
+
+    /// Override the per-batch limits (files, bytes). For tests that need to
+    /// exercise multi-batch builds on small trees; production reads
+    /// `REFLEX_INDEX_BATCH_FILES` / `REFLEX_INDEX_BATCH_BYTES` or the defaults.
+    #[doc(hidden)]
+    pub fn set_batch_limits(&mut self, max_files: usize, max_bytes: u64) {
+        self.batch_limits = Some((max_files, max_bytes));
+    }
+
+    fn batch_limits(&self) -> (usize, u64) {
+        if let Some(limits) = self.batch_limits {
+            return limits;
+        }
+        let files = std::env::var("REFLEX_INDEX_BATCH_FILES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(BATCH_MAX_FILES);
+        let bytes = std::env::var("REFLEX_INDEX_BATCH_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(BATCH_MAX_BYTES);
+        (files, bytes)
     }
 
     /// The `[index] include/exclude` policy for a workspace root.
@@ -428,11 +496,12 @@ impl Indexer {
             log::info!("Not a git repository, using default branch");
         }
 
-        // Configure thread pool for parallel processing
-        // 0 = auto (use 80% of available cores to avoid locking the system).
-        // Capped at 8 to prevent diminishing returns from cache contention on
-        // high-core systems while writing.
-        let num_threads = crate::models::resolve_thread_count(self.config.parallel_threads, 8);
+        // Configure thread pool for parallel processing.
+        // 0 = auto (80% of available cores, up to 32 — the query pool's rule).
+        // The pool reads, hashes, extracts imports and trigrams; the only serial
+        // work left is streaming file bytes into content.bin. Peak memory is set
+        // by the batch byte budget, not by the thread count.
+        let num_threads = crate::models::resolve_thread_count(self.config.parallel_threads, 32);
 
         log::info!(
             "Using {} threads for parallel indexing (out of {} available)",
@@ -489,18 +558,21 @@ impl Indexer {
         );
 
         // Step 1: Walk directory tree and collect files
+        let phase_start = Instant::now();
         let Discovered {
             files,
+            sizes,
             skipped_too_large,
             skipped_bytes_too_large,
             skipped_binary,
         } = self.discover_files(root)?;
         let total_files = files.len();
         log::info!(
-            "Discovered {} files to index ({} skipped: too large, {} binary)",
+            "Discovered {} files to index ({} skipped: too large, {} binary) in {} ms",
             total_files,
             skipped_too_large,
-            skipped_binary
+            skipped_binary,
+            phase_start.elapsed().as_millis()
         );
 
         // Step 1.4: Parse tsconfig.json files for TypeScript/Vue path alias resolution
@@ -699,18 +771,11 @@ impl Indexer {
         let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
         let mut all_exports: Vec<(String, Vec<ExportInfo>)> = Vec::new(); // For batch export insertion
 
-        // Initialize trigram index and content store
-        let mut trigram_index = TrigramIndex::new();
+        // Initialize trigram builder and content store. The builder spills each
+        // batch to `<cache>/trigram_temp/` only when there is more than one batch;
+        // a single batch stays in memory and the directory is never created.
+        let mut trigram_builder = TrigramIndexBuilder::new(self.cache.path().join("trigram_temp"));
         let mut content_writer = ContentWriter::new();
-
-        // Enable batch-flush mode for trigram index if we have lots of files
-        if total_files > 10000 {
-            let temp_dir = self.cache.path().join("trigram_temp");
-            trigram_index
-                .enable_batch_flush(temp_dir)
-                .context("Failed to enable batch-flush mode for trigram index")?;
-            log::info!("Enabled batch-flush mode for {} files", total_files);
-        }
 
         // Initialize content writer to start streaming writes immediately
         let content_path = self.cache.path().join("content.bin");
@@ -740,7 +805,9 @@ impl Indexer {
         // Shared status message for progress callback
         let progress_status = Arc::new(Mutex::new("Indexing files...".to_string()));
 
-        let _start_time = Instant::now();
+        let batch_phase_start = Instant::now();
+        let mut pool_ms = 0u128;
+        let mut flush_ms = 0u128;
 
         // Spawn a background thread to update progress bar and call callback during parallel processing
         let counter_for_thread = Arc::clone(&progress_counter);
@@ -776,31 +843,39 @@ impl Indexer {
             .build()
             .context("Failed to create thread pool")?;
 
-        // Process files in batches to avoid OOM on huge codebases
-        // Batch size: process 5000 files at a time to limit memory usage
-        const BATCH_SIZE: usize = 5000;
-        let num_batches = total_files.div_ceil(BATCH_SIZE);
+        // Process files in batches to bound memory: a batch holds at most
+        // `max_files` files and about `max_bytes` bytes of text, so the pool's
+        // in-flight contents and the trigram build's postings stay bounded on
+        // any tree.
+        let (max_files, max_bytes) = self.batch_limits();
+        let batches = plan_batches(&sizes, max_files, max_bytes);
+        let num_batches = batches.len();
+        let spill_to_disk = num_batches > 1;
         log::info!(
-            "Processing {} files in {} batches of up to {} files",
+            "Processing {} files in {} batches (<= {} files, ~{} MB each)",
             total_files,
             num_batches,
-            BATCH_SIZE
+            max_files,
+            max_bytes >> 20
         );
 
-        for (batch_idx, batch_files) in files.chunks(BATCH_SIZE).enumerate() {
+        for (batch_idx, batch_range) in batches.into_iter().enumerate() {
+            let batch_files = &files[batch_range];
             log::info!(
                 "Processing batch {}/{} ({} files)",
                 batch_idx + 1,
                 num_batches,
                 batch_files.len()
             );
+            let pool_start = Instant::now();
 
-            // Process files in parallel using rayon with custom thread pool
+            // Process files in parallel using rayon with custom thread pool.
+            // `map_init` gives each worker one reusable trigram sort buffer.
             let counter_clone = Arc::clone(&progress_counter);
             let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
                 batch_files
                     .par_iter()
-                    .map(|file_path| {
+                    .map_init(Vec::<u64>::new, |trigram_scratch, file_path| {
                 // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
                 // Always emit forward slashes so the persisted path is deterministic across OSes.
                 let path_str = file_path.to_string_lossy().to_string();
@@ -845,7 +920,11 @@ impl Indexer {
                 // Count lines in the file
                 let line_count = content.lines().count();
 
+                // Trigram postings, sorted, without a file id (assigned serially below).
+                let trigram_run = crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
+
                 // Extract dependencies and exports for supported languages
+                let mut parsed_exports: Vec<ExportInfo> = Vec::new();
                 let dependencies = match language {
                     Language::Rust => {
                         match RustDependencyExtractor::extract_dependencies(&content) {
@@ -866,10 +945,14 @@ impl Indexer {
                         }
                     }
                     Language::TypeScript | Language::JavaScript => {
-                        // Find nearest tsconfig for path alias resolution
+                        // Find nearest tsconfig for path alias resolution. One parse
+                        // yields both the imports and the re-exports.
                         let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match TypeScriptDependencyExtractor::extract_dependencies_with_alias_map(&content, alias_map) {
-                            Ok(deps) => deps,
+                        match TypeScriptDependencyExtractor::extract_dependencies_and_exports(&content, alias_map) {
+                            Ok((deps, exports)) => {
+                                parsed_exports = exports;
+                                deps
+                            }
                             Err(e) => {
                                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
                                 Vec::new()
@@ -958,10 +1041,14 @@ impl Indexer {
                         }
                     }
                     Language::Vue => {
-                        // Find nearest tsconfig for path alias resolution
+                        // Find nearest tsconfig for path alias resolution. One parse
+                        // per script block yields both the imports and the re-exports.
                         let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match VueDependencyExtractor::extract_dependencies_with_alias_map(&content, alias_map) {
-                            Ok(deps) => deps,
+                        match VueDependencyExtractor::extract_dependencies_and_exports(&content, alias_map) {
+                            Ok((deps, exports)) => {
+                                parsed_exports = exports;
+                                deps
+                            }
                             Err(e) => {
                                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
                                 Vec::new()
@@ -981,33 +1068,9 @@ impl Indexer {
                     _ => Vec::new(),
                 };
 
-                // Extract exports (for barrel export tracking)
-                let exports = match language {
-                    Language::TypeScript | Language::JavaScript => {
-                        // Find nearest tsconfig for path alias resolution
-                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match TypeScriptDependencyExtractor::extract_export_declarations(&content, alias_map) {
-                            Ok(exports) => exports,
-                            Err(e) => {
-                                log::warn!("Failed to extract exports from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Vue => {
-                        // Find nearest tsconfig for path alias resolution
-                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
-                        match VueDependencyExtractor::extract_export_declarations(&content, alias_map) {
-                            Ok(exports) => exports,
-                            Err(e) => {
-                                log::warn!("Failed to extract exports from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    // Other languages not yet implemented for export tracking
-                    _ => Vec::new(),
-                };
+                // Exports (barrel re-export tracking) came out of the same parse
+                // as the dependencies above; only TypeScript/JavaScript/Vue have them.
+                let exports = parsed_exports;
 
                 // Update progress atomically
                 counter_clone.fetch_add(1, Ordering::Relaxed);
@@ -1022,10 +1085,12 @@ impl Indexer {
                     mtime_ns,
                     dependencies,
                     exports,
+                    trigram_run,
                 })
                 })
                 .collect()
             });
+            pool_ms += pool_start.elapsed().as_millis();
 
             // Process batch results immediately (streaming approach to minimize memory)
             for result in results.into_iter().flatten() {
@@ -1034,11 +1099,10 @@ impl Indexer {
                 // and downstream filters expect, regardless of host separator.
                 let normalized_pathbuf = PathBuf::from(&result.path_str);
 
-                // Add file to trigram index (get file_id)
-                let file_id = trigram_index.add_file(normalized_pathbuf.clone());
-
-                // Index file content directly (avoid accumulating all trigrams)
-                trigram_index.index_file(file_id, &result.content);
+                // Register the file with the trigram builder (assigns file_id in
+                // discovery order) and hand it the postings extracted in the pool.
+                let _file_id =
+                    trigram_builder.add_file(normalized_pathbuf.clone(), result.trigram_run);
 
                 // Add to content store
                 content_writer.add_file(normalized_pathbuf, &result.content);
@@ -1076,18 +1140,28 @@ impl Indexer {
                 new_hashes.insert(result.path_str, result.hash);
             }
 
-            // Flush trigram index batch to disk if batch-flush mode is enabled
-            if total_files > 10000 {
-                let flush_msg = format!("Flushing batch {}/{}...", batch_idx + 1, num_batches);
-                if show_progress {
-                    pb.set_message(flush_msg.clone());
-                }
-                *progress_status.lock().unwrap() = flush_msg;
-                trigram_index
-                    .flush_batch()
-                    .context("Failed to flush trigram batch")?;
+            // Build this batch's posting lists (sharded, parallel) into a partial.
+            let flush_msg = format!(
+                "Building trigram batch {}/{}...",
+                batch_idx + 1,
+                num_batches
+            );
+            if show_progress {
+                pb.set_message(flush_msg.clone());
             }
+            *progress_status.lock().unwrap() = flush_msg;
+            let flush_start = Instant::now();
+            trigram_builder
+                .flush_batch(&pool, spill_to_disk)
+                .context("Failed to build trigram batch")?;
+            flush_ms += flush_start.elapsed().as_millis();
         }
+        log::info!(
+            "phase read+extract: {} ms in pool, {} ms building trigram batches, {} ms total",
+            pool_ms,
+            flush_ms,
+            batch_phase_start.elapsed().as_millis()
+        );
 
         // Wait for progress thread to finish
         if let Some(thread) = progress_thread {
@@ -1100,19 +1174,13 @@ impl Indexer {
             pb.set_position(final_count);
         }
 
-        // Finalize trigram index (sort and deduplicate posting lists)
-        *progress_status.lock().unwrap() = "Finalizing trigram index...".to_string();
-        if show_progress {
-            pb.set_message("Finalizing trigram index...".to_string());
-        }
-        trigram_index.finalize();
-
         // Update progress bar message for post-processing
         *progress_status.lock().unwrap() = "Writing file metadata to database...".to_string();
         if show_progress {
             pb.set_message("Writing file metadata to database...".to_string());
         }
 
+        let files_tx_start = Instant::now();
         // Batch write file metadata AND branch hashes in a SINGLE atomic transaction
         // This ensures that if files are inserted, their hashes are guaranteed to be inserted too
         if !file_metadata.is_empty() {
@@ -1151,6 +1219,22 @@ impl Indexer {
             .checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
         log::debug!("WAL checkpoint completed - database is fully synced");
+
+        log::info!(
+            "phase files+branch transaction: {} ms",
+            files_tx_start.elapsed().as_millis()
+        );
+        let deps_start = Instant::now();
+
+        // Steps 2.5 and 2.6 share one connection, one in-memory path resolver and
+        // one transaction. The resolver is built AFTER the files transaction above
+        // committed, because `INSERT OR REPLACE` hands every re-indexed file a new
+        // id and imports may target files that did not change.
+        let mut dep_conn = crate::cache::open_meta_db(self.cache.path().join("meta.db"))
+            .context("Failed to open meta.db for dependency recording")?;
+        let resolver = crate::dependency::PathResolver::from_conn(&dep_conn)
+            .context("Failed to load file paths for dependency resolution")?;
+        let mut dep_writer = crate::dependency::DependencyWriter::begin(&mut dep_conn)?;
 
         // Step 2.5: Insert dependencies (after files are inserted and have IDs)
         if !all_dependencies.is_empty() {
@@ -1250,34 +1334,13 @@ impl Indexer {
                 }
             }
 
-            // Find and parse all tsconfig.json files for TypeScript/Vue projects (monorepo support)
-            let tsconfigs =
-                crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
-                    log::warn!("Failed to parse tsconfig.json files: {}", e);
-                    HashMap::new()
-                });
-            if !tsconfigs.is_empty() {
-                log::info!("Found {} tsconfig.json files", tsconfigs.len());
-                for (config_dir, alias_map) in &tsconfigs {
-                    log::debug!(
-                        "  {} (base_url: {:?}, {} aliases)",
-                        config_dir.display(),
-                        alias_map.base_url,
-                        alias_map.aliases.len()
-                    );
-                }
-            }
-
-            // Create dependency index to resolve paths and insert dependencies
-            let cache_for_deps = CacheManager::new(root);
-            let dep_index = DependencyIndex::new(cache_for_deps);
-
+            // `tsconfigs` (parsed once in Step 1.4) is reused here for alias resolution.
             let mut total_deps_inserted = 0;
 
             // Process each file's dependencies
             for (file_path, import_infos) in all_dependencies {
                 // Get file ID from database
-                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                let file_id = match resolver.get_file_id_by_path(&file_path)? {
                     Some(id) => id,
                     None => {
                         log::warn!(
@@ -1461,7 +1524,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved PHP dependency: {} -> {} (file_id={})",
@@ -1505,7 +1568,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Python dependency: {} -> {} (file_id={})",
@@ -1547,7 +1610,7 @@ impl Indexer {
                             Some(&file_path),
                         ) {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Go dependency: {} -> {} (file_id={})",
@@ -1622,7 +1685,7 @@ impl Indexer {
                                     normalized_candidate,
                                     candidate_path
                                 );
-                                match dep_index.get_file_id_by_path(&normalized_candidate) {
+                                match resolver.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
                                         log::debug!(
                                             "Resolved TS/JS dependency: {} -> {} (file_id={})",
@@ -1681,7 +1744,7 @@ impl Indexer {
 
                         if let Some(resolved_path) = resolved_path_opt {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Rust dependency: {} -> {} (file_id={})",
@@ -1725,7 +1788,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Java dependency: {} -> {} (file_id={})",
@@ -1771,7 +1834,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Kotlin dependency: {} -> {} (file_id={})",
@@ -1819,7 +1882,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Ruby dependency: {} -> {} (file_id={})",
@@ -1860,7 +1923,7 @@ impl Indexer {
                             Some(&file_path),
                         ) {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved C dependency: {} -> {} (file_id={})",
@@ -1911,7 +1974,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved C++ dependency: {} -> {} (file_id={})",
@@ -1954,7 +2017,7 @@ impl Indexer {
                             )
                         {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved C# dependency: {} -> {} (file_id={})",
@@ -1995,7 +2058,7 @@ impl Indexer {
                             Some(&file_path),
                         ) {
                             // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path) {
+                            match resolver.get_file_id_by_path(&resolved_path) {
                                 Ok(Some(id)) => {
                                     log::trace!(
                                         "Resolved Zig dependency: {} -> {} (file_id={})",
@@ -2057,7 +2120,7 @@ impl Indexer {
                                     candidate_path.replace('\\', "/")
                                 };
 
-                                match dep_index.get_file_id_by_path(&normalized_candidate) {
+                                match resolver.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
                                         log::trace!(
                                             "Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
@@ -2115,14 +2178,10 @@ impl Indexer {
                     });
                 }
 
-                // Clear existing dependencies for this file (incremental reindex)
-                dep_index.clear_dependencies(file_id)?;
-
-                // Batch insert dependencies
-                if !resolved_deps.is_empty() {
-                    dep_index.batch_insert_dependencies(&resolved_deps)?;
-                    total_deps_inserted += resolved_deps.len();
-                }
+                // Clear existing dependencies for this file, then insert the new
+                // rows, inside the shared transaction.
+                dep_writer.replace_dependencies(file_id, &resolved_deps)?;
+                total_deps_inserted += resolved_deps.len();
             }
 
             log::info!("Extracted {} dependencies", total_deps_inserted);
@@ -2135,23 +2194,13 @@ impl Indexer {
                 pb.set_message("Extracting exports...".to_string());
             }
 
-            // Reuse the tsconfigs parsed earlier for TypeScript/Vue path alias resolution
-            let tsconfigs =
-                crate::parsers::tsconfig::parse_all_tsconfigs(root).unwrap_or_else(|e| {
-                    log::warn!("Failed to parse tsconfig.json files: {}", e);
-                    HashMap::new()
-                });
-
-            // Create dependency index to resolve paths and insert exports
-            let cache_for_exports = CacheManager::new(root);
-            let dep_index = DependencyIndex::new(cache_for_exports);
-
+            // `tsconfigs` (parsed once in Step 1.4) is reused here for alias resolution.
             let mut total_exports_inserted = 0;
 
             // Process each file's exports
             for (file_path, export_infos) in all_exports {
                 // Get file ID from database
-                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                let file_id = match resolver.get_file_id_by_path(&file_path)? {
                     Some(id) => id,
                     None => {
                         log::warn!(
@@ -2199,7 +2248,7 @@ impl Indexer {
                                     candidate_path.to_string()
                                 };
 
-                                match dep_index.get_file_id_by_path(&normalized_candidate) {
+                                match resolver.get_file_id_by_path(&normalized_candidate) {
                                     Ok(Some(id)) => {
                                         log::trace!(
                                             "Resolved export source: {} -> {} (file_id={})",
@@ -2246,10 +2295,10 @@ impl Indexer {
                     };
 
                     // Insert export into database
-                    dep_index.insert_export(
+                    dep_writer.insert_export(
                         file_id,
-                        export_info.exported_symbol,
-                        export_info.source_path,
+                        export_info.exported_symbol.as_deref(),
+                        &export_info.source_path,
                         resolved_source_id,
                         export_info.line_number,
                     )?;
@@ -2260,6 +2309,20 @@ impl Indexer {
 
             log::info!("Extracted {} exports", total_exports_inserted);
         }
+
+        // One commit for every dependency and export row of this run.
+        let (deps_written, exports_written) = dep_writer.commit()?;
+        drop(dep_conn);
+        if deps_written + exports_written > 0 {
+            self.cache
+                .checkpoint_wal()
+                .context("Failed to checkpoint WAL after dependency recording")?;
+        }
+        log::info!(
+            "phase dependencies+exports: {} rows, {} ms",
+            deps_written + exports_written,
+            deps_start.elapsed().as_millis()
+        );
 
         log::info!("Indexed {} files", files_indexed);
 
@@ -2273,15 +2336,16 @@ impl Indexer {
             pb.set_message("Writing trigram index...".to_string());
         }
         let trigrams_path = self.cache.path().join("trigrams.bin");
-        log::info!(
-            "Writing trigram index with {} trigrams to trigrams.bin",
-            trigram_index.trigram_count()
-        );
-
-        trigram_index
-            .write(&trigrams_path)
+        let write_start = Instant::now();
+        trigram_builder
+            .write(&pool, &trigrams_path)
             .context("Failed to write trigram index")?;
-        log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
+        log::info!(
+            "phase trigram write: {} trigrams, {} files, {} ms",
+            trigram_builder.trigram_count(),
+            trigram_builder.file_count(),
+            write_start.elapsed().as_millis()
+        );
 
         // Step 4: Finalize content store (already been writing incrementally)
         *progress_status.lock().unwrap() = "Finalizing content store...".to_string();
@@ -2354,8 +2418,9 @@ impl Indexer {
             };
 
             // Check file size separately so we can report skipped counts
+            let mut size = 0u64;
             if let Ok(metadata) = std::fs::metadata(path) {
-                let size = metadata.len();
+                size = metadata.len();
                 if size > self.config.max_file_size as u64 {
                     log::debug!("Skipping {} (too large: {} bytes)", path.display(), size);
                     out.skipped_too_large += 1;
@@ -2376,6 +2441,7 @@ impl Indexer {
             }
 
             out.files.push(path.to_path_buf());
+            out.sizes.push(size);
         }
 
         Ok(out)

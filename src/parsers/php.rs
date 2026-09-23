@@ -1336,11 +1336,12 @@ fn extract_php_uses(source: &str, root: &tree_sitter::Node) -> Result<Vec<Import
             ])
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create PHP use query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create PHP use query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 
@@ -1392,11 +1393,12 @@ fn extract_php_requires(source: &str, root: &tree_sitter::Node) -> Result<Vec<Im
                 (string) @require_path)) @require
     "#;
 
-    let query = Query::new(&language.into(), query_str)
+    static QUERY_2: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_2, language, query_str)
         .context("Failed to create PHP require/include query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

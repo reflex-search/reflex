@@ -67,10 +67,11 @@ fn extract_functions(source: &str, root: &tree_sitter::Node) -> Result<Vec<Searc
             name: (identifier) @name) @function
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create function query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create function query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Function, None)
+    extract_symbols(source, root, query, SymbolKind::Function, None)
 }
 
 /// Extract struct definitions
@@ -81,9 +82,11 @@ fn extract_structs(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchR
             name: (type_identifier) @name) @struct
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create struct query")?;
+    static QUERY_2: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_2, language, query_str)
+        .context("Failed to create struct query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Struct, None)
+    extract_symbols(source, root, query, SymbolKind::Struct, None)
 }
 
 /// Extract enum definitions
@@ -94,9 +97,11 @@ fn extract_enums(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
             name: (type_identifier) @name) @enum
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create enum query")?;
+    static QUERY_3: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_3, language, query_str)
+        .context("Failed to create enum query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Enum, None)
+    extract_symbols(source, root, query, SymbolKind::Enum, None)
 }
 
 /// Extract trait definitions
@@ -107,9 +112,11 @@ fn extract_traits(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRe
             name: (type_identifier) @name) @trait
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create trait query")?;
+    static QUERY_4: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_4, language, query_str)
+        .context("Failed to create trait query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Trait, None)
+    extract_symbols(source, root, query, SymbolKind::Trait, None)
 }
 
 /// Extract impl blocks
@@ -125,10 +132,12 @@ fn extract_impls(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
                     name: (identifier) @method_name))) @impl
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create impl query")?;
+    static QUERY_5: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_5, language, query_str)
+        .context("Failed to create impl query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut symbols = Vec::new();
 
@@ -201,9 +210,11 @@ fn extract_constants(source: &str, root: &tree_sitter::Node) -> Result<Vec<Searc
             name: (identifier) @name) @const
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create const query")?;
+    static QUERY_6: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_6, language, query_str)
+        .context("Failed to create const query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Constant, None)
+    extract_symbols(source, root, query, SymbolKind::Constant, None)
 }
 
 /// Extract static variables
@@ -214,9 +225,11 @@ fn extract_statics(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchR
             name: (identifier) @name) @static
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create static query")?;
+    static QUERY_7: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_7, language, query_str)
+        .context("Failed to create static query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+    extract_symbols(source, root, query, SymbolKind::Variable, None)
 }
 
 /// Extract local variable bindings (let statements)
@@ -227,10 +240,11 @@ fn extract_local_variables(source: &str, root: &tree_sitter::Node) -> Result<Vec
             pattern: (identifier) @name) @let
     "#;
 
-    let query = Query::new(&language.into(), query_str)
+    static QUERY_8: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_8, language, query_str)
         .context("Failed to create let declaration query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+    extract_symbols(source, root, query, SymbolKind::Variable, None)
 }
 
 /// Extract module declarations
@@ -241,9 +255,11 @@ fn extract_modules(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchR
             name: (identifier) @name) @module
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create module query")?;
+    static QUERY_9: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_9, language, query_str)
+        .context("Failed to create module query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Module, None)
+    extract_symbols(source, root, query, SymbolKind::Module, None)
 }
 
 /// Extract type aliases
@@ -254,9 +270,11 @@ fn extract_type_aliases(source: &str, root: &tree_sitter::Node) -> Result<Vec<Se
             name: (type_identifier) @name) @type
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create type query")?;
+    static QUERY_10: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_10, language, query_str)
+        .context("Failed to create type query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Type, None)
+    extract_symbols(source, root, query, SymbolKind::Type, None)
 }
 
 /// Extract macro definitions (macro_rules!)
@@ -267,9 +285,11 @@ fn extract_macros(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRe
             name: (identifier) @name) @macro
     "#;
 
-    let query = Query::new(&language.into(), query_str).context("Failed to create macro query")?;
+    static QUERY_11: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_11, language, query_str)
+        .context("Failed to create macro query")?;
 
-    extract_symbols(source, root, &query, SymbolKind::Macro, None)
+    extract_symbols(source, root, query, SymbolKind::Macro, None)
 }
 
 /// Extract attributes: BOTH definitions and uses
@@ -532,11 +552,12 @@ fn extract_use_declarations(source: &str, root: &tree_sitter::Node) -> Result<Ve
         (use_declaration) @use
     "#;
 
-    let query = Query::new(&language.into(), query_str)
+    static QUERY_12: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_12, language, query_str)
         .context("Failed to create use declaration query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 
@@ -573,11 +594,12 @@ fn extract_mod_items(source: &str, root: &tree_sitter::Node) -> Result<Vec<Impor
             name: (identifier) @name) @mod
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create mod item query")?;
+    static QUERY_13: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_13, language, query_str)
+        .context("Failed to create mod item query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 
@@ -634,11 +656,12 @@ fn extract_extern_crates(source: &str, root: &tree_sitter::Node) -> Result<Vec<I
             name: (identifier) @name) @extern
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create extern crate query")?;
+    static QUERY_14: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_14, language, query_str)
+        .context("Failed to create extern crate query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

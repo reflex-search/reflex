@@ -277,6 +277,14 @@ Before 1.8.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also ma
   `index_project`. The freshness verdict is memoised for `REFLEX_FRESHNESS_TTL_MS`.
 - Query-time verification runs on a pool sized by `[performance] parallel_threads`
   (`0` = 80% of cores, up to 32).
+- `rfx index` uses the same pool rule. It reads, hashes, extracts imports and trigram
+  postings in the pool, builds each batch per trigram shard in parallel, and merges
+  partials by byte copy (`src/trigram_build.rs`); output is byte-identical whatever
+  the batch boundaries. Batches are bounded by files and bytes
+  (`REFLEX_INDEX_BATCH_FILES`, default 5000; `REFLEX_INDEX_BATCH_BYTES`, default
+  48 MiB). `RUST_LOG=info rfx index` prints per-phase timings. Kubernetes (27k files,
+  245 MB) indexes from scratch in ~8 s on 16 cores (1.8.0: 532 s, 95% of it in
+  per-import SQLite lookups).
 - `tests/latency_budget.rs` (`cargo test --release --test latency_budget -- --ignored
   --nocapture --test-threads=1`) measures the field-test query shapes in-process and
   through a real `rfx mcp` stdio round-trip; CI asserts budgets with

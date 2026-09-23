@@ -1,0 +1,6 @@
+---
+source: tests/dependency_equivalence.rs
+expression: dump_exports(corpus)
+---
+javascript/modules.js | something | ./other | - | 41
+javascript/modules.js | * | ./utilities | - | 42

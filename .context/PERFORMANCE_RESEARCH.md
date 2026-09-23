@@ -211,3 +211,36 @@ In count mode the remaining time is building 27k–52k result objects (`verify` 
 Caveats: the synthetic corpus has 2,611 distinct trigrams and is not a git repo (no
 `git status` in `status`); on a real repo the memoised status check adds ~10 ms to the
 first call in each `REFLEX_FRESHNESS_TTL_MS` window (the CLI pays it on every run).
+
+## Indexing throughput round (2026-09-23)
+
+Baseline and result on a scratch clone of Kubernetes (27,448 indexed files, 245 MB of
+text, 582 binary skipped; 16 cores, NVMe; release build; `RUST_LOG=info rfx index --quiet`).
+
+| phase | 1.8.0 (a32b456) | after |
+| --- | ---: | ---: |
+| discovery | 1 s | 0.82 s |
+| batch loop (read/hash/imports in pool + trigram build + flushes) | 22 s | 4.18 s (pool 3.45 s, sharded build 0.64 s) |
+| files + branch tx | 1 s | 0.88 s |
+| dependencies + exports (97,151 rows) | 504 s | 1.12 s |
+| trigram merge/write (289 MB, 328,521 trigrams) | 5 s | 0.21 s |
+| total | 532 s | 7.65 s |
+| user / sys CPU | 357 s / 88 s | 37 s / 2.9 s |
+| peak RSS (zsh `%M`) | 1367 MB | 1045 MB |
+
+Root cause of the 504 s: `DependencyIndex::get_file_id_by_path` opened a connection per
+call and, on an exact-match miss, ran `SELECT id, path FROM files WHERE path LIKE '%' || ?`
+— a full scan of 27k rows (~9 ms) for each of ~53k unresolved internal imports. On the
+Linux kernel the scan is over ~80k rows per miss.
+
+The serial trigram build ran at ~11 MB/s (`HashMap` entry per posting on the main
+thread); the merge decoded and re-encoded every list and then `read_to_end` the data
+section (the size of `trigrams.bin`) to insert the directory.
+
+Verification: `cmp` of `trigrams.bin` and `content.bin` against the baseline files is
+identical for the whole tree; dependency row counts per type are identical
+(external 9,580 / internal 53,538 (85 resolved) / stdlib 34,033).
+
+What is left (k8s): 3.4 s in the pool is dominated by tree-sitter parsing of every Go
+file for imports; the files transaction's per-file `SELECT id` (0.9 s); the discovery
+walk (0.8 s, serial `ignore::Walk`).

@@ -1293,11 +1293,12 @@ fn extract_java_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<Im
             ])
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create Java import query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create Java import query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

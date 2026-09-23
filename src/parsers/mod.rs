@@ -390,3 +390,32 @@ mod minified_tests {
         assert!(!out.is_empty(), "normal source must still parse");
     }
 }
+
+/// A tree-sitter [`Query`](tree_sitter::Query) compiled once per process.
+///
+/// Dependency extraction runs on every file of every index pass, and until 1.8.1
+/// each call recompiled its (constant) query. `Query` is `Send + Sync`, so one
+/// compiled copy in a `static` cell serves every thread of the indexing pool. A
+/// compile failure is stored too and reported on every call, exactly as the
+/// per-call `Query::new` did.
+///
+/// ```ignore
+/// static QUERY: CachedQuery = CachedQuery::new();
+/// let query = cached_query(&QUERY, tree_sitter_c::LANGUAGE, QUERY_SRC)
+///     .context("Failed to create C include query")?;
+/// ```
+pub type CachedQuery = std::sync::OnceLock<std::result::Result<tree_sitter::Query, String>>;
+
+/// Compile `source` for `language` on the first call; return the cached query after.
+pub fn cached_query<'a>(
+    cell: &'a CachedQuery,
+    language: impl Into<tree_sitter::Language>,
+    source: &str,
+) -> Result<&'a tree_sitter::Query> {
+    match cell.get_or_init(|| {
+        tree_sitter::Query::new(&language.into(), source).map_err(|e| e.to_string())
+    }) {
+        Ok(query) => Ok(query),
+        Err(e) => Err(anyhow!("{e}")),
+    }
+}

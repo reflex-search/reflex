@@ -38,6 +38,202 @@ use std::path::PathBuf;
 use crate::cache::CacheManager;
 use crate::models::{Dependency, DependencyInfo, ImportType};
 
+/// In-memory `path → file_id` lookup for the indexer's dependency phase.
+///
+/// Built once from the `files` table after the files transaction commits, then
+/// answers the same question as [`DependencyIndex::get_file_id_by_path`] without
+/// a SQLite connection per call: exact match first, then a unique suffix match.
+/// Before 1.8.1 every miss ran `SELECT … WHERE path LIKE '%' || ?`, a full scan
+/// of the `files` table, and a Kubernetes-sized tree spent ~500 s of a ~530 s
+/// index in that loop.
+///
+/// The suffix match is ASCII-case-insensitive, like SQLite `LIKE`, but `_` and
+/// `%` in the probe are literal. `LIKE` treated them as wildcards, so a probe of
+/// `foo_bar.h` also matched `fooXbar.h` and reported a false ambiguity; a
+/// filename's underscore is a character, not a pattern.
+pub struct PathResolver {
+    /// `path → id`, case-sensitive, the `path = ?` fast path.
+    exact: HashMap<String, i64>,
+    /// `(ASCII-lowercased, byte-reversed path, id)`, sorted by key, so every path
+    /// ending in a probe is a contiguous run found by binary search.
+    suffix: Vec<(Vec<u8>, i64)>,
+}
+
+impl PathResolver {
+    /// Load every `(id, path)` row from `files`.
+    pub fn from_conn(conn: &Connection) -> Result<Self> {
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM files")
+            .context("Failed to prepare files query")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .context("Failed to read files table")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("Failed to read files rows")?;
+        Ok(Self::from_rows(rows))
+    }
+
+    /// Build from `(id, path)` pairs.
+    pub fn from_rows(rows: impl IntoIterator<Item = (i64, String)>) -> Self {
+        let rows = rows.into_iter();
+        let (lower, _) = rows.size_hint();
+        let mut exact = HashMap::with_capacity(lower);
+        let mut suffix = Vec::with_capacity(lower);
+        for (id, path) in rows {
+            suffix.push((Self::suffix_key(&path), id));
+            exact.insert(path, id);
+        }
+        suffix.sort_unstable();
+        Self { exact, suffix }
+    }
+
+    /// Number of paths known to the resolver.
+    pub fn len(&self) -> usize {
+        self.exact.len()
+    }
+
+    /// Whether the resolver knows no paths.
+    pub fn is_empty(&self) -> bool {
+        self.exact.is_empty()
+    }
+
+    fn suffix_key(path: &str) -> Vec<u8> {
+        path.bytes().rev().map(|b| b.to_ascii_lowercase()).collect()
+    }
+
+    /// Same contract as [`DependencyIndex::get_file_id_by_path`]: `Ok(Some)` on an
+    /// exact or unique-suffix match, `Ok(None)` on no match, `Err` when the suffix
+    /// is ambiguous.
+    pub fn get_file_id_by_path(&self, path: &str) -> Result<Option<i64>> {
+        let normalized = normalize_path_for_lookup(path);
+        if let Some(&id) = self.exact.get(&normalized) {
+            return Ok(Some(id));
+        }
+
+        let probe = Self::suffix_key(&normalized);
+        let start = self
+            .suffix
+            .partition_point(|(key, _)| key.as_slice() < probe.as_slice());
+        let mut matches = self.suffix[start..]
+            .iter()
+            .take_while(|(key, _)| key.starts_with(&probe));
+        match (matches.next(), matches.next()) {
+            (None, _) => Ok(None),
+            (Some((_, id)), None) => Ok(Some(*id)),
+            (Some(_), Some(_)) => anyhow::bail!(
+                "Ambiguous path '{}' matches multiple files\n\nPlease be more specific.",
+                path
+            ),
+        }
+    }
+}
+
+/// One transaction for every dependency and export row an index run writes.
+///
+/// Statements are prepared once and reused; the transaction is `IMMEDIATE`, so a
+/// competing writer is refused up front (via `busy_timeout`) rather than
+/// mid-loop. Dropping the writer without [`commit`](Self::commit) rolls back.
+///
+/// Until 1.8.1 the indexer opened a fresh connection for each lookup, each
+/// per-file `DELETE` and each per-file insert batch, committing (and fsyncing)
+/// twice per file and once per export row.
+pub struct DependencyWriter<'c> {
+    tx: rusqlite::Transaction<'c>,
+    deps: usize,
+    exports: usize,
+}
+
+impl<'c> DependencyWriter<'c> {
+    const INSERT_DEPENDENCY: &'static str = "INSERT INTO file_dependencies \
+         (file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols) \
+         VALUES (?, ?, ?, ?, ?, ?)";
+    const INSERT_EXPORT: &'static str = "INSERT INTO file_exports \
+         (file_id, exported_symbol, source_path, resolved_source_id, line_number) \
+         VALUES (?, ?, ?, ?, ?)";
+
+    /// Begin the transaction on `conn`.
+    pub fn begin(conn: &'c mut Connection) -> Result<Self> {
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("Failed to begin dependency transaction")?;
+        Ok(Self {
+            tx,
+            deps: 0,
+            exports: 0,
+        })
+    }
+
+    /// Drop every dependency row of `file_id`, then insert `deps`.
+    ///
+    /// Equivalent to `clear_dependencies` followed by `batch_insert_dependencies`.
+    pub fn replace_dependencies(&mut self, file_id: i64, deps: &[Dependency]) -> Result<()> {
+        self.tx
+            .prepare_cached("DELETE FROM file_dependencies WHERE file_id = ?")?
+            .execute([file_id])?;
+        if deps.is_empty() {
+            return Ok(());
+        }
+        let mut stmt = self.tx.prepare_cached(Self::INSERT_DEPENDENCY)?;
+        for dep in deps {
+            let symbols_json = dep
+                .imported_symbols
+                .as_ref()
+                .map(|syms| serde_json::to_string(syms).unwrap_or_else(|_| "[]".to_string()));
+            stmt.execute(rusqlite::params![
+                dep.file_id,
+                dep.imported_path,
+                dep.resolved_file_id,
+                import_type_str(&dep.import_type),
+                dep.line_number as i64,
+                symbols_json,
+            ])?;
+        }
+        self.deps += deps.len();
+        Ok(())
+    }
+
+    /// Insert one export row (same columns as [`DependencyIndex::insert_export`]).
+    pub fn insert_export(
+        &mut self,
+        file_id: i64,
+        exported_symbol: Option<&str>,
+        source_path: &str,
+        resolved_source_id: Option<i64>,
+        line_number: usize,
+    ) -> Result<()> {
+        self.tx
+            .prepare_cached(Self::INSERT_EXPORT)?
+            .execute(rusqlite::params![
+                file_id,
+                exported_symbol,
+                source_path,
+                resolved_source_id,
+                line_number as i64,
+            ])?;
+        self.exports += 1;
+        Ok(())
+    }
+
+    /// Commit; returns `(dependencies, exports)` written.
+    pub fn commit(self) -> Result<(usize, usize)> {
+        self.tx
+            .commit()
+            .context("Failed to commit dependency transaction")?;
+        Ok((self.deps, self.exports))
+    }
+}
+
+fn import_type_str(import_type: &ImportType) -> &'static str {
+    match import_type {
+        ImportType::Internal => "internal",
+        ImportType::External => "external",
+        ImportType::Stdlib => "stdlib",
+        ImportType::ModDecl => "mod_decl",
+    }
+}
+
 /// Manages dependency storage and graph operations
 pub struct DependencyIndex {
     cache: Option<CacheManager>,
@@ -822,6 +1018,13 @@ impl DependencyIndex {
         }
 
         Ok(None)
+    }
+
+    /// Prepared-statement writer for the indexer's dependency phase.
+    ///
+    /// See [`DependencyWriter`].
+    pub fn writer(conn: &mut Connection) -> Result<DependencyWriter<'_>> {
+        DependencyWriter::begin(conn)
     }
 
     /// Get file ID by path with fuzzy matching support

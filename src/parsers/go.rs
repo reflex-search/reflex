@@ -1081,11 +1081,12 @@ fn extract_go_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<Impo
                     path: (interpreted_string_literal) @import_path))) @import
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create Go import query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create Go import query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

@@ -528,11 +528,12 @@ fn extract_import_statements(source: &str, root: &tree_sitter::Node) -> Result<V
             name: (dotted_name) @import_path) @import
     "#;
 
-    let query = Query::new(&language.into(), query_str)
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
         .context("Failed to create import statement query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 
@@ -587,11 +588,12 @@ fn extract_from_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<Im
             module_name: (relative_import) @module_path) @import
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create from-import query")?;
+    static QUERY_2: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_2, language, query_str)
+        .context("Failed to create from-import query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

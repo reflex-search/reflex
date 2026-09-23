@@ -988,6 +988,35 @@ impl TypeScriptDependencyExtractor {
 
         Ok(imports)
     }
+
+    /// Imports and re-exports from ONE parse of `source`.
+    ///
+    /// Same rows as `extract_dependencies_with_alias_map` followed by
+    /// `extract_export_declarations`; the indexer used to call both and parse
+    /// every TypeScript file twice.
+    pub fn extract_dependencies_and_exports(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<(Vec<ImportInfo>, Vec<ExportInfo>)> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set TypeScript/JavaScript language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse TypeScript/JavaScript source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = extract_import_declarations(source, &root_node, alias_map)?;
+        imports.extend(extract_require_statements(source, &root_node, alias_map)?);
+        let exports = extract_export_from_statements(source, &root_node)?;
+
+        Ok((imports, exports))
+    }
 }
 
 /// Extract ES6 import declarations: import { foo } from 'module'
@@ -1003,11 +1032,12 @@ fn extract_import_declarations(
             source: (string) @import_path) @import
     "#;
 
-    let query = Query::new(&language.into(), query_str)
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
         .context("Failed to create import declaration query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 
@@ -1067,11 +1097,12 @@ fn extract_require_statements(
             arguments: (arguments (string) @require_path)) @require_call
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create require query")?;
+    static QUERY_2: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_2, language, query_str)
+        .context("Failed to create require query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 
@@ -1364,11 +1395,12 @@ fn extract_export_from_statements(
             source: (string) @source_path) @export
     "#;
 
-    let query = Query::new(&language.into(), query_str)
+    static QUERY_3: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_3, language, query_str)
         .context("Failed to create export statement query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut exports = Vec::new();
 

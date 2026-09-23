@@ -993,11 +993,12 @@ fn extract_cpp_includes(source: &str, root: &tree_sitter::Node) -> Result<Vec<Im
             path: (system_lib_string) @include_path) @include
     "#;
 
-    let query =
-        Query::new(&language.into(), query_str).context("Failed to create C++ include query")?;
+    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
+        .context("Failed to create C++ include query")?;
 
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+    let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut imports = Vec::new();
 

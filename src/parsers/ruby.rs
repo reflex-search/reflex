@@ -649,11 +649,12 @@ impl DependencyExtractor for RubyDependencyExtractor {
             (#match? @method_name "^(require|require_relative|load)$")
         "#;
 
-        let query = Query::new(&language.into(), query_str)
+        static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
+        let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
             .context("Failed to create Ruby require query")?;
 
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, root_node, source.as_bytes());
+        let mut matches = cursor.matches(query, root_node, source.as_bytes());
 
         let mut imports = Vec::new();
         let mut seen = std::collections::HashSet::new(); // Deduplicate by (path, line_number)

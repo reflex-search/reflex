@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-09-22
+**Last Updated:** 2026-09-23
 **Project Status:** Testing & Quality Phase Complete - Production Ready
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
@@ -60,6 +60,56 @@
 **Implementation Status:** ✅ COMPLETED
 
 **See:** This change obsoletes previous symbol storage research. New architecture is pure trigram + runtime parsing.
+
+---
+
+## ⚡ 1.8.x indexing throughput (2026-09-23) — COMPLETED
+
+Goal: orders-of-magnitude faster `rfx index` from scratch on huge trees (Linux kernel
+~10 min) with no regression in resources, portability or query behaviour. Measured on a
+scratch Kubernetes clone (27,448 files, 245 MB, 16 cores, NVMe), `RUST_LOG=info`:
+
+| phase | 1.8.0 | now |
+| --- | ---: | ---: |
+| discovery walk | 1 s | 0.8 s |
+| read + hash + import extraction + trigram build (+ partial flushes) | 22 s (serial trigram build) | 4.2 s (3.4 s pool, 0.6 s sharded build) |
+| files + branch transaction | 1 s | 0.9 s |
+| dependency + export recording | **504 s** | 1.1 s |
+| trigram merge + write | 5 s | 0.2 s |
+| **total wall** | **532 s** | **7.7 s** |
+| peak RSS | 1.37 GB | 1.05 GB |
+
+`trigrams.bin` and `content.bin` are byte-identical before/after (`cmp`), so query results
+and latency are unchanged by construction; the latency harness stays green.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | In-memory `PathResolver` (exact + binary-searched unique-suffix) replaces a SQLite connection + `LIKE '%' \|\| ?` full scan per import lookup; one `DependencyWriter` transaction with prepared statements replaces per-file autocommits | `src/dependency.rs`, `src/indexer.rs` (Steps 2.5/2.6) |
+| 2 | Trigram extraction in the read pool (`extract_trigram_run`); per-batch sharded build with no sort/dedup; V4-encoded partials; single-pass byte-copy merge with the directory size known up front | `src/trigram_build.rs` (new), `src/trigram.rs` (batch machinery removed, `scan_line_trigrams` shared) |
+| 3 | Batches bounded by files AND bytes (`plan_batches`, `REFLEX_INDEX_BATCH_FILES/BYTES`, `Indexer::set_batch_limits` for tests); single batch stays in memory; stale `trigram_temp/` reaped | `src/indexer.rs`, `src/atomic_write.rs` |
+| 4 | tree-sitter dependency queries compiled once per process (`parsers::cached_query`); TS/JS/Vue parsed once for imports + exports; tsconfigs parsed once per run | `src/parsers/*` |
+| 5 | Indexing pool auto cap 8 → 32 (query pool rule); per-phase `log::info!` timings | `src/indexer.rs` |
+
+Decision: the resolver's suffix match treats `_`/`%` literally (SQLite `LIKE` made them
+wildcards, producing false ambiguity for `foo_bar.h`-style names). Agreed with the user;
+noted in CHANGELOG.
+
+Tests: `tests/dependency_equivalence.rs` (insta snapshot of every dependency/export row
+of `tests/corpus`, generated on the 1.8.0 code; workspace test with relative imports, an
+underscore name and a duplicate basename), `tests/index_batch_identity.rs` (one batch vs
+50-file batches vs 2 KB batches → identical files and results; `plan_batches`),
+`src/trigram_build.rs` unit tests (byte identity against `TrigramIndex::write`, cap,
+empty/tiny inputs), `tests/index_crash_safety.rs` (multi-batch kill, `trigram_temp`
+reaping, `foreign_key_check`).
+
+Follow-ups (not done; each changes behaviour or is a separate feature):
+- The pool phase is now the floor (3.4 s on k8s; tree-sitter parsing every file for
+  imports). A line-scan `#include`/`import` extractor needs an equivalence test first.
+- Lexical `..` resolution instead of `canonicalize()` in `c.rs`/`cpp.rs` (resolves more
+  includes; changes `rfx deps` output).
+- Incremental rebuild: any change still rewrites `content.bin`/`trigrams.bin` in full.
+- `batch_update_files_and_branch` still SELECTs each id after insert (0.9 s on k8s);
+  `RETURNING id` would trim it.
 
 ---
 
