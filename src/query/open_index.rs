@@ -78,10 +78,9 @@ pub struct OpenIndex {
     pub content: ContentReader,
     /// Memory-mapped `trigrams.bin` (or an in-memory rebuild when the file is absent).
     pub trigrams: TrigramIndex,
-    /// `file_id → path`, with any leading `./` stripped.
-    paths: Vec<String>,
-    /// Inverse of [`Self::paths`].
-    path_to_id: HashMap<String, u32>,
+    /// `path → file_id`, with any leading `./` stripped, built on first use.
+    /// Only symbol and AST queries need it; a full-text query never pays for it.
+    path_to_id: OnceLock<HashMap<String, u32>>,
     /// Query-side thread pool, sized from `[performance] parallel_threads`, built
     /// on first parallel use: a zero-hit query (no candidates to verify) never
     /// spawns a thread, and neither does a `check_index_status` call.
@@ -104,7 +103,7 @@ impl std::fmt::Debug for OpenIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenIndex")
             .field("cache_dir", &self.cache_dir)
-            .field("files", &self.paths.len())
+            .field("files", &self.content.file_count())
             .field("threads", &self.threads)
             .finish()
     }
@@ -154,18 +153,6 @@ impl OpenIndex {
             .into());
         }
 
-        let mut paths = Vec::with_capacity(content.file_count());
-        let mut path_to_id = HashMap::with_capacity(content.file_count());
-        for id in 0..content.file_count() {
-            let raw = content
-                .get_file_path(id as u32)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let normalized = raw.strip_prefix("./").unwrap_or(&raw).to_string();
-            path_to_id.entry(normalized.clone()).or_insert(id as u32);
-            paths.push(normalized);
-        }
-
         let config = cache.load_index_config().unwrap_or_else(|e| {
             log::debug!("Using default index config for query pool: {}", e);
             crate::models::IndexConfig::default()
@@ -185,8 +172,7 @@ impl OpenIndex {
             cache_dir,
             content,
             trigrams,
-            paths,
-            path_to_id,
+            path_to_id: OnceLock::new(),
             pool: OnceLock::new(),
             threads,
             posting_cap: config.max_posting_list_entries,
@@ -231,18 +217,35 @@ impl OpenIndex {
 
     /// Number of files in the index.
     pub fn file_count(&self) -> usize {
-        self.paths.len()
+        self.content.file_count()
     }
 
     /// Array file id for a path as stored in the index (a leading `./` is ignored).
     pub fn file_id_for(&self, path: &str) -> Option<u32> {
         let normalized = path.strip_prefix("./").unwrap_or(path);
-        self.path_to_id.get(normalized).copied()
+        let map = self.path_to_id.get_or_init(|| {
+            let mut map = HashMap::with_capacity(self.content.file_count());
+            for id in 0..self.content.file_count() {
+                if let Some(p) = self
+                    .content
+                    .get_file_path(id as u32)
+                    .and_then(|p| p.to_str())
+                {
+                    map.entry(p.strip_prefix("./").unwrap_or(p).to_string())
+                        .or_insert(id as u32);
+                }
+            }
+            map
+        });
+        map.get(normalized).copied()
     }
 
     /// Path for an array file id, without a leading `./`.
     pub fn path_of(&self, file_id: u32) -> Option<&str> {
-        self.paths.get(file_id as usize).map(String::as_str)
+        self.content
+            .get_file_path(file_id)
+            .and_then(|p| p.to_str())
+            .map(|p| p.strip_prefix("./").unwrap_or(p))
     }
 
     /// The query-side thread pool, built on first use.

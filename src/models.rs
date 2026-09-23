@@ -346,7 +346,7 @@ impl Language {
 #[serde(rename_all = "lowercase")]
 pub enum IndexMode {
     /// Every file not ignored by `.gitignore` / `.ignore` / `[index] exclude`,
-    /// unless a NUL byte in its first 8 KB says it is binary. Lock and generated
+    /// unless a NUL byte anywhere in it says it is binary. Lock and generated
     /// files are indexed and excluded from searches by default. This is ripgrep's
     /// rule, and what an agent that greps expects.
     #[default]
@@ -687,7 +687,7 @@ pub struct IndexStats {
     /// Total bytes of files skipped due to max_file_size
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub skipped_bytes_too_large: u64,
-    /// Files skipped because a NUL byte in their first 8 KB says they are binary
+    /// Files skipped because a NUL byte says they are binary (ripgrep's rule)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_binary: usize,
     /// Raw bytes of indexed source held in content.bin (0 if unknown)

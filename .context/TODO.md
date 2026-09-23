@@ -2135,11 +2135,45 @@ silently dropping files past the cap.
 
 - **REF-219-style hybrid columnar format** — optional backlog, unchanged.
 - **Incremental index path** (prerequisite for auto-refresh, decision 1 above).
-- **Text tier v2**: extension-less names (`Dockerfile`, `Makefile`) were deliberately
-  deferred; `should_index_lang` early-returns on a missing extension, so they need a
-  second lookup path, and both plausibly want real parsers later.
 - **`cleanup_stale` tail profiling**: instrumented and logged, but not yet measured on
   a large repo now that the meta.db lock contention is gone.
+- ~~Text tier v2 (extension-less names)~~ — superseded by tracked mode (below).
+
+---
+
+## 🧭 1.8.0 handoff: content-based freshness + tracked-file coverage (2026-09-23, branch `feat/perf-enhancements`)
+
+| WP | Scope | Status |
+| --- | --- | --- |
+| WP5 | Freshness by file content: `files.size/mtime_ns/hash/dirty_at_index` fingerprint; candidates = `git status` ∪ dirty-at-index ∪ `git diff indexed..HEAD`, confirmed by stat then blake3; non-git tree walk; status thread overlaps the search; `details.indexed_at/checked_by` | completed (3a420f6) |
+| WP6 | `[index] mode = "tracked"` (every non-ignored, non-binary file; NUL anywhere = binary, ripgrep's rule), `hidden`, lossy UTF-8, `Lock` / `Generated` tiers excluded by default with `include_locks` / `include_generated` / `lang`, `excluded_by_default` hint, `rfx index` tier counts | completed (1b2061f) |
+| WP7 | Perf: count-only verification (`QueryFilter.count_only`, `file_count`), single-round verify without a budget, lazy rayon pool, lazy path tables (content.bin V2 fixed-width index, trigram paths left in the mmap) | completed |
+
+Decisions (with the user): dot-directories stay skipped unless `[index] hidden = true`;
+non-UTF-8 is decoded lossily; generated detection is by name only (`@generated` marker
+deferred — the query side derives language from the path).
+
+Measured (this box, warm):
+
+| | Hearth (1875 files) | Kubernetes (24k files) |
+| --- | --- | --- |
+| CLI zero-hit wall | 11–13 ms, all `git status` (open 0.24 ms) | see CHANGELOG (open was 12 ms before V2) |
+| `--count` common word | `realm` 6 ms (was ~30) | `(?i)kubernetes` 55 ms (was 159; rg 80) |
+| parity, include lock+generated | equal to rg on every pattern | equal to rg after the NUL-anywhere rule |
+| index ratio (trigrams.bin / corpus) | 1.3x | 1.2x |
+
+Finding: prose costs ~2.5x its bytes in trigrams.bin, code ~1.4x (one posting per
+distinct trigram per LINE; a prose line is nearly all distinct trigrams). That is why
+Kubernetes sits above Hearth, and why a 1.5x *total* gate cannot hold on a text-heavy
+fixture; `tests/index_stats_ratio.rs` gates each store at the format's bound instead.
+
+Still open after this handoff:
+- `@generated` content marker (needs language persisted in the index).
+- Bytes-per-line minified guard (V4 per-line postings bound the cost; deferred).
+- First symbol query after a re-index fills the symbol cache (Hearth `RealmId --symbols`:
+  4 s cold, ~105 ms warm) — pre-existing, worth a background warm-up.
+- Parallel fold decode of very common trigrams (`trigram.rs`): candidates phase is
+  8–9 ms on Kubernetes, verify now dominates; not needed.
 
 ---
 

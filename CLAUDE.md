@@ -348,7 +348,7 @@ returning only the struct and a confident `0` for the rest is a wrong answer.
 
 **Coverage rule (1.8.0, `[index] mode = "tracked"`, the default)**: ripgrep's — every
 file not excluded by `.gitignore` / `.ignore` / `.rgignore` / `[index] exclude`, unless
-a NUL byte in its first 8 KB says it is binary. So `OWNERS`, `SECURITY_CONTACTS`,
+a NUL byte anywhere in it says it is binary (ripgrep's rule). So `OWNERS`, `SECURITY_CONTACTS`,
 `foo.po`, `a.css`, `data.jsonl`, `Makefile`, `Dockerfile` and every other extensionless
 or unlisted name are `language: "text"`. Code is still classified by extension
 (`.mjs` / `.cjs` are JavaScript, with symbols). Non-UTF-8 text (Latin-1 `.po`) is

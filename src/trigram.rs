@@ -384,8 +384,16 @@ pub struct TrigramIndex {
     /// Inverted index: sorted Vec of (trigram, locations) for binary search
     /// Used in in-memory mode (during indexing)
     index: Vec<(Trigram, Vec<FileLocation>)>,
-    /// File ID to file path mapping
+    /// File ID to file path mapping (in-memory mode). Empty in lazy mode: the
+    /// paths section stays in the mmap undecoded and `num_files` carries the
+    /// count, because content.bin already answers `file_id → path` in O(1).
     files: Vec<PathBuf>,
+    /// File count in lazy mode.
+    num_files: usize,
+    /// Start of the paths section in the mmap (lazy mode).
+    paths_offset: usize,
+    /// Paths decoded from the mmap on first request (lazy mode).
+    lazy_paths: std::sync::OnceLock<Vec<PathBuf>>,
     /// Temporary HashMap used during batch indexing (None when finalized)
     temp_index: Option<HashMap<Trigram, Vec<FileLocation>>>,
     /// Memory-mapped index file (for lazy loading)
@@ -408,6 +416,9 @@ impl TrigramIndex {
         Self {
             index: Vec::new(),
             files: Vec::new(),
+            num_files: 0,
+            paths_offset: 0,
+            lazy_paths: std::sync::OnceLock::new(),
             temp_index: Some(HashMap::new()),
             mmap: None,
             num_trigrams: 0,
@@ -529,12 +540,38 @@ impl TrigramIndex {
 
     /// Get file path for a file_id
     pub fn get_file(&self, file_id: u32) -> Option<&PathBuf> {
-        self.files.get(file_id as usize)
+        match &self.mmap {
+            None => self.files.get(file_id as usize),
+            Some(mmap) => self
+                .lazy_paths
+                .get_or_init(|| {
+                    let mut out = Vec::with_capacity(self.num_files);
+                    let mut pos = self.paths_offset;
+                    for _ in 0..self.num_files {
+                        let Ok((len, consumed)) = read_varint(&mmap[pos..]) else {
+                            break;
+                        };
+                        pos += consumed;
+                        let end = pos + len as usize;
+                        let Some(bytes) = mmap.get(pos..end) else {
+                            break;
+                        };
+                        out.push(PathBuf::from(String::from_utf8_lossy(bytes).into_owned()));
+                        pos = end;
+                    }
+                    out
+                })
+                .get(file_id as usize),
+        }
     }
 
     /// Get total number of files
     pub fn file_count(&self) -> usize {
-        self.files.len()
+        if self.mmap.is_some() {
+            self.num_files
+        } else {
+            self.files.len()
+        }
     }
 
     /// Get total number of unique trigrams
@@ -1601,23 +1638,19 @@ impl TrigramIndex {
             );
         }
 
-        // Read file paths (varint-encoded lengths)
+        // The paths section is validated (bounds only, no allocation) and left in
+        // the mmap. Decoding 24k paths into a Vec<PathBuf> was part of every CLI
+        // open; the query side reads paths from content.bin, O(1) per id since
+        // its V2, and `get_file` decodes this section on first request.
         let mut pos = paths_offset as usize;
-        let mut files = Vec::with_capacity(num_files);
         for _ in 0..num_files {
             let (path_len, consumed) = read_varint(&mmap[pos..])?;
-            pos += consumed;
-            let path_len = path_len as usize;
-
-            if pos + path_len > mmap.len() {
+            pos += consumed + path_len as usize;
+            if pos > mmap.len() {
                 anyhow::bail!("Truncated file path at pos={}", pos);
             }
-
-            let path_bytes = &mmap[pos..pos + path_len];
-            let path_str = std::str::from_utf8(path_bytes).context("Invalid UTF-8 in file path")?;
-            files.push(PathBuf::from(path_str));
-            pos += path_len;
         }
+        let files = Vec::new();
 
         log::info!(
             "Loaded lazy trigram index: {} trigrams, {} files (directory: {} KB, in mmap)",
@@ -1629,6 +1662,9 @@ impl TrigramIndex {
         Ok(Self {
             index: Vec::new(), // Empty in lazy mode
             files,
+            num_files,
+            paths_offset: paths_offset as usize,
+            lazy_paths: std::sync::OnceLock::new(),
             temp_index: None,
             mmap: Some(mmap), // Keep mmap alive for lazy decompression!
             num_trigrams,

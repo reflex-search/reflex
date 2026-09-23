@@ -268,32 +268,24 @@ struct Discovered {
     skipped_binary: usize,
 }
 
-/// How many leading bytes the binary sniff reads. ripgrep's number.
-pub const BINARY_SNIFF_BYTES: usize = 8192;
-
-/// ripgrep's binary rule: a NUL byte in the first 8 KB.
+/// ripgrep's binary rule: a NUL byte anywhere in the file.
+///
+/// Not "in the first 8 KB": a protobuf blob on the Kubernetes checkout
+/// (`swagger.pb`, 4109 word matches) carries its first NUL past that point, and
+/// ripgrep still skips it. The indexer holds the whole file in memory when it
+/// asks, so the full scan is free; `memchr` makes it a few GB/s.
 pub fn is_binary(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
-    memchr::memchr(0, head).is_some()
+    memchr::memchr(0, bytes).is_some()
 }
 
-/// [`is_binary`] on the first 8 KB of the file at `path`. A file that cannot be
-/// read is not called binary here; the read that follows reports the error.
+/// [`is_binary`] on the file at `path`. A file that cannot be read is not called
+/// binary here; the read that follows reports the error. Callers apply this only
+/// to non-code files under `max_file_size`.
 pub fn looks_binary(path: &Path) -> bool {
-    use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = [0u8; BINARY_SNIFF_BYTES];
-    let mut filled = 0;
-    while filled < buf.len() {
-        match f.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(_) => return false,
-        }
+    match std::fs::read(path) {
+        Ok(bytes) => is_binary(&bytes),
+        Err(_) => false,
     }
-    is_binary(&buf[..filled])
 }
 
 /// Drops the shared query handles for a workspace when an index run ends,
@@ -2365,8 +2357,9 @@ impl Indexer {
 
             // A code extension is trusted to be text. Anything else in the tracked
             // tier (`image.png`, `OWNERS`, `data.bin`) is sniffed: ripgrep's rule, a
-            // NUL byte in the first 8 KB means binary, and a binary file is never
-            // in the index. Only the long tail pays the read.
+            // NUL byte anywhere means binary, and a binary file is never in the
+            // index. Only the long tail pays the read (from the page cache, since
+            // the main pass reads it again a moment later).
             if !lang.is_code() && looks_binary(path) {
                 log::debug!("Skipping {} (binary)", path.display());
                 out.skipped_binary += 1;
@@ -2668,10 +2661,10 @@ mod tests {
     fn test_binary_sniff() {
         assert!(!is_binary(b"plain text\n"));
         assert!(is_binary(b"\x89PNG\r\n\x1a\n\0\0"));
-        // Only the first 8 KB is read.
-        let mut late = vec![b'a'; BINARY_SNIFF_BYTES];
+        // Anywhere, not just the first 8 KB: ripgrep skips such a file too.
+        let mut late = vec![b'a'; 64 * 1024];
         late.push(0);
-        assert!(!is_binary(&late));
+        assert!(is_binary(&late));
     }
 
     #[test]

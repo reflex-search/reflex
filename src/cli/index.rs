@@ -200,7 +200,7 @@ pub(super) fn handle_index_build(
         }
         if stats.skipped_binary > 0 {
             println!(
-                "  Binary files skipped: {} (NUL byte in the first 8 KB)",
+                "  Binary files skipped: {} (NUL byte in the file)",
                 stats.skipped_binary
             );
         }
