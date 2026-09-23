@@ -1,6 +1,6 @@
 //! A zero result names ONE cause, chosen from the filter in a fixed order.
 //!
-//! The 1.8.0 field test on Hearth: `count_occurrences {pattern:"runs-on",
+//! The 2.0.0 field test on Hearth: `count_occurrences {pattern:"runs-on",
 //! file:".github/"}` answered 0 with "6 candidate file(s) were lock or generated
 //! files" — a repo-wide count that ignored the `file` filter. The true cause was a
 //! hidden path. An agent added `include_locks:true`, got 0 again, and concluded the

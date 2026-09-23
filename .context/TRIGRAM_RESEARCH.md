@@ -87,7 +87,7 @@ pub struct FileLocation {
 }
 ```
 
-One posting per **(trigram, file, line)**. Until V4 (1.8.0) the struct also carried
+One posting per **(trigram, file, line)**. Until V4 (2.0.0) the struct also carried
 `byte_offset` and a posting was emitted for every byte position, so a line with
 `"aaaa"` held two identical `(file, line)` keys that intersection then threw away.
 Nothing on the query path ever read `byte_offset` — line verification re-scans the
@@ -104,7 +104,7 @@ pub struct TrigramIndex {
 }
 ```
 
-### Binary Format (trigrams.bin) — V4 (1.8.0)
+### Binary Format (trigrams.bin) — V4 (2.0.0)
 
 ```
 Header (32 bytes):

@@ -2785,7 +2785,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 json!({ "status": status_str, "can_trust_results": report.can_trust_results })
             };
             // Branch and commit context for humans. Present even when fresh: since
-            // 1.8.0 the indexed commit differing from HEAD is not staleness.
+            // 2.0.0 the indexed commit differing from HEAD is not staleness.
             if let Some(details) = report.details {
                 result["details"] = serde_json::to_value(details)?;
             }
@@ -3396,7 +3396,7 @@ mod tests {
     #[test]
     fn test_instructions_size_budget() {
         assert!(
-            // 1700, not 1600: the ripgrep-default coverage sentence (1.8.0) costs ~25
+            // 1700, not 1600: the ripgrep-default coverage sentence (2.0.0) costs ~25
             // tokens per session and prevents an agent trusting a false zero.
             MCP_INSTRUCTIONS.len() <= 1700,
             "instructions are paid for on every session; keep them under 1700 chars (got {})",

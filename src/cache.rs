@@ -139,7 +139,7 @@ impl CacheManager {
         // Create files table.
         //
         // The last four columns are the working-tree fingerprint: what freshness
-        // compares the tree against. Before 1.8.0 the baseline was the indexed
+        // compares the tree against. Before 2.0.0 the baseline was the indexed
         // COMMIT, so a dirty tree could never be reported fresh, however many times
         // it was re-indexed. `hash` is the blake3 of the bytes that went into
         // content.bin; `size`/`mtime_ns` let a status check skip the hash for files
@@ -330,7 +330,7 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Add the fingerprint columns to a `files` table written before 1.8.0.
+    /// Add the fingerprint columns to a `files` table written before 2.0.0.
     ///
     /// `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, and the first
     /// non-`--force` `rfx index` on an old cache would otherwise fail its INSERT.
@@ -349,7 +349,7 @@ impl CacheManager {
             .collect::<Result<_, _>>()?;
         for (name, decl) in WANTED {
             if !present.contains(name) {
-                log::info!("meta.db: adding files.{} (pre-1.8.0 cache)", name);
+                log::info!("meta.db: adding files.{} (pre-2.0.0 cache)", name);
                 conn.execute(
                     &format!("ALTER TABLE files ADD COLUMN {} {}", name, decl),
                     [],
@@ -463,7 +463,7 @@ text_tier = true  # Also index docs, config and every other non-binary file
 # "tracked" (default): every non-binary file that is not gitignored and not under a
 #   dot-directory — ripgrep's defaults (hidden = true walks dot-directories). Lock and generated files are indexed but excluded from
 #   searches unless asked for (include_locks / include_generated / lang).
-# "allowlist": the pre-1.8.0 rule — code plus a fixed docs/config extension list.
+# "allowlist": the pre-2.0.0 rule — code plus a fixed docs/config extension list.
 mode = "tracked"
 hidden = false  # true also walks dot-directories (.githooks/), never .git/ or .reflex/
 max_file_size = 10485760  # 10 MB

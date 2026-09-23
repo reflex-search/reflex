@@ -238,7 +238,7 @@ pub fn has_word_boundary_match(line: &str, pattern: &str) -> bool {
 /// never a word character. So `unwrap()`, `#[derive(` and `-> Result<` all returned a
 /// silent `0` in the 1.7.0 field test, against ripgrep counts of 1221, 1141 and 2139.
 /// The 1.7.2 fix lived only in the MCP layer; the CLI and HTTP surfaces kept
-/// returning the confident zero until 1.8.0, when the rewrite moved here.
+/// returning the confident zero until 2.0.0, when the rewrite moved here.
 pub const REGEX_ONLY_CHARS: &[char] = &['(', ')', '[', ']', '{', '}', '<', '>'];
 
 /// A literal pattern rewritten so it cannot silently return zero.

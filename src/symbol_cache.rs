@@ -27,7 +27,7 @@ pub struct SymbolCache {
 /// * v1 — pre-1.7.2: previews bounded in lines only, so a minified file cached
 ///   multi-megabyte previews.
 /// * v2 — 1.7.2: previews bounded at `parsers::preview::PREVIEW_MAX_BYTES`.
-/// * v3 — 1.8.1: `symbols_json` holds [`encode_symbols`] output — zstd-compressed
+/// * v3 — 2.0.0: `symbols_json` holds [`encode_symbols`] output — zstd-compressed
 ///   JSON behind a 4-byte magic (raw JSON below 256 bytes). ~5x smaller on disk and
 ///   ~5x less to write; decoding a candidate file costs microseconds.
 const SYMBOL_FORMAT_VERSION: i64 = 3;
@@ -363,7 +363,7 @@ impl SymbolCache {
     ///
     /// Only rows whose stored `file_hash` equals the expected hash are returned.
     /// `INSERT OR REPLACE` keys on `(file_id, file_hash)`, so a file that changed
-    /// keeps its old-hash row next to the new one; before 1.8.0 this read ignored
+    /// keeps its old-hash row next to the new one; before 2.0.0 this read ignored
     /// the hash and could serve a changed file its pre-change symbols.
     pub fn batch_get_with_kind_on(
         conn: &rusqlite::Connection,

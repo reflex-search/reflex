@@ -15,7 +15,7 @@ Reflex uses three distinct storage formats optimized for their specific use case
 3. **meta.db** - Structured metadata and statistics (SQLite)
 4. **hashes.json** - File hash cache for incremental indexing (JSON)
 5. **config.toml** - User configuration (TOML)
-6. **trigrams.bin** - Trigram inverted index, custom varint format (**V4 as of 1.8.0**, see §6 below)
+6. **trigrams.bin** - Trigram inverted index, custom varint format (**V4 as of 2.0.0**, see §6 below)
 
 This hybrid approach balances performance, flexibility, and maintainability.
 

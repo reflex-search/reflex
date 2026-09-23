@@ -162,7 +162,7 @@ fn gitignored_files_are_not_changes() {
 fn files_reflex_does_not_index_are_not_changes() {
     let temp = repo();
     // Editing something Reflex never indexes must not mark the index permanently
-    // stale. Since 1.8.0 (tracked mode) every non-binary path is indexable by
+    // stale. Since 2.0.0 (tracked mode) every non-binary path is indexable by
     // PATH — a `.png` is kept out by its bytes, which the content-based freshness
     // check sniffs (tests/freshness_no_git.rs). What stays out by path alone is
     // the allowlist mode's old rule, checked here under that policy.

@@ -1,12 +1,12 @@
 //! Glob filters follow gitignore / ripgrep rules.
 //!
-//! The 1.8.0 field test: `--glob 'src/**/*.rs'` returned 7131 hits where ripgrep's
+//! The 2.0.0 field test: `--glob 'src/**/*.rs'` returned 7131 hits where ripgrep's
 //! `-g 'src/**/*.rs'` returned 6770, because Reflex prefixed every relative pattern
 //! with `**/` and so also matched `simulation/src/`, `sdks/go/src/`, `sdks/php/src/`.
 //! Every agent's prior for `glob` comes from gitignore, where a pattern containing
 //! a `/` is anchored at the root. The same rules now apply to `--glob`, `--exclude`,
 //! the MCP `glob` / `exclude` arguments, and `[index] include/exclude` (which were
-//! parsed but never applied before 1.8.0).
+//! parsed but never applied before 2.0.0).
 
 use reflex::mcp::run_mcp_server_io_in;
 use reflex::query::{QueryEngine, QueryFilter};

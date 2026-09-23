@@ -1,7 +1,7 @@
 //! Case-insensitive search: `(?i)` regexes and `ignore_case` literals must use the
 //! trigram index, agree with the regex crate line for line, and say so.
 //!
-//! Before 1.8.0 the literal extractor discarded every literal the moment it saw an
+//! Before 2.0.0 the literal extractor discarded every literal the moment it saw an
 //! `i` flag, so `(?i)kubernetes` scanned every line of every file (387 ms on the
 //! Kubernetes checkout against ripgrep's 166 ms) and printed a "has no literals"
 //! warning for a pattern with a 10-character literal.

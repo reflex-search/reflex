@@ -87,7 +87,7 @@ pub enum Language {
     Text,
     /// Lock files (`Cargo.lock`, `package-lock.json`, `*.lock`, …).
     ///
-    /// Indexed since 1.8.0 in `[index] mode = "tracked"`, but excluded from every
+    /// Indexed since 2.0.0 in `[index] mode = "tracked"`, but excluded from every
     /// search by default: 100k lines of pinned versions are noise for almost every
     /// query and the one real question ("which lockfile pins serde 1.0.190?") is
     /// asked with `include_locks: true` or `lang: "lock"`.
@@ -96,7 +96,7 @@ pub enum Language {
     /// `*.min.js`, `*.min.css`, `*.map`. Indexed, excluded by default,
     /// `include_generated: true` or `lang: "generated"` to widen.
     Generated,
-    /// Never produced by [`Language::from_path`] since 1.8.0 (every path classifies
+    /// Never produced by [`Language::from_path`] since 2.0.0 (every path classifies
     /// as code, `Text`, `Lock` or `Generated`); kept as the miss value of
     /// [`Language::from_extension`] and as the forward-compatible sentinel for
     /// readers of the `language` field.
@@ -168,7 +168,7 @@ const TEXT_FILENAME_EXCLUSIONS: &[&str] = &[
 
 /// Whether a file belongs in the ALLOWLIST text tier, judged by its full name.
 ///
-/// This is the pre-1.8.0 rule, kept for `[index] mode = "allowlist"`. In the
+/// This is the pre-2.0.0 rule, kept for `[index] mode = "allowlist"`. In the
 /// default `tracked` mode every non-binary, non-ignored file is text unless it is
 /// code, a lock file or a generated file.
 pub fn is_text_tier_file(file_name: &str) -> bool {
@@ -351,7 +351,7 @@ pub enum IndexMode {
     /// rule, and what an agent that greps expects.
     #[default]
     Tracked,
-    /// The pre-1.8.0 rule: code by extension plus the fixed docs/config extension
+    /// The pre-2.0.0 rule: code by extension plus the fixed docs/config extension
     /// list (`is_text_tier_file`). Lock and generated files are not indexed. For
     /// trees where the long tail of data files is not worth the index size.
     Allowlist,
@@ -560,8 +560,8 @@ pub struct IndexConfig {
     #[serde(default = "default_true")]
     pub text_tier: bool,
     /// Which non-code files the text tier takes: every non-binary, non-hidden, non-ignored file
-    /// (`tracked`, the default since 1.8.0) or the fixed extension list
-    /// (`allowlist`, the pre-1.8.0 rule).
+    /// (`tracked`, the default since 2.0.0) or the fixed extension list
+    /// (`allowlist`, the pre-2.0.0 rule).
     #[serde(default)]
     pub mode: IndexMode,
     /// Walk dot-directories and dotfiles too (`.githooks/pre-commit`, `.env.example`).
@@ -609,7 +609,7 @@ fn is_zero_u64(v: &u64) -> bool {
 /// `REFLEX_SYMBOL_THREADS` overrides for benchmarking, then `configured` if
 /// non-zero, else half the cores (1..=32). The pass is detached from `rfx index`
 /// and runs while the user may be querying, so it takes half the machine rather
-/// than the indexer's 80%; before 1.8.1 it took 27.5%.
+/// than the indexer's 80%; before 2.0.0 it took 27.5%.
 pub fn resolve_symbol_thread_count(configured: usize) -> usize {
     if let Some(n) = std::env::var("REFLEX_SYMBOL_THREADS")
         .ok()
@@ -648,8 +648,8 @@ pub fn resolve_thread_count(configured: usize, auto_cap: usize) -> usize {
 /// inverted index and only the lines they name were verified. `scan` means every
 /// line of every file was verified, which happens for a pattern shorter than
 /// 3 chars, a regex with no literal of 3+ chars (`\w+_id`), a non-ASCII literal
-/// under `(?i)`, or a keyword symbol query. Before 1.8.0 every `(?i)` regex
-/// scanned; since 1.8.0 its literals are looked up under all case variants.
+/// under `(?i)`, or a keyword symbol query. Before 2.0.0 every `(?i)` regex
+/// scanned; since 2.0.0 its literals are looked up under all case variants.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexPath {
@@ -833,7 +833,7 @@ pub struct IndexWarningDetails {
 ///
 /// `details` is present even when the index is fresh, so a human can see that the
 /// indexed commit differs from HEAD without that difference being called staleness:
-/// since 1.8.0 freshness is judged by file content, not by commit.
+/// since 2.0.0 freshness is judged by file content, not by commit.
 #[derive(Debug, Clone)]
 pub struct IndexStatusReport {
     pub status: IndexStatus,
@@ -848,7 +848,7 @@ pub struct PaginationInfo {
     /// Total number of results before offset/limit — **`null` whenever
     /// `total_is_exact` is false**. A list-mode search with a `limit` stops
     /// verifying once the page is full, and the number verified by then is not a
-    /// total; reporting it as one made agents stop paginating early (1.8.0 field
+    /// total; reporting it as one made agents stop paginating early (2.0.0 field
     /// test: `total: 851` for a term with 18,752 matches). Use `approx_total` for an
     /// estimate, or a count-mode / no-limit search for the exact number.
     #[serde(default)]

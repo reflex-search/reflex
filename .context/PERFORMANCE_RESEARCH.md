@@ -217,7 +217,7 @@ first call in each `REFLEX_FRESHNESS_TTL_MS` window (the CLI pays it on every ru
 Baseline and result on a scratch clone of Kubernetes (27,448 indexed files, 245 MB of
 text, 582 binary skipped; 16 cores, NVMe; release build; `RUST_LOG=info rfx index --quiet`).
 
-| phase | 1.8.0 (a32b456) | after |
+| phase | 2.0.0 (a32b456) | after |
 | --- | ---: | ---: |
 | discovery | 1 s | 0.82 s |
 | batch loop (read/hash/imports in pool + trigram build + flushes) | 22 s | 4.18 s (pool 3.45 s, sharded build 0.64 s) |
@@ -251,7 +251,7 @@ Same Kubernetes clone. `rfx index-symbols-internal` after `DELETE FROM symbols`:
 
 | step | wall | user CPU | notes |
 | --- | ---: | ---: | --- |
-| 1.8.0 | 44.9 s | 131 s | 5 threads; 40.3 s "parse" incl. serial per-file cache check; 256 MB JSON |
+| 2.0.0 | 44.9 s | 131 s | 5 threads; 40.3 s "parse" incl. serial per-file cache check; 256 MB JSON |
 | + cached queries + byte-offset previews | 20.1 s | 40 s | still 5 threads, serial check, per-batch writes |
 | + streaming writer, 8 threads, zstd, skip text tiers | 6.4–8.3 s | 49–64 s | load-dependent (browser + editor at load ~6); parse 63 s, encode 1.7 s |
 | + one combined query per language | **3.4 s** | **25 s** | parse 24 s, encode 1.5 s; blob 28.6 MB |

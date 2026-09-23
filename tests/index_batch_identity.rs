@@ -1,4 +1,4 @@
-//! The parallel trigram builder (1.8.1) must produce the same bytes whatever the
+//! The parallel trigram builder (2.0.0) must produce the same bytes whatever the
 //! batch boundaries: `trigrams.bin` and `content.bin` from a single in-memory
 //! batch and from many on-disk partials are identical, and so are query results.
 

@@ -23,7 +23,7 @@
 //!    re-encode — and writes header, directory, data and paths in one pass
 //!    because the trigram count is known up front.
 //!
-//! Until 1.8.1 extraction and the inverted index were built on the main thread
+//! Until 2.0.0 extraction and the inverted index were built on the main thread
 //! with a `HashMap` entry per posting, partials stored 8 bytes per posting, and
 //! the merge re-encoded every list and then read the whole data section back
 //! into memory to insert the directory. On a Kubernetes-sized tree the batch loop

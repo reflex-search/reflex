@@ -2,7 +2,7 @@
 //! and `file_exports` must not change when the resolution machinery changes.
 //!
 //! The corpus snapshot was generated on the SQLite-per-lookup implementation
-//! (1.8.0) and pins the output of the in-memory `PathResolver` that replaced it.
+//! (2.0.0) and pins the output of the in-memory `PathResolver` that replaced it.
 //! The workspace test covers the relative-import shapes the corpus lacks.
 
 mod test_helpers;

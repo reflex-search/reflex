@@ -323,7 +323,7 @@ fn verify_files_streaming(
             } else {
                 // Counted only when the tier gate is the SOLE reason: a lock file
                 // the `file` filter already rejected must not make the zero-result
-                // hint blame lock files (the 1.8.0 field test's wrong hint).
+                // hint blame lock files (the 2.0.0 field test's wrong hint).
                 if file_filter.path_admits(&path_str) && file_filter.excluded_by_default(lang) {
                     excluded_by_default += 1;
                 }
@@ -2072,7 +2072,7 @@ impl QueryEngine {
         //
         // Only the candidate lines are examined: the trigram pass already verified
         // that those are the lines holding the pattern, so scanning the whole file
-        // (as this did before 1.8.0, serially) found nothing more. A definition
+        // (as this did before 2.0.0, serially) found nothing more. A definition
         // line is always a candidate line, so a file that defines the symbol is
         // never skipped. Two cases keep the old outcome exactly:
         // * keyword queries carry dummy line-1 candidates from
@@ -4013,7 +4013,7 @@ mod status_cache {
 
     /// Compare the working tree to what the index holds.
     ///
-    /// Until 1.8.0 the baseline was the indexed COMMIT: any path `git status`
+    /// Until 2.0.0 the baseline was the indexed COMMIT: any path `git status`
     /// listed made the index stale, so a dirty tree could never be fresh however
     /// often it was re-indexed, and an agent's session is dirty from its first edit
     /// to its last. The baseline is now the per-file fingerprint the indexer wrote

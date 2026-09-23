@@ -63,12 +63,12 @@
 
 ---
 
-## ⚡ 1.8.x background symbol pass (2026-09-23) — COMPLETED
+## ⚡ 2.0.0 background symbol pass (2026-09-23) — COMPLETED
 
 Goal: ≥10x on `rfx index-symbols-internal` with identical symbols. Scratch Kubernetes
 clone (27,448 files in content.bin, 15,436 with a parser), release, 16 cores:
 
-| | 1.8.0 | now |
+| | 2.0.0 | now |
 | --- | ---: | ---: |
 | wall | 44.9 s (5 threads) | **3.4 s** (8 threads, 50% policy) |
 | user CPU | 131 s | 25 s |
@@ -96,18 +96,18 @@ extraction 7.40 s (70%) → after: 1.73 s. The pass is now bound by tree-sitter 
 itself (~1 ms per 10 KB).
 
 Observed once, not solved: a spawned pass reported `128 file(s) parsed but not
-persisted: database is locked` under 1.8.0's per-file connections; the single-writer
+persisted: database is locked` under 2.0.0's per-file connections; the single-writer
 design logs commit duration and retries once — watch `rfx index status` `error`.
 
 ---
 
-## ⚡ 1.8.x indexing throughput (2026-09-23) — COMPLETED
+## ⚡ 2.0.0 indexing throughput (2026-09-23) — COMPLETED
 
 Goal: orders-of-magnitude faster `rfx index` from scratch on huge trees (Linux kernel
 ~10 min) with no regression in resources, portability or query behaviour. Measured on a
 scratch Kubernetes clone (27,448 files, 245 MB, 16 cores, NVMe), `RUST_LOG=info`:
 
-| phase | 1.8.0 | now |
+| phase | 2.0.0 | now |
 | --- | ---: | ---: |
 | discovery walk | 1 s | 0.8 s |
 | read + hash + import extraction + trigram build (+ partial flushes) | 22 s (serial trigram build) | 4.2 s (3.4 s pool, 0.6 s sharded build) |
@@ -133,7 +133,7 @@ wildcards, producing false ambiguity for `foo_bar.h`-style names). Agreed with t
 noted in CHANGELOG.
 
 Tests: `tests/dependency_equivalence.rs` (insta snapshot of every dependency/export row
-of `tests/corpus`, generated on the 1.8.0 code; workspace test with relative imports, an
+of `tests/corpus`, generated on the 2.0.0 code; workspace test with relative imports, an
 underscore name and a duplicate basename), `tests/index_batch_identity.rs` (one batch vs
 50-file batches vs 2 KB batches → identical files and results; `plan_batches`),
 `src/trigram_build.rs` unit tests (byte identity against `TrigramIndex::write`, cap,
@@ -151,7 +151,7 @@ Follow-ups (not done; each changes behaviour or is a separate feature):
 
 ---
 
-## 🔧 1.8.0 post-perf-round defects (2026-09-22) — COMPLETED
+## 🔧 2.0.0 post-perf-round defects (2026-09-22) — COMPLETED
 
 Field test of the perf round (b18ae06 → 11ba6de) against ripgrep surfaced four defects
 plus two small items. All fixed on `feat/perf-enhancements`, in the order below; the
@@ -1911,8 +1911,8 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] Fallback to full scan when no literals present
 - [x] Handle regex metacharacters and escapes
 - [x] Support for alternation, quantifiers, groups
-- [x] Case-insensitive flags: literals under `(?i)` are kept and looked up under every case variant (1.8.0; was a full scan)
-- [x] Extractor soundness: alternation branch without a literal, optional group, char class, unknown escapes, `x` flag (1.8.0)
+- [x] Case-insensitive flags: literals under `(?i)` are kept and looked up under every case variant (2.0.0; was a full scan)
+- [x] Extractor soundness: alternation branch without a literal, optional group, char class, unknown escapes, `x` flag (2.0.0)
 - [x] Comprehensive tests (13 test cases)
 - [x] Integration with query engine (search_with_regex)
 
@@ -2229,7 +2229,7 @@ silently dropping files past the cap.
 
 ---
 
-## 🧭 1.8.0 handoff: content-based freshness + tracked-file coverage (2026-09-23, branch `feat/perf-enhancements`)
+## 🧭 2.0.0 handoff: content-based freshness + tracked-file coverage (2026-09-23, branch `feat/perf-enhancements`)
 
 | WP | Scope | Status |
 | --- | --- | --- |

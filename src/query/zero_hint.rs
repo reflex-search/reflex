@@ -1,6 +1,6 @@
 //! Why a search returned nothing, judged from the FILTER, in a fixed order.
 //!
-//! The 1.8.0 field test found the zero-result hint naming lock/generated files for
+//! The 2.0.0 field test found the zero-result hint naming lock/generated files for
 //! every kind of exclusion: `count_occurrences {pattern:"runs-on", file:".github/"}`
 //! said "6 candidate file(s) were lock or generated files" when the true cause was
 //! "hidden path, not indexed". An agent followed the hint, added `include_locks`,

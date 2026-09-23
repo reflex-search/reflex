@@ -2718,7 +2718,7 @@ mod tests {
         fs::write(&unsupported_file, "mystery format").unwrap();
         assert!(indexer.should_index(&unsupported_file));
 
-        // Allowlist mode keeps the pre-1.8.0 rule.
+        // Allowlist mode keeps the pre-2.0.0 rule.
         let allowlist = Indexer::new(
             CacheManager::new(temp.path()),
             IndexConfig {
@@ -2887,7 +2887,7 @@ mod tests {
         fs::write(temp.path().join("app.js"), "console.log('hi')").unwrap();
         // Since 1.7.2 markdown IS indexed, in the plain-text tier.
         fs::write(temp.path().join("README.md"), "# Project").unwrap();
-        // Since 1.8.0 (tracked mode) every non-binary file is indexed, whatever
+        // Since 2.0.0 (tracked mode) every non-binary file is indexed, whatever
         // its extension; a binary one is sniffed out.
         fs::write(temp.path().join("mystery.xyz"), "?").unwrap();
         fs::write(temp.path().join("blob.bin"), b"\0\x01\x02").unwrap();

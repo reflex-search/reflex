@@ -408,7 +408,7 @@ mod minified_tests {
 
 /// A tree-sitter [`Query`](tree_sitter::Query) compiled once per process.
 ///
-/// Dependency extraction runs on every file of every index pass, and until 1.8.1
+/// Dependency extraction runs on every file of every index pass, and until 2.0.0
 /// each call recompiled its (constant) query. `Query` is `Send + Sync`, so one
 /// compiled copy in a `static` cell serves every thread of the indexing pool. A
 /// compile failure is stored too and reported on every call, exactly as the
@@ -496,7 +496,7 @@ pub struct MatchRec<'t> {
 /// Every match of a language's combined query over one tree, bucketed by the
 /// sub-query (the original per-kind query) each pattern came from.
 ///
-/// Until 1.8.1 each of a module's 6–14 extractors ran its own `QueryCursor` over
+/// Until 2.0.0 each of a module's 6–14 extractors ran its own `QueryCursor` over
 /// the whole tree, so a file was walked 6–14 times; on Kubernetes that was 70% of
 /// symbol-extraction CPU, more than parsing itself. One walk per file now.
 pub struct MatchTable<'t> {

@@ -123,7 +123,7 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 - `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
   `find_references` (not `search_regex`, which is already substring-based).
 - `ignore_case` is available on those four **and** `search_regex` (where it prepends
-  `(?i)`). Since 1.8.0 a `(?i)` literal is looked up in the trigram index under every
+  `(?i)`). Since 2.0.0 a `(?i)` literal is looked up in the trigram index under every
   case variant, so it costs about what the case-sensitive query costs; before, any `i`
   flag forced a scan of every line. A whole-identifier `ignore_case` search keeps
   whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
@@ -133,7 +133,7 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 - A pattern containing brackets (`()`, `[]`, `<>`) is regex-escaped and run through the
   regex path automatically, with the rewrite reported in `warnings`. Whole-identifier
   matching wraps the pattern as `\b…\b`, which a pattern ending in `)` or `>` can
-  never satisfy — `unwrap()` used to return a silent `0`. Since 1.8.0 the rewrite lives
+  never satisfy — `unwrap()` used to return a silent `0`. Since 2.0.0 the rewrite lives
   in the engine, so `rfx query`, `rfx serve` and MCP all apply it: the CLI prints
   `Warning:` on stderr and carries `warnings[]` / `hint` in `--json` output.
 - A zero result carries a `hint` naming the substring count:
@@ -228,7 +228,7 @@ shape. `count` mode (`{count, pattern}`) and the other tools are unaffected.
 `paths: true` returns `{status, can_trust_results, paths, total_files}` (plus
 `has_more` when a `limit` cut the list) with no rows at all.
 
-### Early termination and totals (1.8.0)
+### Early termination and totals (2.0.0)
 
 A list-mode `search_code` / `search_regex` call verifies candidates in path order
 and **stops once the page is full** (`offset + limit` results). The page is identical
@@ -246,7 +246,7 @@ inexact total as `Found 10 results (~1234 total, estimated)` and points at `--co
 Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 `best_total()` (exact, else estimate, else page end; for thresholds only).
 
-### Glob rules (1.8.0)
+### Glob rules (2.0.0)
 
 `glob` / `exclude` (every MCP search tool), `rfx query --glob` / `--exclude` and
 `[index] include.patterns` / `exclude.patterns` follow **gitignore / ripgrep rules**:
@@ -259,7 +259,7 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 | `target/` | any `target/` directory and everything under it |
 | `src/*.rs` | directly in `src/`; `*` never crosses `/` |
 
-Before 1.8.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also matched
+Before 2.0.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also matched
 `vendor/src/`. `./` and a leading `/` are dropped.
 
 ### Latency diagnostics
@@ -291,7 +291,7 @@ Before 1.8.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also ma
   the batch boundaries. Batches are bounded by files and bytes
   (`REFLEX_INDEX_BATCH_FILES`, default 5000; `REFLEX_INDEX_BATCH_BYTES`, default
   48 MiB). `RUST_LOG=info rfx index` prints per-phase timings. Kubernetes (27k files,
-  245 MB) indexes from scratch in ~8 s on 16 cores (1.8.0: 532 s, 95% of it in
+  245 MB) indexes from scratch in ~8 s on 16 cores (2.0.0: 532 s, 95% of it in
   per-import SQLite lookups).
 - `tests/latency_budget.rs` (`cargo test --release --test latency_budget -- --ignored
   --nocapture --test-threads=1`) measures the field-test query shapes in-process and
@@ -362,7 +362,7 @@ Reflex indexes non-code files, because **agents do not partition searches by fil
 type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
 returning only the struct and a confident `0` for the rest is a wrong answer.
 
-**Coverage rule (1.8.0, `[index] mode = "tracked"`, the default)**: ripgrep's defaults —
+**Coverage rule (2.0.0, `[index] mode = "tracked"`, the default)**: ripgrep's defaults —
 every non-binary file (no NUL byte anywhere) that is not excluded by `.gitignore` /
 `.ignore` / `.rgignore` / `[index] exclude` and not under a dot-directory (`.github/`,
 `.githooks/`, `.cargo/`; `[index] hidden = true` walks them). So `OWNERS`, `SECURITY_CONTACTS`,
@@ -395,7 +395,7 @@ marker is **not** read (the query engine derives language from the path).
 - **Select the text tier**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
 - **Exclude it**: `exclude_text: true` on the four full-text MCP tools.
 - **Turn it off**: `[index] text_tier = false` in `.reflex/config.toml`.
-- **Old rule**: `[index] mode = "allowlist"` restores the pre-1.8.0 behaviour — code by
+- **Old rule**: `[index] mode = "allowlist"` restores the pre-2.0.0 behaviour — code by
   extension plus the fixed list `md mdx txt yaml yml toml json proto html htm sh bash
   ini cfg sql graphql bru` and the names `Makefile`, `Dockerfile`, `Justfile`; lock and
   generated files are not indexed. For trees where the long tail of data files is not

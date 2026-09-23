@@ -1,4 +1,6 @@
-## [Unreleased] - 1.8.0
+## [Unreleased] - 2.0.0
+
+A major version: the on-disk index formats, the MCP pagination fields, glob anchoring, the freshness contract and the default coverage rule all change (below). Every existing `.reflex/` cache is rebuilt once by `rfx index`.
 
 ### ⚠️ Breaking
 

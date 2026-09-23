@@ -541,7 +541,7 @@ impl BackgroundIndexer {
     /// Workers parse files from `content.bin` and hand encoded blobs to ONE writer
     /// thread that owns the database connection and commits in large batches, so
     /// parsing never waits on SQLite and SQLite never waits on parsing. Until
-    /// 1.8.1 the pass ran 128-file `par_iter` chunks separated by a serial write,
+    /// 2.0.0 the pass ran 128-file `par_iter` chunks separated by a serial write,
     /// opened a connection per file to ask whether it was cached, and recompiled
     /// every tree-sitter query per file: 45 s on a 27k-file tree, 90% of it
     /// avoidable.

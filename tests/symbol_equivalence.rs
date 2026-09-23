@@ -2,7 +2,7 @@
 //! change when the extractors are made faster.
 //!
 //! The corpus snapshot was generated on the per-file `Query::new` / line-skip
-//! preview implementation (1.8.0) and pins the output of the cached-query and
+//! preview implementation (2.0.0) and pins the output of the cached-query and
 //! byte-offset-preview implementation that replaced it. The synthetic snapshot
 //! covers the line-ending and offset shapes the corpus lacks.
 

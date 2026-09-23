@@ -1,7 +1,7 @@
 //! `[index] mode = "tracked"`: every non-binary file git tracks or does not
 //! ignore is indexed, the way ripgrep searches it.
 //!
-//! Every remaining count gap against ripgrep in the 1.8.0 field test was a file
+//! Every remaining count gap against ripgrep in the 2.0.0 field test was a file
 //! outside the old extension allowlist: `composer.lock`, `OWNERS`,
 //! `SECURITY_CONTACTS`, `.po`, `.jsonl`, `.css`, `.cjs`, lock files. Agents grep
 //! all of them. An allowlist can never be complete; ripgrep's rule can.

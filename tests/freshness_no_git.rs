@@ -1,6 +1,6 @@
 //! Freshness outside a git repository.
 //!
-//! Until 1.8.0 a directory without `.git` was always reported `fresh`, because
+//! Until 2.0.0 a directory without `.git` was always reported `fresh`, because
 //! `git status` was the only source of changed paths. The content fingerprint
 //! (`size`, `mtime_ns`, blake3 per file) makes a tree walk cheap enough to answer
 //! the same four questions — edited, added, deleted, reindexed — without git.

@@ -336,7 +336,7 @@ fn mcp_count_mode_matches_list_locations_and_a_full_page() {
     }
 }
 
-/// The 1.8.0 field test: `realm --limit 1` reported `total: 851` (the number
+/// The 2.0.0 field test: `realm --limit 1` reported `total: 851` (the number
 /// verified before the page filled) and `approx_total: 36178` (candidate lines)
 /// for a term with 18,752 matches. An agent that read either number was wrong.
 /// The synthetic corpus is large enough (2000 files) that a one-result page for a

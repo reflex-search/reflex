@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn test_should_not_watch_unsupported_file() {
         let temp = TempDir::new().unwrap();
-        // Since 1.8.0 (tracked mode) every non-binary file is indexed, so every
+        // Since 2.0.0 (tracked mode) every non-binary file is indexed, so every
         // file is watched; only allowlist mode leaves an unclaimed extension out.
         let unknown = temp.path().join("test.xyz");
         fs::write(&unknown, "mystery format").unwrap();

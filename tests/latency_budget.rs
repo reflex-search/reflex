@@ -109,7 +109,7 @@ const SHAPES: &[Shape] = &[
         find_refs: false,
         budget_ms: 300.0,
     },
-    // Case-insensitive regex over a rare literal. Before 1.8.0 every `(?i)`
+    // Case-insensitive regex over a rare literal. Before 2.0.0 every `(?i)`
     // pattern scanned the whole corpus; now the literal is looked up under all
     // of its case variants. Budget: twice the case-sensitive `rare_ident`.
     Shape {

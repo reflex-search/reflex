@@ -43,7 +43,7 @@ use crate::models::{Dependency, DependencyInfo, ImportType};
 /// Built once from the `files` table after the files transaction commits, then
 /// answers the same question as [`DependencyIndex::get_file_id_by_path`] without
 /// a SQLite connection per call: exact match first, then a unique suffix match.
-/// Before 1.8.1 every miss ran `SELECT … WHERE path LIKE '%' || ?`, a full scan
+/// Before 2.0.0 every miss ran `SELECT … WHERE path LIKE '%' || ?`, a full scan
 /// of the `files` table, and a Kubernetes-sized tree spent ~500 s of a ~530 s
 /// index in that loop.
 ///
@@ -136,7 +136,7 @@ impl PathResolver {
 /// competing writer is refused up front (via `busy_timeout`) rather than
 /// mid-loop. Dropping the writer without [`commit`](Self::commit) rolls back.
 ///
-/// Until 1.8.1 the indexer opened a fresh connection for each lookup, each
+/// Until 2.0.0 the indexer opened a fresh connection for each lookup, each
 /// per-file `DELETE` and each per-file insert batch, committing (and fsyncing)
 /// twice per file and once per export row.
 pub struct DependencyWriter<'c> {

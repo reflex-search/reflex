@@ -183,7 +183,7 @@ fn reindex_replaces_binaries_atomically_and_keeps_old_readable() {
 }
 
 /// A partial-batch directory left by an indexer that died between two trigram
-/// batches (1.8.1) is removed on the next start, like a stale `.tmp`.
+/// batches (2.0.0) is removed on the next start, like a stale `.tmp`.
 #[test]
 fn stale_partial_batch_dir_removed_on_index_start() {
     let temp = TempDir::new().unwrap();

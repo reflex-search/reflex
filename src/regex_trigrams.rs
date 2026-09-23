@@ -161,7 +161,7 @@ impl Frame {
 ///
 /// A literal under `(?i)`, `(?i:...)` or `(?im)` is returned with
 /// `case_insensitive: true`; `(?-i)` and the end of the enclosing group turn
-/// the flag off again. Before 1.8.0 any `i` flag discarded every literal and
+/// the flag off again. Before 2.0.0 any `i` flag discarded every literal and
 /// forced a full scan.
 ///
 /// # Examples

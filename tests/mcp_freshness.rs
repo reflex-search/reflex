@@ -142,7 +142,7 @@ fn index(root: &Path) -> Value {
     r
 }
 
-/// The 1.8.0 field-test sequence: an agent edits, reindexes and searches, and
+/// The 2.0.0 field-test sequence: an agent edits, reindexes and searches, and
 /// never commits. Before, only `git commit` could return the tree to `fresh`.
 #[test]
 fn edit_then_index_project_is_fresh_without_commit() {

@@ -95,7 +95,7 @@ pub fn extract_preview_at(source: &str, start_line_idx: usize) -> String {
 /// (stripping one trailing `\r`), so "the line that starts after the last `\n`
 /// before `start_byte`" and "line number `row`" are the same line. Finding it with
 /// `memrchr` costs the length of one line instead of a scan from byte 0 — which
-/// made symbol extraction quadratic in the file size (1.8.0).
+/// made symbol extraction quadratic in the file size (2.0.0).
 pub fn extract_preview_from_byte(source: &str, start_byte: usize) -> String {
     let at = start_byte.min(source.len());
     let line_start = memchr::memrchr(b'\n', &source.as_bytes()[..at]).map_or(0, |i| i + 1);

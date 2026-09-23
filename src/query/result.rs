@@ -59,7 +59,7 @@ pub fn rebuild_trigram_index(content_reader: &ContentReader) -> Result<TrigramIn
 ///   gitignore, a trailing slash alone does not anchor: `src/` is any `src/`.
 /// * A leading `./` or `/` is dropped (both mean "from the root").
 ///
-/// Before 1.8.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` matched
+/// Before 2.0.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` matched
 /// 7131 files against ripgrep's 6770 in the field test (`simulation/src/`,
 /// `sdks/go/src/`, …). Compile the result with [`build_glob_set`], which also
 /// stops `*` from crossing `/`.
@@ -177,7 +177,7 @@ mod normalize_glob_tests {
         assert!(matches("src/**/*.rs", "src/mcp.rs"));
     }
 
-    /// 1.8.0: anchored, like ripgrep's `-g 'src/**/*.rs'`.
+    /// 2.0.0: anchored, like ripgrep's `-g 'src/**/*.rs'`.
     #[test]
     fn anchored_pattern_rejects_nested_src() {
         assert!(!matches("src/**", "vendor/src/b.rs"));
