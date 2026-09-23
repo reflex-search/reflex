@@ -910,6 +910,10 @@ pub struct QueryResponse {
     /// `include_generated` (or `lang`) asks for them. The `hint` says so too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded_by_default: Option<usize>,
+    /// Count-only searches: the number of files with at least one match. `results`
+    /// is empty in that mode, so this is the only place the file count lives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_count: Option<usize>,
     /// Per-phase timings, only when requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<QueryTimings>,

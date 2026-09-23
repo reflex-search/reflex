@@ -340,6 +340,7 @@ No dependency data will be included for {} files.",
         ignore_case,
         include_locks,
         include_generated,
+        count_only,
         timeout_secs,
         glob_patterns: glob_patterns.clone(),
         exclude_patterns,
@@ -669,6 +670,7 @@ No dependency data will be included for {} files.",
                     results: file_results,
                     substring_hint_count: None,
                     excluded_by_default: None,
+                    file_count: None,
                     warnings: Vec::new(),
                     hint: None,
                     timings: None,
@@ -712,7 +714,9 @@ No dependency data will be included for {} files.",
         // Standard output with formatting
         notes_to_stderr();
         if count_only {
-            let n = flat_results.len();
+            // `--count` runs without a limit, so the total is exact and, in
+            // count-only mode, nothing was materialised to count by hand.
+            let n = total_results.unwrap_or(flat_results.len());
             println!(
                 "Found {} result{} in {}",
                 n,

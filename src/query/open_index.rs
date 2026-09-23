@@ -82,8 +82,11 @@ pub struct OpenIndex {
     paths: Vec<String>,
     /// Inverse of [`Self::paths`].
     path_to_id: HashMap<String, u32>,
-    /// Query-side thread pool, sized from `[performance] parallel_threads`.
-    pool: rayon::ThreadPool,
+    /// Query-side thread pool, sized from `[performance] parallel_threads`, built
+    /// on first parallel use: a zero-hit query (no candidates to verify) never
+    /// spawns a thread, and neither does a `check_index_status` call.
+    pool: OnceLock<rayon::ThreadPool>,
+    threads: usize,
     /// `IndexConfig::max_posting_list_entries` at open time (0 = unlimited).
     posting_cap: usize,
     fingerprint: Fingerprint,
@@ -102,7 +105,7 @@ impl std::fmt::Debug for OpenIndex {
         f.debug_struct("OpenIndex")
             .field("cache_dir", &self.cache_dir)
             .field("files", &self.paths.len())
-            .field("threads", &self.pool.current_num_threads())
+            .field("threads", &self.threads)
             .finish()
     }
 }
@@ -169,11 +172,6 @@ impl OpenIndex {
         });
         let threads =
             crate::models::resolve_thread_count(config.parallel_threads, QUERY_AUTO_THREAD_CAP);
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name(|i| format!("rfx-query-{i}"))
-            .build()
-            .context("Failed to create query thread pool")?;
 
         log::debug!(
             "Opened index {}: {} files, {} trigrams, {} query threads",
@@ -189,7 +187,8 @@ impl OpenIndex {
             trigrams,
             paths,
             path_to_id,
-            pool,
+            pool: OnceLock::new(),
+            threads,
             posting_cap: config.max_posting_list_entries,
             fingerprint,
             meta: OnceLock::new(),
@@ -246,9 +245,23 @@ impl OpenIndex {
         self.paths.get(file_id as usize).map(String::as_str)
     }
 
-    /// The query-side thread pool.
+    /// The query-side thread pool, built on first use.
     pub fn pool(&self) -> &rayon::ThreadPool {
-        &self.pool
+        self.pool.get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(self.threads)
+                .thread_name(|i| format!("rfx-query-{i}"))
+                .build()
+                .unwrap_or_else(|e| {
+                    // A pool that cannot be built (thread limit hit) degrades to
+                    // the global pool rather than failing the query.
+                    log::warn!("Failed to create query thread pool: {}; using default", e);
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(1)
+                        .build()
+                        .expect("a single-thread pool")
+                })
+        })
     }
 
     /// `max_posting_list_entries` the index was configured with (0 = unlimited).

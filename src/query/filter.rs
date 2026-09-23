@@ -51,6 +51,12 @@ pub struct QueryFilter {
     /// Search generated files too (`*.pb.go`, `*.min.js`, `*.map`, …). Same
     /// default as lock files; `lang: "generated"` selects them alone.
     pub include_generated: bool,
+    /// Count matches without materialising them: no previews, no grouping, no
+    /// result rows. `total_count` / `pagination.total` carry the exact line count
+    /// and `QueryResponse.file_count` the files with a match. Honoured only by the
+    /// full-text line searches (trigram and regex) with no `limit`; symbol and AST
+    /// searches ignore it. Set by `--count`, `mode: "count"` and `count_occurrences`.
+    pub count_only: bool,
     /// Query timeout in seconds (0 = no timeout)
     pub timeout_secs: u64,
     /// Glob patterns to include (empty = all files)
@@ -102,6 +108,7 @@ impl Default for QueryFilter {
             exclude_text: false,      // Default: docs and config are searched too
             include_locks: false,     // Default: lock files stay out
             include_generated: false, // Default: generated files stay out
+            count_only: false,        // Default: materialise results
             timeout_secs: 30,         // 30 seconds default timeout
             glob_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
@@ -116,6 +123,18 @@ impl Default for QueryFilter {
             test_large_index_threshold: None,   // Default: use production threshold (20,000)
             test_short_pattern_threshold: None, // Default: use production threshold (4)
         }
+    }
+}
+
+impl QueryFilter {
+    /// Whether this query is a count-only full-text LINE search: the one shape
+    /// the verifier can answer with two numbers instead of result rows.
+    pub fn count_only_line_search(&self) -> bool {
+        self.count_only
+            && self.limit.is_none()
+            && !self.symbols_mode
+            && !self.use_ast
+            && self.kind.is_none()
     }
 }
 

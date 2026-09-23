@@ -50,6 +50,9 @@ struct Internal {
     /// Candidate files left out because they are lock/generated files nobody
     /// asked for, for the zero-result hint.
     excluded_by_default: usize,
+    /// Count-only mode: `(matching lines, files with a match)`; `results` is empty
+    /// and `total_count` is the line count.
+    counted: Option<(usize, usize)>,
     /// Time spent in trigram lookup and intersection.
     candidates_us: u64,
     /// Trigram index or full scan.
@@ -65,6 +68,8 @@ struct CandidateStats {
     substring_only: Option<usize>,
     /// See `Internal::excluded_by_default`.
     excluded_by_default: usize,
+    /// Count-only mode: `(matching lines, files with a match)`.
+    counted: Option<(usize, usize)>,
     /// Every candidate was verified.
     exhausted: bool,
     /// Sample-based estimate of the total, only when not `exhausted`.
@@ -82,6 +87,7 @@ impl Default for CandidateStats {
             candidates_us: 0,
             substring_only: None,
             excluded_by_default: 0,
+            counted: None,
             exhausted: true,
             approx_total: None,
             index_path: IndexPath::Trigram,
@@ -178,6 +184,8 @@ struct VerifyOutcome {
     /// Candidate files left out because they are lock/generated files and nothing
     /// asked for them.
     excluded_by_default: usize,
+    /// Count-only mode: `(matching lines, files with a match)`; `results` is empty.
+    counted: Option<(usize, usize)>,
 }
 
 /// The per-line predicate for one query, built once.
@@ -291,6 +299,7 @@ fn verify_files_streaming(
     file_filter: &FileFilter,
     paths_only: bool,
     budget: Option<usize>,
+    count_only: bool,
 ) -> VerifyOutcome {
     use rayon::prelude::*;
 
@@ -389,9 +398,87 @@ fn verify_files_streaming(
         out
     };
 
+    // Count-only: no `SearchResult`, no preview, no path clone, no grouping —
+    // one parallel pass that returns two numbers. `(?i)kubernetes --count` on the
+    // Kubernetes checkout spent most of its ~220 ms materialising and grouping
+    // 114k rows it then threw away.
+    if count_only && budget.is_none() {
+        let count_one = |file_id: u32, lines: &LineSet| -> usize {
+            let Ok(text) = content.get_file_content(file_id) else {
+                return 0;
+            };
+            let mut hits = 0usize;
+            let mut check = |line: &str| {
+                if matcher.find(line).is_some() {
+                    hits += 1;
+                    true
+                } else {
+                    if count_substring_only
+                        && let Some(p) = matcher.literal()
+                        && line.contains(p)
+                    {
+                        substring_only.fetch_add(1, Ordering::Relaxed);
+                    }
+                    false
+                }
+            };
+            match lines {
+                LineSet::Only(nos) => {
+                    let all_lines: Vec<&str> = text.lines().collect();
+                    let mut last = 0u32;
+                    for &line_no in nos {
+                        if line_no == last {
+                            continue;
+                        }
+                        last = line_no;
+                        let idx = line_no as usize;
+                        if idx == 0 || idx > all_lines.len() {
+                            continue;
+                        }
+                        if check(all_lines[idx - 1]) && paths_only {
+                            break;
+                        }
+                    }
+                }
+                LineSet::All => {
+                    for line in text.lines() {
+                        if check(line) && paths_only {
+                            break;
+                        }
+                    }
+                }
+            }
+            hits
+        };
+        let (lines, files_hit) = open.pool().install(|| {
+            accepted
+                .par_iter()
+                .map(|(file_id, _, _, lines)| {
+                    let n = count_one(*file_id, lines);
+                    (n, usize::from(n > 0))
+                })
+                .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+        });
+        return VerifyOutcome {
+            results: Vec::new(),
+            exhausted: true,
+            estimated_total: None,
+            substring_only: substring_only.into_inner(),
+            excluded_by_default,
+            counted: Some((if paths_only { files_hit } else { lines }, files_hit)),
+        };
+    }
+
     let mut results: Vec<SearchResult> = Vec::new();
     let mut next = 0usize;
-    let mut chunk = 16usize;
+    // The doubling rounds exist so a page can stop early. Without a budget every
+    // file is verified anyway, and each round boundary is a full pool drain that
+    // waits on its slowest file; one round keeps every thread busy to the end.
+    let mut chunk = if budget.is_some() {
+        16usize
+    } else {
+        accepted.len().max(1)
+    };
     let mut exhausted = true;
 
     while next < accepted.len() {
@@ -482,6 +569,7 @@ fn verify_files_streaming(
         estimated_total,
         substring_only: substring_only.into_inner(),
         excluded_by_default,
+        counted: None,
     }
 }
 
@@ -778,16 +866,18 @@ impl QueryEngine {
         // that is derived after both are done. On the CLI, where the memo is cold
         // every time, this takes the status phase off the zero-hit floor.
         let status_started = std::time::Instant::now();
-        let (searched, snapshot) = std::thread::scope(|s| {
+        let (searched, search_done, snapshot) = std::thread::scope(|s| {
             let status = s.spawn(|| {
                 let snapshot = status_cache::snapshot(&self.cache);
                 (snapshot, status_started.elapsed())
             });
             let searched = self.search_internal(&prepared.effective, filter.clone());
+            // Measured before the join, so the status wait is not charged to verify.
+            let search_done = started.elapsed();
             let snapshot = status
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            (searched, snapshot)
+            (searched, search_done, snapshot)
         });
         let Internal {
             results,
@@ -796,11 +886,11 @@ impl QueryEngine {
             approx_total,
             substring_only,
             excluded_by_default,
+            counted,
             candidates_us,
             index_path,
             warnings: engine_warnings,
         } = searched?;
-        let search_done = started.elapsed();
         let (snapshot, status_compute) = snapshot;
         let snapshot = snapshot?;
 
@@ -883,6 +973,7 @@ impl QueryEngine {
                 .collect(),
             hint,
             excluded_by_default,
+            file_count: counted.map(|(_, files)| files),
             timings: filter.collect_timings.then_some(timings),
         })
     }
@@ -1055,6 +1146,7 @@ impl QueryEngine {
         // PHASE 1: Get initial candidates (choose search strategy)
         let mut substring_only = None;
         let mut excluded_by_default = 0usize;
+        let mut counted = None;
         let mut candidates_us = 0u64;
         let mut total_is_exact = true;
         let mut approx_total = None;
@@ -1089,6 +1181,7 @@ impl QueryEngine {
             };
             substring_only = stats.substring_only;
             excluded_by_default = stats.excluded_by_default;
+            counted = stats.counted;
             candidates_us = stats.candidates_us;
             total_is_exact = stats.exhausted;
             approx_total = (!stats.exhausted).then_some(stats.approx_total).flatten();
@@ -1423,8 +1516,9 @@ impl QueryEngine {
         });
 
         // Capture total count AFTER all filtering but BEFORE pagination (offset/limit)
-        // This is the total number of results the user can paginate through
-        let total_count = results.len();
+        // This is the total number of results the user can paginate through. In
+        // count-only mode nothing was materialised and the verifier's count is it.
+        let total_count = counted.map(|(lines, _)| lines).unwrap_or(results.len());
 
         // Step 5.5: Apply offset (pagination)
         if let Some(offset) = filter.offset {
@@ -1454,6 +1548,7 @@ impl QueryEngine {
             approx_total,
             substring_only,
             excluded_by_default,
+            counted,
             candidates_us,
             index_path,
             warnings: engine_warnings,
@@ -2494,12 +2589,14 @@ impl QueryEngine {
             &file_filter,
             filter.paths_only,
             budget,
+            filter.count_only_line_search(),
         );
 
         let stats = CandidateStats {
             candidates_us,
             substring_only: matcher.is_word_boundary().then_some(outcome.substring_only),
             excluded_by_default: outcome.excluded_by_default,
+            counted: outcome.counted,
             exhausted: outcome.exhausted,
             approx_total: outcome.estimated_total,
             index_path: IndexPath::Trigram,
@@ -2750,6 +2847,7 @@ impl QueryEngine {
             &file_filter,
             filter.paths_only,
             budget,
+            filter.count_only_line_search(),
         );
 
         log::info!(
@@ -2761,6 +2859,7 @@ impl QueryEngine {
             candidates_us,
             substring_only: None,
             excluded_by_default: outcome.excluded_by_default,
+            counted: outcome.counted,
             exhausted: outcome.exhausted,
             approx_total: outcome.estimated_total,
             index_path,

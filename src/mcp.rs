@@ -1715,6 +1715,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 use_ast: false,
                 use_regex: false,
                 limit: None, // No limit for counting
+                count_only: true,
                 symbols_mode,
                 expand: false,
                 file_pattern: file,
@@ -1748,7 +1749,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 "status": response.status,
                 "pattern": pattern,
                 "total": exact_total_or_count(&response),
-                "files": unique_files.len()
+                "files": response.file_count.unwrap_or(unique_files.len())
             });
             annotate_literal_result(&mut stats, &response.warnings, response.hint.as_deref());
 
@@ -1839,6 +1840,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     use_ast: false,
                     use_regex: false,
                     limit: None, // count everything
+                    count_only: true,
                     symbols_mode,
                     expand: false,
                     file_pattern: file,
@@ -2016,6 +2018,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     use_ast: false,
                     use_regex: true,
                     limit: None, // count everything
+                    count_only: true,
                     symbols_mode: false,
                     expand: false,
                     file_pattern: file,
@@ -2804,6 +2807,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     use_ast: false,
                     use_regex: false,
                     limit: None, // count everything
+                    count_only: true,
                     symbols_mode: false,
                     expand: false,
                     file_pattern: None,
