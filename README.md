@@ -232,13 +232,22 @@ rfx list-files            # Every indexed file
 rfx clear                 # Delete the local cache
 rfx context               # Codebase context for AI prompts
 rfx snapshot              # Structural snapshots for change tracking
-rfx pulse changelog       # Codebase change digest
-rfx pulse wiki            # Per-module documentation
+rfx pulse generate        # Documentation site (static HTML) from the index
+rfx pulse serve           # Preview it locally
 rfx pulse map             # Architecture diagram (Mermaid / D2)
 rfx serve --port 7878     # Local HTTP API server
 ```
 
 Run `rfx <command> --help` for full options.
+
+### Documentation sites (Pulse)
+
+`rfx pulse generate` builds a two-tab docs site from the index: **Docs** (overview,
+guides, CLI and API reference for Rust, Python and Go, a changelog page per release) and
+**Internals** (architecture, dependency map, module pages). The output is plain HTML for
+any static host. It needs Node 22.12+ to build; the site runtime downloads once. An
+optional LLM adds prose, and a deterministic gate drops any sentence the index does not
+support. A GitHub Action is included. See [docs/features/PULSE.md](docs/features/PULSE.md).
 
 ---
 
