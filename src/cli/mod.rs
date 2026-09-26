@@ -801,6 +801,76 @@ pub enum SnapshotSubcommand {
     },
 }
 
+/// LLM writing options for `rfx pulse generate`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PulseLlmArgs {
+    /// LLM writing: `on` (call on cache misses), `off`, or `cache-only` (never call;
+    /// use cached answers, e.g. in CI jobs without secrets)
+    #[arg(long, value_name = "MODE", default_value = "on")]
+    pub llm: String,
+
+    /// Skip LLM narration (same as `--llm off`)
+    #[arg(long)]
+    pub no_llm: bool,
+
+    /// Ignore cached LLM answers. Bare flag = all; or a comma list of kinds
+    /// (overview, modules, architecture, guides, timeline, glossary, changelog)
+    /// and task-id globs (e.g. `module:src/pulse*`)
+    #[arg(long, value_name = "SCOPES", num_args = 0..=1, default_missing_value = "all")]
+    pub force_renarrate: Option<String>,
+
+    /// Print the LLM plan (tasks, cache hits, estimated tokens) and exit without
+    /// calling the provider or writing the site
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Stop planning LLM calls once estimated input+output tokens reach this cap;
+    /// the rest are deferred to later runs (default: [pulse.write] max_llm_tokens)
+    #[arg(long, value_name = "TOKENS")]
+    pub max_llm_tokens: Option<u64>,
+
+    /// Model for Pulse only (default: [pulse.write] model, then the `rfx ask` model)
+    #[arg(long, value_name = "MODEL")]
+    pub llm_model: Option<String>,
+
+    /// LLM answer cache directory (default: .reflex/pulse/write-cache)
+    #[arg(long, value_name = "DIR")]
+    pub llm_cache_dir: Option<PathBuf>,
+
+    /// Keep cache entries that this run did not use
+    #[arg(long)]
+    pub no_prune: bool,
+
+    /// Maximum concurrent LLM requests (default: [pulse.write] concurrency, 4)
+    #[arg(long)]
+    pub concurrency: Option<usize>,
+}
+
+impl PulseLlmArgs {
+    pub fn to_options(&self) -> anyhow::Result<crate::pulse::write::WriteOptions> {
+        use crate::pulse::write::{ForceScope, LlmMode, WriteOptions};
+        let mode = if self.no_llm {
+            LlmMode::Off
+        } else {
+            self.llm.parse::<LlmMode>().map_err(anyhow::Error::msg)?
+        };
+        Ok(WriteOptions {
+            mode,
+            force: self
+                .force_renarrate
+                .as_deref()
+                .map(ForceScope::parse)
+                .unwrap_or_default(),
+            dry_run: self.dry_run,
+            concurrency: self.concurrency,
+            max_llm_tokens: self.max_llm_tokens,
+            cache_dir: self.llm_cache_dir.clone(),
+            no_prune: self.no_prune,
+            model: self.llm_model.clone(),
+        })
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum PulseSubcommand {
     /// Generate a product-level changelog from recent commits
@@ -874,21 +944,12 @@ pub enum PulseSubcommand {
         #[arg(long)]
         include: Option<String>,
 
-        /// Skip LLM narration
-        #[arg(long)]
-        no_llm: bool,
-
         /// Clean output directory before generating
         #[arg(long)]
         clean: bool,
 
-        /// Force re-narration (ignore LLM cache)
-        #[arg(long)]
-        force_renarrate: bool,
-
-        /// Maximum concurrent LLM requests (0 = unlimited, default)
-        #[arg(long, default_value = "0")]
-        concurrency: usize,
+        #[command(flatten)]
+        llm: PulseLlmArgs,
 
         /// Maximum directory depth for module discovery (1=top-level only, 2=default)
         #[arg(long, default_value = "2")]
@@ -937,6 +998,10 @@ pub enum PulseSubcommand {
 
     /// Generate cross-cutting symbol glossary
     Glossary {
+        /// Skip LLM concept generation (structural evidence only)
+        #[arg(long)]
+        no_llm: bool,
+
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -1334,10 +1399,8 @@ impl Cli {
                     base_url,
                     title,
                     include,
-                    no_llm,
                     clean,
-                    force_renarrate,
-                    concurrency,
+                    llm,
                     depth,
                     min_files,
                 } => pulse::handle_pulse_generate(
@@ -1345,10 +1408,8 @@ impl Cli {
                     base_url,
                     title,
                     include,
-                    no_llm,
                     clean,
-                    force_renarrate,
-                    concurrency,
+                    llm.to_options()?,
                     depth,
                     min_files,
                 ),
@@ -1359,7 +1420,9 @@ impl Cli {
                     pulse::handle_pulse_onboard(no_llm, json)
                 }
                 PulseSubcommand::Timeline { json } => pulse::handle_pulse_timeline(json),
-                PulseSubcommand::Glossary { json } => pulse::handle_pulse_glossary(json),
+                PulseSubcommand::Glossary { no_llm, json } => {
+                    pulse::handle_pulse_glossary(no_llm, json)
+                }
             },
             Some(Command::Llm { command }) => match command {
                 LlmSubcommand::Config => llm::handle_llm_config(),

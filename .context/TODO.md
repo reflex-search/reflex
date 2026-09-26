@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-09-23
+**Last Updated:** 2026-09-25
 **Project Status:** Testing & Quality Phase Complete - Production Ready
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
@@ -60,6 +60,44 @@
 **Implementation Status:** ✅ COMPLETED
 
 **See:** This change obsoletes previous symbol storage research. New architecture is pure trigram + runtime parsing.
+
+---
+
+## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — IN PROGRESS
+
+Plan: `~/.claude/plans/i-want-to-revamp-purrfect-stonebraker.md` (copy lands in
+`docs/features/PULSE.md` at M7). Branch `feat/pulse-revamp`.
+
+Decisions (with the user, 2026-09-25):
+- Two tabs: **Docs** (users: overview, get started, guides, CLI + API reference,
+  changelog, glossary) and **Internals** (contributors: architecture, modules, dep map, health).
+- Renderer: **Astro Starlight**. Node + npm deps are on-demand downloads (system Node
+  reused when the major fits), never inside the rfx binary. `-o` = static HTML only.
+  CI avoids `npm install`: prebuilt pruned runtime tarball (release asset, SHA-256 pinned).
+- LLM: grounded writer on a complete no-LLM base; sentence-level citations; deterministic gate.
+- Keep + rethink Map, Changelog, Glossary. Drop Timeline, Explorer, Onboard, wiki dump.
+- Defaults: Reflex's Docs tab leads with the CLI (library opt-in via `[docs] public`);
+  LLM cache key includes the model; ships as MINOR with a migration note.
+- The JSON page bundle is the model/renderer seam; a native Rust renderer is the
+  fallback if the M0a spike says no-go.
+
+| # | Milestone | Status |
+| --- | --- | --- |
+| M0a | Renderer spike: template scaffold, synthetic bundles 100/1k/5k/20k, runtime tarball size, build time + RSS, go/no-go | in_progress |
+| M0b | Provider layer (`CompletionRequest`, JSON mode, error kinds, usage); content-addressed write cache (no snapshot id); executor (dry-run, budget, whole-run degrade, scoped force, prune); drop `postprocess_narration`; typed changelog slot; concurrency default 4 | completed (2026-09-26): `src/semantic/providers/wire.rs`, `src/pulse/write/{cache,run,provider}.rs`; e2e: re-index → 3/3 cache hits |
+| M1 | Docs Model (`src/pulse/model/`), file roles, Linker, FactStore, slugs, `rfx pulse model --json`; port map/modules/changelog | pending |
+| M2 | Starlight renderer replaces Zola: runtime modules, `pulse-runtime.yml`, template v1, `render/*`, `astro.rs`, `publish.rs`, `serve.rs`; delete Zola path | pending |
+| M3 | Rust API reference: `src/parsers/api/rust.rs`, `api.db`, surface resolver, reference pages, clap CLI adapter, manifest entry points + capabilities | pending |
+| M4 | TS/JS, Python, Go extractors + surfaces; usage scan; markdown guide ingestion | pending |
+| M5 | Grounded writer: evidence packs, contracts, gate + claim guards, guides, how-tos, `--explain`/`--strict` | pending |
+| M6 | Changelog (release surfaces, API diff, `since`) + Glossary rework | pending |
+| M7 | pulse-action, `pulse.yml` migration, eject, critic, eval harness, generic extractor, docs | pending |
+
+Known defects this fixes (found 2026-09-25): LLM cache key includes the snapshot
+timestamp (`llm_cache.rs:44`) → CI never hits; `json_mode` never used; `postprocess_narration`
+corrupts identifiers in JSON; TUI classified as HttpServer by filename (`onboard.rs`);
+`/wiki/` links ignore `--base-url`; Mermaid/D3 from CDN; `tests/corpus` fixtures in nav;
+failed Zola build still exits 0.
 
 ---
 

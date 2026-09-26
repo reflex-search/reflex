@@ -137,22 +137,15 @@ pub fn build_changelog_context(commits: &[ChangelogCommit], branch: &str) -> Str
         ));
 
         if !commit.files_changed.is_empty() {
-            // Group file paths by top-level directory for brevity
-            let areas: Vec<&str> = commit
+            // Group file paths by their first two path components for brevity
+            let mut unique_areas: Vec<&str> = commit
                 .files_changed
                 .iter()
-                .map(|f| {
-                    let parts: Vec<&str> = f.splitn(3, '/').collect();
-                    if parts.len() >= 2 {
-                        parts[..2].join("/").leak() as &str
-                    } else {
-                        f.as_str()
-                    }
+                .map(|f| match f.match_indices('/').nth(1) {
+                    Some((second_slash, _)) => &f[..second_slash],
+                    None => f.as_str(),
                 })
                 .collect();
-
-            // Deduplicate
-            let mut unique_areas: Vec<&str> = areas.clone();
             unique_areas.sort();
             unique_areas.dedup();
             let display: Vec<&str> = unique_areas.into_iter().take(5).collect();
@@ -167,12 +160,10 @@ pub fn build_changelog_context(commits: &[ChangelogCommit], branch: &str) -> Str
 
 /// Parse the LLM's JSON response into changelog entries.
 ///
-/// Expected format: `{ "entries": [{ "title": "...", "description": "..." }] }`
-/// Falls back to structural entries on parse failure.
-pub fn parse_changelog_response(
-    response: &str,
-    commits: &[ChangelogCommit],
-) -> Vec<ChangelogEntry> {
+/// Expected format: `{ "entries": [{ "title": "...", "description": "..." }] }`.
+/// Returns `None` when the response is not that shape (or has no entries), so the
+/// caller keeps the structural entries and does not mark the changelog as narrated.
+pub fn parse_changelog_response(response: &str) -> Option<Vec<ChangelogEntry>> {
     // Strip markdown fences if present
     let cleaned = response
         .trim()
@@ -193,17 +184,23 @@ pub fn parse_changelog_response(
     }
 
     match serde_json::from_str::<LlmResponse>(cleaned) {
-        Ok(parsed) => parsed
-            .entries
-            .into_iter()
-            .map(|e| ChangelogEntry {
-                title: e.title,
-                description: e.description,
-            })
-            .collect(),
+        Ok(parsed) if !parsed.entries.is_empty() => Some(
+            parsed
+                .entries
+                .into_iter()
+                .map(|e| ChangelogEntry {
+                    title: e.title,
+                    description: e.description,
+                })
+                .collect(),
+        ),
+        Ok(_) => {
+            log::warn!("Changelog LLM response has no entries");
+            None
+        }
         Err(e) => {
             log::warn!("Failed to parse changelog LLM response: {}", e);
-            generate_structural_entries(commits)
+            None
         }
     }
 }
@@ -352,7 +349,7 @@ mod tests {
     fn test_parse_changelog_response_valid() {
         let json =
             r#"{"entries": [{"title": "New search", "description": "Added full-text search."}]}"#;
-        let entries = parse_changelog_response(json, &[]);
+        let entries = parse_changelog_response(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "New search");
     }
@@ -361,24 +358,39 @@ mod tests {
     fn test_parse_changelog_response_with_fences() {
         let json =
             "```json\n{\"entries\": [{\"title\": \"Test\", \"description\": \"Desc\"}]}\n```";
-        let entries = parse_changelog_response(json, &[]);
+        let entries = parse_changelog_response(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "Test");
     }
 
     #[test]
-    fn test_parse_changelog_response_invalid_fallback() {
+    fn test_parse_changelog_response_invalid_is_none() {
+        // A parse failure must not look like narration: the caller keeps the
+        // structural entries and leaves `narrated` false.
+        assert!(parse_changelog_response("not valid json").is_none());
+        assert!(parse_changelog_response(r#"{"entries": []}"#).is_none());
+    }
+
+    #[test]
+    fn test_changelog_context_groups_areas_by_two_components() {
         let commits = vec![ChangelogCommit {
             hash: "abc".into(),
             author: "Alice".into(),
             timestamp: 0,
             date: "2024-01-01".into(),
-            subject: "Fallback commit".into(),
-            files_changed: vec![],
+            subject: "Touch files".into(),
+            files_changed: vec![
+                "src/pulse/site.rs".into(),
+                "src/pulse/wiki.rs".into(),
+                "README.md".into(),
+                "src/main.rs".into(),
+            ],
         }];
-        let entries = parse_changelog_response("not valid json", &commits);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].title, "Fallback commit");
+        let ctx = build_changelog_context(&commits, "main");
+        assert!(
+            ctx.contains("Areas: README.md, src/main.rs, src/pulse"),
+            "{ctx}"
+        );
     }
 
     #[test]

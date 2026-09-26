@@ -6,10 +6,130 @@ pub mod mock;
 pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
+pub mod wire;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// What shape the model must answer in.
+#[derive(Debug, Clone, Copy)]
+pub enum OutputMode<'a> {
+    /// Free text.
+    Text,
+    /// Any JSON object (OpenAI `json_object`, Anthropic prompt-only).
+    JsonObject,
+    /// JSON that matches `schema` (OpenAI strict `json_schema`, Anthropic forced tool use).
+    JsonSchema {
+        name: &'a str,
+        schema: &'a serde_json::Value,
+    },
+}
+
+impl OutputMode<'_> {
+    /// Stable label for cache keys and logs.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OutputMode::Text => "text",
+            OutputMode::JsonObject => "json_object",
+            OutputMode::JsonSchema { .. } => "json_schema",
+        }
+    }
+
+    pub fn is_json(&self) -> bool {
+        !matches!(self, OutputMode::Text)
+    }
+}
+
+/// A completion request with a separate system prompt and an explicit output contract.
+///
+/// Used by Pulse. `rfx ask` still uses [`LlmProvider::complete`].
+#[derive(Debug, Clone, Copy)]
+pub struct CompletionRequest<'a> {
+    pub system: &'a str,
+    pub user: &'a str,
+    pub output: OutputMode<'a>,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    /// Task id for logs and test routing. Never sent to the provider.
+    pub tag: &'a str,
+}
+
+/// Token usage as the provider reports it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Usage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    /// Input tokens served from the provider's prompt cache, when reported.
+    #[serde(default)]
+    pub cached_input_tokens: u32,
+}
+
+/// Why the model stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopReason {
+    End,
+    MaxTokens,
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionResponse {
+    pub text: String,
+    pub usage: Option<Usage>,
+    pub stop: StopReason,
+    pub model: String,
+}
+
+/// Classification of a provider failure. Fatal kinds will not succeed on retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderErrorKind {
+    Auth,
+    NotFound,
+    BadRequest,
+    RateLimited,
+    Server,
+    Timeout,
+    Network,
+    Malformed,
+}
+
+impl ProviderErrorKind {
+    /// Auth, NotFound and BadRequest fail the same way every time.
+    pub fn is_fatal(&self) -> bool {
+        matches!(self, Self::Auth | Self::NotFound | Self::BadRequest)
+    }
+
+    /// Transient failures worth a retry with backoff.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited | Self::Server | Self::Timeout | Self::Network
+        )
+    }
+}
+
+/// A classified provider error. Returned inside `anyhow::Error`; recover it with
+/// `err.downcast_ref::<ProviderError>()`.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{provider} API error ({kind:?}{}): {body}", status.map(|s| format!(", HTTP {s}")).unwrap_or_default())]
+pub struct ProviderError {
+    pub provider: String,
+    pub kind: ProviderErrorKind,
+    pub status: Option<u16>,
+    pub retry_after: Option<Duration>,
+    pub body: String,
+}
+
+/// What a provider supports natively.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProviderCaps {
+    pub system_role: bool,
+    pub json_object: bool,
+    pub json_schema: bool,
+    pub reports_usage: bool,
+}
 
 /// Trait for LLM providers that generate structured query responses
 #[async_trait]
@@ -30,6 +150,35 @@ pub trait LlmProvider: Send + Sync {
 
     /// Get default model identifier
     fn default_model(&self) -> &str;
+
+    /// The model this instance actually calls (configured, else default).
+    fn model(&self) -> &str {
+        self.default_model()
+    }
+
+    /// Native capabilities. The default claims none.
+    fn caps(&self) -> ProviderCaps {
+        ProviderCaps::default()
+    }
+
+    /// Send a structured request.
+    ///
+    /// The default joins system and user into one prompt and calls [`Self::complete`],
+    /// so providers without native support still work (no usage, no schema enforcement).
+    async fn complete_request(&self, req: &CompletionRequest<'_>) -> Result<CompletionResponse> {
+        let prompt = if req.system.is_empty() {
+            req.user.to_string()
+        } else {
+            format!("{}\n\n{}", req.system, req.user)
+        };
+        let text = self.complete(&prompt, req.output.is_json()).await?;
+        Ok(CompletionResponse {
+            text,
+            usage: None,
+            stop: StopReason::End,
+            model: self.model().to_string(),
+        })
+    }
 }
 
 /// Default model name for a provider, for display when no model is configured.

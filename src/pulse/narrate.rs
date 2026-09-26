@@ -1,16 +1,29 @@
-//! LLM narration helpers for Pulse
+//! Prompts and task builders for the current Pulse surfaces.
 //!
-//! Provides centralized LLM calling for digest and wiki surfaces.
-//! Handles provider setup, caching, content gating, and async bridging.
+//! Each builder returns a [`WriteTask`] for the writing pass
+//! ([`crate::pulse::write`]), which owns calling, retries, caching and degradation.
+//! The system prompt stays fixed per task kind (so providers can cache it); the
+//! structural context goes in the user message under a labelled header.
+//!
+//! These prompts are superseded by grounded evidence packs in a later milestone.
 
-use anyhow::Result;
-use std::path::Path;
-use std::sync::Arc;
+use super::write::{OutputSpec, WriteTask};
+use serde_json::json;
 
-use crate::semantic::config;
-use crate::semantic::providers::{self, LlmProvider};
+/// Task ids, used to read results back from a [`crate::pulse::write::WriteOutcome`].
+pub mod ids {
+    pub const CHANGELOG: &str = "changelog";
+    pub const ARCHITECTURE: &str = "architecture";
+    pub const ONBOARD: &str = "onboard-guide";
+    pub const TIMELINE: &str = "timeline-summary";
+    pub const GLOSSARY: &str = "glossary";
+    pub const OVERVIEW: &str = "project-overview";
 
-use super::llm_cache::LlmCache;
+    /// Id of the summary task for one wiki module.
+    pub fn module(path: &str) -> String {
+        format!("module:{path}")
+    }
+}
 
 /// System prompt for changelog narration
 const CHANGELOG_SYSTEM_PROMPT: &str = "\
@@ -35,8 +48,6 @@ Output VALID JSON:
     }
   ]
 }
-
-COMMIT DATA:
 ";
 
 /// System prompt for wiki module summary
@@ -58,8 +69,6 @@ CRITICAL RULES:
 - Write 4-8 sentences. Be specific about what the module does and its scale, not about which files it contains.
 - Do NOT speculate about design intent or add information not in the context.
 - NEVER leave missing spaces between words. Proofread your output.
-
-STRUCTURAL CONTEXT:
 ";
 
 /// System prompt for project overview narration
@@ -76,8 +85,6 @@ CRITICAL RULES:
 - Write exactly 3-4 paragraphs. Be specific: use module names, file counts, and dependency numbers.
 - Do NOT speculate or add information not in the context.
 - NEVER leave missing spaces between words. Proofread your output.
-
-STRUCTURAL CONTEXT:
 ";
 
 /// System prompt for architecture narrative narration
@@ -96,8 +103,6 @@ CRITICAL RULES:
 - Write 3-5 paragraphs. Every claim must reference specific module names and dependency counts.
 - Do NOT speculate about design intent or add information not in the context.
 - NEVER leave missing spaces between words. Proofread your output.
-
-STRUCTURAL CONTEXT:
 ";
 
 /// System prompt for onboard guide narration
@@ -114,8 +119,6 @@ CRITICAL RULES:
 - Use specific file and module names from the context.
 - Do NOT speculate or add information not in the context.
 - NEVER leave missing spaces between words. Proofread your output.
-
-STRUCTURAL CONTEXT:
 ";
 
 /// System prompt for timeline narration
@@ -131,8 +134,6 @@ CRITICAL RULES:
 - Write 3-5 concise paragraphs with specific numbers, file names, and module names.
 - Do NOT speculate about intent or add information not in the context.
 - NEVER leave missing spaces between words. Proofread your output.
-
-STRUCTURAL CONTEXT:
 ";
 
 /// System prompt for product-concept glossary generation.
@@ -168,507 +169,137 @@ Output VALID JSON MATCHING THIS SCHEMA EXACTLY — no markdown fences, no commen
     }
   ]
 }
-
-STRUCTURAL EVIDENCE:
 ";
 
-/// Minimum word count to attempt narration.
-/// Sections below this threshold are too brief to produce useful summaries.
-const MIN_CONTENT_WORDS: usize = 15;
+fn with_header(header: &str, context: &str) -> String {
+    format!("{header}\n{context}")
+}
 
-/// Create an LLM provider using the user's ~/.reflex/config.toml (same config as `rfx ask`)
-///
-/// If the configured provider has no API key, auto-detects from available keys.
-/// This handles CI environments where users may set provider-specific secrets
-/// (e.g. `OPENROUTER_API_KEY`) without also setting `REFLEX_PROVIDER`.
-pub fn create_pulse_provider() -> Result<Box<dyn LlmProvider>> {
-    let semantic_config = config::load_config(Path::new("."))?;
-
-    // Try the configured provider first
-    let (provider, api_key) = match config::get_api_key(&semantic_config.provider) {
-        Ok(key) => (semantic_config.provider.clone(), key),
-        Err(configured_err) => {
-            // Auto-detect: try other providers before giving up
-            let fallbacks: &[&str] = &["openrouter", "anthropic", "openai"];
-            let mut found = None;
-            for &candidate in fallbacks {
-                if candidate == semantic_config.provider {
-                    continue;
-                }
-                if let Ok(key) = config::get_api_key(candidate) {
-                    eprintln!(
-                        "Note: no API key for configured provider '{}', using auto-detected '{}'",
-                        semantic_config.provider, candidate
-                    );
-                    found = Some((candidate.to_string(), key));
-                    break;
-                }
-            }
-            found.ok_or(configured_err)?
-        }
-    };
-
-    let model = config::resolve_model_for(&provider, semantic_config.model.as_deref(), None);
-
-    let options = config::get_provider_options(&provider);
-
-    providers::create_provider(
-        &provider,
-        api_key,
-        model,
-        options,
-        semantic_config.timeout_seconds,
+/// Summary of one wiki module.
+pub fn wiki_task(module_path: &str, context: &str) -> WriteTask {
+    WriteTask::text(
+        ids::module(module_path),
+        "modules",
+        WIKI_SYSTEM_PROMPT,
+        with_header("STRUCTURAL CONTEXT:", context),
     )
+    .with_max_tokens(900)
+    .with_priority(60)
 }
 
-/// Narrate a structural context block using LLM.
-///
-/// Returns `None` if:
-/// - Content is too brief (fewer than MIN_CONTENT_WORDS words)
-/// - LLM call fails (degrades gracefully, logs warning)
-/// - Cache hit returns previously generated narration
-///
-/// Checks `LlmCache` first; stores response on success.
-pub fn narrate_section(
-    provider: &dyn LlmProvider,
-    system_prompt: &str,
-    structural_context: &str,
-    cache: &LlmCache,
-    snapshot_id: &str,
-    cache_key_suffix: &str,
-) -> Option<String> {
-    // Check minimum content length
-    let word_count = structural_context.split_whitespace().count();
-    if word_count < MIN_CONTENT_WORDS {
-        eprintln!(
-            "  Skipping: {} (too brief, {} words)",
-            cache_key_suffix, word_count
-        );
-        return None;
-    }
-
-    // Check cache
-    let cache_key = LlmCache::compute_key(snapshot_id, cache_key_suffix, structural_context);
-    match cache.get(&cache_key) {
-        Ok(Some(cached)) => {
-            log::debug!("LLM cache hit for '{}'", cache_key_suffix);
-            eprintln!("  Narrating: {} (cached)", cache_key_suffix);
-            return Some(cached.response);
-        }
-        Ok(None) => {}
-        Err(e) => {
-            log::warn!("Failed to read LLM cache: {}", e);
-        }
-    }
-
-    // Build prompt
-    let prompt = format!("{}{}", system_prompt, structural_context);
-
-    eprintln!("  Narrating: {}...", cache_key_suffix);
-
-    // Call LLM with retry (sync bridge over async)
-    let result = call_llm_sync(provider, &prompt);
-
-    match result {
-        Ok(response) => {
-            let response = postprocess_narration(&response);
-
-            // Cache the response
-            let context_hash = blake3::hash(structural_context.as_bytes())
-                .to_hex()
-                .to_string();
-            if let Err(e) = cache.put(&cache_key, &context_hash, &response) {
-                log::warn!("Failed to write LLM cache: {}", e);
-            }
-
-            Some(response)
-        }
-        Err(e) => {
-            log::warn!("LLM narration failed for '{}': {}", cache_key_suffix, e);
-            None
-        }
-    }
-}
-
-/// A narration task for batch dispatch
-pub struct NarrationTask {
-    pub system_prompt: &'static str,
-    pub structural_context: String,
-    pub snapshot_id: String,
-    pub cache_key_suffix: String,
-}
-
-/// Result of a narration task
-pub struct NarrationResult {
-    pub cache_key_suffix: String,
-    pub response: Option<String>,
-}
-
-/// Narrate multiple sections concurrently using a single tokio runtime.
-///
-/// Pre-filters cache hits and too-brief content. Remaining tasks are dispatched
-/// concurrently with a semaphore bound. Results are returned in order.
-pub fn narrate_batch(
-    provider: Arc<dyn LlmProvider>,
-    tasks: Vec<NarrationTask>,
-    cache: &LlmCache,
-    concurrency: usize,
-) -> Vec<NarrationResult> {
-    let total = tasks.len();
-    if total == 0 {
-        return Vec::new();
-    }
-
-    // Pre-filter: resolve cache hits and too-brief content synchronously
-    let mut results: Vec<NarrationResult> = Vec::with_capacity(total);
-    let mut pending: Vec<(usize, NarrationTask, String)> = Vec::new(); // (result_index, task, cache_key)
-
-    for task in tasks {
-        let word_count = task.structural_context.split_whitespace().count();
-        if word_count < MIN_CONTENT_WORDS {
-            eprintln!(
-                "  Skipping: {} (too brief, {} words)",
-                task.cache_key_suffix, word_count
-            );
-            results.push(NarrationResult {
-                cache_key_suffix: task.cache_key_suffix,
-                response: None,
-            });
-            continue;
-        }
-
-        let cache_key = LlmCache::compute_key(
-            &task.snapshot_id,
-            &task.cache_key_suffix,
-            &task.structural_context,
-        );
-        match cache.get(&cache_key) {
-            Ok(Some(cached)) => {
-                eprintln!("  Narrating: {} (cached)", task.cache_key_suffix);
-                results.push(NarrationResult {
-                    cache_key_suffix: task.cache_key_suffix,
-                    response: Some(cached.response),
-                });
-            }
-            _ => {
-                let idx = results.len();
-                results.push(NarrationResult {
-                    cache_key_suffix: task.cache_key_suffix.clone(),
-                    response: None,
-                });
-                pending.push((idx, task, cache_key));
-            }
-        }
-    }
-
-    if pending.is_empty() {
-        return results;
-    }
-
-    let pending_count = pending.len();
-    let effective_concurrency = if concurrency == 0 {
-        pending_count
-    } else {
-        concurrency
-    };
-    eprintln!(
-        "  Dispatching {} LLM calls ({} concurrent)...",
-        pending_count, effective_concurrency
-    );
-
-    // Clone cache_dir for use inside async tasks
-    let cache_dir = cache.cache_dir().to_path_buf();
-
-    // Single tokio runtime for all concurrent LLM calls
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            log::warn!("Failed to create tokio runtime for batch narration: {}", e);
-            return results;
-        }
-    };
-
-    let async_results = rt.block_on(async {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(effective_concurrency));
-        let mut join_set = tokio::task::JoinSet::new();
-
-        for (idx, task, cache_key) in pending {
-            let provider = Arc::clone(&provider);
-            let sem = Arc::clone(&semaphore);
-            let cache_dir = cache_dir.clone();
-
-            join_set.spawn(async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
-                let start = std::time::Instant::now();
-                eprintln!("  Narrating: {}...", task.cache_key_suffix);
-
-                let prompt = format!("{}{}", task.system_prompt, task.structural_context);
-                let result = call_llm_async(&*provider, &prompt).await;
-
-                let response = match result {
-                    Ok(raw) => {
-                        let response = postprocess_narration(&raw);
-
-                        // Write to cache (file-based, unique key per task — no conflicts)
-                        let task_cache = LlmCache::from_dir(cache_dir);
-                        let context_hash = blake3::hash(task.structural_context.as_bytes())
-                            .to_hex()
-                            .to_string();
-                        if let Err(e) = task_cache.put(&cache_key, &context_hash, &response) {
-                            log::warn!(
-                                "Failed to write LLM cache for '{}': {}",
-                                task.cache_key_suffix,
-                                e
-                            );
-                        }
-
-                        eprintln!(
-                            "  Narrating: {} (done, {:.1}s)",
-                            task.cache_key_suffix,
-                            start.elapsed().as_secs_f64()
-                        );
-                        Some(response)
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "LLM narration failed for '{}': {}",
-                            task.cache_key_suffix,
-                            e
-                        );
-                        eprintln!(
-                            "  Narrating: {} (failed, {:.1}s)",
-                            task.cache_key_suffix,
-                            start.elapsed().as_secs_f64()
-                        );
-                        None
-                    }
-                };
-
-                (idx, task.cache_key_suffix, response)
-            });
-        }
-
-        let mut async_results = Vec::new();
-        while let Some(result) = join_set.join_next().await {
-            match result {
-                Ok(r) => async_results.push(r),
-                Err(e) => log::warn!("Narration task panicked: {}", e),
-            }
-        }
-        async_results
+/// Product-level changelog entries, as JSON.
+pub fn changelog_task(context: &str) -> WriteTask {
+    let entry = json!({
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "description": {"type": "string"}
+        },
+        "required": ["title", "description"],
+        "additionalProperties": false
     });
-
-    // Distribute results back
-    for (idx, cache_key_suffix, response) in async_results {
-        results[idx] = NarrationResult {
-            cache_key_suffix,
-            response,
-        };
-    }
-
-    results
-}
-
-/// Async LLM call with retry logic (native async, no per-call Runtime)
-async fn call_llm_async(provider: &dyn LlmProvider, prompt: &str) -> Result<String> {
-    let max_retries = 2;
-    let mut last_error = None;
-
-    for attempt in 0..=max_retries {
-        if attempt > 0 {
-            log::debug!(
-                "Retrying LLM narration (attempt {}/{})",
-                attempt + 1,
-                max_retries + 1
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
-        }
-
-        match provider.complete(prompt, false).await {
-            Ok(response) => return Ok(response),
-            Err(e) => {
-                log::debug!("LLM call attempt {} failed: {}", attempt + 1, e);
-                last_error = Some(e);
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed")))
-}
-
-/// Get the system prompt for changelog narration
-pub fn changelog_system_prompt() -> &'static str {
-    CHANGELOG_SYSTEM_PROMPT
-}
-
-/// Get the system prompt for wiki narration
-pub fn wiki_system_prompt() -> &'static str {
-    WIKI_SYSTEM_PROMPT
-}
-
-/// Get the system prompt for project overview narration
-pub fn project_overview_system_prompt() -> &'static str {
-    PROJECT_OVERVIEW_SYSTEM_PROMPT
-}
-
-/// Get the system prompt for architecture narrative narration
-pub fn architecture_narrative_system_prompt() -> &'static str {
-    ARCHITECTURE_NARRATIVE_SYSTEM_PROMPT
-}
-
-/// Get the system prompt for onboard guide narration
-pub fn onboard_system_prompt() -> &'static str {
-    ONBOARD_SYSTEM_PROMPT
-}
-
-/// Get the system prompt for timeline narration
-pub fn timeline_system_prompt() -> &'static str {
-    TIMELINE_SYSTEM_PROMPT
-}
-
-/// Get the system prompt for product-concept glossary generation.
-pub fn concepts_system_prompt() -> &'static str {
-    CONCEPTS_SYSTEM_PROMPT
-}
-
-/// Known compound words / proper nouns that should NOT be split by camelCase regex.
-/// These are common technical terms found in codebases.
-const CAMEL_CASE_BLOCKLIST: &[&str] = &[
-    "TypeScript",
-    "JavaScript",
-    "CoffeeScript",
-    "ActionScript",
-    "PostgreSQL",
-    "MySQL",
-    "MariaDB",
-    "MongoDB",
-    "CouchDB",
-    "GraphQL",
-    "GitHub",
-    "GitLab",
-    "BitBucket",
-    "WordPress",
-    "PostCSS",
-    "IntelliJ",
-    "WebSocket",
-    "WebAssembly",
-    "DevOps",
-    "DevTools",
-    "DataFrame",
-    "NumPy",
-    "PyTorch",
-    "TensorFlow",
-    "FastAPI",
-    "NextJS",
-    "NestJS",
-    "NodeJS",
-    "ExpressJS",
-    "AngularJS",
-    "iPhone",
-    "iPad",
-    "macOS",
-    "iOS",
-    "FreeBSD",
-    "OpenBSD",
-    "CodePen",
-    "CodeSandbox",
-    "JetBrains",
-    "PhpStorm",
-    "AppKit",
-    "SwiftUI",
-    "UIKit",
-    "CoreData",
-    "MapReduce",
-    "CloudFormation",
-    "CloudFront",
-    "CloudWatch",
-    "RedHat",
-    "OpenShift",
-    "OpenStack",
-    "SourceMap",
-    "AutoComplete",
-    "IntelliSense",
-];
-
-/// Post-process LLM narration output to fix common formatting issues.
-fn postprocess_narration(text: &str) -> String {
-    let mut result = text.trim().to_string();
-
-    // Fix missing spaces after periods (e.g., "module.The" → "module. The" but not "config.toml")
-    // Only insert space when followed by an uppercase letter (sentence boundary)
-    let re = regex::Regex::new(r"([a-z])\.([A-Z])").unwrap();
-    result = re.replace_all(&result, "$1. $2").to_string();
-
-    // Fix missing spaces between lowercase and uppercase (e.g., "moduledrives" → "module drives")
-    // Protect known compound words with placeholders before applying the regex
-    let mut placeholders: Vec<(&str, String)> = Vec::new();
-    for (i, term) in CAMEL_CASE_BLOCKLIST.iter().enumerate() {
-        if result.contains(*term) {
-            let placeholder = format!("\x00KEEP{}\x00", i);
-            result = result.replace(*term, &placeholder);
-            placeholders.push((term, placeholder));
-        }
-    }
-
-    // Apply camelCase splitting only to non-code segments (outside backticks)
-    let re = regex::Regex::new(r"([a-z]{3,})([A-Z][a-z]{2,})").unwrap();
-    let parts: Vec<&str> = result.split('`').collect();
-    let mut assembled = String::new();
-    for (i, part) in parts.iter().enumerate() {
-        if i % 2 == 0 {
-            // Outside backticks — apply fix
-            assembled.push_str(&re.replace_all(part, "$1 $2"));
-        } else {
-            // Inside backticks — preserve as-is
-            assembled.push('`');
-            assembled.push_str(part);
-            assembled.push('`');
-        }
-    }
-    result = assembled;
-
-    // Restore protected compound words
-    for (term, placeholder) in &placeholders {
-        result = result.replace(placeholder, term);
-    }
-
-    // Fix double spaces
-    while result.contains("  ") {
-        result = result.replace("  ", " ");
-    }
-
-    result
-}
-
-/// Synchronous LLM call with retry logic.
-/// Uses tokio runtime to bridge async provider calls.
-fn call_llm_sync(provider: &dyn LlmProvider, prompt: &str) -> Result<String> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let mut last_error = None;
-        let max_retries = 2;
-
-        for attempt in 0..=max_retries {
-            if attempt > 0 {
-                log::debug!(
-                    "Retrying LLM narration (attempt {}/{})",
-                    attempt + 1,
-                    max_retries + 1
-                );
-                tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
-            }
-
-            match provider.complete(prompt, false).await {
-                Ok(response) => return Ok(response),
-                Err(e) => {
-                    log::debug!("LLM call attempt {} failed: {}", attempt + 1, e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed")))
+    let schema = json!({
+        "type": "object",
+        "properties": {"entries": {"type": "array", "items": entry}},
+        "required": ["entries"],
+        "additionalProperties": false
+    });
+    WriteTask::text(
+        ids::CHANGELOG,
+        "changelog",
+        CHANGELOG_SYSTEM_PROMPT,
+        with_header("COMMIT DATA:", context),
+    )
+    .with_output(OutputSpec::JsonSchema {
+        name: "changelog".into(),
+        schema,
     })
+    .with_max_tokens(1500)
+    .with_priority(80)
+}
+
+/// Architecture narrative for the map page.
+pub fn architecture_task(context: &str) -> WriteTask {
+    WriteTask::text(
+        ids::ARCHITECTURE,
+        "architecture",
+        ARCHITECTURE_NARRATIVE_SYSTEM_PROMPT,
+        with_header("STRUCTURAL CONTEXT:", context),
+    )
+    .with_max_tokens(1400)
+    .with_priority(20)
+}
+
+/// First-day guide for the onboarding page.
+pub fn onboard_task(context: &str) -> WriteTask {
+    WriteTask::text(
+        ids::ONBOARD,
+        "guides",
+        ONBOARD_SYSTEM_PROMPT,
+        with_header("STRUCTURAL CONTEXT:", context),
+    )
+    .with_max_tokens(1400)
+    .with_priority(15)
+}
+
+/// Summary of recent development activity.
+pub fn timeline_task(context: &str) -> WriteTask {
+    WriteTask::text(
+        ids::TIMELINE,
+        "timeline",
+        TIMELINE_SYSTEM_PROMPT,
+        with_header("STRUCTURAL CONTEXT:", context),
+    )
+    .with_max_tokens(1200)
+    .with_priority(90)
+}
+
+/// Product concepts for the glossary, as JSON.
+pub fn concepts_task(context: &str) -> WriteTask {
+    let concept = json!({
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "category": {"type": "string"},
+            "definition": {"type": "string"},
+            "related_modules": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["name", "category", "definition", "related_modules"],
+        "additionalProperties": false
+    });
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "intro": {"type": "string"},
+            "concepts": {"type": "array", "items": concept}
+        },
+        "required": ["intro", "concepts"],
+        "additionalProperties": false
+    });
+    WriteTask::text(
+        ids::GLOSSARY,
+        "glossary",
+        CONCEPTS_SYSTEM_PROMPT,
+        with_header("STRUCTURAL EVIDENCE:", context),
+    )
+    .with_output(OutputSpec::JsonSchema {
+        name: "concepts".into(),
+        schema,
+    })
+    .with_max_tokens(2500)
+    .with_priority(70)
+}
+
+/// Project overview for the home page.
+pub fn overview_task(context: &str) -> WriteTask {
+    WriteTask::text(
+        ids::OVERVIEW,
+        "overview",
+        PROJECT_OVERVIEW_SYSTEM_PROMPT,
+        with_header("STRUCTURAL CONTEXT:", context),
+    )
+    .with_max_tokens(1200)
+    .with_priority(10)
 }
 
 #[cfg(test)]
@@ -676,136 +307,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_word_count_sufficient() {
-        // 15+ words should pass the gate
-        let text = "src/parsers/rust.rs has 250 lines and contains extract_symbols fn_name and other important functions used for parsing code";
-        let count = text.split_whitespace().count();
-        assert!(
-            count >= MIN_CONTENT_WORDS,
-            "Word count {} should be >= {}",
-            count,
-            MIN_CONTENT_WORDS
-        );
+    fn system_prompts_are_stable_and_headers_move_to_user() {
+        let t = wiki_task("src/pulse", "ctx");
+        assert!(t.system.contains("STRUCTURAL CONTEXT below"));
+        assert!(!t.system.trim_end().ends_with("STRUCTURAL CONTEXT:"));
+        assert_eq!(t.user, "STRUCTURAL CONTEXT:\nctx");
+        assert_eq!(t.id, "module:src/pulse");
+        assert_eq!(t.kind, "modules");
+
+        let c = changelog_task("commits");
+        assert!(c.system.contains("Output VALID JSON"));
+        assert!(c.user.starts_with("COMMIT DATA:\n"));
     }
 
     #[test]
-    fn test_word_count_too_brief() {
-        // < 15 words should be rejected
-        let text = "No data available yet.";
-        let count = text.split_whitespace().count();
-        assert!(
-            count < MIN_CONTENT_WORDS,
-            "Word count {} should be < {}",
-            count,
-            MIN_CONTENT_WORDS
-        );
+    fn json_tasks_declare_strict_schemas() {
+        for t in [changelog_task("x"), concepts_task("x")] {
+            let OutputSpec::JsonSchema { schema, .. } = &t.output else {
+                panic!("{} should use a JSON schema", t.id);
+            };
+            assert_eq!(schema["additionalProperties"], false);
+            assert!(schema["required"].as_array().is_some());
+        }
     }
 
     #[test]
-    fn test_word_count_empty() {
-        let count = "".split_whitespace().count();
-        assert!(count < MIN_CONTENT_WORDS);
-    }
-
-    #[test]
-    fn test_word_count_wiki_structural() {
-        // Typical wiki page with markdown table + file list should pass
-        let text = "| Language | Files | Lines |\n| --- | --- | --- |\n| Rust | 45 | 12,500 |\n\n**Files:** src/main.rs src/lib.rs src/query/mod.rs src/parsers/rust.rs";
-        let count = text.split_whitespace().count();
-        assert!(
-            count >= MIN_CONTENT_WORDS,
-            "Wiki structural word count {} should be >= {}",
-            count,
-            MIN_CONTENT_WORDS
-        );
-    }
-
-    #[test]
-    fn test_word_count_digest_bootstrap() {
-        // Typical digest with structural data should pass
-        let text = "Branch: feature/pulse Commit: abc1234 Files: 120 Edges: 340 Modules: src tests build.rs config.toml main.rs lib.rs";
-        let count = text.split_whitespace().count();
-        assert!(
-            count >= MIN_CONTENT_WORDS,
-            "Digest bootstrap word count {} should be >= {}",
-            count,
-            MIN_CONTENT_WORDS
-        );
-    }
-
-    #[test]
-    fn test_changelog_system_prompt() {
-        assert!(changelog_system_prompt().contains("COMMIT DATA"));
-    }
-
-    #[test]
-    fn test_wiki_system_prompt() {
-        assert!(wiki_system_prompt().contains("STRUCTURAL CONTEXT"));
-    }
-
-    #[test]
-    fn test_postprocess_preserves_proper_nouns() {
-        let input = "The TypeScript module handles JavaScript compilation.";
-        let result = postprocess_narration(input);
-        assert!(
-            result.contains("TypeScript"),
-            "Should preserve TypeScript, got: {}",
-            result
-        );
-        assert!(
-            result.contains("JavaScript"),
-            "Should preserve JavaScript, got: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_postprocess_splits_run_on_words() {
-        // "moduledrives" should become "module drives"
-        let input = "The parseModule drives the query engine.";
-        let result = postprocess_narration(input);
-        assert!(
-            result.contains("parse Module"),
-            "Should split run-on camelCase: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_postprocess_preserves_backtick_code() {
-        let input = "Uses `TypeScript` and `parseModule` for processing.";
-        let result = postprocess_narration(input);
-        assert!(
-            result.contains("`TypeScript`"),
-            "Should preserve code: {}",
-            result
-        );
-        assert!(
-            result.contains("`parseModule`"),
-            "Should preserve code: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_postprocess_fixes_missing_sentence_space() {
-        let input = "First sentence.Second sentence starts here.";
-        let result = postprocess_narration(input);
-        assert!(
-            result.contains(". S"),
-            "Should add space after period: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_postprocess_fixes_double_spaces() {
-        let input = "Too  many  spaces  here.";
-        let result = postprocess_narration(input);
-        assert!(
-            !result.contains("  "),
-            "Should remove double spaces: {}",
-            result
-        );
+    fn task_ids_are_unique() {
+        let tasks = [
+            changelog_task("x"),
+            architecture_task("x"),
+            onboard_task("x"),
+            timeline_task("x"),
+            concepts_task("x"),
+            overview_task("x"),
+            wiki_task("src", "x"),
+        ];
+        let mut ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), tasks.len());
     }
 }

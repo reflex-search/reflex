@@ -14,6 +14,58 @@ pub struct PulseConfig {
     pub retention: RetentionConfig,
     #[serde(default)]
     pub thresholds: ThresholdConfig,
+    #[serde(default)]
+    pub write: WriteSettings,
+}
+
+/// `[pulse.write]`: the LLM writing pass.
+///
+/// CLI flags override these. Provider credentials stay in `~/.reflex/config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteSettings {
+    /// Provider for Pulse only (default: the `[semantic]` provider used by `rfx ask`).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model for Pulse only. Docs usually deserve a stronger model than query generation.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Cache directory, relative to the workspace root (default: `.reflex/pulse/write-cache`).
+    /// Entries hold no timestamps, so the directory is safe to commit or keep in CI caches.
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+    /// Successful runs whose cache entries survive pruning (default: 3).
+    #[serde(default = "default_keep_runs")]
+    pub keep_runs: usize,
+    /// Leave provider and model out of the cache key, so switching models keeps old text.
+    #[serde(default)]
+    pub cache_model_agnostic: bool,
+    /// Concurrent LLM calls (default: 4).
+    #[serde(default = "default_write_concurrency")]
+    pub concurrency: usize,
+    /// Stop planning calls once estimated input+output tokens reach this cap.
+    #[serde(default)]
+    pub max_llm_tokens: Option<u64>,
+}
+
+impl Default for WriteSettings {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            cache_dir: None,
+            keep_runs: default_keep_runs(),
+            cache_model_agnostic: false,
+            concurrency: default_write_concurrency(),
+            max_llm_tokens: None,
+        }
+    }
+}
+
+fn default_keep_runs() -> usize {
+    3
+}
+fn default_write_concurrency() -> usize {
+    4
 }
 
 /// Snapshot retention policy
@@ -159,5 +211,23 @@ mod tests {
         assert_eq!(config.retention.daily, 14);
         assert_eq!(config.retention.weekly, 4); // default
         assert_eq!(config.thresholds.fan_in_warning, 10); // default
+        assert_eq!(config.write.keep_runs, 3); // default
+    }
+
+    #[test]
+    fn test_deserialize_write_settings() {
+        let toml_str = r#"
+            [pulse.write]
+            model = "claude-sonnet-5"
+            cache_dir = "docs/.pulse-cache"
+            max_llm_tokens = 200000
+        "#;
+        let table: toml::Value = toml_str.parse().unwrap();
+        let config: PulseConfig = table.get("pulse").unwrap().clone().try_into().unwrap();
+        assert_eq!(config.write.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(config.write.cache_dir.as_deref(), Some("docs/.pulse-cache"));
+        assert_eq!(config.write.max_llm_tokens, Some(200_000));
+        assert_eq!(config.write.concurrency, 4);
+        assert!(!config.write.cache_model_agnostic);
     }
 }

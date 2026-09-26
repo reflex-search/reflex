@@ -1,3 +1,16 @@
+## [Unreleased]
+
+### Pulse
+
+- **The LLM cache now survives re-indexing.** The key was `blake3(snapshot_id + suffix + context)`, and the snapshot id is a timestamp, so every index change re-narrated every section and the CI cache in `pulse.yml` never produced a hit. The new write cache (`.reflex/pulse/write-cache/`) keys each answer by exactly what would be sent (task kind, prompt version, provider, model, output contract, system and user text). Measured on this repo: change one file, re-index (new snapshot), regenerate → 3 of 3 sections cached, 0 calls. Entries hold no timestamps, so the directory is safe to commit or keep in CI; unused entries are pruned after a successful run (the last 3 runs are kept). The old `.reflex/pulse/llm-cache/` is no longer read.
+- **`rfx pulse generate` gains run control:** `--llm on|off|cache-only` (`--no-llm` still works; `cache-only` never calls, for CI jobs without secrets), `--dry-run` (per-kind table of tasks, cache hits and estimated tokens, then exit), `--max-llm-tokens` (defers the lowest-priority calls past the cap), `--force-renarrate[=SCOPES]` (e.g. `=overview,modules` or `=module:src/pulse*`; bare = all; the cache is never wiped), `--llm-model`, `--llm-cache-dir`, `--no-prune`. `--concurrency` defaults to 4 (was unlimited). A `[pulse.write]` section in `.reflex/config.toml` sets `provider`, `model`, `cache_dir`, `keep_runs`, `cache_model_agnostic`, `concurrency` and `max_llm_tokens`.
+- **Failure handling:** a probe call runs first; an auth, unknown-model or bad-request error makes the whole run structural instead of producing a half-narrated site. Transient errors retry with backoff (honouring `Retry-After`), a 429 halves concurrency, and five consecutive failures stop the run. `rfx pulse glossary` gains `--no-llm`; `rfx pulse onboard` now reports why the LLM was unavailable instead of silently skipping it.
+- **JSON sections use the provider's structured output.** The changelog and glossary tasks send a strict JSON schema (OpenAI/OpenRouter `json_schema`, Anthropic `output_config.format`, downgrading to `json_object` or prompt-only when an endpoint rejects it). The system prompt goes in the system role (cached by Anthropic). Anthropic requests no longer send `temperature`, which current Claude models reject. The post-processing pass that split camelCase words is gone: it also rewrote identifiers inside JSON answers.
+- A changelog whose LLM answer fails to parse no longer reports `narrated: true`.
+- openai-compatible endpoints join the provider auto-detection fallback when `openai_compatible_base_url` is set.
+
+Library: `LlmProvider` gains `complete_request(&CompletionRequest) -> CompletionResponse` (system prompt, `OutputMode`, `max_tokens`, usage, stop reason), `model()` and `caps()`; failures carry a classified `ProviderError` (`downcast_ref`). `complete()` and `rfx ask` are unchanged. `pulse::llm_cache` is removed; `pulse::write` replaces it.
+
 ## [Unreleased] - 2.0.0
 
 A major version: the on-disk index formats, the MCP pagination fields, glob anchoring, the freshness contract and the default coverage rule all change (below). Every existing `.reflex/` cache is rebuilt once by `rfx index`.

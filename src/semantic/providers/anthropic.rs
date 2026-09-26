@@ -1,16 +1,22 @@
 //! Anthropic API provider implementation
 
-use super::LlmProvider;
+use super::wire;
+use super::{CompletionRequest, CompletionResponse, LlmProvider, OutputMode, ProviderCaps};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 
 /// Anthropic provider for Claude models
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    /// Cleared after the model rejects `output_config.format`; later requests ask by prompt only.
+    native_schema: AtomicBool,
 }
 
 impl AnthropicProvider {
@@ -24,7 +30,18 @@ impl AnthropicProvider {
             client,
             api_key,
             model: model.unwrap_or_else(|| "claude-3-5-haiku-20241022".to_string()),
+            native_schema: AtomicBool::new(true),
         })
+    }
+
+    async fn send_messages(&self, body: &serde_json::Value) -> Result<CompletionResponse> {
+        let request = self
+            .client
+            .post(MESSAGES_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01");
+        let data = wire::post_json(self.name(), request, body).await?;
+        Ok(wire::parse_anthropic(self.name(), &data, &self.model)?)
     }
 }
 
@@ -83,6 +100,41 @@ impl LlmProvider for AnthropicProvider {
 
     fn default_model(&self) -> &str {
         "claude-3-5-haiku-20241022"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        ProviderCaps {
+            system_role: true,
+            json_object: false,
+            json_schema: self.native_schema.load(Ordering::Relaxed),
+            reports_usage: true,
+        }
+    }
+
+    async fn complete_request(&self, req: &CompletionRequest<'_>) -> Result<CompletionResponse> {
+        let wants_schema = matches!(req.output, OutputMode::JsonSchema { .. });
+        let native = wants_schema && self.native_schema.load(Ordering::Relaxed);
+        let body = wire::anthropic_body(&self.model, req, native);
+        match self.send_messages(&body).await {
+            Err(e)
+                if native
+                    && e.downcast_ref::<super::ProviderError>()
+                        .is_some_and(wire::is_output_format_rejection) =>
+            {
+                log::info!(
+                    "anthropic: {} rejected output_config.format; using prompt-only JSON",
+                    self.model
+                );
+                self.native_schema.store(false, Ordering::Relaxed);
+                self.send_messages(&wire::anthropic_body(&self.model, req, false))
+                    .await
+            }
+            other => other,
+        }
     }
 }
 

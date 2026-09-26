@@ -1,9 +1,11 @@
 //! OpenAI API provider implementation
 
-use super::LlmProvider;
+use super::wire::{self, ChatFormat};
+use super::{CompletionRequest, CompletionResponse, LlmProvider, ProviderCaps};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 /// OpenAI provider for GPT models
@@ -11,6 +13,8 @@ pub struct OpenAiProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    /// Weakest output format known to work (see [`ChatFormat`]).
+    format_cap: AtomicU8,
 }
 
 impl OpenAiProvider {
@@ -24,6 +28,7 @@ impl OpenAiProvider {
             client,
             api_key,
             model: model.unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            format_cap: AtomicU8::new(ChatFormat::JsonSchema.as_u8()),
         })
     }
 }
@@ -98,6 +103,35 @@ impl LlmProvider for OpenAiProvider {
 
     fn default_model(&self) -> &str {
         "gpt-4o-mini"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        let cap = ChatFormat::from_u8(self.format_cap.load(Ordering::Relaxed));
+        ProviderCaps {
+            system_role: true,
+            json_object: cap != ChatFormat::None,
+            json_schema: cap == ChatFormat::JsonSchema,
+            reports_usage: true,
+        }
+    }
+
+    async fn complete_request(&self, req: &CompletionRequest<'_>) -> Result<CompletionResponse> {
+        wire::chat_complete(
+            self.name(),
+            &self.client,
+            "https://api.openai.com/v1/chat/completions",
+            Some(&self.api_key),
+            &[],
+            &self.model,
+            req,
+            &self.format_cap,
+            &|_, _| {},
+        )
+        .await
     }
 }
 

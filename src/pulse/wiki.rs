@@ -18,9 +18,7 @@ use crate::models::{Language, SymbolKind};
 use crate::parsers::ParserFactory;
 use crate::query::{QueryEngine, QueryFilter};
 use crate::semantic::context::CodebaseContext;
-use crate::semantic::providers::LlmProvider;
 
-use super::llm_cache::LlmCache;
 use super::narrate;
 
 /// A detected module in the codebase
@@ -172,122 +170,33 @@ fn discover_sub_modules(conn: &Connection, parent_path: &str) -> Result<Vec<Stri
     Ok(rows)
 }
 
-/// Generate a wiki page for a single module
-#[allow(clippy::too_many_arguments)]
-pub fn generate_wiki_page(
-    cache: &CacheManager,
-    module: &ModuleDefinition,
-    all_modules: &[ModuleDefinition],
-    diff: Option<&super::diff::SnapshotDiff>,
-    no_llm: bool,
-    provider: Option<&dyn LlmProvider>,
-    llm_cache: Option<&LlmCache>,
-    snapshot_id: &str,
-) -> Result<WikiPage> {
-    let db_path = cache.path().join("meta.db");
-    let conn = crate::cache::open_meta_db(&db_path)?;
-    let deps_index = DependencyIndex::new(cache.clone());
-    let query_engine = QueryEngine::new(cache.clone());
-
-    // Find child modules of this module
-    let prefix = format!("{}/", module.path);
-    let child_modules: Vec<&ModuleDefinition> = all_modules
-        .iter()
-        .filter(|m| m.path.starts_with(&prefix) && m.path != module.path)
-        .collect();
-
-    // Build structural sections
-    let structure = build_structure_section(&conn, &module.path, &child_modules)?;
-    let dependencies = build_dependencies_section(&conn, &module.path, all_modules)?;
-    let dependents = build_dependents_section(&conn, &deps_index, &module.path, all_modules)?;
-    let dependency_diagram = build_dependency_diagram(&conn, &module.path, all_modules);
-    let circular_deps = build_circular_deps_section(&deps_index, &module.path);
-    let key_symbols = build_key_symbols_section(&conn, &module.path, &query_engine);
-    let metrics = build_metrics_section(module, &conn)?;
-    let recent_changes = diff.map(|d| build_recent_changes(d, &module.path));
-
-    // Generate LLM summary when provider is available
-    let summary = if !no_llm {
-        if let (Some(provider), Some(llm_cache)) = (provider, llm_cache) {
-            // Build combined structural context for the summary
-            let mut context = String::new();
-            context.push_str(&format!("Module: {}\n\n", module.path));
-            context.push_str(&format!("## Structure\n{}\n\n", structure));
-            context.push_str(&format!("## Dependencies\n{}\n\n", dependencies));
-            context.push_str(&format!("## Dependents\n{}\n\n", dependents));
-            context.push_str(&format!("## Key Symbols\n{}\n\n", key_symbols));
-            context.push_str(&format!("## Metrics\n{}\n", metrics));
-
-            narrate::narrate_section(
-                provider,
-                narrate::wiki_system_prompt(),
-                &context,
-                llm_cache,
-                snapshot_id,
-                &module.path,
-            )
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Ok(WikiPage {
-        module_path: module.path.clone(),
-        title: format!("{}/", module.path),
-        sections: WikiSections {
-            summary,
-            structure,
-            dependencies,
-            dependents,
-            dependency_diagram,
-            circular_deps,
-            key_symbols,
-            metrics,
-            recent_changes,
-        },
-    })
-}
-
-/// Generate wiki pages for all detected modules
-///
-/// `provider` and `llm_cache` are created by the caller (site.rs or CLI handler).
+/// Generate wiki pages for all detected modules, with LLM summaries when `write`
+/// is given. Used by `rfx pulse wiki`; the site generator batches its own tasks.
 pub fn generate_all_pages(
     cache: &CacheManager,
     diff: Option<&super::diff::SnapshotDiff>,
-    no_llm: bool,
-    snapshot_id: &str,
-    provider: Option<&dyn LlmProvider>,
-    llm_cache: Option<&LlmCache>,
     discovery_config: &ModuleDiscoveryConfig,
+    write: Option<&super::write::WriteSession>,
 ) -> Result<Vec<WikiPage>> {
-    let modules = detect_modules(cache, discovery_config)?;
-    let mut pages = Vec::new();
-
-    if provider.is_some() {
-        eprintln!("Generating wiki summaries...");
-    }
-
-    for module in &modules {
-        match generate_wiki_page(
-            cache,
-            module,
-            &modules,
-            diff,
-            no_llm,
-            provider,
-            llm_cache,
-            snapshot_id,
-        ) {
-            Ok(page) => pages.push(page),
-            Err(e) => {
-                log::warn!("Failed to generate wiki page for {}: {}", module.path, e);
-            }
+    let mut pages = generate_all_pages_structural(cache, diff, discovery_config)?;
+    if let Some(session) = write {
+        let tasks = pages
+            .iter()
+            .filter_map(|p| {
+                p.narration_context
+                    .as_deref()
+                    .map(|ctx| narrate::wiki_task(&p.page.module_path, ctx))
+            })
+            .collect();
+        let outcome = session.run(tasks);
+        eprintln!("{}", outcome.summary());
+        for p in &mut pages {
+            p.page.sections.summary = outcome
+                .text(&narrate::ids::module(&p.page.module_path))
+                .map(str::to_string);
         }
     }
-
-    Ok(pages)
+    Ok(pages.into_iter().map(|p| p.page).collect())
 }
 
 /// A wiki page with pre-built narration context for batch LLM dispatch

@@ -50,9 +50,9 @@ jobs:
       - name: Restore LLM cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
-          path: .reflex/pulse/llm-cache
-          key: pulse-llm-cache-${{ github.sha }}
-          restore-keys: pulse-llm-cache-
+          path: .reflex/pulse/write-cache
+          key: pulse-write-cache-${{ github.sha }}
+          restore-keys: pulse-write-cache-
 
       - name: Generate Pulse site
         run: ./target/release/rfx pulse generate --base-url "https://pulse.rfx-search.dev" --title "Reflex" --concurrency 4
@@ -60,8 +60,8 @@ jobs:
       - name: Save LLM cache
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
-          path: .reflex/pulse/llm-cache
-          key: pulse-llm-cache-${{ github.sha }}
+          path: .reflex/pulse/write-cache
+          key: pulse-write-cache-${{ github.sha }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3

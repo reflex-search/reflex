@@ -253,11 +253,15 @@ The measure of success is not volume of output — it's how much human-written d
 
 ## LLM response caching
 
-**Cache key:** `blake3(snapshot_id + module_path + structural_context_hash)`. The structural context hash covers the exact set of facts sent to the LLM — symbol names, dependency edges, metrics. Same structure = cache hit, regardless of LLM provider, model version, or wall-clock time. This means switching from OpenAI to Anthropic doesn't invalidate the cache unless the structural inputs changed.
+**Cache key:** `blake3` of exactly what would be sent: task kind, prompt version, provider, model, `max_tokens`, output contract (mode + schema), and the full system and user text. There is **no snapshot id and no wall clock** in the key, so an unchanged request hits after any number of re-indexes, on any machine, and CI caches are useful across commits. (Until 2.0.1 the key included the snapshot timestamp, so every index change re-narrated everything.)
 
-**Bypass:** `--force-renarrate` flag on any Pulse command to skip the cache and re-invoke the LLM for all modules.
+**Model in the key.** Provider and model are part of the key by default: output quality and schema behaviour differ by model, and one site should not mix them. Set `[pulse.write] cache_model_agnostic = true` to drop them from the key and keep existing text when switching models.
 
-**Storage:** `.reflex/pulse/llm-cache/` directory. Exact file format (one file per module vs. SQLite) deferred to implementation — the key derivation is the important decision.
+**Bypass:** `--force-renarrate` re-runs everything; `--force-renarrate=overview,modules` or a task-id glob (`module:src/pulse*`) re-runs only that scope. The cache directory is never wiped.
+
+**Storage:** `.reflex/pulse/write-cache/v1/<2-hex>/<key>.json`, one timestamp-free file per answer, plus `runs.json` listing the keys of the last `keep_runs` (default 3) successful runs. After a complete, successful run, entries no kept run references are deleted (`--no-prune` keeps them). `--llm-cache-dir` / `[pulse.write] cache_dir` move it, e.g. into the repo so the cache is committed.
+
+**Run control.** `--llm on|off|cache-only` (`--no-llm` = off; `cache-only` never calls, for CI jobs without secrets), `--dry-run` (prints tasks, cache hits and estimated tokens per kind, then exits), `--max-llm-tokens` (defers lowest-priority calls past the cap; the cache fills and later runs finish the rest), `--concurrency` (default 4). A probe call runs first; an auth, unknown-model or bad-request error degrades the **whole run** to structural output, as does a success rate under 90% or five consecutive failures. Successful answers stay cached either way.
 
 ### Summary regeneration triggers
 

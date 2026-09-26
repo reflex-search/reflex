@@ -3,6 +3,11 @@ use crate::pulse;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+/// Writing-pass options for the standalone commands: LLM on, `[pulse.write]` defaults.
+fn llm_on() -> pulse::write::WriteOptions {
+    pulse::write::WriteOptions::default()
+}
+
 pub(super) fn handle_pulse_changelog(
     count: usize,
     no_llm: bool,
@@ -18,41 +23,16 @@ pub(super) fn handle_pulse_changelog(
     let mut changelog = pulse::changelog::extract_changelog(workspace_root, count)?;
 
     if !no_llm && !changelog.raw_commits.is_empty() {
-        match pulse::narrate::create_pulse_provider() {
-            Ok(provider) => {
-                eprintln!("LLM provider ready.");
-                let llm_cache = pulse::llm_cache::LlmCache::new(cache.path());
-
-                let pulse_config = pulse::config::load_pulse_config(cache.path())?;
-                let ensure_result =
-                    pulse::snapshot::ensure_snapshot(&cache, &pulse_config.retention)?;
-                let snapshot_id = match &ensure_result {
-                    pulse::snapshot::EnsureSnapshotResult::Created(info) => info.id.clone(),
-                    pulse::snapshot::EnsureSnapshotResult::Reused(info) => info.id.clone(),
-                };
-
-                let ctx = pulse::changelog::build_changelog_context(
-                    &changelog.raw_commits,
-                    &changelog.branch,
-                );
-                let response = pulse::narrate::narrate_section(
-                    provider.as_ref(),
-                    pulse::narrate::changelog_system_prompt(),
-                    &ctx,
-                    &llm_cache,
-                    &snapshot_id,
-                    "changelog",
-                );
-
-                if let Some(text) = response {
-                    changelog.entries =
-                        pulse::changelog::parse_changelog_response(&text, &changelog.raw_commits);
-                    changelog.narrated = true;
-                }
-            }
-            Err(e) => {
-                eprintln!("LLM unavailable: {}", e);
-            }
+        let session = pulse::write::WriteSession::open(cache.path(), &llm_on());
+        let ctx =
+            pulse::changelog::build_changelog_context(&changelog.raw_commits, &changelog.branch);
+        if let Some(entries) = session
+            .run_one(pulse::narrate::changelog_task(&ctx))
+            .as_deref()
+            .and_then(pulse::changelog::parse_changelog_response)
+        {
+            changelog.entries = entries;
+            changelog.narrated = true;
         }
     }
 
@@ -105,35 +85,12 @@ pub(super) fn handle_pulse_wiki(no_llm: bool, output: Option<PathBuf>, json: boo
         None
     };
 
-    // Create provider for standalone wiki command
-    let (provider, llm_cache) = if !no_llm {
-        match pulse::narrate::create_pulse_provider() {
-            Ok(p) => {
-                eprintln!("LLM provider ready.");
-                let c = pulse::llm_cache::LlmCache::new(cache.path());
-                (Some(p), Some(c))
-            }
-            Err(e) => {
-                eprintln!("LLM unavailable: {}", e);
-                (None, None)
-            }
-        }
-    } else {
-        (None, None)
-    };
-
-    let snapshot_id = snapshots
-        .first()
-        .map(|s| s.id.as_str())
-        .unwrap_or("unknown");
+    let session = (!no_llm).then(|| pulse::write::WriteSession::open(cache.path(), &llm_on()));
     let pages = pulse::wiki::generate_all_pages(
         &cache,
         snapshot_diff.as_ref(),
-        no_llm,
-        snapshot_id,
-        provider.as_ref().map(|p| p.as_ref()),
-        llm_cache.as_ref(),
         &pulse::wiki::ModuleDiscoveryConfig::default(),
+        session.as_ref(),
     )?;
 
     if json {
@@ -193,10 +150,8 @@ pub(super) fn handle_pulse_generate(
     base_url: String,
     title: Option<String>,
     include: Option<String>,
-    no_llm: bool,
     clean: bool,
-    force_renarrate: bool,
-    concurrency: usize,
+    write: pulse::write::WriteOptions,
     depth: u8,
     min_files: usize,
 ) -> Result<()> {
@@ -247,15 +202,18 @@ pub(super) fn handle_pulse_generate(
             format!("{} Documentation", capitalized)
         }),
         surfaces,
-        no_llm,
+        write,
         clean,
-        force_renarrate,
-        concurrency,
         max_depth: depth,
         min_files,
     };
 
+    let dry_run = config.write.dry_run;
     let report = pulse::site::generate_site(&cache, &config)?;
+    if dry_run {
+        eprintln!("Dry run: no LLM calls were made and nothing was written.");
+        return Ok(());
+    }
 
     eprintln!("Zola project generated in {}/", report.output_dir);
     eprintln!("  Wiki pages: {}", report.pages_generated);
@@ -377,18 +335,10 @@ pub(super) fn handle_pulse_onboard(no_llm: bool, json: bool) -> Result<()> {
     )?;
     let mut data = crate::pulse::onboard::generate_onboard_structural(&cache, modules.len())?;
 
-    if !no_llm && let Ok(provider) = crate::pulse::narrate::create_pulse_provider() {
-        let llm_cache = crate::pulse::llm_cache::LlmCache::new(cache.path());
+    if !no_llm {
+        let session = pulse::write::WriteSession::open(cache.path(), &llm_on());
         let ctx = crate::pulse::onboard::build_onboard_context(&data);
-        let narration = crate::pulse::narrate::narrate_section(
-            &*provider,
-            crate::pulse::narrate::onboard_system_prompt(),
-            &ctx,
-            &llm_cache,
-            "standalone",
-            "onboard-guide",
-        );
-        data.narration = narration;
+        data.narration = session.run_one(pulse::narrate::onboard_task(&ctx));
     }
 
     if json {
@@ -438,7 +388,7 @@ pub(super) fn handle_pulse_timeline(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn handle_pulse_glossary(json: bool) -> Result<()> {
+pub(super) fn handle_pulse_glossary(no_llm: bool, json: bool) -> Result<()> {
     use crate::pulse::glossary;
 
     let cache = CacheManager::new(".");
@@ -448,36 +398,22 @@ pub(super) fn handle_pulse_glossary(json: bool) -> Result<()> {
 
     let evidence = glossary::collect_glossary_evidence(&cache)?;
 
-    // Try to generate concepts via LLM if configured; fall back to structural-only output.
-    let data: glossary::GlossaryData = if let Some(ev) = evidence.as_ref() {
-        match pulse::narrate::create_pulse_provider() {
-            Ok(provider) => {
-                let llm_cache = pulse::llm_cache::LlmCache::new(cache.path());
-                let project_name = std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "project".to_string());
-                let context = glossary::build_concepts_context(ev, &project_name);
-                let raw = pulse::narrate::narrate_section(
-                    provider.as_ref(),
-                    pulse::narrate::concepts_system_prompt(),
-                    &context,
-                    &llm_cache,
-                    "cli-glossary",
-                    "glossary",
-                );
-                if let Some(raw_text) = raw {
-                    glossary::parse_concepts_response(&raw_text)
-                        .map(glossary::GlossaryData::from)
-                        .unwrap_or_default()
-                } else {
-                    glossary::GlossaryData::default()
-                }
-            }
-            Err(_) => glossary::GlossaryData::default(),
+    // Generate concepts via the LLM when enabled; fall back to structural-only output.
+    let data: glossary::GlossaryData = match evidence.as_ref() {
+        Some(ev) if !no_llm => {
+            let project_name = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "project".to_string());
+            let context = glossary::build_concepts_context(ev, &project_name);
+            let session = pulse::write::WriteSession::open(cache.path(), &llm_on());
+            session
+                .run_one(pulse::narrate::concepts_task(&context))
+                .and_then(|raw| glossary::parse_concepts_response(&raw).ok())
+                .map(glossary::GlossaryData::from)
+                .unwrap_or_default()
         }
-    } else {
-        glossary::GlossaryData::default()
+        _ => glossary::GlossaryData::default(),
     };
 
     if json {

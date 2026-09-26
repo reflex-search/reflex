@@ -7,7 +7,6 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use super::changelog;
 use super::diff;
@@ -20,9 +19,9 @@ use super::onboard;
 use super::pagefind;
 use super::snapshot;
 use super::wiki;
+use super::write::{LlmMode, WriteOptions, WriteSession};
 use super::zola;
 use crate::cache::CacheManager;
-use crate::semantic::providers::LlmProvider;
 
 /// Truncate a string to at most `max_chars` Unicode characters, appending "..." if truncated.
 fn truncate_str(s: &str, max_chars: usize) -> String {
@@ -42,11 +41,9 @@ pub struct SiteConfig {
     pub base_url: String,
     pub title: String,
     pub surfaces: Vec<Surface>,
-    pub no_llm: bool,
+    /// LLM writing pass options (mode, force scope, budget, cache).
+    pub write: WriteOptions,
     pub clean: bool,
-    pub force_renarrate: bool,
-    /// Maximum concurrent LLM requests (0 = unlimited)
-    pub concurrency: usize,
     /// Maximum directory depth for module discovery (1=top-level only, 2=default)
     pub max_depth: u8,
     /// Minimum file count for a module to be included
@@ -79,10 +76,8 @@ impl Default for SiteConfig {
                 Surface::Glossary,
                 Surface::Explorer,
             ],
-            no_llm: true,
+            write: WriteOptions::off(),
             clean: false,
-            force_renarrate: false,
-            concurrency: 0,
             max_depth: 2,
             min_files: 1,
         }
@@ -102,6 +97,24 @@ pub struct SiteReport {
     pub explorer_generated: bool,
     pub narration_mode: String,
     pub build_success: bool,
+}
+
+impl SiteReport {
+    /// `--dry-run`: the LLM plan was printed and nothing was written.
+    fn dry_run(output_dir: &std::path::Path) -> Self {
+        Self {
+            output_dir: output_dir.display().to_string(),
+            pages_generated: 0,
+            changelog_generated: false,
+            map_generated: false,
+            onboard_generated: false,
+            timeline_generated: false,
+            glossary_generated: false,
+            explorer_generated: false,
+            narration_mode: "dry-run".to_string(),
+            build_success: false,
+        }
+    }
 }
 
 /// Generate the complete Zola project and optionally build it.
@@ -163,33 +176,18 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
         _ => None,
     };
 
-    // Clear LLM cache if force-renarrate is set
-    if config.force_renarrate && !config.no_llm {
-        let llm_cache = super::llm_cache::LlmCache::new(cache.path());
-        if let Err(e) = llm_cache.clear() {
-            log::warn!("Failed to clear LLM cache: {}", e);
-        }
+    // Resolve the LLM writing pass (provider, cache, budget). Nothing is sent yet.
+    let write_session = WriteSession::open(cache.path(), &config.write);
+    match (
+        &config.write.mode,
+        &write_session.llm.provider,
+        &write_session.llm.unavailable,
+    ) {
+        (LlmMode::Off, _, _) => {}
+        (_, Some(p), _) => eprintln!("LLM writing enabled ({}/{}).", p.name(), p.model()),
+        (_, None, Some(reason)) => eprintln!("LLM writing: {reason}"),
+        (_, None, None) => {}
     }
-
-    // Create LLM provider (as Arc for concurrent sharing)
-    let provider: Option<Arc<dyn LlmProvider>> = if !config.no_llm {
-        match narrate::create_pulse_provider() {
-            Ok(p) => {
-                eprintln!("LLM provider ready, narration enabled.");
-                Some(Arc::from(p))
-            }
-            Err(e) => {
-                eprintln!("LLM narration unavailable: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let llm_cache = provider
-        .as_ref()
-        .map(|_| super::llm_cache::LlmCache::new(cache.path()));
 
     let mut pages_generated = 0;
     let mut changelog_generated = false;
@@ -199,11 +197,6 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     let mut glossary_generated = false;
     let mut explorer_generated = false;
     let mut has_narration = false;
-
-    let snapshot_id = snapshots
-        .first()
-        .map(|s| s.id.as_str())
-        .unwrap_or("unknown");
 
     // ══════════════════════════════════════════════════════════════
     // Phase 1: Parallel Structural (rayon for wiki, sequential for rest)
@@ -354,180 +347,88 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     // ══════════════════════════════════════════════════════════════
     // Phase 2: Concurrent Narration (tokio, all at once)
     // ══════════════════════════════════════════════════════════════
-    if let (Some(provider), Some(llm_cache)) = (provider.as_ref(), llm_cache.as_ref()) {
-        eprintln!("Collecting narration tasks...");
-
-        let mut narration_tasks: Vec<narrate::NarrationTask> = Vec::new();
-
-        // Wiki narration tasks
+    if config.write.mode != LlmMode::Off {
+        let mut tasks = Vec::new();
         for pwc in &wiki_pages_with_context {
             if let Some(ctx) = &pwc.narration_context {
-                narration_tasks.push(narrate::NarrationTask {
-                    system_prompt: narrate::wiki_system_prompt(),
-                    structural_context: ctx.clone(),
-                    snapshot_id: snapshot_id.to_string(),
-                    cache_key_suffix: pwc.page.module_path.clone(),
-                });
+                tasks.push(narrate::wiki_task(&pwc.page.module_path, ctx));
             }
         }
-
-        // Changelog narration task (single task for entire changelog)
         if let Some(ref cl) = changelog_data
             && !cl.raw_commits.is_empty()
         {
             let ctx = changelog::build_changelog_context(&cl.raw_commits, &cl.branch);
-            narration_tasks.push(narrate::NarrationTask {
-                system_prompt: narrate::changelog_system_prompt(),
-                structural_context: ctx,
-                snapshot_id: snapshot_id.to_string(),
-                cache_key_suffix: "changelog".to_string(),
-            });
+            tasks.push(narrate::changelog_task(&ctx));
         }
-
-        // Architecture narrative task
         if let Some(ref ctx) = arch_context {
-            narration_tasks.push(narrate::NarrationTask {
-                system_prompt: narrate::architecture_narrative_system_prompt(),
-                structural_context: ctx.clone(),
-                snapshot_id: snapshot_id.to_string(),
-                cache_key_suffix: "architecture-narrative".to_string(),
-            });
+            tasks.push(narrate::architecture_task(ctx));
         }
-
-        // Onboard narration task
         if let Some(ref ob_data) = onboard_data {
-            let ctx = onboard::build_onboard_context(ob_data);
-            narration_tasks.push(narrate::NarrationTask {
-                system_prompt: narrate::onboard_system_prompt(),
-                structural_context: ctx,
-                snapshot_id: snapshot_id.to_string(),
-                cache_key_suffix: "onboard-guide".to_string(),
-            });
+            tasks.push(narrate::onboard_task(&onboard::build_onboard_context(
+                ob_data,
+            )));
         }
-
-        // Timeline narration task
         if let Some(ref tl_data) = timeline_data {
-            let ctx = git_intel::build_timeline_context(tl_data);
-            narration_tasks.push(narrate::NarrationTask {
-                system_prompt: narrate::timeline_system_prompt(),
-                structural_context: ctx,
-                snapshot_id: snapshot_id.to_string(),
-                cache_key_suffix: "timeline-summary".to_string(),
-            });
+            tasks.push(narrate::timeline_task(&git_intel::build_timeline_context(
+                tl_data,
+            )));
         }
-
-        // Glossary/Concepts: single product-concept task. The LLM receives
-        // structural evidence (modules + anchor symbols) and returns a JSON
-        // document containing the intro + 10-15 concepts with categories and
-        // related modules. Cache key bumped to `-v3` so v2 cache entries are
-        // bypassed.
         if let Some(ref evidence) = glossary_evidence
             && !evidence.modules.is_empty()
         {
-            let concepts_ctx = glossary::build_concepts_context(evidence, &config.title);
-            narration_tasks.push(narrate::NarrationTask {
-                system_prompt: narrate::concepts_system_prompt(),
-                structural_context: concepts_ctx,
-                snapshot_id: snapshot_id.to_string(),
-                cache_key_suffix: "concepts-product-v3".to_string(),
-            });
+            tasks.push(narrate::concepts_task(&glossary::build_concepts_context(
+                evidence,
+                &config.title,
+            )));
         }
+        tasks.push(narrate::overview_task(&overview_context));
 
-        // Project overview task
-        narration_tasks.push(narrate::NarrationTask {
-            system_prompt: narrate::project_overview_system_prompt(),
-            structural_context: overview_context,
-            snapshot_id: snapshot_id.to_string(),
-            cache_key_suffix: "project-overview".to_string(),
-        });
+        eprintln!("Writing {} LLM section(s)...", tasks.len());
+        let outcome = write_session.run(tasks);
+        if config.write.dry_run {
+            eprintln!("{}", outcome.plan_table());
+            return Ok(SiteReport::dry_run(&config.output_dir));
+        }
+        eprintln!("  {}", outcome.summary());
+        let text = |id: &str| outcome.text(id).map(str::to_string);
 
-        let task_count = narration_tasks.len();
-        eprintln!("Narrating {} tasks concurrently...", task_count);
-        let narration_start = std::time::Instant::now();
-
-        let results = narrate::narrate_batch(
-            Arc::clone(provider),
-            narration_tasks,
-            llm_cache,
-            config.concurrency,
-        );
-
-        eprintln!(
-            "  Narration phase: {:.1}s ({} tasks)",
-            narration_start.elapsed().as_secs_f64(),
-            task_count,
-        );
-
-        // Distribute results back to their sources
-        let result_map: std::collections::HashMap<String, Option<String>> = results
-            .into_iter()
-            .map(|r| (r.cache_key_suffix, r.response))
-            .collect();
-
-        // Fill wiki summaries
         for pwc in &mut wiki_pages_with_context {
-            if let Some(response) = result_map.get(&pwc.page.module_path) {
-                pwc.page.sections.summary = response.clone();
-                if pwc.page.sections.summary.is_some() {
-                    has_narration = true;
-                }
-            }
+            pwc.page.sections.summary = text(&narrate::ids::module(&pwc.page.module_path));
+            has_narration |= pwc.page.sections.summary.is_some();
         }
 
-        // Fill changelog narration
+        // Only a parsed response counts as narration; otherwise the structural
+        // entries stay and `narrated` stays false.
         if let Some(ref mut cl) = changelog_data
-            && let Some(Some(text)) = result_map.get("changelog")
+            && let Some(entries) = outcome
+                .text(narrate::ids::CHANGELOG)
+                .and_then(changelog::parse_changelog_response)
         {
-            cl.entries = changelog::parse_changelog_response(text, &cl.raw_commits);
+            cl.entries = entries;
             cl.narrated = true;
             has_narration = true;
         }
 
-        // Extract architecture narrative and project overview
-        if let Some(response) = result_map.get("architecture-narrative") {
-            architecture_narrative = response.clone();
-            if architecture_narrative.is_some() {
-                has_narration = true;
-            }
+        architecture_narrative = text(narrate::ids::ARCHITECTURE);
+        project_overview = text(narrate::ids::OVERVIEW);
+        has_narration |= architecture_narrative.is_some() || project_overview.is_some();
+
+        if let Some(ref mut ob_data) = onboard_data {
+            ob_data.narration = text(narrate::ids::ONBOARD);
+            has_narration |= ob_data.narration.is_some();
         }
-        if let Some(response) = result_map.get("project-overview") {
-            project_overview = response.clone();
-            if project_overview.is_some() {
-                has_narration = true;
-            }
+        if let Some(ref mut tl_data) = timeline_data {
+            tl_data.narration = text(narrate::ids::TIMELINE);
+            has_narration |= tl_data.narration.is_some();
         }
 
-        // Fill onboard narration
-        if let Some(ref mut ob_data) = onboard_data
-            && let Some(response) = result_map.get("onboard-guide")
-        {
-            ob_data.narration = response.clone();
-            if ob_data.narration.is_some() {
-                has_narration = true;
-            }
-        }
-
-        // Fill timeline narration
-        if let Some(ref mut tl_data) = timeline_data
-            && let Some(response) = result_map.get("timeline-summary")
-        {
-            tl_data.narration = response.clone();
-            if tl_data.narration.is_some() {
-                has_narration = true;
-            }
-        }
-
-        // Parse the single concepts-product-v3 response into GlossaryData.
-        // On malformed JSON we log a warning and leave glossary_data as None
-        // so the page falls back to the no-LLM renderer (which still lists
-        // modules from the evidence bundle).
-        if let Some(Some(response)) = result_map.get("concepts-product-v3") {
+        // On malformed JSON the glossary falls back to the no-LLM renderer, which
+        // still lists modules from the evidence bundle.
+        if let Some(response) = outcome.text(narrate::ids::GLOSSARY) {
             match glossary::parse_concepts_response(response) {
                 Ok(parsed) => {
                     let data: glossary::GlossaryData = parsed.into();
-                    if !data.concepts.is_empty() {
-                        has_narration = true;
-                    }
+                    has_narration |= !data.concepts.is_empty();
                     glossary_data = Some(data);
                 }
                 Err(e) => {
@@ -643,7 +544,7 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
     )?;
 
     // Compute narration mode
-    let narration_mode = if config.no_llm {
+    let narration_mode = if config.write.mode == LlmMode::Off {
         "disabled".to_string()
     } else if has_narration {
         "narrated".to_string()
