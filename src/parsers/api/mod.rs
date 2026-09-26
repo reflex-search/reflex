@@ -10,18 +10,20 @@
 
 pub mod doc;
 pub mod go;
+pub mod pydoc;
+pub mod python;
 pub mod rust;
 
 use crate::models::Language;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the output of any extractor changes; cached results are then rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 4;
+pub const EXTRACTOR_VERSION: u32 = 5;
 
 /// The documented surface of one file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ApiFile {
-    /// Inner doc comment of the file (`//!`), if any.
+    /// Inner doc comment of the file (`//!`), or the module docstring (Python).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_doc: Option<DocComment>,
     /// Top-level items, in source order. Members nest inside their parent.
@@ -29,12 +31,15 @@ pub struct ApiFile {
     /// `mod foo;` declarations (Rust), in source order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mod_decls: Vec<ModDecl>,
-    /// `pub use` re-exports (Rust), in source order.
+    /// `pub use` re-exports (Rust), `from x import A` (Python), in source order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reexports: Vec<ReExport>,
     /// The package the file declares (`package foo` in Go), for languages with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// The file's explicit export list, when it declares one (Python `__all__`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exports: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -44,6 +49,8 @@ pub enum ApiKind {
     Function,
     Method,
     Struct,
+    /// A class (Python, TypeScript, Java, …).
+    Class,
     Enum,
     Variant,
     Field,
@@ -64,7 +71,12 @@ impl ApiKind {
     pub fn is_type(&self) -> bool {
         matches!(
             self,
-            ApiKind::Struct | ApiKind::Enum | ApiKind::Trait | ApiKind::Union | ApiKind::Interface
+            ApiKind::Struct
+                | ApiKind::Class
+                | ApiKind::Enum
+                | ApiKind::Trait
+                | ApiKind::Union
+                | ApiKind::Interface
         )
     }
 
@@ -74,6 +86,7 @@ impl ApiKind {
             ApiKind::Function => "fn",
             ApiKind::Method => "method",
             ApiKind::Struct => "struct",
+            ApiKind::Class => "class",
             ApiKind::Enum => "enum",
             ApiKind::Variant => "variant",
             ApiKind::Field => "field",
@@ -224,9 +237,11 @@ pub struct ModDecl {
 }
 
 /// `pub use a::b::C;` / `pub use a::b::C as D;` / `pub use a::b::*;`.
+/// Python: `from .x import A` / `from .x import A as B` / `from pkg.sub import *`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReExport {
-    /// Path as written, `::`-separated (`crate::query::QueryEngine`).
+    /// Path as written, `::`-separated (`crate::query::QueryEngine`). Python keeps its
+    /// dots and relative prefix, with the imported name last (`.x.A`, `..A`, `pkg.sub.*`).
     pub path: String,
     /// Name it is exported under (`QueryEngine`, `D`, or `*`).
     pub name: String,
@@ -236,7 +251,7 @@ pub struct ReExport {
 
 /// Whether [`extract`] handles this language.
 pub fn has_extractor(language: Language) -> bool {
-    matches!(language, Language::Rust | Language::Go)
+    matches!(language, Language::Rust | Language::Go | Language::Python)
 }
 
 /// Extract the API of one file, if its language has an extractor.
@@ -244,6 +259,7 @@ pub fn extract(language: Language, source: &str) -> Option<ApiFile> {
     match language {
         Language::Rust => rust::extract(source).ok(),
         Language::Go => go::extract(source).ok(),
+        Language::Python => python::extract(source).ok(),
         _ => None,
     }
 }

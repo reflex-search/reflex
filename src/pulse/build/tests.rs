@@ -506,3 +506,201 @@ fn go_reference_pages_symbols_and_links() {
     );
     assert!(site.symbols.values().any(|s| s.name == "WithTimeout"));
 }
+
+fn python_fixture() -> TempDir {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "pyproject.toml",
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        r,
+        "src/pkg/__init__.py",
+        r#""""Tools for engines. Start with :class:`Engine`."""
+from ._core import Engine
+from . import util
+
+__all__ = ["Engine", "connect"]
+
+
+def connect(url: str) -> Engine:
+    """Connect to *url*.
+
+    Returns:
+        Engine: A running :class:`Engine`.
+    """
+    return Engine(url)
+"#,
+    );
+    write(
+        r,
+        "src/pkg/_core.py",
+        r#""""Engine internals."""
+
+
+class Engine:
+    """Runs jobs.
+
+    Use :meth:`Engine.start` to begin; see :func:`pkg.util.slugify`.
+
+    Example:
+        >>> e = Engine("x")
+        >>> e.start()
+    """
+
+    #: The URL.
+    url: str
+
+    def __init__(self, url: str) -> None:
+        """Create an engine for *url*."""
+        self.url = url
+
+    def start(self) -> None:
+        """Start it."""
+
+    @classmethod
+    def default(cls) -> "Engine":
+        """The default engine."""
+
+    def _private(self): ...
+
+    def __repr__(self):
+        return "Engine()"
+"#,
+    );
+    write(
+        r,
+        "src/pkg/util.py",
+        r#""""Helpers."""
+
+
+def slugify(s: str) -> str:
+    """Make a slug from *s*. See :class:`~pkg.Engine`."""
+    return s
+"#,
+    );
+    write(r, "tests/test_engine.py", "def test_start():\n    pass\n");
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .index(r, false)
+        .unwrap();
+    t
+}
+
+#[test]
+fn python_reference_pages_symbols_and_links() {
+    let t = python_fixture();
+    let site = build_site(&CacheManager::new(t.path()), &opts()).unwrap();
+    assert!(
+        site.report.broken_links.is_empty(),
+        "{:?}",
+        site.report.broken_links
+    );
+
+    let root = &site.pages[&PageId::new("docs/ref/mod/pkg")];
+    assert_eq!(root.route, "/docs/reference/pkg/");
+    assert!(
+        site.pages
+            .contains_key(&PageId::new("docs/ref/mod/pkg.util"))
+    );
+    assert!(
+        !site
+            .pages
+            .contains_key(&PageId::new("docs/ref/mod/pkg._core")),
+        "private modules have no reference page"
+    );
+    let engine = &site.pages[&PageId::new("docs/ref/type/pkg.Engine")];
+    assert_eq!(engine.route, "/docs/reference/pkg/engine/");
+    assert_eq!(engine.badges, vec!["class"]);
+
+    let Block::Code { code, lang, .. } = &engine.blocks[0] else {
+        panic!("type page starts with its signature");
+    };
+    assert_eq!((code.as_str(), lang.as_str()), ("class Engine", "python"));
+    let Block::Markdown { markdown } = &engine.blocks[1] else {
+        panic!("then its docs");
+    };
+    let doc = &markdown.source;
+    assert!(
+        doc.contains("[`Engine.start`](/docs/reference/pkg/engine/#method.start)"),
+        "{doc}"
+    );
+    assert!(
+        doc.contains("[`pkg.util.slugify`](/docs/reference/pkg/util/#fn.slugify)"),
+        "{doc}"
+    );
+    assert!(
+        doc.contains("```python\n>>> e = Engine(\"x\")\n>>> e.start()\n```"),
+        "{doc}"
+    );
+    let reexported = engine.blocks.iter().any(|b| {
+        matches!(b, Block::Callout { body, .. } if body.iter().any(|x| matches!(x,
+            Block::Paragraph { content } if content.iter().any(|i| matches!(i,
+                Inline::Text { text } if text.contains("defined as pkg._core.Engine"))))))
+    });
+    assert!(reexported, "{:#?}", engine.blocks);
+
+    // The field, the constructor and public methods; not `_private` or `__repr__`.
+    let symbols: Vec<(&str, &str, Vec<&str>)> = engine
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Symbol { symbol } => Some((
+                symbol.name.as_str(),
+                symbol.kind.as_str(),
+                symbol.badges.iter().map(String::as_str).collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        symbols,
+        vec![
+            ("url", "field", vec![]),
+            ("__init__", "method", vec!["constructor"]),
+            ("start", "method", vec![]),
+            ("default", "method", vec!["classmethod"]),
+        ]
+    );
+
+    // Package docs, and a `~`-shortened role in another module, link to the class page.
+    let Block::Markdown { markdown } = &root.blocks[0] else {
+        panic!("root page starts with the package docs");
+    };
+    assert!(
+        markdown
+            .source
+            .contains("[`Engine`](/docs/reference/pkg/engine/)"),
+        "{}",
+        markdown.source
+    );
+    let util = &site.pages[&PageId::new("docs/ref/mod/pkg.util")];
+    let slugify = util
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Symbol { symbol } if symbol.name == "slugify" => Some(symbol),
+            _ => None,
+        })
+        .expect("slugify is documented");
+    assert!(
+        slugify
+            .doc
+            .as_ref()
+            .unwrap()
+            .source
+            .contains("[`Engine`](/docs/reference/pkg/engine/)"),
+        "{:?}",
+        slugify.doc
+    );
+    assert_eq!(slugify.signature, "def slugify(s: str) -> str");
+
+    let connect = site
+        .symbols
+        .values()
+        .find(|s| s.name == "connect")
+        .expect("connect is documented");
+    assert_eq!(connect.path, "pkg.connect");
+    assert!(!site.symbols.values().any(|s| s.name == "test_start"));
+}

@@ -5,6 +5,7 @@
 //! file is internal: it appears on Internals pages only.
 
 pub mod go;
+pub mod python;
 pub mod rust;
 
 use crate::parsers::api::{ApiItem, DocComment};
