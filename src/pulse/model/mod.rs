@@ -13,6 +13,7 @@
 //! (`rfx pulse model --json`) is deterministic: no timestamps, sorted maps.
 
 pub mod content;
+pub mod evidence;
 pub mod facts;
 pub mod ids;
 pub mod text;
@@ -40,6 +41,12 @@ pub struct Site {
     pub symbols: BTreeMap<SymbolId, SymbolEntry>,
     pub facts: FactStore,
     pub report: BuildReport,
+    /// Evidence for each narrative slot (not part of the JSON model).
+    #[serde(skip)]
+    pub evidence: BTreeMap<String, evidence::EvidencePack>,
+    /// Every name the index knows, for the grounding gate (not part of the JSON model).
+    #[serde(skip)]
+    pub known_names: Vec<String>,
 }
 
 /// Where a symbol is documented.

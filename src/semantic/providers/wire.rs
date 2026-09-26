@@ -85,10 +85,14 @@ fn truncate_body(mut body: String) -> String {
 /// True when a 400 body says the endpoint does not understand the requested output format,
 /// so the caller can downgrade and retry.
 pub fn is_output_format_rejection(err: &ProviderError) -> bool {
+    let b = err.body.to_ascii_lowercase();
+    // OpenRouter with `require_parameters`: no backend supports the requested format.
+    if err.kind == ProviderErrorKind::NotFound && b.contains("requested parameters") {
+        return true;
+    }
     if err.kind != ProviderErrorKind::BadRequest {
         return false;
     }
-    let b = err.body.to_ascii_lowercase();
     [
         "response_format",
         "json_schema",
@@ -272,10 +276,12 @@ pub fn parse_chat(
     fallback_model: &str,
 ) -> Result<CompletionResponse, ProviderError> {
     let choice = &data["choices"][0];
-    let text = choice["message"]["content"]
-        .as_str()
-        .ok_or_else(|| malformed(provider, "no choices[0].message.content"))?
-        .to_string();
+    // A reasoning model can spend the whole budget thinking: no content, `length`.
+    let text = match choice["message"]["content"].as_str() {
+        Some(t) => t.to_string(),
+        None if choice["finish_reason"] == "length" => String::new(),
+        None => return Err(malformed(provider, "no choices[0].message.content")),
+    };
     let stop = match choice["finish_reason"].as_str() {
         Some("stop") | None => StopReason::End,
         Some("length") => StopReason::MaxTokens,
@@ -435,6 +441,18 @@ mod tests {
         assert!(!is_output_format_rejection(&e));
         let e = classify_status("p", 500, None, "json_schema".into());
         assert!(!is_output_format_rejection(&e));
+        let e = classify_status(
+            "openrouter",
+            404,
+            None,
+            r#"{"error":{"message":"No endpoints found that can handle the requested parameters."}}"#.into(),
+        );
+        assert!(
+            is_output_format_rejection(&e),
+            "OpenRouter parameter routing miss"
+        );
+        let e = classify_status("p", 404, None, "model not found".into());
+        assert!(!is_output_format_rejection(&e));
     }
 
     #[test]
@@ -521,6 +539,9 @@ mod tests {
         );
         let err = parse_chat("openai", &json!({"choices": []}), "m").unwrap_err();
         assert_eq!(err.kind, ProviderErrorKind::Malformed);
+        let spent = json!({"choices": [{"message": {"content": null}, "finish_reason": "length"}]});
+        let r = parse_chat("openai", &spent, "m").unwrap();
+        assert_eq!((r.text.as_str(), r.stop), ("", StopReason::MaxTokens));
     }
 
     #[test]

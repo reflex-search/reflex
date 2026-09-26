@@ -25,6 +25,7 @@ const MAX_NEIGHBOURS: usize = 8;
 /// Rows in a module's file table.
 const MAX_FILE_ROWS: usize = 100;
 
+#[allow(clippy::needless_range_loop)] // `mi` indexes modules, caps and cycles together
 pub fn build(
     b: &mut SiteBuilder,
     corpus: &Corpus,
@@ -35,8 +36,71 @@ pub fn build(
     let cycles = graph.cycles();
     let in_cycle = |mi: usize| cycles.iter().find(|c| c.contains(&mi));
 
+    // Capabilities per module, as facts with the proving import as provenance.
+    let evidence = crate::pulse::extract::capabilities::detect(corpus);
+    let mut caps: Vec<Vec<&crate::pulse::extract::capabilities::Evidence>> =
+        vec![Vec::new(); graph.modules.len()];
+    for e in &evidence {
+        if let Some(&mi) = graph.owner.get(&e.file) {
+            let seen = caps[mi].iter().any(|c| c.capability == e.capability);
+            if !seen {
+                caps[mi].push(e);
+            }
+        }
+    }
+    for (mi, list) in caps.iter().enumerate() {
+        for e in list {
+            let file = &corpus.files[e.file].path;
+            b.facts.put(
+                Subject::Module(graph.modules[mi].id.clone()),
+                &format!("capability:{}", e.capability),
+                crate::pulse::model::FactValue::Text(format!(
+                    "{} (imports `{}` in {file}:{})",
+                    e.label, e.import, e.line
+                )),
+                crate::pulse::model::Provenance::Source {
+                    loc: SourceLoc::lines(file, e.line, e.line),
+                },
+            );
+        }
+    }
+
     for mi in 0..graph.modules.len() {
         let mut blocks = module_blocks(b, corpus, graph, mi, in_cycle(mi));
+        if !caps[mi].is_empty() {
+            let at = blocks
+                .iter()
+                .position(|bl| matches!(bl, Block::Heading { text, .. } if text == "Depends on"))
+                .unwrap_or(blocks.len());
+            let items = caps[mi]
+                .iter()
+                .map(|e| {
+                    let file = &corpus.files[e.file].path;
+                    vec![
+                        Inline::strong(e.label),
+                        Inline::text(" — imports "),
+                        Inline::code(e.import.clone()),
+                        Inline::text(" in "),
+                        Inline::code_link(
+                            Target::Source {
+                                loc: SourceLoc::lines(file, e.line, e.line),
+                            },
+                            format!("{file}:{}", e.line),
+                        ),
+                    ]
+                })
+                .collect();
+            blocks.splice(
+                at..at,
+                [
+                    Block::heading(2, "Capabilities"),
+                    Block::List {
+                        ordered: false,
+                        items,
+                    },
+                ],
+            );
+        }
         blocks.extend(item_blocks(corpus, &graph.modules[mi].files, apis));
         let m = &graph.modules[mi];
         let langs: Vec<&str> = m.languages.keys().map(String::as_str).collect();

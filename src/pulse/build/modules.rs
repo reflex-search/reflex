@@ -302,6 +302,7 @@ mod tests {
             root: PathBuf::from("."),
             files,
             edges: edges.to_vec(),
+            imports: Vec::new(),
             readme: None,
         }
     }

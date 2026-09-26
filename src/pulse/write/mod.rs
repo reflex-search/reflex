@@ -6,6 +6,8 @@
 //! gate build on top of this layer.
 
 pub mod cache;
+pub mod contract;
+pub mod gate;
 pub mod provider;
 pub mod run;
 
@@ -27,6 +29,8 @@ pub struct WriteOptions {
     pub cache_dir: Option<PathBuf>,
     pub no_prune: bool,
     pub model: Option<String>,
+    /// Print every sentence the grounding gate dropped, and why.
+    pub explain: bool,
 }
 
 impl WriteOptions {

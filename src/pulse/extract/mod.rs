@@ -5,6 +5,7 @@
 //! `rfx query`.
 
 pub mod api_cache;
+pub mod capabilities;
 pub mod cli;
 pub mod roles;
 pub mod surface;
@@ -83,6 +84,15 @@ pub struct DocFile {
     pub content: String,
 }
 
+/// An import of a module outside the project (external or standard library).
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub file: usize,
+    /// As written: `axum::Router`, `github.com/spf13/cobra`, `fastapi`.
+    pub path: String,
+    pub line: u32,
+}
+
 /// The index, as the docs builders see it.
 #[derive(Debug, Clone)]
 pub struct Corpus {
@@ -91,6 +101,8 @@ pub struct Corpus {
     pub files: Vec<FileInfo>,
     /// Resolved file-level imports as indices into `files` (importer, imported), deduped.
     pub edges: Vec<(usize, usize)>,
+    /// External and standard-library imports, in file order.
+    pub imports: Vec<Import>,
     pub readme: Option<DocFile>,
 }
 
@@ -142,12 +154,37 @@ impl Corpus {
             }
         }
 
+        let mut imports = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, imported_path, line_number FROM file_dependencies
+             WHERE import_type IN ('external', 'stdlib')",
+        )?;
+        let rows_iter = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows_iter {
+            let (file_id, path, line) = row?;
+            if let Some(&file) = index_of.get(&file_id) {
+                imports.push(Import {
+                    file,
+                    path,
+                    line: line.max(0) as u32,
+                });
+            }
+        }
+        imports.sort_by(|a, b| (a.file, a.line, &a.path).cmp(&(b.file, b.line, &b.path)));
+
         let files: Vec<FileInfo> = rows.into_iter().map(|(_, f)| f).collect();
         let readme = Self::read_readme(cache, &files);
         Ok(Self {
             root,
             files,
             edges: edges.into_iter().collect(),
+            imports,
             readme,
         })
     }

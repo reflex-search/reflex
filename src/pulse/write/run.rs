@@ -703,10 +703,14 @@ async fn execute(
                         Ordering::SeqCst,
                     );
                 }
-                // Truncated JSON never parses: retry once with room to finish.
-                if resp.stop == StopReason::MaxTokens && task.output != OutputSpec::Text && !grown {
+                // Truncated JSON never parses, and a reasoning model may spend the whole
+                // budget before answering: retry once with twice the room.
+                if resp.stop == StopReason::MaxTokens
+                    && (task.output != OutputSpec::Text || resp.text.trim().is_empty())
+                    && !grown
+                {
                     grown = true;
-                    max_tokens = (max_tokens as f32 * 1.5) as u32;
+                    max_tokens = max_tokens.saturating_mul(2);
                     shared.retries.fetch_add(1, Ordering::SeqCst);
                     continue;
                 }

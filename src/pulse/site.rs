@@ -10,9 +10,10 @@
 //!    `--no-build` stops after staging and prints where the project is.
 
 use super::build::{self, BuildOptions};
-use super::model::{Block, Page, PageKind, Site};
+use super::model::Site;
 use super::render::bundle::{BaseUrl, BundleStats, write_bundle};
 use super::write::{LlmMode, WriteOptions, WriteSession, WriteTask};
+use super::write::{contract, gate};
 use super::{narrate, publish, runtime};
 use crate::cache::CacheManager;
 use anyhow::Result;
@@ -74,46 +75,102 @@ pub struct SiteReport {
     pub bundle: BundleStats,
 }
 
-/// Page text sent as context for a slot, at most this many characters.
-const CONTEXT_CHARS: usize = 14_000;
+/// Packs below this groundability are not sent: they would produce generic prose.
+const MIN_GROUNDABILITY: f32 = 0.2;
 
-/// Writing tasks for every narrative slot, with each page's text as context.
+/// Grounded writing tasks for every narrative slot with enough evidence.
 pub fn narrative_tasks(site: &Site) -> Vec<WriteTask> {
-    let mut tasks = Vec::new();
-    for page in site.pages.values() {
-        for b in &page.blocks {
-            let Block::Narrative { slot, .. } = b else {
-                continue;
-            };
-            let ctx = super::model::text::page_text(site, page, CONTEXT_CHARS);
-            let task = if slot == narrate::ids::OVERVIEW {
-                narrate::overview_task(&overview_context(site, &ctx))
-            } else if slot == narrate::ids::ARCHITECTURE {
-                narrate::architecture_task(&ctx)
-            } else if let Some(module) = slot.strip_prefix("module:") {
-                narrate::wiki_task(module, &ctx)
-            } else {
-                continue;
-            };
-            tasks.push(task);
-        }
-    }
-    tasks
+    let slots: std::collections::BTreeSet<String> = site.narrative_slots().into_iter().collect();
+    site.evidence
+        .values()
+        .filter(|p| slots.contains(&p.slot))
+        .filter(|p| p.groundability() >= MIN_GROUNDABILITY && p.descriptive_count() >= 1)
+        .map(narrate::grounded_task)
+        .collect()
 }
 
-/// The home page is thin on its own; add the architecture page's text.
-fn overview_context(site: &Site, home: &str) -> String {
-    let arch: Option<&Page> = site
-        .pages
-        .values()
-        .find(|p| matches!(p.kind, PageKind::Architecture));
-    match arch {
-        Some(a) => format!(
-            "{home}\n\n{}",
-            super::model::text::page_text(site, a, CONTEXT_CHARS / 2)
-        ),
-        None => home.to_string(),
+/// Verify each answer and turn the kept sentences into Markdown with sources.
+fn grounded_texts(
+    site: &Site,
+    outcome: &super::write::WriteOutcome,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    Vec<gate::GateReport>,
+) {
+    let mut known = gate::KnownNames::default();
+    for n in &site.known_names {
+        known.insert(n);
     }
+    let mut texts = std::collections::BTreeMap::new();
+    let mut reports = Vec::new();
+    for (slot, pack) in &site.evidence {
+        let Some(raw) = outcome.text(slot) else {
+            continue;
+        };
+        let min_sentences = if slot.starts_with("module:") { 2 } else { 3 };
+        let cfg = gate::GateConfig {
+            min_sentences,
+            ..gate::GateConfig::default()
+        };
+        let verified = contract::parse(raw)
+            .map_err(|e| gate::GateReport {
+                slot: slot.clone(),
+                rejected: Some(format!("unparseable answer: {e}")),
+                ..Default::default()
+            })
+            .and_then(|c| gate::verify(&c, pack, &known, &cfg));
+        match verified {
+            Ok(v) => {
+                let mut md: Vec<String> = v
+                    .paragraphs
+                    .iter()
+                    .map(|p| {
+                        p.iter()
+                            .map(|s| s.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect();
+                let mut cited: Vec<usize> = v
+                    .paragraphs
+                    .iter()
+                    .flatten()
+                    .flat_map(|s| s.cites.clone())
+                    .collect();
+                cited.sort_unstable();
+                cited.dedup();
+                let sources: Vec<String> = cited
+                    .iter()
+                    .filter_map(|&i| pack.items.get(i)?.source.clone())
+                    .map(|loc| {
+                        let anchor = match (loc.start, loc.end) {
+                            (0, _) => String::new(),
+                            (s, e) if e > s => format!("#L{s}-L{e}"),
+                            (s, _) => format!("#L{s}"),
+                        };
+                        format!(
+                            "[{}]({}{}{anchor})",
+                            loc.label(),
+                            super::build::links::SOURCE_SCHEME,
+                            loc.path
+                        )
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                if !sources.is_empty() {
+                    md.push(format!("Sources: {}.", sources.join(", ")));
+                }
+                if v.confidence == gate::Confidence::Low {
+                    md.push("_Low confidence: parts of this section could not be verified and were removed._".into());
+                }
+                texts.insert(slot.clone(), md.join("\n\n"));
+                reports.push(v.report);
+            }
+            Err(r) => reports.push(r),
+        }
+    }
+    (texts, reports)
 }
 
 /// Generate the site.
@@ -176,7 +233,32 @@ pub fn generate_site(cache: &CacheManager, config: &SiteConfig) -> Result<SiteRe
             });
         }
         eprintln!("  {}", outcome.summary());
-        narrated = site.fill_narratives(|slot| outcome.text(slot).map(str::to_string));
+        let (texts, reports) = grounded_texts(&site, &outcome);
+        let dropped: usize = reports.iter().map(|r| r.dropped.len()).sum();
+        let rejected = reports.iter().filter(|r| r.rejected.is_some()).count();
+        let kept: usize = reports.iter().map(|r| r.kept).sum();
+        eprintln!(
+            "  Grounding: {kept} sentences kept, {dropped} dropped, {rejected} section(s) fell back to structure"
+        );
+        if config.write.explain {
+            for r in &reports {
+                if let Some(why) = &r.rejected {
+                    eprintln!("    [{}] fell back: {why}", r.slot);
+                }
+                for (sentence, reason) in &r.dropped {
+                    eprintln!("    [{}] dropped ({:?}): {sentence}", r.slot, reason);
+                }
+            }
+        }
+        let report_dir = cache.path().join("pulse").join("reports");
+        if std::fs::create_dir_all(&report_dir).is_ok() {
+            let _ = std::fs::write(
+                report_dir.join("write-report.json"),
+                serde_json::to_vec_pretty(&reports).unwrap_or_default(),
+            );
+        }
+        narrated = site.fill_narratives(|slot| texts.get(slot).cloned());
+        super::build::links::resolve_markdown_links(&mut site);
     }
 
     // 3. Render + stage
@@ -256,7 +338,7 @@ mod tests {
     use crate::{CacheManager, Indexer};
 
     #[test]
-    fn slots_become_tasks_with_page_context() {
+    fn slots_become_grounded_tasks() {
         let t = tempfile::TempDir::new().unwrap();
         let r = t.path();
         std::fs::create_dir_all(r.join("src/api")).unwrap();
@@ -281,6 +363,9 @@ mod tests {
         assert!(ids.contains(&"project-overview"), "{ids:?}");
         assert!(ids.contains(&"architecture"), "{ids:?}");
         assert!(ids.contains(&"module:src/api"), "{ids:?}");
+        // `src/api` has only undocumented functions: still descriptive (items).
+        let module = tasks.iter().find(|t| t.id == "module:src/api").unwrap();
+        assert!(module.user.contains("pub fn f()"), "{}", module.user);
         let overview = tasks.iter().find(|t| t.id == "project-overview").unwrap();
         assert!(
             overview.user.contains("Demo stores values."),
@@ -288,8 +373,10 @@ mod tests {
             overview.user
         );
         assert!(
-            overview.user.contains("# Architecture"),
-            "includes the architecture page"
+            overview.user.contains("<facts>\n[F1]"),
+            "numbered facts: {}",
+            overview.user
         );
+        assert!(overview.system.contains("cites 1-3 facts"));
     }
 }

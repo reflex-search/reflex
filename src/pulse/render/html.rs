@@ -691,6 +691,8 @@ mod tests {
             symbols: BTreeMap::new(),
             facts: FactStore::default(),
             report: BuildReport::default(),
+            evidence: BTreeMap::new(),
+            known_names: Vec::new(),
         }
     }
 

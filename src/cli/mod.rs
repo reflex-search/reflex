@@ -844,6 +844,10 @@ pub struct PulseLlmArgs {
     /// Maximum concurrent LLM requests (default: [pulse.write] concurrency, 4)
     #[arg(long)]
     pub concurrency: Option<usize>,
+
+    /// Print every LLM sentence the grounding gate dropped, and why
+    #[arg(long)]
+    pub explain: bool,
 }
 
 impl PulseLlmArgs {
@@ -867,6 +871,7 @@ impl PulseLlmArgs {
             cache_dir: self.llm_cache_dir.clone(),
             no_prune: self.no_prune,
             model: self.llm_model.clone(),
+            explain: self.explain,
         })
     }
 }

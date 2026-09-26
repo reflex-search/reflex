@@ -10,6 +10,7 @@
 
 pub mod cli_ref;
 pub mod docs_tab;
+pub mod evidence;
 pub mod guides;
 pub mod internals_tab;
 pub mod links;
@@ -87,13 +88,16 @@ pub fn build_site(cache: &CacheManager, opts: &BuildOptions) -> Result<Site> {
     let guides = guides::collect(&corpus, &content);
     let (guide_nav, contributing_nav) = guides::build(&mut b, &corpus, &guides);
     internals_tab::build(&mut b, &corpus, &graph, &apis, contributing_nav);
-    let mut reference_nav =
-        cli_ref::build(&mut b, &crate::pulse::extract::cli::find_commands(&rust));
+    let commands = crate::pulse::extract::cli::find_commands(&rust);
+    let mut reference_nav = cli_ref::build(&mut b, &commands);
     reference_nav.extend(reference::build(&mut b, &rust, &opts.reference));
     docs_tab::build(&mut b, &corpus, &graph, &commits, guide_nav, reference_nav);
 
     let (mut site, slugs) = b.finish();
     links::resolve_markdown_links(&mut site);
+    let (packs, known) = evidence::build(&site, &corpus, &graph, &apis, &rust, &commands, &guides);
+    site.evidence = packs;
+    site.known_names = known;
     if let Some(p) = &opts.slugs_path
         && let Err(e) = slugs.save(p)
     {
@@ -200,6 +204,8 @@ impl SiteBuilder {
             symbols: self.symbols,
             facts: self.facts,
             report: self.report,
+            evidence: BTreeMap::new(),
+            known_names: Vec::new(),
         };
         site.check_links();
         (site, self.slugs)
