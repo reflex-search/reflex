@@ -294,6 +294,7 @@ mod tests {
                 language: Language::from_path(Path::new(p)),
                 lines: 10,
                 role: roles::classify(p),
+                hash: String::new(),
             })
             .collect();
         files.sort_by(|a, b| a.path.cmp(&b.path));

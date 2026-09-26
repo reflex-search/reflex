@@ -27,6 +27,7 @@ pub fn build(
     corpus: &Corpus,
     _graph: &ModuleGraph,
     commits: &[ChangelogCommit],
+    reference_nav: Vec<NavNode>,
 ) {
     let changelog = b.add_page(PageSpec {
         id: PageId::new(CHANGELOG),
@@ -55,7 +56,16 @@ pub fn build(
         blocks: home_blocks,
     });
 
-    b.add_tab(TabId::Docs, "Docs", home, vec![NavNode::page(&changelog)]);
+    let mut nav = Vec::new();
+    if !reference_nav.is_empty() {
+        nav.push(NavNode::Group {
+            label: "Reference".into(),
+            collapsed: false,
+            children: reference_nav,
+        });
+    }
+    nav.push(NavNode::page(&changelog));
+    b.add_tab(TabId::Docs, "Docs", home, nav);
 }
 
 fn home_blocks(b: &SiteBuilder, corpus: &Corpus) -> Vec<Block> {

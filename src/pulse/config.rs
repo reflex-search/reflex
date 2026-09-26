@@ -16,6 +16,32 @@ pub struct PulseConfig {
     pub thresholds: ThresholdConfig,
     #[serde(default)]
     pub write: WriteSettings,
+    #[serde(default)]
+    pub docs: DocsSettings,
+}
+
+/// `[pulse.docs]`: what the Docs tab documents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocsSettings {
+    /// Document library APIs (default: true). Set false for a CLI-first project.
+    #[serde(default = "default_true")]
+    pub library: bool,
+    /// Only these module paths and their children (`reflex::query`). Empty = all public.
+    #[serde(default)]
+    pub include: Vec<String>,
+}
+
+impl Default for DocsSettings {
+    fn default() -> Self {
+        Self {
+            library: true,
+            include: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// `[pulse.write]`: the LLM writing pass.
@@ -155,10 +181,20 @@ fn default_line_count_growth() -> f64 {
     2.0
 }
 
-/// Load Pulse configuration from the project's `.reflex/config.toml`
+/// Load Pulse configuration.
 ///
-/// Falls back to defaults if the `[pulse]` section is missing.
+/// A `pulse.toml` at the workspace root (next to `.reflex/`) wins: it can be committed,
+/// while `.reflex/` is usually ignored. It uses the same sections without the `pulse.`
+/// prefix (`[docs]`, `[write]`). Otherwise the `[pulse]` section of
+/// `.reflex/config.toml` is used, else defaults.
 pub fn load_pulse_config(cache_path: &Path) -> Result<PulseConfig> {
+    if let Some(root) = cache_path.parent() {
+        let committed = root.join("pulse.toml");
+        if committed.exists() {
+            let content = std::fs::read_to_string(&committed)?;
+            return Ok(toml::from_str(&content)?);
+        }
+    }
     let config_path = cache_path.join("config.toml");
 
     if !config_path.exists() {
@@ -212,6 +248,26 @@ mod tests {
         assert_eq!(config.retention.weekly, 4); // default
         assert_eq!(config.thresholds.fan_in_warning, 10); // default
         assert_eq!(config.write.keep_runs, 3); // default
+    }
+
+    #[test]
+    fn test_root_pulse_toml_wins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".reflex")).unwrap();
+        std::fs::write(
+            dir.path().join(".reflex/config.toml"),
+            "[pulse.docs]\nlibrary = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pulse.toml"),
+            "[docs]\nlibrary = false\ninclude = [\"x::y\"]\n",
+        )
+        .unwrap();
+        let c = load_pulse_config(&dir.path().join(".reflex")).unwrap();
+        assert!(!c.docs.library);
+        assert_eq!(c.docs.include, vec!["x::y"]);
+        assert_eq!(c.retention.daily, 7);
     }
 
     #[test]

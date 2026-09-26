@@ -62,6 +62,10 @@ pub enum Block {
     Stats {
         stats: Vec<Stat>,
     },
+    /// One documented item: signature, docs, parameters, source.
+    Symbol {
+        symbol: Box<SymbolBlock>,
+    },
     /// A slot the writing pass may fill. `fallback` is always complete on its own, so a
     /// site built without an LLM has no holes.
     Narrative {
@@ -209,4 +213,36 @@ pub struct Card {
 pub struct Stat {
     pub label: String,
     pub fact: FactId,
+}
+
+/// A documented item as the reference shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolBlock {
+    pub id: super::ids::SymbolId,
+    pub anchor: AnchorId,
+    /// `fn`, `struct`, `method`, …
+    pub kind: String,
+    pub name: String,
+    /// Code language of the signature (`rust`).
+    pub lang: String,
+    pub signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<MarkdownText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ParamRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returns: Option<String>,
+    /// Deprecation message ("Deprecated since 1.2: use `sum`").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<String>,
+    /// `async`, `unsafe`, `const`, `impl Display`…
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub badges: Vec<String>,
+    pub source: SourceLoc,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParamRow {
+    pub name: String,
+    pub ty: String,
 }

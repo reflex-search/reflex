@@ -17,7 +17,7 @@ pub mod facts;
 pub mod ids;
 pub mod xref;
 
-pub use content::{Block, Card, Inline, MarkdownOrigin, MarkdownText, Stat};
+pub use content::{Block, Card, Inline, MarkdownOrigin, MarkdownText, ParamRow, Stat, SymbolBlock};
 pub use facts::{Fact, FactStore, FactValue, Provenance, Subject};
 pub use ids::{AnchorId, FactId, ModuleId, PageId, SlugAllocator, SymbolId};
 pub use xref::{Linker, RepoInfo, SourceLoc, Target};
@@ -34,8 +34,22 @@ pub struct Site {
     pub meta: SiteMeta,
     pub tabs: Vec<Tab>,
     pub pages: BTreeMap<PageId, Page>,
+    /// Every documented symbol and where it is documented.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub symbols: BTreeMap<SymbolId, SymbolEntry>,
     pub facts: FactStore,
     pub report: BuildReport,
+}
+
+/// Where a symbol is documented.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolEntry {
+    pub name: String,
+    /// Language path (`reflex::query::QueryEngine`).
+    pub path: String,
+    pub kind: String,
+    pub page: PageId,
+    pub anchor: Option<AnchorId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,6 +152,18 @@ pub enum PageKind {
     /// A page built from a repository document.
     Guide {
         source: String,
+    },
+    /// A library module in the API reference.
+    ReferenceModule {
+        path: String,
+    },
+    /// A type (struct, enum, trait) in the API reference.
+    ReferenceType {
+        path: String,
+    },
+    /// A command in the CLI reference.
+    CliCommand {
+        command: String,
     },
 }
 

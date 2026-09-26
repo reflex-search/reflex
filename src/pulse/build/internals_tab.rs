@@ -7,6 +7,8 @@
 
 use super::modules::ModuleGraph;
 use super::{PageSpec, SiteBuilder, module_page_id, module_slug};
+use crate::parsers::api::{ApiItem, ApiKind, Visibility};
+use crate::pulse::extract::api_cache::ApiIndex;
 use crate::pulse::extract::{Corpus, language_name};
 use crate::pulse::model::content::{CalloutKind, DiagramKind};
 use crate::pulse::model::{
@@ -23,12 +25,13 @@ const MAX_NEIGHBOURS: usize = 8;
 /// Rows in a module's file table.
 const MAX_FILE_ROWS: usize = 100;
 
-pub fn build(b: &mut SiteBuilder, corpus: &Corpus, graph: &ModuleGraph) {
+pub fn build(b: &mut SiteBuilder, corpus: &Corpus, graph: &ModuleGraph, apis: &ApiIndex) {
     let cycles = graph.cycles();
     let in_cycle = |mi: usize| cycles.iter().find(|c| c.contains(&mi));
 
     for mi in 0..graph.modules.len() {
-        let blocks = module_blocks(b, corpus, graph, mi, in_cycle(mi));
+        let mut blocks = module_blocks(b, corpus, graph, mi, in_cycle(mi));
+        blocks.extend(item_blocks(corpus, &graph.modules[mi].files, apis));
         let m = &graph.modules[mi];
         let langs: Vec<&str> = m.languages.keys().map(String::as_str).collect();
         b.add_page(PageSpec {
@@ -558,4 +561,84 @@ fn dependency_map_blocks(
         });
     }
     blocks
+}
+
+/// Rows in a module's item table.
+const MAX_ITEM_ROWS: usize = 300;
+
+/// Every item in the module's files as a one-line signature with a source link:
+/// the contributor's index, not the reference (that is the Docs tab's job).
+fn item_blocks(corpus: &Corpus, files: &[usize], apis: &ApiIndex) -> Vec<Block> {
+    fn push(rows: &mut Vec<Vec<Vec<Inline>>>, path: &str, it: &ApiItem, owner: Option<&str>) {
+        if it.test_only {
+            return;
+        }
+        let name = match owner {
+            Some(o) => format!("{o}::{}", it.name),
+            None => it.name.clone(),
+        };
+        let vis = match &it.visibility {
+            Visibility::Public => "pub".to_string(),
+            Visibility::Restricted(s) => format!("pub({s})"),
+            Visibility::Private | Visibility::Inherited => String::new(),
+        };
+        rows.push(vec![
+            vec![Inline::code_link(
+                Target::Source {
+                    loc: SourceLoc::lines(path, it.start_line, it.end_line),
+                },
+                name,
+            )],
+            vec![Inline::text(it.kind.label())],
+            vec![Inline::text(vis)],
+            vec![Inline::code(it.signature.clone())],
+        ]);
+    }
+    let mut rows = Vec::new();
+    let mut total = 0usize;
+    for &f in files {
+        let Some(api) = apis.files.get(&f) else {
+            continue;
+        };
+        let path = &corpus.files[f].path;
+        for it in &api.items {
+            match it.kind {
+                ApiKind::Module => {
+                    for m in &it.members {
+                        total += 1;
+                        push(&mut rows, path, m, Some(&it.name));
+                    }
+                }
+                _ => {
+                    total += 1;
+                    let owner = it
+                        .self_type
+                        .as_deref()
+                        .map(|t| t.split('<').next().unwrap_or(t));
+                    push(&mut rows, path, it, owner);
+                }
+            }
+        }
+    }
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let shown = rows.len().min(MAX_ITEM_ROWS);
+    rows.truncate(shown);
+    let mut out = vec![
+        Block::heading(2, "Items"),
+        Block::Table {
+            columns: vec![
+                "Item".into(),
+                "Kind".into(),
+                "Visibility".into(),
+                "Signature".into(),
+            ],
+            rows,
+        },
+    ];
+    if total > shown {
+        out.push(Block::note(format!("Showing {shown} of {total} items.")));
+    }
+    out
 }

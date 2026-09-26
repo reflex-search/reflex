@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::models::IndexConfig;
-use crate::pulse::model::{Block, PageKind, TabId};
+use crate::pulse::model::{Block, Inline, PageId, PageKind, TabId};
 use crate::{CacheManager, Indexer};
 use std::path::Path;
 use tempfile::TempDir;
@@ -186,4 +186,94 @@ fn slugs_persist_across_runs() {
             .collect::<Vec<_>>()
     };
     assert_eq!(routes(&first), routes(&second));
+}
+
+fn library_fixture() -> TempDir {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "Cargo.toml",
+        "[package]\nname = \"kv-lib\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        r,
+        "src/lib.rs",
+        "//! A key-value library. Start with [`Store`].\npub mod store;\nmod util;\npub use util::helper;\n",
+    );
+    write(
+        r,
+        "src/store.rs",
+        "/// An in-memory store.\n///\n/// Create one with [`Store::new`].\n///\n/// ```\n/// # use kv_lib::store::Store;\n/// let s = Store::new();\n/// ```\npub struct Store {\n    /// Number of entries.\n    pub len: usize,\n}\n\nimpl Store {\n    /// Make an empty store. See [`crate::helper`].\n    pub fn new() -> Self { Store { len: 0 } }\n    fn secret(&self) {}\n}\n\nimpl Default for Store {\n    fn default() -> Self { Self::new() }\n}\n\n/// Largest key size.\npub const MAX_KEY: usize = 256;\n",
+    );
+    write(r, "src/util.rs", "/// Helps.\npub fn helper() {}\n");
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .index(r, false)
+        .unwrap();
+    t
+}
+
+#[test]
+fn library_reference_pages_symbols_and_links() {
+    let t = library_fixture();
+    let site = build_site(&CacheManager::new(t.path()), &opts()).unwrap();
+    assert!(
+        site.report.broken_links.is_empty(),
+        "{:?}",
+        site.report.broken_links
+    );
+
+    let root = &site.pages[&PageId::new("docs/ref/mod/kv_lib")];
+    assert_eq!(root.route, "/docs/reference/kv-lib/");
+    let store = &site.pages[&PageId::new("docs/ref/type/kv_lib::store::Store")];
+    assert_eq!(store.route, "/docs/reference/kv-lib/store/store/");
+
+    // The type's definition block: doc with hidden line removed and a resolved link.
+    let Block::Symbol { symbol } = &store.blocks[0] else {
+        panic!("type page starts with its definition");
+    };
+    assert_eq!(symbol.signature, "pub struct Store");
+    let doc = &symbol.doc.as_ref().unwrap().source;
+    assert!(
+        doc.contains("[`Store::new`](/docs/reference/kv-lib/store/store/#method.new)"),
+        "{doc}"
+    );
+    assert!(doc.contains("```rust\nlet s = Store::new();\n```"), "{doc}");
+    assert!(!doc.contains("# use"), "{doc}");
+
+    // Fields and public methods are documented; private ones are not.
+    let names: Vec<&str> = store
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Symbol { symbol } => Some(symbol.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["Store", "len", "new"]);
+
+    // `pub use util::helper` makes a private-module function public at the root.
+    let helper = site
+        .symbols
+        .values()
+        .find(|s| s.name == "helper")
+        .expect("re-exported helper is documented");
+    assert_eq!(helper.path, "kv_lib::helper");
+
+    // Module docs link to the type page.
+    let Block::Markdown { markdown } = &root.blocks[0] else {
+        panic!("root page starts with the crate docs");
+    };
+    assert!(
+        markdown
+            .source
+            .contains("[`Store`](/docs/reference/kv-lib/store/store/)"),
+        "{}",
+        markdown.source
+    );
+
+    // Trait impls are listed, not documented as methods.
+    let lists_default = store.blocks.iter().any(|b| matches!(b,
+        Block::List { items, .. } if items.iter().flatten().any(|i| matches!(i, Inline::Code { code } if code == "impl Default for Store"))));
+    assert!(lists_default);
 }

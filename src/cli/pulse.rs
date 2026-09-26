@@ -475,10 +475,15 @@ pub(super) fn handle_pulse_model(
     if !cache.path().exists() {
         anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
     }
+    let docs = pulse::config::load_pulse_config(cache.path())?.docs;
     let opts = pulse::build::BuildOptions {
         max_depth: depth,
         min_files,
         slugs_path: Some(cache.path().join("pulse").join("slugs.json")),
+        reference: pulse::build::reference::ReferenceOptions {
+            skip_library: !docs.library,
+            include: docs.include,
+        },
         ..pulse::build::BuildOptions::new(title.unwrap_or_else(default_title))
     };
     let site = pulse::build::build_site(&cache, &opts)?;

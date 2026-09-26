@@ -183,7 +183,14 @@ impl<'a> Linker<'a> {
                 .pages
                 .get(page)
                 .map(|p| internal(format!("{}#{anchor}", p.route))),
-            Target::Symbol { .. } => None,
+            Target::Symbol { symbol } => {
+                let entry = self.site.symbols.get(symbol)?;
+                let page = self.site.pages.get(&entry.page)?;
+                Some(internal(match &entry.anchor {
+                    Some(a) => format!("{}#{a}", page.route),
+                    None => page.route.clone(),
+                }))
+            }
             Target::Source { loc } => self
                 .site
                 .meta
@@ -267,6 +274,7 @@ pub(super) fn collect_block_targets(blocks: &[Block], out: &mut Vec<Target>) {
             Block::Diagram { links, .. } => out.extend(links.iter().map(|(_, t)| t.clone())),
             Block::Cards { cards } => out.extend(cards.iter().map(|c| c.to.clone())),
             Block::Heading { .. }
+            | Block::Symbol { .. }
             | Block::Markdown { .. }
             | Block::Code { .. }
             | Block::Stats { .. } => {}

@@ -112,7 +112,10 @@ pub fn classify(path: &str) -> FileRole {
     if in_dir(EXAMPLE_DIRS) {
         return FileRole::Example;
     }
-    if in_dir(BUILD_DIRS) || is_build_script(dirs, name) {
+    // `build/`, `dist/`, `out/` are output only at the top of the tree (`src/build/` is
+    // code); `target/` is Cargo output at any depth.
+    let output_dir = dirs.first().is_some_and(|d| BUILD_DIRS.contains(d)) || in_dir(&["target"]);
+    if output_dir || is_build_script(dirs, name) {
         return FileRole::Build;
     }
     if lang.is_code() {
@@ -180,6 +183,8 @@ mod tests {
             ("crates/core/build.rs", Build),
             ("src/codegen/build.rs", Source),
             ("dist/bundle.js", Build),
+            ("src/pulse/build/mod.rs", Source),
+            ("crates/x/target/debug/gen.rs", Build),
             ("vite.config.ts", Build),
             ("README.md", Docs),
             ("docs/ARCHITECTURE.md", Docs),

@@ -6,6 +6,7 @@
 //! Each language has its own submodule with a `parse` function that takes
 //! source code and returns a vector of symbols.
 
+pub mod api;
 pub mod c;
 pub mod cpp;
 pub mod csharp;

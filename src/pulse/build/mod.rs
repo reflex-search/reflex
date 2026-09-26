@@ -8,9 +8,11 @@
 //! Nothing here calls an LLM. Narrative blocks carry structural fallbacks; the writing
 //! pass fills them later by slot id.
 
+pub mod cli_ref;
 pub mod docs_tab;
 pub mod internals_tab;
 pub mod modules;
+pub mod reference;
 
 use crate::cache::CacheManager;
 use crate::pulse::extract::Corpus;
@@ -35,6 +37,7 @@ pub struct BuildOptions {
     pub slugs_path: Option<PathBuf>,
     /// Detect the git remote for source permalinks.
     pub detect_repo: bool,
+    pub reference: reference::ReferenceOptions,
 }
 
 impl BuildOptions {
@@ -46,6 +49,7 @@ impl BuildOptions {
             changelog_commits: 50,
             slugs_path: None,
             detect_repo: true,
+            reference: reference::ReferenceOptions::default(),
         }
     }
 }
@@ -71,10 +75,21 @@ pub fn build_site(cache: &CacheManager, opts: &BuildOptions) -> Result<Site> {
     b.report.files_by_role = corpus.role_counts();
     compute_facts(&mut b.facts, &corpus, &graph);
 
-    internals_tab::build(&mut b, &corpus, &graph);
-    docs_tab::build(&mut b, &corpus, &graph, &commits);
+    let apis = crate::pulse::extract::api_cache::load(cache, &corpus).unwrap_or_else(|e| {
+        log::warn!("API extraction skipped: {e:#}");
+        Default::default()
+    });
+    let content = crate::pulse::extract::ContentAccess::open(cache);
+    let rust = crate::pulse::extract::surface::RustApi::resolve(&corpus, &apis, &content);
 
-    let (site, slugs) = b.finish();
+    internals_tab::build(&mut b, &corpus, &graph, &apis);
+    let mut reference_nav =
+        cli_ref::build(&mut b, &crate::pulse::extract::cli::find_commands(&rust));
+    reference_nav.extend(reference::build(&mut b, &rust, &opts.reference));
+    docs_tab::build(&mut b, &corpus, &graph, &commits, reference_nav);
+
+    let (mut site, slugs) = b.finish();
+    reference::resolve_markdown_links(&mut site);
     if let Some(p) = &opts.slugs_path
         && let Err(e) = slugs.save(p)
     {
@@ -90,6 +105,7 @@ pub struct SiteBuilder {
     slugs: SlugAllocator,
     pub facts: FactStore,
     pub pages: BTreeMap<PageId, Page>,
+    pub symbols: BTreeMap<crate::pulse::model::SymbolId, crate::pulse::model::SymbolEntry>,
     pub tabs: Vec<Tab>,
     pub report: BuildReport,
 }
@@ -102,6 +118,7 @@ impl SiteBuilder {
             slugs,
             facts: FactStore::default(),
             pages: BTreeMap::new(),
+            symbols: BTreeMap::new(),
             tabs: Vec::new(),
             report: BuildReport::default(),
         }
@@ -176,6 +193,7 @@ impl SiteBuilder {
             },
             tabs,
             pages: self.pages,
+            symbols: self.symbols,
             facts: self.facts,
             report: self.report,
         };
