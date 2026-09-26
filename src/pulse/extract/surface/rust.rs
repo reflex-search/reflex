@@ -12,58 +12,15 @@
 //! 5. `pub use` in a public module makes its target public under the re-exported path
 //!    (rustdoc's inlining of items from private modules).
 
+use super::{Package, Surface, SurfaceItem, SurfaceModule};
 use crate::parsers::api::{ApiFile, ApiItem, ApiKind, DocComment, Visibility};
 use crate::pulse::extract::api_cache::ApiIndex;
 use crate::pulse::extract::{ContentAccess, Corpus};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Default)]
-pub struct RustApi {
-    pub crates: Vec<RustCrate>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RustCrate {
-    /// Crate name as code refers to it (`reflex`, `my_lib`).
-    pub name: String,
-    /// Package name from `Cargo.toml` (`reflex-search`).
-    pub package: String,
-    pub manifest: String,
-    pub is_lib: bool,
-    pub root_file: String,
-    /// Tree order; `modules[0]` is the crate root.
-    pub modules: Vec<RustModule>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RustModule {
-    /// `demo`, `demo::store`, `demo::store::db`.
-    pub path: String,
-    pub name: String,
-    pub file: String,
-    pub public: bool,
-    pub doc: Option<DocComment>,
-    pub items: Vec<RustItem>,
-    pub children: Vec<usize>,
-    pub parent: Option<usize>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RustItem {
-    /// For types, `members` also holds methods and associated items from `impl` blocks.
-    pub item: ApiItem,
-    pub file: String,
-    pub public: bool,
-    /// Documented path (`demo::store::Db`, or the re-export path).
-    pub path: String,
-    /// Where it is defined, when `path` is a re-export.
-    pub defined_at: Option<String>,
-    /// File of each member attached from an `impl` block, by index in `item.members`.
-    pub impl_files: BTreeMap<usize, String>,
-}
-
-impl RustApi {
-    pub fn resolve(corpus: &Corpus, apis: &ApiIndex, content: &ContentAccess) -> Self {
+impl Surface {
+    /// Rust crates in the corpus.
+    pub fn resolve_rust(corpus: &Corpus, apis: &ApiIndex, content: &ContentAccess) -> Self {
         let file_api = |path: &str| -> Option<&ApiFile> {
             corpus.index_of(path).and_then(|i| apis.files.get(&i))
         };
@@ -78,8 +35,10 @@ impl RustApi {
                 continue;
             };
             for spec in crate_specs(&f.path, text, |p| corpus.index_of(p).is_some()) {
-                let mut k = RustCrate {
+                let mut k = Package {
                     name: spec.name,
+                    lang: crate::models::Language::Rust,
+                    sep: "::",
                     package: spec.package,
                     manifest: f.path.clone(),
                     is_lib: spec.is_lib,
@@ -103,11 +62,7 @@ impl RustApi {
             }
         }
         crates.sort_by(|a, b| (!a.is_lib, &a.name).cmp(&(!b.is_lib, &b.name)));
-        Self { crates }
-    }
-
-    pub fn libraries(&self) -> impl Iterator<Item = &RustCrate> {
-        self.crates.iter().filter(|c| c.is_lib)
+        Self { packages: crates }
     }
 }
 
@@ -222,7 +177,7 @@ struct PendingReexport {
 }
 
 struct Walker<'a, 'f> {
-    crate_: &'a mut RustCrate,
+    crate_: &'a mut Package,
     file_api: &'f dyn Fn(&str) -> Option<&'f ApiFile>,
     exists: &'f dyn Fn(&str) -> bool,
     impls: Vec<PendingImpl>,
@@ -241,7 +196,7 @@ impl Walker<'_, '_> {
         parent: Option<usize>,
     ) -> usize {
         let idx = self.crate_.modules.len();
-        self.crate_.modules.push(RustModule {
+        self.crate_.modules.push(SurfaceModule {
             path,
             name,
             file: file.to_string(),
@@ -362,7 +317,7 @@ impl Walker<'_, '_> {
                 continue;
             }
             let public = module_public && it.visibility == Visibility::Public && !it.hidden;
-            self.crate_.modules[module].items.push(RustItem {
+            self.crate_.modules[module].items.push(SurfaceItem {
                 path: format!("{module_path}::{}", it.name),
                 item: it.clone(),
                 file: file.to_string(),
@@ -387,7 +342,7 @@ fn base_type_name(t: &str) -> &str {
     t.rsplit("::").next().unwrap_or(t).trim()
 }
 
-fn attach_impls(k: &mut RustCrate, impls: Vec<PendingImpl>) {
+fn attach_impls(k: &mut Package, impls: Vec<PendingImpl>) {
     // Type name → (module, item) locations.
     let mut types: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
     for (mi, m) in k.modules.iter().enumerate() {
@@ -421,7 +376,7 @@ fn attach_impls(k: &mut RustCrate, impls: Vec<PendingImpl>) {
 }
 
 /// Resolve a `use` path from `module` to a module index plus the final segment.
-fn resolve_use(k: &RustCrate, module: usize, path: &str) -> Option<(usize, String)> {
+fn resolve_use(k: &Package, module: usize, path: &str) -> Option<(usize, String)> {
     let segs: Vec<&str> = path.split("::").collect();
     let (last, init) = segs.split_last()?;
     let mut cur = module;
@@ -440,7 +395,7 @@ fn resolve_use(k: &RustCrate, module: usize, path: &str) -> Option<(usize, Strin
     Some((cur, last.to_string()))
 }
 
-fn apply_reexports(k: &mut RustCrate, reexports: Vec<PendingReexport>) {
+fn apply_reexports(k: &mut Package, reexports: Vec<PendingReexport>) {
     for r in reexports {
         if !k.modules[r.module].public {
             continue;
@@ -494,7 +449,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn resolve(&self) -> RustApi {
+        fn resolve(&self) -> Surface {
             let exists = |p: &str| self.files.contains_key(p);
             let apis: BTreeMap<&str, ApiFile> = self
                 .files
@@ -505,8 +460,10 @@ mod tests {
             let file_api = |p: &str| apis.get(p);
             let mut crates = Vec::new();
             for spec in crate_specs("Cargo.toml", self.files["Cargo.toml"], exists) {
-                let mut k = RustCrate {
+                let mut k = Package {
                     name: spec.name,
+                    lang: crate::models::Language::Rust,
+                    sep: "::",
                     package: spec.package,
                     manifest: "Cargo.toml".into(),
                     is_lib: spec.is_lib,
@@ -529,7 +486,7 @@ mod tests {
                 crates.push(k);
             }
             let _ = ApiIndex::default();
-            RustApi { crates }
+            Surface { packages: crates }
         }
     }
 
@@ -561,7 +518,7 @@ mod tests {
         Fixture { files }
     }
 
-    fn item<'a>(k: &'a RustCrate, path: &str) -> &'a RustItem {
+    fn item<'a>(k: &'a Package, path: &str) -> &'a SurfaceItem {
         k.modules
             .iter()
             .flat_map(|m| &m.items)
@@ -572,8 +529,8 @@ mod tests {
     #[test]
     fn crates_and_module_tree() {
         let api = fixture().resolve();
-        assert_eq!(api.crates.len(), 2);
-        let lib = &api.crates[0];
+        assert_eq!(api.packages.len(), 2);
+        let lib = &api.packages[0];
         assert!(lib.is_lib);
         assert_eq!(lib.name, "my_lib");
         assert_eq!(lib.package, "my-lib");
@@ -594,9 +551,9 @@ mod tests {
             ]
         );
         assert_eq!(lib.modules[0].doc.as_ref().unwrap().summary, "My lib.");
-        assert!(!api.crates[1].is_lib);
+        assert!(!api.packages[1].is_lib);
         assert!(
-            !api.crates[1].modules[0].public,
+            !api.packages[1].modules[0].public,
             "binary roots are not public"
         );
     }
@@ -604,7 +561,7 @@ mod tests {
     #[test]
     fn visibility_impls_and_reexports() {
         let api = fixture().resolve();
-        let lib = &api.crates[0];
+        let lib = &api.packages[0];
         assert!(item(lib, "my_lib::api::run").public);
         assert!(!item(lib, "my_lib::api::helper").public);
         assert!(!item(lib, "my_lib::api::hidden::nope").public);

@@ -7,7 +7,7 @@
 //! without `#[arg]` are positional. Doc comments are the help text, as in clap.
 
 use crate::parsers::api::{ApiItem, ApiKind, DocComment};
-use crate::pulse::extract::surface::{RustApi, RustItem};
+use crate::pulse::extract::surface::{Surface, SurfaceItem};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,13 +203,13 @@ fn field_type(field: &ApiItem) -> String {
 }
 
 struct Types<'a> {
-    by_name: HashMap<&'a str, &'a RustItem>,
+    by_name: HashMap<&'a str, &'a SurfaceItem>,
 }
 
 /// Find every clap command tree in the code. Usually one.
-pub fn find_commands(api: &RustApi) -> Vec<CliCommand> {
-    let mut all: Vec<&RustItem> = Vec::new();
-    for k in &api.crates {
+pub fn find_commands(api: &Surface) -> Vec<CliCommand> {
+    let mut all: Vec<&SurfaceItem> = Vec::new();
+    for k in &api.packages {
         for m in &k.modules {
             all.extend(m.items.iter());
         }
@@ -228,7 +228,7 @@ pub fn find_commands(api: &RustApi) -> Vec<CliCommand> {
     {
         let cmd = attr_kv(&it.item.attrs, "command");
         let bin = api
-            .crates
+            .packages
             .iter()
             .find(|k| !k.is_lib)
             .map(|k| k.name.replace('_', "-"));
@@ -329,7 +329,7 @@ fn arg(f: &ApiItem, ty: &str) -> CliArg {
     }
 }
 
-fn subcommands(parent: &[String], e: &RustItem, types: &Types, depth: usize) -> Vec<CliCommand> {
+fn subcommands(parent: &[String], e: &SurfaceItem, types: &Types, depth: usize) -> Vec<CliCommand> {
     if e.item.kind != ApiKind::Enum {
         return Vec::new();
     }
@@ -377,15 +377,15 @@ fn subcommands(parent: &[String], e: &RustItem, types: &Types, depth: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pulse::extract::surface::{RustCrate, RustModule};
+    use crate::pulse::extract::surface::{Package, SurfaceModule};
     use std::collections::BTreeMap;
 
-    fn api(src: &str) -> RustApi {
+    fn api(src: &str) -> Surface {
         let file = crate::parsers::api::rust::extract(src).unwrap();
         let items = file
             .items
             .into_iter()
-            .map(|item| RustItem {
+            .map(|item| SurfaceItem {
                 path: format!("app::{}", item.name),
                 item,
                 file: "src/cli.rs".into(),
@@ -394,14 +394,16 @@ mod tests {
                 impl_files: BTreeMap::new(),
             })
             .collect();
-        RustApi {
-            crates: vec![RustCrate {
+        Surface {
+            packages: vec![Package {
                 name: "app".into(),
+                lang: crate::models::Language::Rust,
+                sep: "::",
                 package: "app".into(),
                 manifest: "Cargo.toml".into(),
                 is_lib: false,
                 root_file: "src/main.rs".into(),
-                modules: vec![RustModule {
+                modules: vec![SurfaceModule {
                     path: "app".into(),
                     name: "app".into(),
                     file: "src/cli.rs".into(),

@@ -13,7 +13,7 @@
 
 use super::{PageSpec, SiteBuilder};
 use crate::parsers::api::{ApiItem, ApiKind, DocComment, Visibility};
-use crate::pulse::extract::surface::{RustApi, RustCrate, RustItem};
+use crate::pulse::extract::surface::{Package, Surface, SurfaceItem};
 use crate::pulse::model::ids::slugify;
 use crate::pulse::model::{
     AnchorId, Block, Inline, MarkdownOrigin, MarkdownText, NavNode, PageId, PageKind, ParamRow,
@@ -121,8 +121,8 @@ pub struct ReferenceOptions {
     pub include: Vec<String>,
 }
 
-fn sym_id(path: &str, kind: ApiKind) -> SymbolId {
-    SymbolId(format!("rust:{path}#{}", kind.label().replace(' ', "-")))
+fn sym_id(lang: &str, path: &str, kind: ApiKind) -> SymbolId {
+    SymbolId(format!("{lang}:{path}#{}", kind.label().replace(' ', "-")))
 }
 
 fn anchor(kind: ApiKind, name: &str) -> AnchorId {
@@ -144,12 +144,12 @@ fn type_page(path: &str) -> PageId {
     PageId(format!("docs/ref/type/{path}"))
 }
 
-fn path_slug(path: &str) -> String {
-    path.split("::").map(slugify).collect::<Vec<_>>().join("/")
+fn path_slug(path: &str, sep: &str) -> String {
+    path.split(sep).map(slugify).collect::<Vec<_>>().join("/")
 }
 
 /// Build the library reference and return its nav nodes (one group per crate).
-pub fn build(b: &mut SiteBuilder, api: &RustApi, opts: &ReferenceOptions) -> Vec<NavNode> {
+pub fn build(b: &mut SiteBuilder, api: &Surface, opts: &ReferenceOptions) -> Vec<NavNode> {
     if opts.skip_library {
         return Vec::new();
     }
@@ -173,7 +173,7 @@ pub fn build(b: &mut SiteBuilder, api: &RustApi, opts: &ReferenceOptions) -> Vec
         let mut crate_nav = Vec::new();
         for &mi in &modules {
             let m = &k.modules[mi];
-            let types: Vec<&RustItem> = public_items(k, mi)
+            let types: Vec<&SurfaceItem> = public_items(k, mi)
                 .filter(|it| it.item.kind.is_type())
                 .collect();
             let mut group = vec![NavNode::page(&module_page(&m.path))];
@@ -188,7 +188,7 @@ pub fn build(b: &mut SiteBuilder, api: &RustApi, opts: &ReferenceOptions) -> Vec
                     },
                     title: t.item.name.clone(),
                     description: summary.filter(|s| !s.is_empty()),
-                    slug: Some(format!("reference/{}", path_slug(&t.path))),
+                    slug: Some(format!("reference/{}", path_slug(&t.path, k.sep))),
                     badges: badges_for(&t.item),
                     blocks,
                 });
@@ -207,7 +207,7 @@ pub fn build(b: &mut SiteBuilder, api: &RustApi, opts: &ReferenceOptions) -> Vec
                     .as_ref()
                     .map(|d| plain(&d.summary))
                     .filter(|s| !s.is_empty()),
-                slug: Some(format!("reference/{}", path_slug(&m.path))),
+                slug: Some(format!("reference/{}", path_slug(&m.path, k.sep))),
                 badges: vec!["module".into()],
                 blocks,
             });
@@ -217,7 +217,7 @@ pub fn build(b: &mut SiteBuilder, api: &RustApi, opts: &ReferenceOptions) -> Vec
                 crate_nav.push(NavNode::Group {
                     label: m
                         .path
-                        .strip_prefix(&format!("{}::", k.name))
+                        .strip_prefix(&format!("{}{}", k.name, k.sep))
                         .unwrap_or(&m.path)
                         .to_string(),
                     collapsed: true,
@@ -235,7 +235,7 @@ pub fn build(b: &mut SiteBuilder, api: &RustApi, opts: &ReferenceOptions) -> Vec
     nav
 }
 
-fn public_items(k: &RustCrate, mi: usize) -> impl Iterator<Item = &RustItem> {
+fn public_items(k: &Package, mi: usize) -> impl Iterator<Item = &SurfaceItem> {
     k.modules[mi].items.iter().filter(|it| it.public)
 }
 
@@ -245,15 +245,19 @@ struct SymbolIndex {
     by_path: HashMap<String, SymbolId>,
     by_name: HashMap<String, Vec<SymbolId>>,
     crate_name: String,
+    lang: String,
+    sep: &'static str,
 }
 
 impl SymbolIndex {
-    fn build(k: &RustCrate, modules: &[usize], _b: &SiteBuilder) -> Self {
+    fn build(k: &Package, modules: &[usize], _b: &SiteBuilder) -> Self {
         let mut idx = Self {
             entries: BTreeMap::new(),
             by_path: HashMap::new(),
             by_name: HashMap::new(),
             crate_name: k.name.clone(),
+            lang: k.lang_id(),
+            sep: k.sep,
         };
         for &mi in modules {
             let m = &k.modules[mi];
@@ -270,7 +274,7 @@ impl SymbolIndex {
                     idx.add(&it.path, &it.item.name, it.item.kind, page.clone(), None);
                     for mem in documented_members(&it.item) {
                         idx.add(
-                            &format!("{}::{}", it.path, mem.name),
+                            &k.join(&it.path, &mem.name),
                             &mem.name,
                             mem.kind,
                             page.clone(),
@@ -299,7 +303,7 @@ impl SymbolIndex {
         page: PageId,
         anchor: Option<AnchorId>,
     ) {
-        let id = sym_id(path, kind);
+        let id = sym_id(&self.lang, path, kind);
         self.by_path
             .entry(path.to_string())
             .or_insert_with(|| id.clone());
@@ -319,34 +323,39 @@ impl SymbolIndex {
         );
     }
 
-    /// Resolve an intra-doc link written in `module` (and inside `self_type`, if any).
+    /// Resolve an intra-doc link written in `module` (and inside `self_type`, if any),
+    /// the way rustdoc does for Rust; other languages use the same scopes.
     fn resolve(&self, link: &str, module: &str, self_type: Option<&str>) -> Option<&SymbolId> {
+        let sep = self.sep;
         let link = link.trim_end_matches("()").trim_end_matches('!');
+        let j = |a: &str, b: &str| format!("{a}{sep}{b}");
         let try_path = |p: &str| self.by_path.get(p);
-        if let Some(rest) = link.strip_prefix("Self::") {
-            return self_type.and_then(|t| try_path(&format!("{t}::{rest}")));
-        }
-        if let Some(rest) = link.strip_prefix("crate::") {
-            return try_path(&format!("{}::{rest}", self.crate_name));
-        }
-        if let Some(rest) = link.strip_prefix("self::") {
-            return try_path(&format!("{module}::{rest}"));
-        }
-        if let Some(rest) = link.strip_prefix("super::") {
-            let parent = module.rsplit_once("::").map(|(p, _)| p)?;
-            return try_path(&format!("{parent}::{rest}"));
+        if sep == "::" {
+            if let Some(rest) = link.strip_prefix("Self::") {
+                return self_type.and_then(|t| try_path(&j(t, rest)));
+            }
+            if let Some(rest) = link.strip_prefix("crate::") {
+                return try_path(&j(&self.crate_name, rest));
+            }
+            if let Some(rest) = link.strip_prefix("self::") {
+                return try_path(&j(module, rest));
+            }
+            if let Some(rest) = link.strip_prefix("super::") {
+                let parent = module.rsplit_once(sep).map(|(p, _)| p)?;
+                return try_path(&j(parent, rest));
+            }
         }
         if let Some(t) = self_type
-            && let Some(id) = try_path(&format!("{t}::{link}"))
+            && let Some(id) = try_path(&j(t, link))
         {
             return Some(id);
         }
-        try_path(&format!("{module}::{link}"))
+        try_path(&j(module, link))
             .or_else(|| try_path(link))
-            .or_else(|| try_path(&format!("{}::{link}", self.crate_name)))
+            .or_else(|| try_path(&j(&self.crate_name, link)))
             .or_else(|| {
-                // A bare name that is unique in the crate.
-                let name = link.rsplit("::").next().unwrap_or(link);
+                // A bare name that is unique in the package.
+                let name = link.rsplit(sep).next().unwrap_or(link);
                 match self.by_name.get(name).map(Vec::as_slice) {
                     Some([only]) => Some(only),
                     _ => None,
@@ -410,18 +419,24 @@ fn render_doc(
         match (&fence, is_fence) {
             (None, true) => {
                 let info = t.trim_start_matches(['`', '~']).trim();
-                let rusty = info.is_empty()
-                    || info.split(',').all(|a| {
-                        a.trim().starts_with("rust")
-                            || matches!(
-                                a.trim(),
-                                "ignore" | "no_run" | "should_panic" | "compile_fail"
-                            )
-                            || a.trim().starts_with("edition")
-                    });
+                // Rustdoc fences (bare, `rust`, `no_run`, …) hide `# ` lines; in other
+                // languages a bare fence is code in the package's own language.
+                let is_rust = index.lang == "rust";
+                let rusty = is_rust
+                    && (info.is_empty()
+                        || info.split(',').all(|a| {
+                            a.trim().starts_with("rust")
+                                || matches!(
+                                    a.trim(),
+                                    "ignore" | "no_run" | "should_panic" | "compile_fail"
+                                )
+                                || a.trim().starts_with("edition")
+                        }));
                 fence = Some(rusty);
                 out.push(if rusty {
                     "```rust".to_string()
+                } else if info.is_empty() {
+                    format!("```{}", index.lang)
                 } else {
                     line.to_string()
                 });
@@ -447,7 +462,7 @@ fn render_doc(
                     let (tick, text, dest) = (&c[1], &c[2], c.get(5).map(|m| m.as_str()));
                     // `[text](https://…)` never matches; a bare `[word]` needs a path shape.
                     let target = dest.unwrap_or(text);
-                    if dest.is_none() && tick.is_empty() && !text.contains("::") {
+                    if dest.is_none() && tick.is_empty() && !text.contains(index.sep) {
                         return whole.to_string();
                     }
                     match index.resolve(target, module, self_type) {
@@ -500,11 +515,11 @@ fn symbol_block(
     });
     Block::Symbol {
         symbol: Box::new(SymbolBlock {
-            id: sym_id(path, item.kind),
+            id: sym_id(&index.lang, path, item.kind),
             anchor: anchor(item.kind, &item.name),
             kind: item.kind.label().to_string(),
             name: item.name.clone(),
-            lang: "rust".into(),
+            lang: index.lang.clone(),
             signature: pretty_signature(&item.signature),
             doc: item
                 .doc
@@ -548,7 +563,7 @@ fn summary_cell(
     }
 }
 
-fn module_blocks(k: &RustCrate, mi: usize, included: &[usize], index: &SymbolIndex) -> Vec<Block> {
+fn module_blocks(k: &Package, mi: usize, included: &[usize], index: &SymbolIndex) -> Vec<Block> {
     let m = &k.modules[mi];
     let mut blocks = Vec::new();
     if let Some(d) = &m.doc {
@@ -582,8 +597,8 @@ fn module_blocks(k: &RustCrate, mi: usize, included: &[usize], index: &SymbolInd
         });
     }
 
-    let items: Vec<&RustItem> = public_items(k, mi).collect();
-    let types: Vec<&&RustItem> = items.iter().filter(|it| it.item.kind.is_type()).collect();
+    let items: Vec<&SurfaceItem> = public_items(k, mi).collect();
+    let types: Vec<&&SurfaceItem> = items.iter().filter(|it| it.item.kind.is_type()).collect();
     if !types.is_empty() {
         blocks.push(Block::heading(2, "Types"));
         blocks.push(Block::Table {
@@ -610,7 +625,7 @@ fn module_blocks(k: &RustCrate, mi: usize, included: &[usize], index: &SymbolInd
         (ApiKind::Static, "Statics"),
         (ApiKind::TypeAlias, "Type aliases"),
     ] {
-        let group: Vec<&&RustItem> = items.iter().filter(|it| it.item.kind == kind).collect();
+        let group: Vec<&&SurfaceItem> = items.iter().filter(|it| it.item.kind == kind).collect();
         if group.is_empty() {
             continue;
         }
@@ -627,11 +642,11 @@ fn module_blocks(k: &RustCrate, mi: usize, included: &[usize], index: &SymbolInd
     blocks
 }
 
-fn type_blocks(k: &RustCrate, t: &RustItem, index: &SymbolIndex) -> Vec<Block> {
-    let module = t.path.rsplit_once("::").map(|(m, _)| m).unwrap_or(&k.name);
+fn type_blocks(k: &Package, t: &SurfaceItem, index: &SymbolIndex) -> Vec<Block> {
+    let module = t.path.rsplit_once(k.sep).map(|(m, _)| m).unwrap_or(&k.name);
     // The page is the type: its definition renders flat, not as a card under its own title.
     let mut blocks = vec![Block::Code {
-        lang: "rust".into(),
+        lang: k.lang_id(),
         code: pretty_signature(&t.item.signature),
         title: None,
     }];
@@ -679,7 +694,7 @@ fn type_blocks(k: &RustCrate, t: &RustItem, index: &SymbolIndex) -> Vec<Block> {
         for m in data {
             blocks.push(symbol_block(
                 m,
-                &format!("{}::{}", t.path, m.name),
+                &k.join(&t.path, &m.name),
                 &t.file,
                 index,
                 module,
@@ -703,7 +718,7 @@ fn type_blocks(k: &RustCrate, t: &RustItem, index: &SymbolIndex) -> Vec<Block> {
             let file = t.impl_files.get(&i).map(String::as_str).unwrap_or(&t.file);
             blocks.push(symbol_block(
                 m,
-                &format!("{}::{}", t.path, m.name),
+                &k.join(&t.path, &m.name),
                 file,
                 index,
                 module,
