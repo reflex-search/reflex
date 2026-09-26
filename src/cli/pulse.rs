@@ -3,6 +3,20 @@ use crate::pulse;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+/// "<Directory> Documentation", from the working directory name.
+fn default_title() -> String {
+    let name = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "Pulse".to_string());
+    let mut chars = name.chars();
+    let capitalized = match chars.next() {
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+        None => name,
+    };
+    format!("{} Documentation", capitalized)
+}
+
 /// Writing-pass options for the standalone commands: LLM on, `[pulse.write]` defaults.
 fn llm_on() -> pulse::write::WriteOptions {
     pulse::write::WriteOptions::default()
@@ -189,18 +203,7 @@ pub(super) fn handle_pulse_generate(
     let config = pulse::site::SiteConfig {
         output_dir: output,
         base_url,
-        title: title.unwrap_or_else(|| {
-            let name = std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "Pulse".to_string());
-            let mut chars = name.chars();
-            let capitalized = match chars.next() {
-                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
-                None => name,
-            };
-            format!("{} Documentation", capitalized)
-        }),
+        title: title.unwrap_or_else(default_title),
         surfaces,
         write,
         clean,
@@ -459,5 +462,56 @@ pub(super) fn handle_pulse_glossary(no_llm: bool, json: bool) -> Result<()> {
         println!("{}", md);
     }
 
+    Ok(())
+}
+
+pub(super) fn handle_pulse_model(
+    json: bool,
+    title: Option<String>,
+    depth: u8,
+    min_files: usize,
+) -> Result<()> {
+    let cache = CacheManager::new(".");
+    if !cache.path().exists() {
+        anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
+    }
+    let opts = pulse::build::BuildOptions {
+        max_depth: depth,
+        min_files,
+        slugs_path: Some(cache.path().join("pulse").join("slugs.json")),
+        ..pulse::build::BuildOptions::new(title.unwrap_or_else(default_title))
+    };
+    let site = pulse::build::build_site(&cache, &opts)?;
+    if json {
+        println!("{}", site.to_json()?);
+        return Ok(());
+    }
+    println!("{} ({})", site.meta.title, site.meta.generator);
+    for tab in &site.tabs {
+        let pages = site.nav_order(tab.id);
+        println!("  {}: {} pages", tab.label, pages.len());
+        for id in pages {
+            if let Some(p) = site.pages.get(&id) {
+                println!("    {:<40} {}", p.route, p.title);
+            }
+        }
+    }
+    println!("  facts: {}", site.facts.len());
+    println!("  narrative slots: {}", site.narrative_slots().len());
+    let roles: Vec<String> = site
+        .report
+        .files_by_role
+        .iter()
+        .map(|(r, n)| format!("{r} {n}"))
+        .collect();
+    println!("  indexed files by role: {}", roles.join(", "));
+    if site.report.broken_links.is_empty() {
+        println!("  broken links: none");
+    } else {
+        println!("  broken links: {}", site.report.broken_links.len());
+        for (page, target) in &site.report.broken_links {
+            println!("    {page} -> {target:?}");
+        }
+    }
     Ok(())
 }

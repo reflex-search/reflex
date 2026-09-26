@@ -8,13 +8,16 @@
 //!
 //! All surfaces are thin layers over the same core capability: **snapshot and diff**.
 
+pub mod build;
 pub mod changelog;
 pub mod config;
 pub mod diff;
 pub mod explorer;
+pub mod extract;
 pub mod git_intel;
 pub mod glossary;
 pub mod map;
+pub mod model;
 pub mod narrate;
 pub mod onboard;
 pub mod pagefind;

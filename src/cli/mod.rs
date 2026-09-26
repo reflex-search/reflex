@@ -996,6 +996,28 @@ pub enum PulseSubcommand {
         json: bool,
     },
 
+    /// Build the Docs Model (tabs, pages, facts) without rendering it
+    ///
+    /// Prints a summary, or the full model with --json. The model is what the site
+    /// renderer consumes; its JSON is deterministic, so it diffs well.
+    Model {
+        /// Print the full model as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Site title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Maximum directory depth for module discovery (1=top-level only, 2=default)
+        #[arg(long, default_value = "2")]
+        depth: u8,
+
+        /// Minimum source files for a module to be included
+        #[arg(long, default_value = "1")]
+        min_files: usize,
+    },
+
     /// Generate cross-cutting symbol glossary
     Glossary {
         /// Skip LLM concept generation (structural evidence only)
@@ -1420,6 +1442,12 @@ impl Cli {
                     pulse::handle_pulse_onboard(no_llm, json)
                 }
                 PulseSubcommand::Timeline { json } => pulse::handle_pulse_timeline(json),
+                PulseSubcommand::Model {
+                    json,
+                    title,
+                    depth,
+                    min_files,
+                } => pulse::handle_pulse_model(json, title, depth, min_files),
                 PulseSubcommand::Glossary { no_llm, json } => {
                     pulse::handle_pulse_glossary(no_llm, json)
                 }
