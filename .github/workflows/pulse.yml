@@ -44,36 +44,18 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Index codebase
-        run: ./target/release/rfx index
+      - name: Put rfx on PATH
+        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
-      # The site is built with Astro/Starlight: Node 22.12+ plus the template's
-      # node_modules, installed once per template version into ~/.reflex/pulse/runtime.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
-        with:
-          node-version: 22
-
-      - name: Cache Pulse site runtime
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: ~/.reflex/pulse/runtime
-          key: pulse-runtime-${{ hashFiles('pulse-template/package-lock.json') }}
-
-      - name: Restore LLM cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: .reflex/pulse/write-cache
-          key: pulse-write-cache-${{ github.sha }}
-          restore-keys: pulse-write-cache-
-
+      # The same composite action other repositories use (with rfx-version: latest).
       - name: Generate Pulse site
-        run: ./target/release/rfx pulse generate --base-url "https://pulse.rfx-search.dev" --title "Reflex" --concurrency 4 --clean
-
-      - name: Save LLM cache
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: ./.github/actions/pulse
         with:
-          path: .reflex/pulse/write-cache
-          key: pulse-write-cache-${{ github.sha }}
+          rfx-version: none
+          output: pulse-site
+          base-url: https://pulse.rfx-search.dev
+          title: Reflex
+          args: --concurrency 4
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3

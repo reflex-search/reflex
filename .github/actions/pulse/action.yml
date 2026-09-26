@@ -1,0 +1,136 @@
+name: Reflex Pulse
+description: >-
+  Generate a static documentation site from the Reflex code index with
+  `rfx pulse generate`. The output directory holds plain HTML for any static host.
+author: reflex-search
+
+branding:
+  icon: book-open
+  color: blue
+
+inputs:
+  rfx-version:
+    description: >-
+      rfx release to install, for example `v2.1.0`, or `latest`. Use `none` when
+      `rfx` is already on PATH (a source build, for example).
+    default: latest
+  output:
+    description: Directory for the generated site.
+    default: pulse-site
+  base-url:
+    description: >-
+      Where the site is served: a full URL (`https://docs.example.com`), or a path
+      (`/my-repo/` for a GitHub Pages project site).
+    default: ''
+  title:
+    description: Site title. Empty = the repository name.
+    default: ''
+  args:
+    description: >-
+      More `rfx pulse generate` arguments, for example `--no-llm` or
+      `--concurrency 8`.
+    default: ''
+  index:
+    description: Run `rfx index` first. Set `false` when an earlier step built the index.
+    default: 'true'
+  node-version:
+    description: Node.js version for the site build (22.12 or later).
+    default: '22'
+  cache:
+    description: >-
+      Cache the site runtime and the LLM write cache between runs. The write
+      cache makes an unchanged section cost nothing on the next run.
+    default: 'true'
+
+outputs:
+  site-dir:
+    description: The directory that holds the generated site.
+    value: ${{ steps.generate.outputs.site-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install rfx (Linux, macOS)
+      if: inputs.rfx-version != 'none' && runner.os != 'Windows'
+      shell: bash
+      env:
+        RFX_VERSION: ${{ inputs.rfx-version }}
+      run: |
+        if [[ "$RFX_VERSION" == latest ]]; then
+          url="https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.sh"
+        else
+          url="https://github.com/reflex-search/reflex/releases/download/$RFX_VERSION/reflex-search-installer.sh"
+        fi
+        curl --proto '=https' --tlsv1.2 -LsSf "$url" | sh
+        echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+
+    - name: Install rfx (Windows)
+      if: inputs.rfx-version != 'none' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        RFX_VERSION: ${{ inputs.rfx-version }}
+      run: |
+        if ($env:RFX_VERSION -eq 'latest') {
+          $url = "https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.ps1"
+        } else {
+          $url = "https://github.com/reflex-search/reflex/releases/download/$env:RFX_VERSION/reflex-search-installer.ps1"
+        }
+        powershell -ExecutionPolicy Bypass -c "irm $url | iex"
+        $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
+        Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $cargoHome 'bin')
+
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Runtime key
+      id: key
+      shell: bash
+      run: |
+        rfx --version
+        echo "runtime=$(rfx pulse runtime key)" >> "$GITHUB_OUTPUT"
+
+    # The runtime id is a hash of the template's npm dependencies, so this entry is
+    # shared by every rfx release that uses the same packages.
+    - name: Cache the site runtime
+      if: inputs.cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      with:
+        path: ~/.reflex/pulse/runtime/${{ steps.key.outputs.runtime }}/node_modules
+        key: pulse-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.runtime }}
+
+    # Entries are content-addressed (prompt + model), so the newest cache is always a
+    # safe starting point; rfx prunes entries that the last 3 runs did not use.
+    - name: Cache LLM writing
+      if: inputs.cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      with:
+        path: .reflex/pulse/write-cache
+        key: pulse-write-cache-${{ github.ref_name }}-${{ github.sha }}-${{ github.run_attempt }}
+        restore-keys: |
+          pulse-write-cache-${{ github.ref_name }}-
+          pulse-write-cache-
+
+    - name: Index
+      if: inputs.index == 'true'
+      shell: bash
+      run: rfx index
+
+    - name: Generate
+      id: generate
+      shell: bash
+      env:
+        OUTPUT: ${{ inputs.output }}
+        BASE_URL: ${{ inputs.base-url }}
+        TITLE: ${{ inputs.title }}
+        EXTRA: ${{ inputs.args }}
+      run: |
+        cmd=(rfx pulse generate -o "$OUTPUT" --clean)
+        [[ -n "$BASE_URL" ]] && cmd+=(--base-url "$BASE_URL")
+        [[ -n "$TITLE" ]] && cmd+=(--title "$TITLE")
+        # EXTRA is split on whitespace on purpose: it is a list of flags.
+        # shellcheck disable=SC2206
+        [[ -n "$EXTRA" ]] && cmd+=($EXTRA)
+        echo "+ ${cmd[*]}"
+        "${cmd[@]}"
+        echo "site-dir=$OUTPUT" >> "$GITHUB_OUTPUT"
