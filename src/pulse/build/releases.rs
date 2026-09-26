@@ -144,7 +144,7 @@ pub fn commits(root: &Path, from: Option<&str>, to: &str, limit: usize) -> Vec<C
                 hash: hash.to_string(),
                 author: author.to_string(),
                 timestamp,
-                date: crate::pulse::git_intel::epoch_to_date_string(timestamp),
+                date: crate::pulse::dates::epoch_to_date_string(timestamp),
                 subject: subject.to_string(),
                 files_changed: Vec::new(),
             })

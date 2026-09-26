@@ -1,7 +1,7 @@
 //! Architecture map generation
 //!
 //! Produces dependency diagrams in mermaid or d2 format.
-//! Uses detect_modules() for consistent sub-module resolution across all Pulse surfaces.
+//! Modules come from [`ModuleGraph`], the same source modules the site's Internals tab shows.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,34 @@ use std::collections::{HashMap, HashSet};
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 
-use super::wiki;
+use super::build::modules::ModuleGraph;
+use super::extract::Corpus;
+
+/// One map node: a module of [`ModuleGraph`].
+#[derive(Debug, Clone)]
+pub struct ModuleDefinition {
+    /// Module path (e.g. "src", "src/parsers").
+    pub path: String,
+    /// 1 = top-level, 2 = a submodule.
+    pub tier: u8,
+    pub file_count: usize,
+}
+
+/// The source modules of the index (depth 2), without the root pseudo-module.
+fn detect_modules(cache: &CacheManager) -> Result<Vec<ModuleDefinition>> {
+    let corpus = Corpus::load(cache)?;
+    let graph = ModuleGraph::build(&corpus, 2, 1);
+    Ok(graph
+        .modules
+        .iter()
+        .filter(|m| !m.is_root())
+        .map(|m| ModuleDefinition {
+            path: m.id.as_str().to_string(),
+            tier: m.tier,
+            file_count: m.files.len(),
+        })
+        .collect())
+}
 
 /// Zoom level for the architecture map
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,8 +78,7 @@ fn generate_repo_map(cache: &CacheManager, format: MapFormat) -> Result<String> 
     let db_path = cache.path().join("meta.db");
     let conn = crate::cache::open_meta_db(&db_path)?;
 
-    // Use detect_modules() for consistent sub-module resolution
-    let modules = wiki::detect_modules(cache, &wiki::ModuleDiscoveryConfig::default())?;
+    let modules = detect_modules(cache)?;
 
     // Build module info for node labels
     let module_info: Vec<(String, usize)> = modules
@@ -111,7 +137,7 @@ fn generate_repo_map(cache: &CacheManager, format: MapFormat) -> Result<String> 
 }
 
 /// Find the most-specific module that owns a given file path
-fn find_owning_module(file_path: &str, modules: &[wiki::ModuleDefinition]) -> String {
+fn find_owning_module(file_path: &str, modules: &[ModuleDefinition]) -> String {
     let mut best_match = String::new();
     let mut best_len = 0;
 
@@ -225,16 +251,6 @@ fn render_mermaid_repo(
         }
     }
 
-    // Clickable nodes → wiki pages (only connected modules)
-    for (module, _) in modules {
-        if !connected.contains(module.as_str()) {
-            continue;
-        }
-        let id = sanitize_id(module);
-        let slug = module.replace('/', "-");
-        out.push_str(&format!("  click {} \"/wiki/{}/\"\n", id, slug));
-    }
-
     Ok(out)
 }
 
@@ -242,7 +258,7 @@ fn render_mermaid_repo(
 pub fn generate_layered_map(cache: &CacheManager, format: MapFormat) -> Result<String> {
     let db_path = cache.path().join("meta.db");
     let conn = crate::cache::open_meta_db(&db_path)?;
-    let modules = wiki::detect_modules(cache, &wiki::ModuleDiscoveryConfig::default())?;
+    let modules = detect_modules(cache)?;
 
     let module_info: Vec<(String, usize, u8)> = modules
         .iter()
@@ -320,7 +336,7 @@ fn render_mermaid_layered(
     let tier2: Vec<&(String, usize, u8)> = modules.iter().filter(|m| m.2 == 2).collect();
 
     // Build proxy map: Tier 1 modules that become subgraphs get an inner proxy node.
-    // Mermaid v11 cannot target subgraph IDs with edges, classDef, or click handlers,
+    // Mermaid v11 cannot target subgraph IDs with edges or classDef,
     // so we create a real node inside the subgraph to receive those interactions.
     let mut proxy_map: HashMap<String, String> = HashMap::new();
 
@@ -340,7 +356,7 @@ fn render_mermaid_layered(
             // Standalone Tier 1 node (no subgraph needed)
             out.push_str(&format!("  {}[\"{}/ ({} files)\"]\n", t1_id, t1.0, t1.1));
         } else {
-            // Subgraph with proxy node for edges/styling/clicks
+            // Subgraph with proxy node for edges and styling
             let proxy_id = format!("{}_self", t1_id);
             proxy_map.insert(t1.0.clone(), proxy_id.clone());
 
@@ -418,19 +434,6 @@ fn render_mermaid_layered(
             .cloned()
             .unwrap_or_else(|| sanitize_id(module));
         out.push_str(&format!("  class {} hotspot\n", id));
-    }
-
-    // Clickable nodes — apply click to proxy nodes, not subgraph containers
-    for (module, _, _) in modules {
-        if !connected.contains(module.as_str()) {
-            continue;
-        }
-        let id = proxy_map
-            .get(module)
-            .cloned()
-            .unwrap_or_else(|| sanitize_id(module));
-        let slug = module.replace('/', "-");
-        out.push_str(&format!("  click {} \"/wiki/{}/\"\n", id, slug));
     }
 
     Ok(out)
@@ -582,16 +585,6 @@ mod tests {
             !result.contains("class m_docs hotspot"),
             "orphan hotspot should not be styled"
         );
-
-        // Click handlers for orphans should not appear
-        assert!(
-            !result.contains("click m_docs"),
-            "orphan should not have click handler"
-        );
-        assert!(
-            !result.contains("click m_scripts"),
-            "orphan should not have click handler"
-        );
     }
 
     #[test]
@@ -637,12 +630,6 @@ mod tests {
             "hotspot class should target proxy node"
         );
 
-        // click should target proxy node
-        assert!(
-            result.contains("click m_src_self"),
-            "click handler should target proxy node"
-        );
-
         // tests is standalone Tier 1 (no children), should be a regular node
         assert!(
             result.contains("m_tests["),
@@ -657,19 +644,15 @@ mod tests {
     #[test]
     fn test_find_owning_module() {
         let modules = vec![
-            wiki::ModuleDefinition {
+            ModuleDefinition {
                 path: "src".to_string(),
                 tier: 1,
                 file_count: 80,
-                total_lines: 50000,
-                languages: vec!["Rust".to_string()],
             },
-            wiki::ModuleDefinition {
+            ModuleDefinition {
                 path: "src/parsers".to_string(),
                 tier: 2,
                 file_count: 15,
-                total_lines: 8000,
-                languages: vec!["Rust".to_string()],
             },
         ];
 

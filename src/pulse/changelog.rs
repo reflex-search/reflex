@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 
-use super::git_intel;
+use super::dates;
 
 /// A complete changelog
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +95,7 @@ pub fn extract_changelog_commits(
                 hash: parts[0].to_string(),
                 author: parts[1].to_string(),
                 timestamp,
-                date: git_intel::epoch_to_date_string(timestamp),
+                date: dates::epoch_to_date_string(timestamp),
                 subject: parts[3].to_string(),
                 files_changed: Vec::new(),
             });

@@ -733,16 +733,17 @@ pub enum Command {
         command: Option<SnapshotSubcommand>,
     },
 
-    /// Generate codebase intelligence surfaces (changelog, wiki, map, site)
+    /// Generate a documentation site from the index (plus changelog, map, glossary)
     ///
-    /// Pulse turns structural facts from the index into browsable documentation.
-    /// The `generate` command creates a Zola project and builds it into a static HTML site.
+    /// Pulse turns the index into a docs site: a Docs tab for users (guides, API and
+    /// CLI reference, changelog) and an Internals tab for contributors. `generate`
+    /// builds it with Astro/Starlight into plain static HTML.
     ///
     /// Examples:
+    ///   rfx pulse generate --no-llm          # Full static site in ./pulse-site
+    ///   rfx pulse serve                      # Preview it
     ///   rfx pulse changelog --no-llm         # Structural-only changelog
-    ///   rfx pulse wiki --no-llm             # Generate wiki pages
     ///   rfx pulse map                        # Architecture map (mermaid)
-    ///   rfx pulse generate --no-llm          # Full static site (Zola)
     Pulse {
         #[command(subcommand)]
         command: PulseSubcommand,
@@ -907,21 +908,6 @@ pub enum PulseSubcommand {
         pretty: bool,
     },
 
-    /// Generate living wiki pages
-    Wiki {
-        /// Skip LLM narration
-        #[arg(long)]
-        no_llm: bool,
-
-        /// Output directory for markdown files
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Export an architecture map
     Map {
         /// Output format (mermaid, d2)
@@ -937,11 +923,12 @@ pub enum PulseSubcommand {
         zoom: Option<String>,
     },
 
-    /// Generate a complete static site (Zola project + HTML build)
+    /// Generate the documentation site (static HTML)
     ///
-    /// Creates a Zola project with markdown content, templates, and CSS,
-    /// then downloads Zola and builds it into a static HTML site.
-    /// The --base-url maps to Zola's base_url config.
+    /// Builds the Docs Model from the index, optionally fills narrative sections
+    /// with a grounded LLM pass, renders every page to HTML and lays the site out
+    /// with Astro/Starlight. Needs Node 22.12+; the site runtime is downloaded once
+    /// (see `rfx pulse runtime status`). --base-url sets the host and path prefix.
     Generate {
         /// Output directory for the static site (plain HTML, ready for any CDN)
         #[arg(short, long, default_value = "pulse-site")]
@@ -1011,24 +998,6 @@ pub enum PulseSubcommand {
     Runtime {
         #[command(subcommand)]
         command: PulseRuntimeCommand,
-    },
-
-    /// Generate a developer onboarding guide
-    Onboard {
-        /// Skip LLM narration
-        #[arg(long)]
-        no_llm: bool,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Show development timeline from git history
-    Timeline {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
     },
 
     /// Build the Docs Model (tabs, pages, facts) without rendering it
@@ -1441,11 +1410,6 @@ impl Cli {
                     json,
                     pretty,
                 } => pulse::handle_pulse_changelog(count, no_llm, json, pretty),
-                PulseSubcommand::Wiki {
-                    no_llm,
-                    output,
-                    json,
-                } => pulse::handle_pulse_wiki(no_llm, output, json),
                 PulseSubcommand::Map {
                     format,
                     output,
@@ -1483,10 +1447,6 @@ impl Cli {
                     no_open,
                 } => crate::pulse::serve::serve(&output, &host, port, !no_open),
                 PulseSubcommand::Runtime { command } => pulse::handle_pulse_runtime(command),
-                PulseSubcommand::Onboard { no_llm, json } => {
-                    pulse::handle_pulse_onboard(no_llm, json)
-                }
-                PulseSubcommand::Timeline { json } => pulse::handle_pulse_timeline(json),
                 PulseSubcommand::Model {
                     json,
                     title,
