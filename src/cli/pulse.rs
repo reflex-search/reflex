@@ -419,3 +419,17 @@ pub(super) fn handle_pulse_model(
     }
     Ok(())
 }
+
+pub fn handle_pulse_runtime(command: super::PulseRuntimeCommand) -> Result<()> {
+    use super::PulseRuntimeCommand as C;
+    use crate::pulse::runtime;
+    match command {
+        C::Key => println!("{}", runtime::key()),
+        C::Status => print!("{}", runtime::status()),
+        C::Install => {
+            let rt = runtime::ensure(false)?;
+            println!("{}", rt.root.display());
+        }
+    }
+    Ok(())
+}

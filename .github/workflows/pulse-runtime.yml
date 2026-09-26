@@ -1,0 +1,177 @@
+# Build and publish the prebuilt Pulse site runtime.
+#
+# `rfx pulse generate` needs the Astro/Starlight packages of pulse-template/.
+# Instead of `npm ci` on every machine, it downloads one pruned node_modules
+# tarball per platform:
+#
+#   pulse-runtime-<id>-<platform>.tar.zst   in release   pulse-runtime-<id>
+#
+# <id> is the runtime key: sha256 of package.json + package-lock.json, 12 hex
+# (scripts/runtime-key.mjs, the same value as build.rs DEPS_HASH). The binary
+# trusts a tarball only through the SHA-256 in pulse-template/runtime.lock.json,
+# which this workflow updates through a pull request.
+#
+# The release is a prerelease that is never "latest". Its tag has no x.y.z, so
+# release.yml and publish-packages.yml ignore it.
+name: Pulse runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pulse-template/package.json'
+      - 'pulse-template/package-lock.json'
+      - 'pulse-template/scripts/build-runtime.sh'
+      - 'pulse-template/scripts/prune.mjs'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the release and open the runtime.lock.json PR (false = build and smoke-test only)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pulse-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  key:
+    runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.key.outputs.id }}
+      exists: ${{ steps.exists.outputs.exists }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+      - id: key
+        run: echo "id=$(node pulse-template/scripts/runtime-key.mjs)" >> "$GITHUB_OUTPUT"
+      - id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "pulse-runtime-${{ steps.key.outputs.id }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release pulse-runtime-${{ steps.key.outputs.id }} already exists; nothing to build."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: key
+    if: needs.key.outputs.exists != 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: linux-x64, os: ubuntu-24.04 }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm }
+          - { platform: darwin-x64, os: macos-13 }
+          - { platform: darwin-arm64, os: macos-14 }
+          - { platform: win32-x64, os: windows-2022 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Install zstd (Windows)
+        if: runner.os == 'Windows'
+        run: choco install zstandard --no-progress -y
+
+      - name: Build the runtime and smoke-test it
+        run: |
+          got="$(node -p 'process.platform + "-" + process.arch')"
+          [[ "$got" == "${{ matrix.platform }}" ]] || { echo "runner is $got, expected ${{ matrix.platform }}" >&2; exit 1; }
+          pulse-template/scripts/build-runtime.sh "$RUNNER_TEMP/rt" --verify
+
+      - name: Name the tarball
+        id: asset
+        run: |
+          name="pulse-runtime-${{ needs.key.outputs.id }}-${{ matrix.platform }}.tar.zst"
+          mv "$RUNNER_TEMP/rt/pulse-runtime-${{ matrix.platform }}.tar.zst" "$RUNNER_TEMP/rt/$name"
+          sum="$( (sha256sum "$RUNNER_TEMP/rt/$name" 2>/dev/null || shasum -a 256 "$RUNNER_TEMP/rt/$name") | cut -d' ' -f1)"
+          size="$(node -p "require('fs').statSync(process.argv[1]).size" "$RUNNER_TEMP/rt/$name")"
+          printf '{"platform":"%s","name":"%s","sha256":"%s","size":%s}\n' \
+            "${{ matrix.platform }}" "$name" "$sum" "$size" > "$RUNNER_TEMP/rt/${{ matrix.platform }}.json"
+          cat "$RUNNER_TEMP/rt/${{ matrix.platform }}.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: runtime-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/rt/pulse-runtime-*.tar.zst
+            ${{ runner.temp }}/rt/${{ matrix.platform }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [key, build]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: runtime-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write runtime.lock.json
+        run: |
+          node - "${{ needs.key.outputs.id }}" <<'EOF'
+          const fs = require("fs");
+          const [id] = process.argv.slice(2);
+          const lock = {
+            schema: 1,
+            deps_hash: id,
+            release_base: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download`,
+            assets: {},
+          };
+          for (const f of fs.readdirSync("dist").filter((f) => f.endsWith(".json")).sort()) {
+            const a = JSON.parse(fs.readFileSync(`dist/${f}`, "utf8"));
+            lock.assets[a.platform] = { name: a.name, sha256: a.sha256, size: a.size };
+          }
+          fs.writeFileSync("pulse-template/runtime.lock.json", JSON.stringify(lock, null, 2) + "\n");
+          EOF
+          cat pulse-template/runtime.lock.json
+
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="pulse-runtime-${{ needs.key.outputs.id }}"
+          gh release create "$tag" dist/*.tar.zst \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Pulse site runtime ${{ needs.key.outputs.id }}" \
+            --notes "Prebuilt node_modules for \`rfx pulse generate\` (pulse-template at $GITHUB_SHA). Not an rfx release." \
+            --prerelease --latest=false
+
+      - name: Open the runtime.lock.json pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="pulse-runtime/${{ needs.key.outputs.id }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add pulse-template/runtime.lock.json
+          git commit -m "chore(pulse): runtime.lock.json for runtime ${{ needs.key.outputs.id }}"
+          git push -u origin "$branch"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "chore(pulse): prebuilt runtime ${{ needs.key.outputs.id }}" \
+            --body "Points \`rfx pulse generate\` at the tarballs in release \`pulse-runtime-${{ needs.key.outputs.id }}\`. Generated by the Pulse runtime workflow."

@@ -7,8 +7,8 @@
 # The tarball is platform-specific: rolldown, lightningcss, satteri, esbuild
 # and pagefind all ship native binaries selected by npm at install time.
 #
-# --verify extracts the tarball into OUT_DIR/verify, stages a fixture site at
-# OUT_DIR/verify/sites/spike/ (so Node's upward resolution finds
+# --verify extracts the tarball into OUT_DIR/verify, stages fixtures/smoke at
+# OUT_DIR/verify/sites/smoke/ (so Node's upward resolution finds
 # OUT_DIR/verify/node_modules) and builds it with
 #   node <runtime>/node_modules/astro/bin/astro.mjs build --root <site>
 # from an unrelated working directory.
@@ -97,17 +97,18 @@ if [[ $VERIFY == 1 ]]; then
 	echo "== verify: extract + build fixture from the runtime only"
 	RT="$OUT/verify"
 	rm -rf "$RT"
-	mkdir -p "$RT/sites/spike"
+	mkdir -p "$RT/sites"
 	T0=$(node -p 'Date.now()/1000')
 	zstd -d -q -c "$TARBALL" | tar -C "$RT" -xf -
 	T1=$(node -p 'Date.now()/1000')
 	echo "extract_seconds=$(awk "BEGIN{printf \"%.2f\", $T1-$T0}")"
-	SITE="$RT/sites/spike"
+	SITE="$RT/sites/smoke"
+	mkdir -p "$SITE"
 	cp -r "$TEMPLATE/src" "$TEMPLATE/public" "$TEMPLATE/astro.config.mjs" "$TEMPLATE/package.json" "$SITE/"
-	node "$TEMPLATE/scripts/gen-fixture.mjs" --out "$SITE" --pages 100 --base /reflex/ --site https://example.github.io
+	# fixtures/smoke is a real `rfx pulse generate --no-build` bundle (base /reflex/).
+	cp -r "$TEMPLATE/fixtures/smoke/." "$SITE/"
 	# Run from an unrelated cwd, with no node_modules anywhere above it, to prove resolution
 	# goes through <runtime>/node_modules only.
 	(cd / && ASTRO_TELEMETRY_DISABLED=1 node "$RT/node_modules/astro/bin/astro.mjs" build --root "$SITE")
-	node "$TEMPLATE/scripts/check-dist.mjs" "$SITE" >"$OUT/verify-check.json" && echo "verify: all dist checks passed" \
-		|| { echo "verify: dist checks FAILED (see $OUT/verify-check.json)"; exit 1; }
+	node "$TEMPLATE/scripts/smoke-check.mjs" "$SITE" || { echo "verify: smoke checks FAILED"; exit 1; }
 fi

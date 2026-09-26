@@ -135,8 +135,181 @@ pub fn ensure(offline: bool) -> Result<Runtime> {
             root.display()
         );
     }
-    install(&root, &node)?;
+    match install_prebuilt(&root) {
+        Ok(true) => {}
+        Ok(false) => install(&root, &node)?,
+        Err(e) => {
+            eprintln!("  prebuilt runtime unavailable ({e:#}); installing with npm instead");
+            install(&root, &node)?;
+        }
+    }
     Ok(Runtime { root, node })
+}
+
+/// The runtime id: the template's dependency hash. It names the runtime directory,
+/// the prebuilt tarballs and their release tag.
+pub fn key() -> &'static str {
+    template::DEPS_HASH
+}
+
+/// A human-readable report for `rfx pulse runtime status`.
+pub fn status() -> String {
+    let mut out = String::new();
+    match find_node() {
+        Ok(n) => out.push_str(&format!(
+            "node:      {} ({}.{}.{})\n",
+            n.path.display(),
+            n.version.0,
+            n.version.1,
+            n.version.2
+        )),
+        Err(e) => out.push_str(&format!("node:      not usable: {e:#}\n")),
+    }
+    let root = pulse_home().join("runtime").join(key());
+    let state = if root.join(COMPLETE).exists() {
+        "installed"
+    } else {
+        "not installed"
+    };
+    out.push_str(&format!("runtime:   {} ({state})\n", root.display()));
+    let lock = RuntimeLock::embedded();
+    let platform = platform_id().unwrap_or("unsupported");
+    let prebuilt = match lock.asset_for(platform) {
+        Some(a) => format!("{} ({:.1} MB)", lock.url(a), a.size as f64 / 1_048_576.0),
+        None => "none published; falls back to npm ci".to_string(),
+    };
+    out.push_str(&format!("platform:  {platform}\nprebuilt:  {prebuilt}\n"));
+    out
+}
+
+/// The platform id Node reports (`process.platform-process.arch`), which names the
+/// prebuilt runtime tarballs.
+pub fn platform_id() -> Option<&'static str> {
+    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("macos", "aarch64") => "darwin-arm64",
+        ("windows", "x86_64") => "win32-x64",
+        ("windows", "aarch64") => "win32-arm64",
+        _ => return None,
+    })
+}
+
+/// One published runtime tarball.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Asset {
+    pub name: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
+/// `pulse-template/runtime.lock.json`, compiled into the binary.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RuntimeLock {
+    #[serde(default)]
+    pub deps_hash: String,
+    #[serde(default)]
+    pub release_base: String,
+    #[serde(default)]
+    pub assets: std::collections::BTreeMap<String, Asset>,
+}
+
+impl RuntimeLock {
+    pub fn embedded() -> Self {
+        serde_json::from_str(template::RUNTIME_LOCK).unwrap_or_default()
+    }
+
+    /// The asset for this platform, if the manifest matches the embedded template.
+    /// A stale manifest (template dependencies changed since the tarballs were built)
+    /// is ignored, so a new template never runs with old packages.
+    pub fn asset_for(&self, platform: &str) -> Option<&Asset> {
+        (self.deps_hash == template::DEPS_HASH)
+            .then(|| self.assets.get(platform))
+            .flatten()
+    }
+
+    /// Download URL; `REFLEX_PULSE_MIRROR` replaces the release base (air-gapped CI).
+    pub fn url(&self, asset: &Asset) -> String {
+        let base =
+            std::env::var("REFLEX_PULSE_MIRROR").unwrap_or_else(|_| self.release_base.clone());
+        format!(
+            "{}/pulse-runtime-{}/{}",
+            base.trim_end_matches('/'),
+            self.deps_hash,
+            asset.name
+        )
+    }
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Download, verify and unpack the prebuilt `node_modules` tarball. `Ok(false)` when
+/// no tarball is published for this platform and template.
+fn install_prebuilt(root: &Path) -> Result<bool> {
+    let lock = RuntimeLock::embedded();
+    let Some(asset) = platform_id().and_then(|p| lock.asset_for(p)) else {
+        return Ok(false);
+    };
+    std::fs::create_dir_all(root)?;
+    let guard =
+        crate::atomic_write::IndexLock::acquire_with_timeout(root, Duration::from_secs(900))
+            .context("waiting for another rfx process that is installing the site runtime")?;
+    if root.join(COMPLETE).exists() {
+        drop(guard);
+        return Ok(true);
+    }
+    let url = lock.url(asset);
+    eprintln!("Downloading the Pulse site runtime ({})…", asset.name);
+    let start = Instant::now();
+    let bytes = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let resp = reqwest::get(&url).await?.error_for_status()?;
+            resp.bytes().await
+        })
+        .with_context(|| format!("downloading {url}"))?;
+    let got = sha256_hex(&bytes);
+    if !got.eq_ignore_ascii_case(&asset.sha256) {
+        bail!(
+            "checksum mismatch for {}: expected {}, got {got}",
+            asset.name,
+            asset.sha256
+        );
+    }
+    // Unpack beside the final location, then rename: a crash never leaves half a runtime.
+    let tmp = root.join(format!("node_modules.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let decoder = zstd::stream::read::Decoder::new(&bytes[..])?;
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        // `unpack_in` refuses paths that escape `tmp` (`..`, absolute).
+        entry.unpack_in(&tmp)?;
+    }
+    let nm = tmp.join("node_modules");
+    if !nm.join("astro").exists() {
+        bail!("{} does not contain node_modules/astro", asset.name);
+    }
+    let _ = std::fs::remove_dir_all(root.join("node_modules"));
+    std::fs::rename(&nm, root.join("node_modules"))?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::write(root.join(COMPLETE), template::DEPS_HASH)?;
+    eprintln!(
+        "  runtime ready in {:.0}s ({:.1} MB)",
+        start.elapsed().as_secs_f64(),
+        bytes.len() as f64 / 1_048_576.0
+    );
+    drop(guard);
+    Ok(true)
 }
 
 fn npm_for(node: &Node) -> PathBuf {
@@ -329,6 +502,37 @@ mod tests {
         assert!(
             dir.path().join("package.json").exists(),
             "declares \"type\": \"module\""
+        );
+    }
+
+    #[test]
+    fn runtime_lock_matching() {
+        let json = format!(
+            r#"{{"deps_hash": "{}", "release_base": "https://example.test/dl",
+                "assets": {{"linux-x64": {{"name": "a.tar.zst", "sha256": "ab", "size": 1}}}}}}"#,
+            template::DEPS_HASH
+        );
+        let lock: RuntimeLock = serde_json::from_str(&json).unwrap();
+        assert!(lock.asset_for("linux-x64").is_some());
+        assert!(lock.asset_for("darwin-arm64").is_none());
+        assert_eq!(
+            lock.url(lock.asset_for("linux-x64").unwrap()),
+            format!(
+                "https://example.test/dl/pulse-runtime-{}/a.tar.zst",
+                template::DEPS_HASH
+            )
+        );
+        let stale: RuntimeLock =
+            serde_json::from_str(r#"{"deps_hash": "000000000000", "assets": {"linux-x64": {"name": "a", "sha256": "b"}}}"#).unwrap();
+        assert!(
+            stale.asset_for("linux-x64").is_none(),
+            "a stale manifest is ignored"
+        );
+        // The committed manifest parses.
+        let _ = RuntimeLock::embedded();
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 

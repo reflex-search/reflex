@@ -877,6 +877,16 @@ impl PulseLlmArgs {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum PulseRuntimeCommand {
+    /// Print the runtime id (a cache key for CI)
+    Key,
+    /// Show Node, the runtime directory and whether a prebuilt runtime exists
+    Status,
+    /// Install the runtime now (prebuilt download, else `npm ci`)
+    Install,
+}
+
+#[derive(Subcommand, Debug)]
 pub enum PulseSubcommand {
     /// Generate a product-level changelog from recent commits
     Changelog {
@@ -995,6 +1005,12 @@ pub enum PulseSubcommand {
         /// Do not open a browser
         #[arg(long)]
         no_open: bool,
+    },
+
+    /// Inspect or install the site runtime (Astro/Starlight packages)
+    Runtime {
+        #[command(subcommand)]
+        command: PulseRuntimeCommand,
     },
 
     /// Generate a developer onboarding guide
@@ -1466,6 +1482,7 @@ impl Cli {
                     host,
                     no_open,
                 } => crate::pulse::serve::serve(&output, &host, port, !no_open),
+                PulseSubcommand::Runtime { command } => pulse::handle_pulse_runtime(command),
                 PulseSubcommand::Onboard { no_llm, json } => {
                     pulse::handle_pulse_onboard(no_llm, json)
                 }

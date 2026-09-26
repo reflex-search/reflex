@@ -90,11 +90,13 @@ fn embed_pulse_template() {
         "runtime",
         ".spike",
         "results",
+        "fixtures",
     ];
     const SKIP_FILES: &[&str] = &[
         "pulse.config.json",
         ".pulse-files.json",
         "pulse-highlight.css",
+        "runtime.lock.json",
     ];
     let root = Path::new("pulse-template");
     let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
@@ -135,15 +137,16 @@ fn embed_pulse_template() {
     files.sort();
 
     let mut all = blake3::Hasher::new();
-    let mut deps = blake3::Hasher::new();
+    // SHA-256, not blake3: `scripts/runtime-key.mjs` recomputes it in CI with Node alone.
+    let mut deps = <sha2::Sha256 as sha2::Digest>::new();
     let mut table = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
     for (rel, path) in &files {
         let bytes = fs::read(path).unwrap_or_default();
         all.update(rel.as_bytes());
         all.update(&bytes);
         if rel == "package.json" || rel == "package-lock.json" {
-            deps.update(rel.as_bytes());
-            deps.update(&bytes);
+            sha2::Digest::update(&mut deps, rel.as_bytes());
+            sha2::Digest::update(&mut deps, &bytes);
         }
         let abs = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
         table.push_str(&format!(
@@ -156,7 +159,18 @@ fn embed_pulse_template() {
     table.push_str(&format!(
         "pub const TEMPLATE_HASH: &str = {:?};\npub const DEPS_HASH: &str = {:?};\n",
         &all.finalize().to_hex()[..16],
-        &deps.finalize().to_hex()[..12]
+        &sha2::Digest::finalize(deps)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()[..12]
+    ));
+    // The prebuilt-runtime manifest (published tarballs and their SHA-256s).
+    let lock = root.join("runtime.lock.json");
+    println!("cargo:rerun-if-changed={}", lock.display());
+    let lock_json = fs::read_to_string(&lock).unwrap_or_else(|_| "{}".to_string());
+    table.push_str(&format!(
+        "pub const RUNTIME_LOCK: &str = {:?};\n",
+        lock_json
     ));
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("pulse_template.rs");
     fs::write(out, table).expect("write pulse_template.rs");
