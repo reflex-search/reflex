@@ -9,7 +9,7 @@ import { locate } from '../routeData';
 
 const base = (pulse.base ?? '/').replace(/\/$/, '');
 const current = locate(Astro.url.pathname)?.tab;
-const tabs = pulse.tabs.map((t) => ({ ...t, href: `${base}/${t.home ?? t.prefix.replace(/^\/|\/$/g, '')}/`, active: t.id === current }));
+const tabs = (pulse.tabs as any[]).map((t) => ({ ...t, href: `${base}${t.href}`, active: t.id === current }));
 ---
 
 <div class="header">

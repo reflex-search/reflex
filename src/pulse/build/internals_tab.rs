@@ -324,6 +324,7 @@ fn neighbourhood_diagram(
     for &(d, n) in deps.iter().take(MAX_NEIGHBOURS) {
         src.push_str(&format!("  m{mi} -->|{n}| m{d}\n"));
     }
+    src.push_str("  classDef focus fill:#6366f1,stroke:#4338ca,color:#ffffff\n");
     src.push_str(&format!("  class m{mi} focus\n"));
     let hidden =
         deps.len().saturating_sub(MAX_NEIGHBOURS) + users.len().saturating_sub(MAX_NEIGHBOURS);

@@ -15,6 +15,7 @@
 pub mod content;
 pub mod facts;
 pub mod ids;
+pub mod text;
 pub mod xref;
 
 pub use content::{Block, Card, Inline, MarkdownOrigin, MarkdownText, ParamRow, Stat, SymbolBlock};

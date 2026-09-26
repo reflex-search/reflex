@@ -25,6 +25,94 @@ use std::sync::LazyLock;
 /// URL scheme for symbol links inside markdown; rewritten to routes once all pages exist.
 pub const SYMBOL_SCHEME: &str = "pulse-symbol:";
 
+/// Longest signature kept on one line.
+const SIGNATURE_WIDTH: usize = 90;
+
+/// Tidy a whitespace-collapsed signature, and wrap a long `fn` one like rustfmt:
+/// one parameter per line, `where` on its own line.
+pub fn pretty_signature(sig: &str) -> String {
+    let mut s = sig
+        .replace("( ", "(")
+        .replace(" )", ")")
+        .replace(",)", ")")
+        .replace("< ", "<")
+        .replace(" >", ">");
+    while s.contains(", )") {
+        s = s.replace(", )", ")");
+    }
+    if s.chars().count() <= SIGNATURE_WIDTH {
+        return s;
+    }
+    let Some(fn_at) = s.find("fn ") else {
+        return s;
+    };
+    // The parameter list opens at the first `(` outside the generics after the name.
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut open = None;
+    for (i, &b) in bytes.iter().enumerate().skip(fn_at) {
+        match b {
+            b'<' => depth += 1,
+            b'>' if i > 0 && bytes[i - 1] != b'-' => depth -= 1,
+            b'(' if depth == 0 => {
+                open = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let Some(open) = open else {
+        return s;
+    };
+    let mut depth = 0i32;
+    let mut close = None;
+    let mut parts = Vec::new();
+    let mut last = open + 1;
+    for (i, &b) in bytes.iter().enumerate().skip(open + 1) {
+        match b {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b'>' if bytes[i - 1] == b'-' => {}
+            b')' if depth == 0 => {
+                close = Some(i);
+                break;
+            }
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(s[last..i].trim().to_string());
+                last = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return s;
+    };
+    let tail = s[last..close].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    let mut out = s[..=open].to_string();
+    for p in &parts {
+        out.push_str(&format!("\n    {p},"));
+    }
+    if !parts.is_empty() {
+        out.push('\n');
+    }
+    let rest = &s[close..];
+    match rest.split_once(" where ") {
+        Some((before, clauses)) => {
+            out.push_str(before);
+            out.push_str("\nwhere\n");
+            for c in clauses.split(", ").filter(|c| !c.is_empty()) {
+                out.push_str(&format!("    {},\n", c.trim_end_matches(',')));
+            }
+            out.truncate(out.trim_end().len());
+        }
+        None => out.push_str(rest),
+    }
+    out
+}
+
 /// Which parts of the library surface to document.
 #[derive(Debug, Clone, Default)]
 pub struct ReferenceOptions {
@@ -418,7 +506,7 @@ fn symbol_block(
             kind: item.kind.label().to_string(),
             name: item.name.clone(),
             lang: "rust".into(),
-            signature: item.signature.clone(),
+            signature: pretty_signature(&item.signature),
             doc: item
                 .doc
                 .as_ref()
@@ -542,14 +630,37 @@ fn module_blocks(k: &RustCrate, mi: usize, included: &[usize], index: &SymbolInd
 
 fn type_blocks(k: &RustCrate, t: &RustItem, index: &SymbolIndex) -> Vec<Block> {
     let module = t.path.rsplit_once("::").map(|(m, _)| m).unwrap_or(&k.name);
-    let mut blocks = vec![symbol_block(
-        &t.item,
-        &t.path,
-        &t.file,
-        index,
-        module,
-        Some(&t.path),
-    )];
+    // The page is the type: its definition renders flat, not as a card under its own title.
+    let mut blocks = vec![Block::Code {
+        lang: "rust".into(),
+        code: pretty_signature(&t.item.signature),
+        title: None,
+    }];
+    if let Some(d) = &t.item.deprecated {
+        let mut msg = String::from("Deprecated");
+        if let Some(v) = &d.since {
+            msg.push_str(&format!(" since {v}"));
+        }
+        if let Some(n) = &d.note {
+            msg.push_str(&format!(": {n}"));
+        }
+        blocks.push(Block::Callout {
+            kind: crate::pulse::model::content::CalloutKind::Caution,
+            title: Some("Deprecated".into()),
+            body: vec![Block::text(msg)],
+        });
+    }
+    if let Some(doc) = &t.item.doc {
+        blocks.push(Block::Markdown {
+            markdown: render_doc(doc, index, module, Some(&t.path), &t.file),
+        });
+    }
+    let def = SourceLoc::lines(&t.file, t.item.start_line, t.item.end_line);
+    blocks.push(Block::para(vec![
+        Inline::text("Defined in "),
+        Inline::code_link(Target::Source { loc: def.clone() }, def.label()),
+        Inline::text("."),
+    ]));
     if let Some(def) = &t.defined_at {
         blocks.push(Block::note(format!("Re-exported here; defined as {def}.")));
     }
@@ -676,5 +787,34 @@ pub fn resolve_markdown_links(site: &mut crate::pulse::model::Site) {
     }
     for page in site.pages.values_mut() {
         walk(&mut page.blocks, &fix);
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::pretty_signature;
+
+    #[test]
+    fn short_signatures_are_tidied() {
+        assert_eq!(pretty_signature("pub fn f( a: u8, )"), "pub fn f(a: u8)");
+        assert_eq!(pretty_signature("pub struct S< T >"), "pub struct S<T>");
+    }
+
+    #[test]
+    fn long_signatures_wrap_like_rustfmt() {
+        let s = "pub fn search_with_metadata( &self, pattern: &str, filter: QueryFilter, ) -> Result<QueryResponse, Error> where F: Fn(u8) -> u8";
+        assert_eq!(
+            pretty_signature(s),
+            "pub fn search_with_metadata(\n    &self,\n    pattern: &str,\n    filter: QueryFilter,\n) -> Result<QueryResponse, Error>\nwhere\n    F: Fn(u8) -> u8,"
+        );
+        let g = "pub fn run<T: Into<String>, F: Fn(T) -> T>(input: Vec<(T, u8)>, callback: F, extra_argument_name: HashMap<String, u8>) -> T";
+        let out = pretty_signature(g);
+        assert!(
+            out.starts_with(
+                "pub fn run<T: Into<String>, F: Fn(T) -> T>(\n    input: Vec<(T, u8)>,\n"
+            ),
+            "{out}"
+        );
+        assert!(out.ends_with(") -> T"), "{out}");
     }
 }

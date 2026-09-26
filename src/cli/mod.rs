@@ -928,11 +928,11 @@ pub enum PulseSubcommand {
     /// then downloads Zola and builds it into a static HTML site.
     /// The --base-url maps to Zola's base_url config.
     Generate {
-        /// Output directory for the Zola project
+        /// Output directory for the static site (plain HTML, ready for any CDN)
         #[arg(short, long, default_value = "pulse-site")]
         output: PathBuf,
 
-        /// Base URL for the site (maps to Zola's base_url)
+        /// Where the site is served from: `/`, `/docs/`, or `https://host/sub/`
         #[arg(long, default_value = "/")]
         base_url: String,
 
@@ -940,11 +940,11 @@ pub enum PulseSubcommand {
         #[arg(long)]
         title: Option<String>,
 
-        /// Surfaces to include (comma-separated: wiki,changelog,map,onboard,timeline,glossary,explorer)
-        #[arg(long)]
+        /// Deprecated: the site's sections are no longer selectable (ignored)
+        #[arg(long, hide = true)]
         include: Option<String>,
 
-        /// Clean output directory before generating
+        /// Replace the output directory even if rfx pulse did not create it
         #[arg(long)]
         clean: bool,
 
@@ -958,14 +958,24 @@ pub enum PulseSubcommand {
         /// Minimum file count for a module to be included
         #[arg(long, default_value = "1")]
         min_files: usize,
+
+        /// Write the site project (template + page bundle) but do not install the
+        /// runtime or build HTML; prints where the project is
+        #[arg(long)]
+        no_build: bool,
+
+        /// Never download or install anything (the runtime must already be installed)
+        #[arg(long)]
+        offline: bool,
+
+        /// Show the full `astro build` output
+        #[arg(long)]
+        verbose_build: bool,
     },
 
-    /// Serve the generated site locally
-    ///
-    /// Starts a local development server for the Pulse site.
-    /// Uses Zola's built-in server with live reload.
+    /// Serve a generated site locally (under its base path)
     Serve {
-        /// Directory containing the generated Zola project
+        /// Directory containing the generated site
         #[arg(short, long, default_value = "pulse-site")]
         output: PathBuf,
 
@@ -973,9 +983,13 @@ pub enum PulseSubcommand {
         #[arg(short, long, default_value = "1111")]
         port: u16,
 
-        /// Open browser automatically
-        #[arg(long, default_value = "true")]
-        open: bool,
+        /// Address to bind (loopback by default)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Do not open a browser
+        #[arg(long)]
+        no_open: bool,
     },
 
     /// Generate a developer onboarding guide
@@ -1425,19 +1439,28 @@ impl Cli {
                     llm,
                     depth,
                     min_files,
-                } => pulse::handle_pulse_generate(
+                    no_build,
+                    offline,
+                    verbose_build,
+                } => pulse::handle_pulse_generate(pulse::GenerateArgs {
                     output,
                     base_url,
                     title,
                     include,
                     clean,
-                    llm.to_options()?,
+                    write: llm.to_options()?,
                     depth,
                     min_files,
-                ),
-                PulseSubcommand::Serve { output, port, open } => {
-                    pulse::handle_pulse_serve(output, port, open)
-                }
+                    no_build,
+                    offline,
+                    verbose_build,
+                }),
+                PulseSubcommand::Serve {
+                    output,
+                    port,
+                    host,
+                    no_open,
+                } => crate::pulse::serve::serve(&output, &host, port, !no_open),
                 PulseSubcommand::Onboard { no_llm, json } => {
                     pulse::handle_pulse_onboard(no_llm, json)
                 }

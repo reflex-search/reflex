@@ -70,7 +70,96 @@ fn main() {
         }
     }
 
+    embed_pulse_template();
+
     println!("cargo:warning=Cache schema hash: {}", schema_hash);
+}
+
+/// Embed `pulse-template/` (the Astro/Starlight site template `rfx pulse` builds with)
+/// as `OUT_DIR/pulse_template.rs`: a file table plus two hashes. `DEPS_HASH` covers
+/// package.json + package-lock.json and names the shared `node_modules` runtime;
+/// `TEMPLATE_HASH` covers every embedded file.
+fn embed_pulse_template() {
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules",
+        "dist",
+        ".astro",
+        ".astro-cache",
+        "bundle",
+        "scripts",
+        "runtime",
+        ".spike",
+        "results",
+    ];
+    const SKIP_FILES: &[&str] = &[
+        "pulse.config.json",
+        ".pulse-files.json",
+        "pulse-highlight.css",
+    ];
+    let root = Path::new("pulse-template");
+    let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        skip_dirs: &[&str],
+        skip_files: &[&str],
+        out: &mut Vec<(String, std::path::PathBuf)>,
+    ) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !skip_dirs.contains(&name.as_str()) {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                    walk(&path, root, skip_dirs, skip_files, out);
+                }
+            } else if !skip_files.contains(&name.as_str())
+                && !name.ends_with(".tar.zst")
+                && !name.ends_with(".tar")
+            {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                println!("cargo:rerun-if-changed={}", path.display());
+                out.push((rel, path));
+            }
+        }
+    }
+    println!("cargo:rerun-if-changed=pulse-template");
+    walk(root, root, SKIP_DIRS, SKIP_FILES, &mut files);
+    files.sort();
+
+    let mut all = blake3::Hasher::new();
+    let mut deps = blake3::Hasher::new();
+    let mut table = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
+    for (rel, path) in &files {
+        let bytes = fs::read(path).unwrap_or_default();
+        all.update(rel.as_bytes());
+        all.update(&bytes);
+        if rel == "package.json" || rel == "package-lock.json" {
+            deps.update(rel.as_bytes());
+            deps.update(&bytes);
+        }
+        let abs = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        table.push_str(&format!(
+            "    ({:?}, include_bytes!({:?})),\n",
+            rel,
+            abs.display().to_string()
+        ));
+    }
+    table.push_str("];\n");
+    table.push_str(&format!(
+        "pub const TEMPLATE_HASH: &str = {:?};\npub const DEPS_HASH: &str = {:?};\n",
+        &all.finalize().to_hex()[..16],
+        &deps.finalize().to_hex()[..12]
+    ));
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("pulse_template.rs");
+    fs::write(out, table).expect("write pulse_template.rs");
 }
 
 /// Compute a deterministic hash of all cache-critical source files

@@ -50,7 +50,10 @@ pub fn build(
             .readme
             .as_ref()
             .and_then(|r| readme_intro(&r.content))
-            .and_then(|(intro, _)| first_sentence(&intro)),
+            .and_then(|(intro, _)| {
+                let (lead, _) = split_lead(&intro);
+                lead.or_else(|| first_sentence(&intro))
+            }),
         slug: None,
         badges: vec![],
         blocks: home_blocks,
@@ -129,8 +132,29 @@ fn home_blocks(b: &SiteBuilder, corpus: &Corpus) -> Vec<Block> {
 }
 
 /// The README introduction as a markdown block with its source lines.
+/// A README that opens with a short bold line (`**Fast local search**`) has a tagline:
+/// return it as plain text, and the intro without it.
+fn split_lead(intro: &str) -> (Option<String>, &str) {
+    let (first, rest) = intro.split_once("\n\n").unwrap_or((intro, ""));
+    let t = first.trim();
+    let bold = t.starts_with("**")
+        && t.ends_with("**")
+        && t.len() > 4
+        && !t[2..t.len() - 2].contains("**");
+    if bold && t.len() < 160 && !rest.trim().is_empty() {
+        (
+            Some(t.trim_matches('*').trim().to_string()),
+            rest.trim_start(),
+        )
+    } else {
+        (None, intro)
+    }
+}
+
 fn readme_block(readme: &DocFile) -> Option<Block> {
-    let (intro, (start, end)) = readme_intro(&readme.content)?;
+    let (full, (start, end)) = readme_intro(&readme.content)?;
+    let (_, body) = split_lead(&full);
+    let intro = body.to_string();
     Some(Block::Markdown {
         markdown: MarkdownText {
             source: intro,
@@ -298,6 +322,16 @@ mod tests {
         let (intro, _) = readme_intro("# Title\n\n## Overview\ntext\n## Next\nmore").unwrap();
         assert_eq!(intro, "text");
         assert!(readme_intro("# Title\n").is_none());
+    }
+
+    #[test]
+    fn bold_lead_line_is_a_tagline() {
+        let (lead, body) = split_lead("**Fast local search**\n\nReflex is a tool.");
+        assert_eq!(lead.as_deref(), Some("Fast local search"));
+        assert_eq!(body, "Reflex is a tool.");
+        let (lead, body) = split_lead("Reflex is **fast**.\n\nMore.");
+        assert!(lead.is_none());
+        assert_eq!(body, "Reflex is **fast**.\n\nMore.");
     }
 
     #[test]

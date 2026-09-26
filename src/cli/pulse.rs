@@ -1,6 +1,6 @@
 use crate::cache::CacheManager;
 use crate::pulse;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 
 /// "<Directory> Documentation", from the working directory name.
@@ -158,172 +158,71 @@ pub(super) fn handle_pulse_map(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn handle_pulse_generate(
-    output: PathBuf,
-    base_url: String,
-    title: Option<String>,
-    include: Option<String>,
-    clean: bool,
-    write: pulse::write::WriteOptions,
-    depth: u8,
-    min_files: usize,
-) -> Result<()> {
+pub(super) struct GenerateArgs {
+    pub output: PathBuf,
+    pub base_url: String,
+    pub title: Option<String>,
+    pub include: Option<String>,
+    pub clean: bool,
+    pub write: pulse::write::WriteOptions,
+    pub depth: u8,
+    pub min_files: usize,
+    pub no_build: bool,
+    pub offline: bool,
+    pub verbose_build: bool,
+}
+
+pub(super) fn handle_pulse_generate(args: GenerateArgs) -> Result<()> {
     let cache = CacheManager::new(".");
     if !cache.path().exists() {
         anyhow::bail!("No .reflex cache found. Run `rfx index` first.");
     }
-
-    let surfaces = match include {
-        Some(ref s) => {
-            s.split(',')
-                .map(|part| match part.trim().to_lowercase().as_str() {
-                    "wiki" => Ok(pulse::site::Surface::Wiki),
-                    "changelog" | "digest" => Ok(pulse::site::Surface::Changelog),
-                    "map" => Ok(pulse::site::Surface::Map),
-                    "onboard" => Ok(pulse::site::Surface::Onboard),
-                    "timeline" => Ok(pulse::site::Surface::Timeline),
-                    "glossary" => Ok(pulse::site::Surface::Glossary),
-                    "explorer" => Ok(pulse::site::Surface::Explorer),
-                    other => anyhow::bail!("Unknown surface '{}'. Supported: wiki, changelog, map, onboard, timeline, glossary, explorer", other),
-                })
-                .collect::<Result<Vec<_>>>()?
-        }
-        None => vec![
-            pulse::site::Surface::Wiki,
-            pulse::site::Surface::Changelog,
-            pulse::site::Surface::Map,
-            pulse::site::Surface::Onboard,
-            pulse::site::Surface::Timeline,
-            pulse::site::Surface::Glossary,
-            pulse::site::Surface::Explorer,
-        ],
-    };
-
+    if args.include.is_some() {
+        eprintln!("Note: --include is ignored; the site always has its Docs and Internals tabs.");
+    }
     let config = pulse::site::SiteConfig {
-        output_dir: output,
-        base_url,
-        title: title.unwrap_or_else(default_title),
-        surfaces,
-        write,
-        clean,
-        max_depth: depth,
-        min_files,
+        output_dir: args.output,
+        base_url: args.base_url,
+        title: args.title.unwrap_or_else(default_title),
+        write: args.write,
+        clean: args.clean,
+        max_depth: args.depth,
+        min_files: args.min_files,
+        no_build: args.no_build,
+        offline: args.offline,
+        verbose_build: args.verbose_build,
     };
-
     let dry_run = config.write.dry_run;
     let report = pulse::site::generate_site(&cache, &config)?;
     if dry_run {
         eprintln!("Dry run: no LLM calls were made and nothing was written.");
         return Ok(());
     }
-
-    eprintln!("Zola project generated in {}/", report.output_dir);
-    eprintln!("  Wiki pages: {}", report.pages_generated);
     eprintln!(
-        "  Changelog: {}",
-        if report.changelog_generated {
-            "yes"
-        } else {
-            "no"
-        }
+        "Pulse: {} pages ({} Docs, {} Internals), {} narrated section(s) [{}], {} broken link(s)",
+        report.pages,
+        report.docs_pages,
+        report.internals_pages,
+        report.narrated_sections,
+        report.narration_mode,
+        report.broken_links
     );
-    eprintln!("  Map: {}", if report.map_generated { "yes" } else { "no" });
-    eprintln!(
-        "  Onboard: {}",
-        if report.onboard_generated {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    eprintln!(
-        "  Timeline: {}",
-        if report.timeline_generated {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    eprintln!(
-        "  Glossary: {}",
-        if report.glossary_generated {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    eprintln!(
-        "  Explorer: {}",
-        if report.explorer_generated {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    eprintln!("  Narration: {}", report.narration_mode);
-    if report.build_success {
-        eprintln!("  Build: success (HTML in {}/public/)", report.output_dir);
-    } else {
-        eprintln!(
-            "  Build: skipped (run `cd {} && zola build` manually)",
-            report.output_dir
-        );
+    match report.build.as_str() {
+        "built" => eprintln!(
+            "Site built in {:.1}s ({:.1}s total): {}/  — preview with `rfx pulse serve -o {}`",
+            report.build_seconds, report.total_seconds, report.output_dir, report.output_dir
+        ),
+        _ => eprintln!(
+            "Site project written to {} (not built). Build it with Node {}.{}+: \
+             `npx astro build --root {}` after `npm ci` in pulse-template's dependencies, \
+             or rerun without --no-build.",
+            report.project_dir.as_deref().unwrap_or("?"),
+            pulse::runtime::MIN_NODE.0,
+            pulse::runtime::MIN_NODE.1,
+            report.project_dir.as_deref().unwrap_or("?")
+        ),
     }
-
     Ok(())
-}
-
-pub(super) fn handle_pulse_serve(output: PathBuf, port: u16, open: bool) -> Result<()> {
-    // Verify the output dir has a config.toml (i.e., was generated)
-    if !output.join("config.toml").exists() {
-        anyhow::bail!(
-            "No Zola project found at '{}'. Run `rfx pulse generate` first.",
-            output.display()
-        );
-    }
-
-    let zola_path = pulse::zola::ensure_zola()?;
-
-    let url = format!("http://127.0.0.1:{}", port);
-    eprintln!("Serving Pulse site at {}", url);
-    eprintln!("Press Ctrl+C to stop.\n");
-
-    if open {
-        open_browser(&url);
-    }
-
-    let status = std::process::Command::new(&zola_path)
-        .current_dir(&output)
-        .arg("serve")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--interface")
-        .arg("127.0.0.1")
-        .status()
-        .context("Failed to start Zola server")?;
-
-    if !status.success() {
-        anyhow::bail!("Zola server exited with error");
-    }
-
-    Ok(())
-}
-
-fn open_browser(url: &str) {
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
-    };
-
-    if let Err(e) = result {
-        eprintln!("Could not open browser: {e}");
-    }
 }
 
 pub(super) fn handle_pulse_onboard(no_llm: bool, json: bool) -> Result<()> {

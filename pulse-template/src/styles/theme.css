@@ -1,44 +1,220 @@
-/* Pulse theme stub. Fonts are self-hosted via @fontsource (no Google Fonts CDN). */
+/* Pulse theme. Fonts are self-hosted via @fontsource (no font CDN). */
 :root {
 	--sl-font: 'Inter Variable', system-ui, sans-serif;
 	--sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
 	--sl-color-accent-low: #1e1b4b;
 	--sl-color-accent: #6366f1;
 	--sl-color-accent-high: #c7d2fe;
+	--sl-content-width: 52rem;
+	--pulse-radius: 0.5rem;
+	--pulse-border: var(--sl-color-gray-5);
+	--pulse-surface: var(--sl-color-gray-7, var(--sl-color-black));
 }
 :root[data-theme='light'] {
 	--sl-color-accent-low: #e0e7ff;
 	--sl-color-accent: #4f46e5;
 	--sl-color-accent-high: #312e81;
+	--pulse-surface: var(--sl-color-gray-7);
 }
 
-.pulse-symbol {
-	border: 1px solid var(--sl-color-gray-5);
-	border-radius: 0.5rem;
+.sl-markdown-content {
+	line-height: 1.65;
+}
+
+/* Headline numbers */
+.pulse-stats {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+	gap: 0.75rem;
+	margin-block: 1.5rem;
+}
+.pulse-stats > div {
+	border: 1px solid var(--pulse-border);
+	border-radius: var(--pulse-radius);
 	padding: 0.75rem 1rem;
-	margin-block: 1.25rem;
+	margin: 0;
 }
-.pulse-symbol > h3 {
-	margin-top: 0;
-	display: flex;
-	gap: 0.5rem;
-	align-items: baseline;
-}
-.pulse-kind {
+.pulse-stats dt {
 	font-size: var(--sl-text-xs);
 	text-transform: uppercase;
 	letter-spacing: 0.05em;
 	color: var(--sl-color-gray-3);
+	font-weight: 600;
+}
+.sl-markdown-content .pulse-stats dd {
+	margin: 0.25rem 0 0;
+	margin-inline-start: 0;
+	padding-inline-start: 0;
+	font-size: var(--sl-text-2xl);
+	font-weight: 600;
+	color: var(--sl-color-white);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Link cards */
+.pulse-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+	gap: 1rem;
+	margin-block: 1.5rem;
+}
+.sl-markdown-content .pulse-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	border: 1px solid var(--pulse-border);
+	border-radius: var(--pulse-radius);
+	padding: 1rem 1.25rem;
+	margin: 0;
+	text-decoration: none;
+	color: var(--sl-color-gray-2);
+	transition: border-color 0.15s, box-shadow 0.15s;
+}
+.sl-markdown-content a.pulse-card:hover {
+	border-color: var(--sl-color-accent);
+	box-shadow: 0 0 0 1px var(--sl-color-accent);
+}
+.pulse-card-title {
+	font-weight: 600;
+	color: var(--sl-color-white);
+}
+.pulse-card-body {
+	font-size: var(--sl-text-sm);
+}
+
+/* Tables scroll instead of overflowing the column */
+.pulse-table {
+	overflow-x: auto;
+	margin-block: 1rem;
+}
+.pulse-table table {
+	width: 100%;
+	margin: 0;
+}
+.pulse-table td code {
+	white-space: nowrap;
+}
+
+/* Symbols (API reference entries) */
+.pulse-symbol {
+	border: 1px solid var(--pulse-border);
+	border-radius: var(--pulse-radius);
+	padding: 1rem 1.25rem 0.75rem;
+	margin-block: 1.5rem;
+	scroll-margin-top: calc(var(--sl-nav-height) + 1rem);
+}
+.sl-markdown-content .pulse-symbol > h3 {
+	margin: 0 0 0.75rem;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: baseline;
+	font-size: var(--sl-text-lg);
+}
+.pulse-symbol > h3 code {
+	background: none;
+	padding: 0;
+	font-size: inherit;
+	color: var(--sl-color-white);
+}
+.pulse-kind,
+.pulse-badge {
+	font-size: var(--sl-text-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--sl-color-gray-3);
+	font-weight: 600;
+}
+.pulse-badge {
+	border: 1px solid var(--pulse-border);
+	border-radius: 999px;
+	padding: 0 0.5rem;
+}
+.pulse-badges {
+	display: flex;
+	gap: 0.5rem;
+	margin-top: -0.5rem;
+}
+.pulse-deprecated {
+	color: var(--sl-color-orange-high);
+	font-size: var(--sl-text-sm);
+	font-weight: 600;
+}
+.pulse-doc > :first-child {
+	margin-top: 0.75rem;
 }
 .pulse-meta {
 	font-size: var(--sl-text-sm);
 	color: var(--sl-color-gray-3);
+	margin-top: 0.75rem;
 }
+.pulse-meta code {
+	font-size: inherit;
+}
+
+/* Code: highlighted by rfx (hl-* classes, colours in pulse-highlight.css) */
+.sl-markdown-content pre.hl-code {
+	border: 1px solid var(--pulse-border);
+	border-radius: var(--pulse-radius);
+	padding: 0.75rem 1rem;
+	overflow-x: auto;
+	font-size: var(--sl-text-code-sm, 0.875rem);
+	line-height: 1.6;
+}
+.sl-markdown-content pre.hl-code code {
+	background: none;
+	padding: 0;
+	color: inherit;
+	white-space: pre;
+}
+pre.pulse-signature {
+	margin-block: 0.25rem;
+}
+.pulse-code figcaption,
+.pulse-diagram figcaption {
+	font-size: var(--sl-text-sm);
+	color: var(--sl-color-gray-3);
+	margin-bottom: 0.25rem;
+}
+
+/* LLM prose is labelled as such */
+.pulse-narrative {
+	border-left: 3px solid var(--sl-color-accent);
+	padding-left: 1rem;
+}
+.pulse-provenance {
+	font-size: var(--sl-text-xs);
+	color: var(--sl-color-gray-3);
+}
+
+.pulse-fact {
+	font-variant-numeric: tabular-nums;
+}
+.pulse-image {
+	color: var(--sl-color-gray-3);
+	font-style: italic;
+}
+
+/* Diagrams */
 pre.pulse-mermaid {
 	background: transparent;
-	border: 1px dashed var(--sl-color-gray-5);
+	border: 1px dashed var(--pulse-border);
 	text-align: center;
+	white-space: pre;
 }
 pre.pulse-mermaid[data-processed='true'] {
 	border: 0;
+	white-space: normal;
+}
+.pulse-diagram {
+	margin-block: 1.5rem;
+	overflow-x: auto;
+}
+
+/* Show code exactly as written: no `->` or `!=` ligatures. */
+code,
+pre,
+kbd {
+	font-variant-ligatures: none;
+	font-feature-settings: 'liga' 0, 'calt' 0;
 }

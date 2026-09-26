@@ -228,12 +228,16 @@ fn library_reference_pages_symbols_and_links() {
     let store = &site.pages[&PageId::new("docs/ref/type/kv_lib::store::Store")];
     assert_eq!(store.route, "/docs/reference/kv-lib/store/store/");
 
-    // The type's definition block: doc with hidden line removed and a resolved link.
-    let Block::Symbol { symbol } = &store.blocks[0] else {
-        panic!("type page starts with its definition");
+    // The type's definition renders flat: signature, then doc with the hidden line
+    // removed and a resolved link.
+    let Block::Code { code, .. } = &store.blocks[0] else {
+        panic!("type page starts with its signature");
     };
-    assert_eq!(symbol.signature, "pub struct Store");
-    let doc = &symbol.doc.as_ref().unwrap().source;
+    assert_eq!(code, "pub struct Store");
+    let Block::Markdown { markdown } = &store.blocks[1] else {
+        panic!("then its docs");
+    };
+    let doc = &markdown.source;
     assert!(
         doc.contains("[`Store::new`](/docs/reference/kv-lib/store/store/#method.new)"),
         "{doc}"
@@ -250,7 +254,7 @@ fn library_reference_pages_symbols_and_links() {
             _ => None,
         })
         .collect();
-    assert_eq!(names, vec!["Store", "len", "new"]);
+    assert_eq!(names, vec!["len", "new"]);
 
     // `pub use util::helper` makes a private-module function public at the root.
     let helper = site

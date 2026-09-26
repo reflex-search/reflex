@@ -15,7 +15,7 @@ type Entry = Link | Group;
 
 const FULL_TREE_MAX: number = (pulse as any).sidebarFullTreeMax ?? 800;
 const base: string = (pulse.base ?? '/').replace(/\/$/, '');
-const href = (slug: string) => `${base}/${slug}/`;
+const href = (slug: string) => (slug ? `${base}/${slug}/` : `${base}/`);
 
 interface TabIndex {
 	tree: Node[];
@@ -83,6 +83,7 @@ function link(label: string, slug: string, isCurrent: boolean): Link {
 export function locate(pathname: string): { tab: string; slug: string } | undefined {
 	let p = pathname.startsWith(base + '/') ? pathname.slice(base.length) : pathname;
 	p = p.replace(/^\/+|\/+$/g, '');
+	if (p === '') return { tab: 'docs', slug: '' };
 	for (const tab of pulse.tabs) {
 		const prefix = tab.prefix.replace(/^\/+|\/+$/g, '');
 		if (p === prefix || p.startsWith(prefix + '/')) return { tab: tab.id, slug: p };

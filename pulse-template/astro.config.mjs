@@ -1,4 +1,4 @@
-// Pulse renderer template (M0a spike).
+// Pulse site template.
 //
 // Static-only: everything site-specific comes from ./pulse.config.json, which
 // `rfx pulse` writes next to this file together with ./bundle/{pages,fragments}.
@@ -19,7 +19,7 @@ export default defineConfig({
 	// Keep every cache next to the staged site (default is <root>/node_modules/.astro), so
 	// rfx can persist/restore it as one directory and the site has no node_modules of its own.
 	cacheDir: './.astro-cache',
-	site: pulse.site,
+	site: pulse.site ?? undefined,
 	base,
 	trailingSlash: 'always',
 	image: { service: passthroughImageService() },
@@ -53,7 +53,7 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: pulse.title,
-			description: pulse.description,
+			description: pulse.description ?? undefined,
 			pagefind: true,
 			// Per-tab sidebars are injected by the route middleware; keep the global one empty so
 			// Starlight does not build (and deep-clone) a sidebar per page for nothing.
@@ -68,6 +68,8 @@ export default defineConfig({
 				'@fontsource/jetbrains-mono/400.css',
 				'@fontsource/jetbrains-mono/700.css',
 				'./src/styles/theme.css',
+				// Written by rfx pulse: syntax-highlight colours for both themes.
+				'./src/styles/pulse-highlight.css',
 			],
 			expressiveCode: {
 				themes: ['github-dark', 'github-light'],
