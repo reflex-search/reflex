@@ -10,7 +10,9 @@
 
 pub mod cli_ref;
 pub mod docs_tab;
+pub mod guides;
 pub mod internals_tab;
+pub mod links;
 pub mod modules;
 pub mod reference;
 
@@ -82,14 +84,16 @@ pub fn build_site(cache: &CacheManager, opts: &BuildOptions) -> Result<Site> {
     let content = crate::pulse::extract::ContentAccess::open(cache);
     let rust = crate::pulse::extract::surface::RustApi::resolve(&corpus, &apis, &content);
 
-    internals_tab::build(&mut b, &corpus, &graph, &apis);
+    let guides = guides::collect(&corpus, &content);
+    let (guide_nav, contributing_nav) = guides::build(&mut b, &corpus, &guides);
+    internals_tab::build(&mut b, &corpus, &graph, &apis, contributing_nav);
     let mut reference_nav =
         cli_ref::build(&mut b, &crate::pulse::extract::cli::find_commands(&rust));
     reference_nav.extend(reference::build(&mut b, &rust, &opts.reference));
-    docs_tab::build(&mut b, &corpus, &graph, &commits, reference_nav);
+    docs_tab::build(&mut b, &corpus, &graph, &commits, guide_nav, reference_nav);
 
     let (mut site, slugs) = b.finish();
-    reference::resolve_markdown_links(&mut site);
+    links::resolve_markdown_links(&mut site);
     if let Some(p) = &opts.slugs_path
         && let Err(e) = slugs.save(p)
     {

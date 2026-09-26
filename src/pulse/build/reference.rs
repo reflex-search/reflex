@@ -22,8 +22,7 @@ use crate::pulse::model::{
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
-/// URL scheme for symbol links inside markdown; rewritten to routes once all pages exist.
-pub const SYMBOL_SCHEME: &str = "pulse-symbol:";
+use super::links::SYMBOL_SCHEME;
 
 /// Longest signature kept on one line.
 const SIGNATURE_WIDTH: usize = 90;
@@ -742,52 +741,6 @@ fn type_blocks(k: &RustCrate, t: &RustItem, index: &SymbolIndex) -> Vec<Block> {
         });
     }
     blocks
-}
-
-/// Rewrite `pulse-symbol:` links in every markdown text to base-less routes.
-pub fn resolve_markdown_links(site: &mut crate::pulse::model::Site) {
-    let routes: HashMap<String, String> = {
-        let linker = crate::pulse::model::Linker::new(site);
-        site.symbols
-            .keys()
-            .filter_map(|id| {
-                linker
-                    .resolve(&Target::Symbol { symbol: id.clone() })
-                    .map(|r| (id.0.clone(), r.href))
-            })
-            .collect()
-    };
-    static LINK: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\(pulse-symbol:([^)\s]+)\)").expect("valid regex"));
-    let fix = |md: &mut MarkdownText| {
-        if !md.source.contains(SYMBOL_SCHEME) {
-            return;
-        }
-        md.source = LINK
-            .replace_all(&md.source, |c: &regex::Captures| match routes.get(&c[1]) {
-                Some(href) => format!("({href})"),
-                None => "()".to_string(),
-            })
-            .into_owned();
-    };
-    fn walk(blocks: &mut [Block], fix: &dyn Fn(&mut MarkdownText)) {
-        for b in blocks {
-            match b {
-                Block::Markdown { markdown } => fix(markdown),
-                Block::Symbol { symbol } => {
-                    if let Some(d) = symbol.doc.as_mut() {
-                        fix(d);
-                    }
-                }
-                Block::Callout { body, .. } => walk(body, fix),
-                Block::Narrative { fallback, .. } => walk(fallback, fix),
-                _ => {}
-            }
-        }
-    }
-    for page in site.pages.values_mut() {
-        walk(&mut page.blocks, &fix);
-    }
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ pub fn build(
     corpus: &Corpus,
     _graph: &ModuleGraph,
     commits: &[ChangelogCommit],
+    guide_nav: Vec<NavNode>,
     reference_nav: Vec<NavNode>,
 ) {
     let changelog = b.add_page(PageSpec {
@@ -60,6 +61,13 @@ pub fn build(
     });
 
     let mut nav = Vec::new();
+    if !guide_nav.is_empty() {
+        nav.push(NavNode::Group {
+            label: "Guides".into(),
+            collapsed: false,
+            children: guide_nav,
+        });
+    }
     if !reference_nav.is_empty() {
         nav.push(NavNode::Group {
             label: "Reference".into(),

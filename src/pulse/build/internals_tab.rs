@@ -25,7 +25,13 @@ const MAX_NEIGHBOURS: usize = 8;
 /// Rows in a module's file table.
 const MAX_FILE_ROWS: usize = 100;
 
-pub fn build(b: &mut SiteBuilder, corpus: &Corpus, graph: &ModuleGraph, apis: &ApiIndex) {
+pub fn build(
+    b: &mut SiteBuilder,
+    corpus: &Corpus,
+    graph: &ModuleGraph,
+    apis: &ApiIndex,
+    contributing: Vec<NavNode>,
+) {
     let cycles = graph.cycles();
     let in_cycle = |mi: usize| cycles.iter().find(|c| c.contains(&mi));
 
@@ -104,14 +110,19 @@ pub fn build(b: &mut SiteBuilder, corpus: &Corpus, graph: &ModuleGraph, apis: &A
             });
         }
     }
-    let nav = vec![
-        NavNode::page(&depmap_id),
-        NavNode::Group {
-            label: "Modules".into(),
+    let mut nav = vec![NavNode::page(&depmap_id)];
+    if !contributing.is_empty() {
+        nav.push(NavNode::Group {
+            label: "Contributing".into(),
             collapsed: false,
-            children: module_nav,
-        },
-    ];
+            children: contributing,
+        });
+    }
+    nav.extend([NavNode::Group {
+        label: "Modules".into(),
+        collapsed: false,
+        children: module_nav,
+    }]);
     b.add_tab(TabId::Internals, "Internals", landing, nav);
 }
 

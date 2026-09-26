@@ -207,6 +207,16 @@ fn library_fixture() -> TempDir {
         "/// An in-memory store.\n///\n/// Create one with [`Store::new`].\n///\n/// ```\n/// # use kv_lib::store::Store;\n/// let s = Store::new();\n/// ```\npub struct Store {\n    /// Number of entries.\n    pub len: usize,\n}\n\nimpl Store {\n    /// Make an empty store. See [`crate::helper`].\n    pub fn new() -> Self { Store { len: 0 } }\n    fn secret(&self) {}\n}\n\nimpl Default for Store {\n    fn default() -> Self { Self::new() }\n}\n\n/// Largest key size.\npub const MAX_KEY: usize = 256;\n",
     );
     write(r, "src/util.rs", "/// Helps.\npub fn helper() {}\n");
+    write(
+        r,
+        "docs/usage.md",
+        "# Using kv\n\nOpen a [`Store`](../src/store.rs), then read [how to contribute](../CONTRIBUTING.md#setup).\n",
+    );
+    write(
+        r,
+        "CONTRIBUTING.md",
+        "# Contributing\n\n## Setup\n\nRun the tests.\n",
+    );
     Indexer::new(CacheManager::new(r), IndexConfig::default())
         .index(r, false)
         .unwrap();
@@ -280,4 +290,36 @@ fn library_reference_pages_symbols_and_links() {
     let lists_default = store.blocks.iter().any(|b| matches!(b,
         Block::List { items, .. } if items.iter().flatten().any(|i| matches!(i, Inline::Code { code } if code == "impl Default for Store"))));
     assert!(lists_default);
+}
+
+#[test]
+fn guides_become_pages_with_resolved_links() {
+    let t = library_fixture();
+    let site = build_site(&CacheManager::new(t.path()), &opts()).unwrap();
+    let usage = &site.pages[&PageId::new("docs/guide/docs/usage.md")];
+    assert_eq!(usage.title, "Using kv");
+    assert_eq!(usage.route, "/docs/guides/usage/");
+    let contributing = &site.pages[&PageId::new("int/guide/CONTRIBUTING.md")];
+    assert_eq!(contributing.route, "/internals/contributing/contributing/");
+    let Block::Markdown { markdown } = &usage.blocks[0] else {
+        panic!("guide body");
+    };
+    assert!(
+        markdown
+            .source
+            .contains("[how to contribute](/internals/contributing/contributing/#setup)"),
+        "{}",
+        markdown.source
+    );
+    // No repository URL: the source link becomes its text.
+    assert!(
+        markdown.source.contains("Open a `Store`, then"),
+        "{}",
+        markdown.source
+    );
+    assert!(
+        site.report.broken_links.is_empty(),
+        "{:?}",
+        site.report.broken_links
+    );
 }
