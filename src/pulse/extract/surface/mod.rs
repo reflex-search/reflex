@@ -4,6 +4,7 @@
 //! a package's `exports`, …) and marks what is reachable. Everything else in a source
 //! file is internal: it appears on Internals pages only.
 
+pub mod go;
 pub mod rust;
 
 use crate::parsers::api::{ApiItem, DocComment};

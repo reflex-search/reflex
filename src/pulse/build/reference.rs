@@ -145,7 +145,18 @@ fn type_page(path: &str) -> PageId {
 }
 
 fn path_slug(path: &str, sep: &str) -> String {
-    path.split(sep).map(slugify).collect::<Vec<_>>().join("/")
+    // Go package paths (`kv/sub`) keep their directories as URL segments.
+    path.split(sep)
+        .flat_map(|s| s.split('/'))
+        .map(slugify)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Whether an item gets its own page: types, and named types that have methods
+/// (a Go `type Kind int` with `String()`).
+fn has_page(item: &ApiItem) -> bool {
+    item.kind.is_type() || (item.kind == ApiKind::TypeAlias && !item.members.is_empty())
 }
 
 /// Build the library reference and return its nav nodes (one group per crate).
@@ -156,12 +167,14 @@ pub fn build(b: &mut SiteBuilder, api: &Surface, opts: &ReferenceOptions) -> Vec
     let mut nav = Vec::new();
     for k in api.libraries() {
         let included = |path: &str| {
+            let nested = |a: &str, b: &str| {
+                a.starts_with(&format!("{b}{}", k.sep)) || a.starts_with(&format!("{b}/"))
+            };
             opts.include.is_empty()
-                || opts.include.iter().any(|p| {
-                    path == p
-                        || path.starts_with(&format!("{p}::"))
-                        || p.starts_with(&format!("{path}::"))
-                })
+                || opts
+                    .include
+                    .iter()
+                    .any(|p| path == p || nested(path, p) || nested(p, path))
         };
         let modules: Vec<usize> = (0..k.modules.len())
             .filter(|&i| k.modules[i].public && included(&k.modules[i].path))
@@ -174,7 +187,7 @@ pub fn build(b: &mut SiteBuilder, api: &Surface, opts: &ReferenceOptions) -> Vec
         for &mi in &modules {
             let m = &k.modules[mi];
             let types: Vec<&SurfaceItem> = public_items(k, mi)
-                .filter(|it| it.item.kind.is_type())
+                .filter(|it| has_page(&it.item))
                 .collect();
             let mut group = vec![NavNode::page(&module_page(&m.path))];
             for t in &types {
@@ -218,6 +231,7 @@ pub fn build(b: &mut SiteBuilder, api: &Surface, opts: &ReferenceOptions) -> Vec
                     label: m
                         .path
                         .strip_prefix(&format!("{}{}", k.name, k.sep))
+                        .or_else(|| m.path.strip_prefix(&format!("{}/", k.name)))
                         .unwrap_or(&m.path)
                         .to_string(),
                     collapsed: true,
@@ -269,7 +283,7 @@ impl SymbolIndex {
                 None,
             );
             for it in public_items(k, mi) {
-                if it.item.kind.is_type() {
+                if has_page(&it.item) {
                     let page = type_page(&it.path);
                     idx.add(&it.path, &it.item.name, it.item.kind, page.clone(), None);
                     for mem in documented_members(&it.item) {
@@ -397,7 +411,7 @@ fn badges_for(item: &ApiItem) -> Vec<String> {
 
 static INTRA_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
-        r"\[(`?)([A-Za-z_][\w:]*(?:\(\)|!)?)(`?)\](\(([A-Za-z_][\w]*(?:::[\w]+)*(?:\(\)|!)?)\))?",
+        r"\[(`?)([A-Za-z_][\w:.]*(?:\(\)|!)?)(`?)\](\(([A-Za-z_][\w]*(?:::[\w]+)*(?:\(\)|!)?)\))?",
     )
     .expect("valid regex")
 });
@@ -463,6 +477,10 @@ fn render_doc(
                     // `[text](https://…)` never matches; a bare `[word]` needs a path shape.
                     let target = dest.unwrap_or(text);
                     if dest.is_none() && tick.is_empty() && !text.contains(index.sep) {
+                        return whole.to_string();
+                    }
+                    // `.` separates paths only where it is the package separator (Go).
+                    if index.sep != "." && text.contains('.') {
                         return whole.to_string();
                     }
                     match index.resolve(target, module, self_type) {
@@ -598,7 +616,7 @@ fn module_blocks(k: &Package, mi: usize, included: &[usize], index: &SymbolIndex
     }
 
     let items: Vec<&SurfaceItem> = public_items(k, mi).collect();
-    let types: Vec<&&SurfaceItem> = items.iter().filter(|it| it.item.kind.is_type()).collect();
+    let types: Vec<&&SurfaceItem> = items.iter().filter(|it| has_page(&it.item)).collect();
     if !types.is_empty() {
         blocks.push(Block::heading(2, "Types"));
         blocks.push(Block::Table {
@@ -623,9 +641,12 @@ fn module_blocks(k: &Package, mi: usize, included: &[usize], index: &SymbolIndex
         (ApiKind::Macro, "Macros"),
         (ApiKind::Const, "Constants"),
         (ApiKind::Static, "Statics"),
-        (ApiKind::TypeAlias, "Type aliases"),
+        (ApiKind::TypeAlias, type_alias_title(k)),
     ] {
-        let group: Vec<&&SurfaceItem> = items.iter().filter(|it| it.item.kind == kind).collect();
+        let group: Vec<&&SurfaceItem> = items
+            .iter()
+            .filter(|it| it.item.kind == kind && !has_page(&it.item))
+            .collect();
         if group.is_empty() {
             continue;
         }
@@ -640,6 +661,15 @@ fn module_blocks(k: &Package, mi: usize, included: &[usize], index: &SymbolIndex
         blocks.push(Block::text("This module has no public items."));
     }
     blocks
+}
+
+/// Go has no aliases in the Rust sense: `type Kind int` is a new type.
+fn type_alias_title(k: &Package) -> &'static str {
+    if k.lang == crate::models::Language::Go {
+        "Other types"
+    } else {
+        "Type aliases"
+    }
 }
 
 fn type_blocks(k: &Package, t: &SurfaceItem, index: &SymbolIndex) -> Vec<Block> {
@@ -685,10 +715,10 @@ fn type_blocks(k: &Package, t: &SurfaceItem, index: &SymbolIndex) -> Vec<Block> 
         .filter(|m| matches!(m.kind, ApiKind::Field | ApiKind::Variant))
         .collect();
     if !data.is_empty() {
-        let title = if t.item.kind == ApiKind::Enum {
-            "Variants"
-        } else {
-            "Fields"
+        let title = match t.item.kind {
+            ApiKind::Enum => "Variants",
+            ApiKind::Interface => "Embedded interfaces",
+            _ => "Fields",
         };
         blocks.push(Block::heading(2, title));
         for m in data {

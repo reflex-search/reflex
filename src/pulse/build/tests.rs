@@ -323,3 +323,186 @@ fn guides_become_pages_with_resolved_links() {
         site.report.broken_links
     );
 }
+
+/// A Go module: two packages, an `internal/` package and a command.
+fn go_fixture() -> TempDir {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "go.mod", "module github.com/acme/kv\n\ngo 1.22\n");
+    write(
+        r,
+        "client.go",
+        r#"// Package kv is a key-value client.
+//
+// Create a [Client] with [New] and configure it with [Option] values.
+package kv
+
+import "context"
+
+// Client talks to a kv server. Configure it with [Option].
+//
+// Reads block:
+//
+//	v, err := c.Get(ctx, "k")
+type Client struct {
+	// Addr is the server address.
+	Addr    string `json:"addr"`
+	timeout int
+}
+
+// New returns a client for addr.
+func New(addr string, opts ...Option) *Client { return &Client{Addr: addr} }
+
+// Get reads key. See [Client.Put] and [context.Context].
+func (c *Client) Get(ctx context.Context, key string) (string, error) { return "", nil }
+
+// Put writes key.
+func (c *Client) Put(ctx context.Context, key, value string) error { return nil }
+
+func (c *Client) secret() {}
+"#,
+    );
+    write(
+        r,
+        "option.go",
+        "package kv\n\n// Option configures a [Client].\ntype Option func(*Client)\n\n// WithTimeout sets the timeout in seconds.\nfunc WithTimeout(s int) Option { return func(c *Client) { c.timeout = s } }\n\n// Level is a consistency level.\ntype Level int\n\n// Consistency levels.\nconst (\n\tOne Level = iota\n\tQuorum\n)\n\n// String names the level.\nfunc (l Level) String() string { return \"\" }\n",
+    );
+    write(
+        r,
+        "codec/codec.go",
+        "// Package codec encodes values for a [kv.Client].\npackage codec\n\n// Encode encodes v.\nfunc Encode(v any) []byte { return nil }\n",
+    );
+    write(
+        r,
+        "internal/x/x.go",
+        "package x\n\n// Hidden is internal.\nfunc Hidden() {}\n",
+    );
+    write(
+        r,
+        "cmd/tool/main.go",
+        "package main\n\n// Run is a command.\nfunc Run() {}\n\nfunc main() {}\n",
+    );
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .index(r, false)
+        .unwrap();
+    t
+}
+
+fn symbol_names(blocks: &[Block]) -> Vec<&str> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Symbol { symbol } => Some(symbol.name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn go_reference_pages_symbols_and_links() {
+    let t = go_fixture();
+    let site = build_site(&CacheManager::new(t.path()), &opts()).unwrap();
+    assert!(
+        site.report.broken_links.is_empty(),
+        "{:?}",
+        site.report.broken_links
+    );
+
+    let root = &site.pages[&PageId::new("docs/ref/mod/kv")];
+    assert_eq!(root.route, "/docs/reference/kv/");
+    let Block::Markdown { markdown } = &root.blocks[0] else {
+        panic!("package page starts with the package doc");
+    };
+    let md = &markdown.source;
+    assert!(md.starts_with("Import path: `github.com/acme/kv`"), "{md}");
+    assert!(
+        md.contains("[`Client`](/docs/reference/kv/client/)"),
+        "{md}"
+    );
+    // `Option` has no methods: it is listed on the package page, and links there.
+    assert!(
+        md.contains("[`Option`](/docs/reference/kv/#type.option)"),
+        "{md}"
+    );
+    assert_eq!(
+        symbol_names(&root.blocks),
+        vec!["New", "WithTimeout", "One", "Quorum", "Option"]
+    );
+
+    let client = &site.pages[&PageId::new("docs/ref/type/kv.Client")];
+    assert_eq!(client.route, "/docs/reference/kv/client/");
+    let Block::Code { code, lang, .. } = &client.blocks[0] else {
+        panic!("type page starts with its signature");
+    };
+    assert_eq!((code.as_str(), lang.as_str()), ("type Client struct", "go"));
+    let Block::Markdown { markdown } = &client.blocks[1] else {
+        panic!("then its docs");
+    };
+    let doc = &markdown.source;
+    assert!(
+        doc.contains("[`Option`](/docs/reference/kv/#type.option)"),
+        "{doc}"
+    );
+    assert!(
+        doc.contains("```go\nv, err := c.Get(ctx, \"k\")\n```"),
+        "{doc}"
+    );
+
+    // Exported fields and methods (from any file) are documented; unexported are not.
+    assert_eq!(symbol_names(&client.blocks), vec!["Addr", "Get", "Put"]);
+    let get = client
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Symbol { symbol } if symbol.name == "Get" => Some(symbol),
+            _ => None,
+        })
+        .unwrap();
+    let get_doc = &get.doc.as_ref().unwrap().source;
+    assert!(
+        get_doc.contains("[`Client.Put`](/docs/reference/kv/client/#method.put)"),
+        "{get_doc}"
+    );
+    assert!(get_doc.contains("`context.Context`"), "{get_doc}");
+    assert_eq!(get.params.len(), 2);
+
+    // A named non-struct type with methods gets a page.
+    let level = &site.pages[&PageId::new("docs/ref/type/kv.Level")];
+    assert_eq!(level.route, "/docs/reference/kv/level/");
+    assert_eq!(symbol_names(&level.blocks), vec!["String"]);
+
+    // A sub-package has its own page under the module.
+    let codec = &site.pages[&PageId::new("docs/ref/mod/kv/codec")];
+    assert_eq!(codec.route, "/docs/reference/kv/codec/");
+    let Block::Markdown { markdown } = &codec.blocks[0] else {
+        panic!("package doc");
+    };
+    assert!(
+        markdown
+            .source
+            .starts_with("Import path: `github.com/acme/kv/codec`"),
+        "{}",
+        markdown.source
+    );
+
+    // `internal/` and `package main` directories are not API.
+    let ref_pages: Vec<&str> = site
+        .pages
+        .keys()
+        .map(|p| p.0.as_str())
+        .filter(|p| p.starts_with("docs/ref/"))
+        .collect();
+    assert!(
+        !ref_pages
+            .iter()
+            .any(|p| p.contains("internal") || p.contains("tool")),
+        "{ref_pages:?}"
+    );
+    assert!(
+        !site
+            .symbols
+            .values()
+            .any(|s| s.name == "Hidden" || s.name == "Run" || s.name == "secret")
+    );
+    assert!(site.symbols.values().any(|s| s.name == "WithTimeout"));
+}
