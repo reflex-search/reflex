@@ -9,13 +9,14 @@
 //! content hash (see `pulse::extract::api_cache`), so `rfx index` pays nothing for it.
 
 pub mod doc;
+pub mod go;
 pub mod rust;
 
 use crate::models::Language;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the output of any extractor changes; cached results are then rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 3;
+pub const EXTRACTOR_VERSION: u32 = 4;
 
 /// The documented surface of one file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -31,6 +32,9 @@ pub struct ApiFile {
     /// `pub use` re-exports (Rust), in source order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reexports: Vec<ReExport>,
+    /// The package the file declares (`package foo` in Go), for languages with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -50,6 +54,8 @@ pub enum ApiKind {
     Static,
     Macro,
     Union,
+    /// A Go interface (a TypeScript/Java/C# interface).
+    Interface,
 }
 
 impl ApiKind {
@@ -58,7 +64,7 @@ impl ApiKind {
     pub fn is_type(&self) -> bool {
         matches!(
             self,
-            ApiKind::Struct | ApiKind::Enum | ApiKind::Trait | ApiKind::Union
+            ApiKind::Struct | ApiKind::Enum | ApiKind::Trait | ApiKind::Union | ApiKind::Interface
         )
     }
 
@@ -78,6 +84,7 @@ impl ApiKind {
             ApiKind::Static => "static",
             ApiKind::Macro => "macro",
             ApiKind::Union => "union",
+            ApiKind::Interface => "interface",
         }
     }
 }
@@ -229,13 +236,14 @@ pub struct ReExport {
 
 /// Whether [`extract`] handles this language.
 pub fn has_extractor(language: Language) -> bool {
-    matches!(language, Language::Rust)
+    matches!(language, Language::Rust | Language::Go)
 }
 
 /// Extract the API of one file, if its language has an extractor.
 pub fn extract(language: Language, source: &str) -> Option<ApiFile> {
     match language {
         Language::Rust => rust::extract(source).ok(),
+        Language::Go => go::extract(source).ok(),
         _ => None,
     }
 }
