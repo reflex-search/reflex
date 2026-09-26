@@ -2,12 +2,13 @@
 //!
 //! - Home (landing): the README introduction, headline numbers, entry cards, and the
 //!   narrative slot `project-overview`.
-//! - Changelog: recent commits grouped by day, typed by conventional-commit prefix.
-//!
-//! Getting started, guides and the API reference join this tab in later milestones.
+//! - Guides and Reference: added by `build::guides`, `build::cli_ref` and `build::reference`.
+//! - Changelog: an index of releases and one page per release (`build::releases`):
+//!   CHANGELOG.md notes, public API changes, commits grouped by conventional type.
 
 use super::internals_tab::{ARCHITECTURE, DEPENDENCY_MAP};
 use super::modules::ModuleGraph;
+use super::releases::Release;
 use super::{PageSpec, SiteBuilder};
 use crate::pulse::changelog::ChangelogCommit;
 use crate::pulse::extract::{Corpus, DocFile};
@@ -26,19 +27,52 @@ pub fn build(
     b: &mut SiteBuilder,
     corpus: &Corpus,
     _graph: &ModuleGraph,
-    commits: &[ChangelogCommit],
+    releases: &[Release],
     guide_nav: Vec<NavNode>,
     reference_nav: Vec<NavNode>,
 ) {
+    // One page per release, then the index that lists them.
+    let mut release_nav = Vec::new();
+    for r in releases {
+        let id = PageId(format!("docs/release/{}", r.version));
+        let blocks = release_blocks(b, r);
+        let slug = if r.tag.is_none() {
+            "changelog/unreleased".to_string()
+        } else {
+            format!(
+                "changelog/{}",
+                crate::pulse::model::ids::slugify(&r.version)
+            )
+        };
+        b.add_page(PageSpec {
+            id: id.clone(),
+            tab: TabId::Docs,
+            kind: PageKind::Changelog,
+            title: if r.tag.is_some() {
+                format!("v{}", r.version)
+            } else {
+                "Unreleased".into()
+            },
+            description: Some(release_summary(r)),
+            slug: Some(slug),
+            badges: if r.date.is_empty() {
+                vec![]
+            } else {
+                vec![r.date.clone()]
+            },
+            blocks,
+        });
+        release_nav.push(NavNode::page(&id));
+    }
     let changelog = b.add_page(PageSpec {
         id: PageId::new(CHANGELOG),
         tab: TabId::Docs,
         kind: PageKind::Changelog,
         title: "Changelog".into(),
-        description: Some("Recent changes, newest first.".into()),
+        description: Some("Releases, newest first.".into()),
         slug: Some("changelog".into()),
         badges: vec![],
-        blocks: changelog_blocks(b, commits),
+        blocks: changelog_index(releases),
     });
 
     let home_blocks = home_blocks(b, corpus);
@@ -75,7 +109,13 @@ pub fn build(
             children: reference_nav,
         });
     }
-    nav.push(NavNode::page(&changelog));
+    let mut changelog_group = vec![NavNode::page(&changelog)];
+    changelog_group.extend(release_nav);
+    nav.push(NavNode::Group {
+        label: "Changelog".into(),
+        collapsed: true,
+        children: changelog_group,
+    });
     b.add_tab(TabId::Docs, "Docs", home, nav);
 }
 
@@ -248,58 +288,197 @@ fn conventional(subject: &str) -> Option<(&str, Option<&str>, bool, &str)> {
         .then_some((kind, scope, breaking, rest))
 }
 
-fn changelog_blocks(b: &SiteBuilder, commits: &[ChangelogCommit]) -> Vec<Block> {
-    if commits.is_empty() {
+fn commit_item(b: &SiteBuilder, c: &ChangelogCommit) -> Vec<Inline> {
+    let mut item = Vec::new();
+    match conventional(&c.subject) {
+        Some((kind, scope, breaking, rest)) => {
+            if let Some(s) = scope {
+                item.push(Inline::code(s.to_string()));
+                item.push(Inline::text(" "));
+            }
+            if breaking {
+                item.push(Inline::strong("breaking"));
+                item.push(Inline::text(" "));
+            }
+            let _ = kind;
+            item.push(Inline::text(rest.to_string()));
+        }
+        None => item.push(Inline::text(c.subject.clone())),
+    }
+    let short: String = c.hash.chars().take(7).collect();
+    item.push(Inline::text(format!(" — {} · ", c.author)));
+    item.push(match b.repo() {
+        Some(r) => Inline::code_link(
+            Target::External {
+                url: format!("{}/commit/{}", r.web_url, c.hash),
+            },
+            short,
+        ),
+        None => Inline::code(short),
+    });
+    item
+}
+
+fn release_summary(r: &Release) -> String {
+    let api = r.api.total();
+    let mut s = format!(
+        "{} commit{}",
+        r.commits.len(),
+        if r.commits.len() == 1 { "" } else { "s" }
+    );
+    if api > 0 {
+        s.push_str(&format!(
+            ", {api} public API change{}",
+            if api == 1 { "" } else { "s" }
+        ));
+    }
+    if !r.date.is_empty() {
+        s.push_str(&format!(", {}", r.date));
+    }
+    s.push('.');
+    s
+}
+
+fn changelog_index(releases: &[Release]) -> Vec<Block> {
+    if releases.is_empty() {
         return vec![Block::text("No git history was found for this index.")];
     }
+    vec![Block::Table {
+        columns: vec![
+            "Release".into(),
+            "Date".into(),
+            "Commits".into(),
+            "API changes".into(),
+        ],
+        rows: releases
+            .iter()
+            .map(|r| {
+                let title = if r.tag.is_some() {
+                    format!("v{}", r.version)
+                } else {
+                    "Unreleased".into()
+                };
+                let api = format!(
+                    "+{} −{} ~{}",
+                    r.api.added_total, r.api.removed_total, r.api.changed_total
+                );
+                vec![
+                    vec![Inline::link(
+                        Target::page(PageId(format!("docs/release/{}", r.version))),
+                        title,
+                    )],
+                    vec![Inline::text(r.date.clone())],
+                    vec![Inline::text(r.commits.len().to_string())],
+                    vec![Inline::code(api)],
+                ]
+            })
+            .collect(),
+    }]
+}
+
+fn release_blocks(b: &SiteBuilder, r: &Release) -> Vec<Block> {
     let mut blocks = Vec::new();
-    let mut day = String::new();
-    let mut items: Vec<Vec<Inline>> = Vec::new();
-    let flush = |blocks: &mut Vec<Block>, day: &str, items: &mut Vec<Vec<Inline>>| {
-        if !items.is_empty() {
-            blocks.push(Block::heading(2, day));
-            blocks.push(Block::List {
-                ordered: false,
-                items: std::mem::take(items),
+    if let Some((md, start, end)) = &r.notes {
+        blocks.push(Block::Markdown {
+            markdown: MarkdownText {
+                source: md.clone(),
+                origin: MarkdownOrigin::Doc,
+                from: Some(SourceLoc::lines("CHANGELOG.md", *start, *end)),
+            },
+        });
+    }
+
+    if !r.api.is_empty() {
+        blocks.push(Block::heading(2, "API changes"));
+        blocks.push(Block::text(
+            "Public items whose declaration was added, removed or changed, found by comparing \
+             both versions of every changed source file.",
+        ));
+        let table = |list: &[crate::pulse::build::releases::ApiChange]| Block::Table {
+            columns: vec!["Item".into(), "Kind".into(), "Declaration".into()],
+            rows: list
+                .iter()
+                .map(|c| {
+                    vec![
+                        vec![Inline::code(c.name.clone())],
+                        vec![Inline::text(c.kind)],
+                        vec![Inline::code(c.signature.clone())],
+                    ]
+                })
+                .collect(),
+        };
+        if !r.api.added.is_empty() {
+            blocks.push(Block::heading(3, "Added"));
+            blocks.push(table(&r.api.added));
+        }
+        if !r.api.removed.is_empty() {
+            blocks.push(Block::heading(3, "Removed"));
+            blocks.push(table(&r.api.removed));
+        }
+        if !r.api.changed.is_empty() {
+            blocks.push(Block::heading(3, "Changed"));
+            blocks.push(Block::Table {
+                columns: vec!["Item".into(), "Before".into(), "After".into()],
+                rows: r
+                    .api
+                    .changed
+                    .iter()
+                    .map(|(c, before)| {
+                        vec![
+                            vec![Inline::code(c.name.clone())],
+                            vec![Inline::code(before.clone())],
+                            vec![Inline::code(c.signature.clone())],
+                        ]
+                    })
+                    .collect(),
             });
         }
-    };
-    for c in commits {
-        let date = c.date.get(..10).unwrap_or(&c.date).to_string();
-        if date != day {
-            flush(&mut blocks, &day, &mut items);
-            day = date;
+        if r.api.omitted() > 0 {
+            blocks.push(Block::note(format!(
+                "{} more API changes are not listed.",
+                r.api.omitted()
+            )));
         }
-        let mut item = Vec::new();
-        match conventional(&c.subject) {
-            Some((kind, scope, breaking, rest)) => {
-                let tag = match scope {
-                    Some(s) => format!("{kind}({s})"),
-                    None => kind.to_string(),
-                };
-                item.push(Inline::code(tag));
-                if breaking {
-                    item.push(Inline::text(" "));
-                    item.push(Inline::strong("breaking"));
-                }
-                item.push(Inline::text(format!(" {rest}")));
-            }
-            None => item.push(Inline::text(c.subject.clone())),
-        }
-        let short: String = c.hash.chars().take(7).collect();
-        item.push(Inline::text(format!(" — {} · ", c.author)));
-        item.push(match b.repo() {
-            Some(r) => Inline::code_link(
-                Target::External {
-                    url: format!("{}/commit/{}", r.web_url, c.hash),
-                },
-                short,
-            ),
-            None => Inline::code(short),
-        });
-        items.push(item);
     }
-    flush(&mut blocks, &day, &mut items);
+
+    if !r.commits.is_empty() {
+        blocks.push(Block::heading(2, "Commits"));
+        let groups: [(&str, &[&str]); 5] = [
+            ("Features", &["feat"]),
+            ("Fixes", &["fix"]),
+            ("Performance", &["perf"]),
+            ("Documentation", &["docs"]),
+            ("Other changes", &[]),
+        ];
+        fn kind_of(c: &ChangelogCommit) -> &str {
+            conventional(&c.subject).map(|(k, ..)| k).unwrap_or("")
+        }
+        for (title, kinds) in groups {
+            let items: Vec<Vec<Inline>> = r
+                .commits
+                .iter()
+                .filter(|c| {
+                    let k = kind_of(c);
+                    if kinds.is_empty() {
+                        !["feat", "fix", "perf", "docs"].contains(&k)
+                    } else {
+                        kinds.contains(&k)
+                    }
+                })
+                .map(|c| commit_item(b, c))
+                .collect();
+            if !items.is_empty() {
+                blocks.push(Block::heading(3, title));
+                blocks.push(Block::List {
+                    ordered: false,
+                    items,
+                });
+            }
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(Block::text("No changes recorded."));
+    }
     blocks
 }
 

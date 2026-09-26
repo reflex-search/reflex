@@ -16,6 +16,7 @@ pub mod internals_tab;
 pub mod links;
 pub mod modules;
 pub mod reference;
+pub mod releases;
 
 use crate::cache::CacheManager;
 use crate::pulse::extract::Corpus;
@@ -34,8 +35,6 @@ pub struct BuildOptions {
     /// 1 = top-level modules only, 2 = also subdirectories with 3+ source files.
     pub max_depth: u8,
     pub min_files: usize,
-    /// Recent commits on the changelog page.
-    pub changelog_commits: usize,
     /// Where slugs persist between runs; `None` keeps them in memory only.
     pub slugs_path: Option<PathBuf>,
     /// Detect the git remote for source permalinks.
@@ -49,7 +48,6 @@ impl BuildOptions {
             title: title.into(),
             max_depth: 2,
             min_files: 1,
-            changelog_commits: 50,
             slugs_path: None,
             detect_repo: true,
             reference: reference::ReferenceOptions::default(),
@@ -61,10 +59,6 @@ impl BuildOptions {
 pub fn build_site(cache: &CacheManager, opts: &BuildOptions) -> Result<Site> {
     let corpus = Corpus::load(cache)?;
     let graph = ModuleGraph::build(&corpus, opts.max_depth, opts.min_files);
-    let commits =
-        crate::pulse::changelog::extract_changelog_commits(&corpus.root, opts.changelog_commits)
-            .map(|(c, _)| c)
-            .unwrap_or_default();
     let repo = opts
         .detect_repo
         .then(|| RepoInfo::detect(&corpus.root))
@@ -91,7 +85,13 @@ pub fn build_site(cache: &CacheManager, opts: &BuildOptions) -> Result<Site> {
     let commands = crate::pulse::extract::cli::find_commands(&rust);
     let mut reference_nav = cli_ref::build(&mut b, &commands);
     reference_nav.extend(reference::build(&mut b, &rust, &opts.reference));
-    docs_tab::build(&mut b, &corpus, &graph, &commits, guide_nav, reference_nav);
+    let changelog_md = corpus
+        .files
+        .iter()
+        .find(|f| f.path.eq_ignore_ascii_case("CHANGELOG.md"))
+        .and_then(|f| content.read(&f.path));
+    let releases = releases::collect(&corpus.root, changelog_md);
+    docs_tab::build(&mut b, &corpus, &graph, &releases, guide_nav, reference_nav);
 
     let (mut site, slugs) = b.finish();
     links::resolve_markdown_links(&mut site);

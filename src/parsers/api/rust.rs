@@ -167,7 +167,7 @@ fn signature(node: &Node, src: &str, cut_at_body: bool) -> String {
     } else {
         node.end_byte()
     };
-    let raw = &src[node.start_byte()..end];
+    let raw = strip_line_comments(&src[node.start_byte()..end]);
     let mut s = collapse_ws(
         raw.trim_end()
             .trim_end_matches(|c: char| c == ';' || c == '{' || c == ',' || c.is_whitespace()),
@@ -176,6 +176,31 @@ fn signature(node: &Node, src: &str, cut_at_body: bool) -> String {
         s = s.chars().take(MAX_SIGNATURE).collect::<String>() + " …";
     }
     s
+}
+
+/// Remove `// …` comments (not inside string or char literals) so a parameter list
+/// annotated line by line reads as a clean one-line signature.
+fn strip_line_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.lines() {
+        let mut in_str = false;
+        let mut prev = '\0';
+        let mut cut = line.len();
+        for (i, c) in line.char_indices() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                '/' if !in_str && prev == '/' => {
+                    cut = i - 1;
+                    break;
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
 }
 
 static SINCE_RE: LazyLock<regex::Regex> =
@@ -798,6 +823,20 @@ pub const CO: u8 = 1;
         assert_eq!(req.visibility, Visibility::Inherited);
         assert_eq!(req.signature, "fn m(&mut self)");
         assert_eq!(find(&tr.members, "Out").kind, ApiKind::AssociatedType);
+    }
+
+    #[test]
+    fn signatures_drop_line_comments() {
+        let src = "pub fn f(\n    files: &[(String, usize)], // (path, lines)\n    url: &str, // \"http://x\"\n) -> u8 { 0 }\n";
+        let f = extract(src).unwrap();
+        assert_eq!(
+            f.items[0].signature,
+            "pub fn f( files: &[(String, usize)], url: &str, ) -> u8"
+        );
+        assert_eq!(
+            strip_line_comments("let s = \"a//b\"; // c"),
+            "let s = \"a//b\"; \n"
+        );
     }
 
     #[test]

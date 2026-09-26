@@ -15,7 +15,7 @@ use crate::models::Language;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the output of any extractor changes; cached results are then rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 2;
+pub const EXTRACTOR_VERSION: u32 = 3;
 
 /// The documented surface of one file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
