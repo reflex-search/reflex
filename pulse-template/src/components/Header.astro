@@ -1,0 +1,78 @@
+---
+// Header override: Starlight's header plus "Docs | Internals" tabs next to the title.
+import SiteTitle from '@astrojs/starlight/components/SiteTitle.astro';
+import Search from '@astrojs/starlight/components/Search.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+import pulse from '../../pulse.config.json';
+import { locate } from '../routeData';
+
+const base = (pulse.base ?? '/').replace(/\/$/, '');
+const current = locate(Astro.url.pathname)?.tab;
+const tabs = pulse.tabs.map((t) => ({ ...t, href: `${base}/${t.home ?? t.prefix.replace(/^\/|\/$/g, '')}/`, active: t.id === current }));
+---
+
+<div class="header">
+	<div class="title-wrapper sl-flex">
+		<SiteTitle />
+		<nav class="pulse-tabs" aria-label="Sections">
+			{tabs.map((t) => <a href={t.href} aria-current={t.active ? 'page' : undefined} data-tab={t.id}>{t.label}</a>)}
+		</nav>
+	</div>
+	<div class="sl-flex print:hidden">
+		<Search />
+	</div>
+	<div class="sl-hidden md:sl-flex print:hidden right-group">
+		<div class="sl-flex social-icons"><SocialIcons /></div>
+		<ThemeSelect />
+	</div>
+</div>
+
+<style>
+	.header {
+		display: flex;
+		gap: var(--sl-nav-gap);
+		justify-content: space-between;
+		align-items: center;
+		height: 100%;
+	}
+	.title-wrapper {
+		overflow: clip;
+		padding: 0.25rem;
+		margin: -0.25rem;
+		min-width: 0;
+		gap: 1.25rem;
+		align-items: center;
+	}
+	.right-group,
+	.social-icons {
+		gap: 1rem;
+		align-items: center;
+	}
+	.pulse-tabs {
+		display: flex;
+		gap: 0.25rem;
+		font-size: var(--sl-text-sm);
+	}
+	.pulse-tabs a {
+		padding: 0.25rem 0.625rem;
+		border-radius: 0.375rem;
+		color: var(--sl-color-gray-2);
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.pulse-tabs a:hover {
+		color: var(--sl-color-white);
+	}
+	.pulse-tabs a[aria-current='page'] {
+		color: var(--sl-color-text-invert);
+		background: var(--sl-color-text-accent);
+	}
+	@media (min-width: 50rem) {
+		.header {
+			display: grid;
+			grid-template-columns: minmax(calc(var(--sl-sidebar-width) - 2 * var(--sl-nav-pad-x)), auto) 1fr auto;
+			align-content: center;
+		}
+	}
+</style>

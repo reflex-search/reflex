@@ -1,0 +1,18 @@
+---
+// Site root: send visitors to the first tab's home page.
+import pulse from '../../pulse.config.json';
+const base = (pulse.base ?? '/').replace(/\/$/, '');
+const tab = pulse.tabs[0];
+const target = `${base}/${tab.home ?? tab.prefix.replace(/^\/|\/$/g, '')}/`;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta http-equiv="refresh" content={`0; url=${target}`} />
+		<link rel="canonical" href={target} />
+		<title>{pulse.title}</title>
+	</head>
+	<body><a href={target}>{pulse.title}</a></body>
+</html>

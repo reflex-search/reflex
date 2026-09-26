@@ -1,0 +1,44 @@
+/* Pulse theme stub. Fonts are self-hosted via @fontsource (no Google Fonts CDN). */
+:root {
+	--sl-font: 'Inter Variable', system-ui, sans-serif;
+	--sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+	--sl-color-accent-low: #1e1b4b;
+	--sl-color-accent: #6366f1;
+	--sl-color-accent-high: #c7d2fe;
+}
+:root[data-theme='light'] {
+	--sl-color-accent-low: #e0e7ff;
+	--sl-color-accent: #4f46e5;
+	--sl-color-accent-high: #312e81;
+}
+
+.pulse-symbol {
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.5rem;
+	padding: 0.75rem 1rem;
+	margin-block: 1.25rem;
+}
+.pulse-symbol > h3 {
+	margin-top: 0;
+	display: flex;
+	gap: 0.5rem;
+	align-items: baseline;
+}
+.pulse-kind {
+	font-size: var(--sl-text-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--sl-color-gray-3);
+}
+.pulse-meta {
+	font-size: var(--sl-text-sm);
+	color: var(--sl-color-gray-3);
+}
+pre.pulse-mermaid {
+	background: transparent;
+	border: 1px dashed var(--sl-color-gray-5);
+	text-align: center;
+}
+pre.pulse-mermaid[data-processed='true'] {
+	border: 0;
+}

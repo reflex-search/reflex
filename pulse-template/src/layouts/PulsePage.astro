@@ -1,0 +1,132 @@
+---
+// Renders one Pulse page (a JSON block list) inside Starlight's page chrome.
+import fs from 'node:fs/promises';
+import type { CollectionEntry } from 'astro:content';
+import { getEntry, render } from 'astro:content';
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+	/** Content-collection page (default), or ... */
+	page?: CollectionEntry<'pages'>;
+	/** ... a page JSON file read at render time (build.pageSource = 'fs'). */
+	pageFile?: string;
+	pageId?: string;
+}
+const props = Astro.props;
+const page = props.page ?? { id: props.pageId!, data: JSON.parse(await fs.readFile(props.pageFile!, 'utf8')) };
+const { title, description, blocks } = page.data;
+
+type Heading = { depth: number; slug: string; text: string };
+const headings: Heading[] = [];
+
+// Resolve every fragment up front: StarlightPage needs the full heading list
+// (for the TOC) before the body renders.
+//
+// Two prose sources are supported (spike experiment E2):
+//   * a fragment id -> Markdown rendered by Astro's content layer (the plan of record);
+//   * inline `html` + `headings` pre-rendered and sanitised by Rust, injected verbatim.
+async function fragment(id: string | undefined, html?: string, hs?: Heading[], toc = true) {
+	if (html !== undefined) return { html, headings: hs ?? [], toc };
+	if (!id) return undefined;
+	const entry = await getEntry('fragments', id);
+	if (!entry) throw new Error(`pulse: page ${page.id} references missing fragment ${id}`);
+	const { Content, headings } = await render(entry);
+	return { Content, headings, toc: entry.data.toc !== false };
+}
+
+const rendered: any[] = [];
+for (const b of blocks as any[]) {
+	switch (b.type) {
+		case 'heading':
+			headings.push({ depth: b.level, slug: b.id, text: b.text });
+			rendered.push(b);
+			break;
+		case 'prose': {
+			const f = await fragment(b.fragment, b.html, b.headings, b.toc !== false);
+			if (f?.toc) headings.push(...f.headings);
+			rendered.push({ ...b, f });
+			break;
+		}
+		case 'symbol-card': {
+			headings.push({ depth: 3, slug: b.id, text: b.name });
+			const f = await fragment(b.doc, b.doc_html, b.doc_headings, false);
+			if (f?.toc) headings.push(...f.headings);
+			rendered.push({ ...b, f });
+			break;
+		}
+		default:
+			rendered.push(b);
+	}
+}
+---
+
+<StarlightPage frontmatter={{ title, description, pagefind: true }} headings={headings}>
+	{
+		rendered.map((b) => {
+			switch (b.type) {
+				case 'heading': {
+					const H = `h${Math.min(6, Math.max(2, b.level))}`;
+					return <H id={b.id}>{b.text}</H>;
+				}
+				case 'prose':
+					return b.f && (b.f.html !== undefined ? <Fragment set:html={b.f.html} /> : <b.f.Content />);
+				case 'signature':
+					return <Code code={b.code} lang={b.lang ?? 'text'} />;
+				case 'symbol-card':
+					return (
+						<section class="pulse-symbol">
+							<h3 id={b.id}>
+								<code>{b.name}</code>
+								<span class="pulse-kind">{b.kind}</span>
+							</h3>
+							{b.signature_html !== undefined ? <Fragment set:html={b.signature_html} /> : <Code code={b.signature} lang={b.lang ?? 'text'} />}
+							{b.f && (b.f.html !== undefined ? <Fragment set:html={b.f.html} /> : <b.f.Content />)}
+							<p class="pulse-meta">
+								Defined in <code>{b.path}:{b.line}</code>
+								{b.refs !== undefined && <> · {b.refs} references</>}
+							</p>
+						</section>
+					);
+				case 'dep-graph':
+					return <pre class="pulse-mermaid">{b.mermaid}</pre>;
+				case 'table':
+					return (
+						<table>
+							<thead>
+								<tr>{b.columns.map((c: string) => <th>{c}</th>)}</tr>
+							</thead>
+							<tbody>
+								{b.rows.map((r: string[]) => (
+									<tr>{r.map((c) => <td>{c}</td>)}</tr>
+								))}
+							</tbody>
+						</table>
+					);
+				default:
+					return <p class="pulse-meta">[unknown block: {b.type}]</p>;
+			}
+		})
+	}
+</StarlightPage>
+
+<script>
+	// Mermaid is ~2 MB of JS: load it only on pages that actually have a diagram.
+	const nodes = Array.from(document.querySelectorAll<HTMLElement>('pre.pulse-mermaid'));
+	if (nodes.length > 0) {
+		// Keep the source: mermaid replaces the text with an SVG, and a theme switch re-renders.
+		for (const n of nodes) n.dataset.src = n.textContent ?? '';
+		const render = async () => {
+			const { default: mermaid } = await import('mermaid');
+			const dark = document.documentElement.dataset.theme === 'dark';
+			mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
+			for (const n of nodes) {
+				n.removeAttribute('data-processed');
+				n.textContent = n.dataset.src ?? '';
+			}
+			await mermaid.run({ nodes });
+		};
+		render();
+		new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+	}
+</script>
