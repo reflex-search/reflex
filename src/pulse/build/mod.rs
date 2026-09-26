@@ -78,6 +78,13 @@ pub fn build_site(cache: &CacheManager, opts: &BuildOptions) -> Result<Site> {
     });
     let content = crate::pulse::extract::ContentAccess::open(cache);
     let rust = crate::pulse::extract::surface::Surface::resolve_rust(&corpus, &apis, &content);
+    let rust = {
+        let mut s = rust;
+        s.extend(crate::pulse::extract::surface::Surface::resolve_python(
+            &corpus, &apis, &content,
+        ));
+        s
+    };
 
     let guides = guides::collect(&corpus, &content);
     let (guide_nav, contributing_nav) = guides::build(&mut b, &corpus, &guides);

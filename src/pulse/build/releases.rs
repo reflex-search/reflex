@@ -246,19 +246,61 @@ impl Drop for BlobReader {
     }
 }
 
-/// Public items of one file version, keyed by `Type::member` / `name`.
-fn public_items(lang: Language, source: &str) -> BTreeMap<String, (String, &'static str)> {
+/// Whether a Python file is a private module: a directory or file name in its path
+/// starts with `_` (`pkg/_core.py`, `pkg/_impl/x.py`); `__init__.py` does not count.
+fn python_private_module(path: &str) -> bool {
+    path.split('/')
+        .map(|s| s.strip_suffix(".py").unwrap_or(s))
+        .any(|s| s.starts_with('_') && s != "__init__")
+}
+
+/// Public items of one file version, keyed by `Type::member` / `name` (`Type.member`
+/// in Python).
+///
+/// Python: `__all__`, when present, lists the public top-level names. A private module
+/// (`_core.py`) counts only through its own `__all__`: what a package re-exports from
+/// it is decided in another file. Documented dunders (`__init__`, `__call__`, …) and
+/// enum members count, so a constructor change is an API change.
+fn public_items(
+    lang: Language,
+    path: &str,
+    source: &str,
+) -> BTreeMap<String, (String, &'static str)> {
     let mut out = BTreeMap::new();
     let Some(file) = api::extract(lang, source) else {
         return out;
     };
+    let python = lang == Language::Python;
+    let exports = file.exports.as_deref().filter(|_| python);
+    if python && exports.is_none() && python_private_module(path) {
+        return out;
+    }
+    let rules = Rules {
+        sep: if python { "." } else { "::" },
+        inherited: python,
+    };
+    struct Rules {
+        sep: &'static str,
+        /// `Visibility::Inherited` members are API (Python dunders, enum members).
+        inherited: bool,
+    }
     fn walk(
         items: &[ApiItem],
         owner: Option<&str>,
+        rules: &Rules,
+        exports: Option<&[String]>,
         out: &mut BTreeMap<String, (String, &'static str)>,
     ) {
         for it in items {
-            if it.test_only || it.hidden || !matches!(it.visibility, Visibility::Public) {
+            let visible = match it.visibility {
+                Visibility::Public => true,
+                Visibility::Inherited => rules.inherited,
+                _ => false,
+            };
+            if it.test_only || it.hidden || !visible {
+                continue;
+            }
+            if exports.is_some_and(|list| !list.contains(&it.name)) {
                 continue;
             }
             let owner_name = it
@@ -266,7 +308,7 @@ fn public_items(lang: Language, source: &str) -> BTreeMap<String, (String, &'sta
                 .as_deref()
                 .map(|t| t.split('<').next().unwrap_or(t).trim());
             let name = match owner.or(owner_name) {
-                Some(o) => format!("{o}::{}", it.name),
+                Some(o) => format!("{o}{}{}", rules.sep, it.name),
                 None => it.name.clone(),
             };
             out.insert(
@@ -277,11 +319,11 @@ fn public_items(lang: Language, source: &str) -> BTreeMap<String, (String, &'sta
                 ),
             );
             if it.kind.is_type() || it.kind == api::ApiKind::Module {
-                walk(&it.members, Some(&name), out);
+                walk(&it.members, Some(&name), rules, None, out);
             }
         }
     }
-    walk(&file.items, None, &mut out);
+    walk(&file.items, None, &rules, exports, &mut out);
     out
 }
 
@@ -301,11 +343,11 @@ pub fn api_delta(root: &Path, from: &str, to: &str) -> ApiDelta {
         }
         let old = blobs
             .read(from, path)
-            .map(|s| public_items(lang, &s))
+            .map(|s| public_items(lang, path, &s))
             .unwrap_or_default();
         let new = blobs
             .read(to, path)
-            .map(|s| public_items(lang, &s))
+            .map(|s| public_items(lang, path, &s))
             .unwrap_or_default();
         let change = |name: &str, sig: &str, kind| ApiChange {
             name: name.to_string(),
@@ -411,10 +453,34 @@ mod tests {
     #[test]
     fn public_item_keys() {
         let src = "pub struct S;\nimpl S { pub fn a(&self) {} fn hidden(&self) {} }\npub fn f(x: u8) {}\nfn private() {}\n";
-        let items = public_items(Language::Rust, src);
+        let items = public_items(Language::Rust, "src/lib.rs", src);
         let keys: Vec<&str> = items.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["S", "S::a", "f"]);
         assert_eq!(items["f"].0, "pub fn f(x: u8)");
+    }
+
+    #[test]
+    fn python_public_item_keys() {
+        let src = "__all__ = [\"Engine\", \"run\"]\nclass Engine:\n    def __init__(self, url: str): ...\n    def __repr__(self): ...\n    def start(self): ...\n    def _step(self): ...\ndef run(): ...\ndef helper(): ...\ndef _private(): ...\n";
+        let keys = |path: &str, src: &str| -> Vec<String> {
+            public_items(Language::Python, path, src)
+                .into_keys()
+                .collect()
+        };
+        assert_eq!(
+            keys("pkg/__init__.py", src),
+            vec!["Engine", "Engine.__init__", "Engine.start", "run"],
+            "__all__ decides top-level names; the constructor counts, __repr__ does not"
+        );
+        assert_eq!(
+            keys("pkg/_core.py", src),
+            keys("pkg/__init__.py", src),
+            "a private module with __all__ counts through it"
+        );
+        let no_all = "def run(): ...\ndef _private(): ...\n";
+        assert_eq!(keys("pkg/api.py", no_all), vec!["run"]);
+        assert!(keys("pkg/_core.py", no_all).is_empty());
+        assert!(keys("pkg/_impl/api.py", no_all).is_empty());
     }
 
     #[test]

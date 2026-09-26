@@ -27,8 +27,8 @@ use super::links::SYMBOL_SCHEME;
 /// Longest signature kept on one line.
 const SIGNATURE_WIDTH: usize = 90;
 
-/// Tidy a whitespace-collapsed signature, and wrap a long `fn` one like rustfmt:
-/// one parameter per line, `where` on its own line.
+/// Tidy a whitespace-collapsed signature, and wrap a long `fn` (or Python `def`) one
+/// like rustfmt: one parameter per line, `where` on its own line.
 pub fn pretty_signature(sig: &str) -> String {
     let mut s = sig
         .replace("( ", "(")
@@ -42,7 +42,7 @@ pub fn pretty_signature(sig: &str) -> String {
     if s.chars().count() <= SIGNATURE_WIDTH {
         return s;
     }
-    let Some(fn_at) = s.find("fn ") else {
+    let Some(fn_at) = s.find("fn ").or_else(|| s.find("def ")) else {
         return s;
     };
     // The parameter list opens at the first `(` outside the generics after the name.
@@ -159,8 +159,8 @@ pub fn build(b: &mut SiteBuilder, api: &Surface, opts: &ReferenceOptions) -> Vec
             opts.include.is_empty()
                 || opts.include.iter().any(|p| {
                     path == p
-                        || path.starts_with(&format!("{p}::"))
-                        || p.starts_with(&format!("{path}::"))
+                        || path.starts_with(&format!("{p}{}", k.sep))
+                        || p.starts_with(&format!("{path}{}", k.sep))
                 })
         };
         let modules: Vec<usize> = (0..k.modules.len())
@@ -389,8 +389,32 @@ fn plain(md: &str) -> String {
 
 fn badges_for(item: &ApiItem) -> Vec<String> {
     let mut v = vec![item.kind.label().to_string()];
+    v.extend(attr_badges(item));
     if item.deprecated.is_some() {
         v.push("deprecated".into());
+    }
+    v
+}
+
+/// Badges a Python decorator or dunder earns (`@classmethod` → `classmethod`).
+fn attr_badges(item: &ApiItem) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for a in &item.attrs {
+        let callee = a.split('(').next().unwrap_or(a).trim();
+        let badge = match callee.rsplit('.').next().unwrap_or(callee) {
+            "classmethod" => "classmethod",
+            "staticmethod" => "staticmethod",
+            "property" | "cached_property" => "property",
+            "abstractmethod" | "abstractproperty" => "abstract",
+            "dataclass" => "dataclass",
+            _ => continue,
+        };
+        if !v.iter().any(|b| b == badge) {
+            v.push(badge.to_string());
+        }
+    }
+    if item.kind == ApiKind::Method && item.name == "__init__" {
+        v.push("constructor".into());
     }
     v
 }
@@ -398,6 +422,14 @@ fn badges_for(item: &ApiItem) -> Vec<String> {
 static INTRA_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r"\[(`?)([A-Za-z_][\w:]*(?:\(\)|!)?)(`?)\](\(([A-Za-z_][\w]*(?:::[\w]+)*(?:\(\)|!)?)\))?",
+    )
+    .expect("valid regex")
+});
+
+/// [`INTRA_RE`] for dot-separated packages (Python): `` [`pkg.mod.Foo`] ``, `[x](pkg.Foo)`.
+static INTRA_DOT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"\[(`?)([A-Za-z_][\w.]*(?:\(\))?)(`?)\](\(([A-Za-z_][\w]*(?:\.[\w]+)*(?:\(\))?)\))?",
     )
     .expect("valid regex")
 });
@@ -457,7 +489,12 @@ fn render_doc(
             }
             (Some(false), false) => out.push(line.to_string()),
             (None, false) => {
-                let rewritten = INTRA_RE.replace_all(line, |c: &regex::Captures| {
+                let re = if index.sep == "." {
+                    &*INTRA_DOT_RE
+                } else {
+                    &*INTRA_RE
+                };
+                let rewritten = re.replace_all(line, |c: &regex::Captures| {
                     let whole = c.get(0).unwrap().as_str();
                     let (tick, text, dest) = (&c[1], &c[2], c.get(5).map(|m| m.as_str()));
                     // `[text](https://…)` never matches; a bare `[word]` needs a path shape.
@@ -503,6 +540,7 @@ fn symbol_block(
             }
         }
     }
+    badges.extend(attr_badges(item));
     let deprecated = item.deprecated.as_ref().map(|d| {
         let mut s = String::from("Deprecated");
         if let Some(v) = &d.since {
