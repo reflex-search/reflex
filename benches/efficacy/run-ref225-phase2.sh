@@ -25,7 +25,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG_FILE="$SCRIPT_DIR/results/ref225-phase2.log"
 
 N=8
-MODEL="${MODEL:-claude-sonnet-5}"
+MODEL="${MODEL:-claude-opus-5-5}"
 DRY_RUN=""
 
 while [[ $# -gt 0 ]]; do

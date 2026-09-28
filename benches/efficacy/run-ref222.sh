@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # REF-222: Powered A/B run — Reflex (columnar) vs grep/glob
 # Runs arms A and B on ALL find_all_usages tasks (9 tasks across 3 repos)
-# with N=8 trials per arm × task. Model: $MODEL (default claude-sonnet-5).
+# with N=8 trials per arm × task. Model: $MODEL (default claude-opus-5-5).
 #
 # Designed to run detached (setsid nohup) so agent heartbeats don't consume
 # the output. Runner context memory is harmless: stdout goes to a log file,
@@ -18,7 +18,7 @@ MANIFEST_PREFIX="ref222"
 
 N=8
 DRY_RUN=""
-MODEL="${MODEL:-claude-sonnet-5}"
+MODEL="${MODEL:-claude-opus-5-5}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

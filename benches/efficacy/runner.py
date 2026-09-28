@@ -452,9 +452,12 @@ def build_claude_cmd(
     if arm_cfg.get("allowed_tools"):
         cmd.extend(["--allowedTools"] + arm_cfg["allowed_tools"])
 
-    # Disallowed tools
-    if arm_cfg["disallowed_tools"]:
-        cmd.extend(["--disallowedTools", ",".join(arm_cfg["disallowed_tools"])])
+    # Disallowed tools. Subagents are blocked in every arm: a subagent's turns and
+    # tokens are not in the result event's num_turns/usage, so a delegated trial
+    # reads as "1 turn" and undercounts its cost (27/128 REF-225 control trials,
+    # 2026-09-28).
+    disallowed = list(arm_cfg["disallowed_tools"]) + ["Agent", "Task"]
+    cmd.extend(["--disallowedTools", ",".join(disallowed)])
 
     # System prompt appendage (for Bprime nudge suppression)
     if arm_cfg["append_system_prompt"]:
@@ -633,8 +636,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="claude-sonnet-5",
-        help="Model ID to use (default: claude-sonnet-5)",
+        default="claude-opus-5-5",
+        help="Model ID to use (default: claude-opus-5-5)",
     )
     parser.add_argument(
         "--skip-build",
