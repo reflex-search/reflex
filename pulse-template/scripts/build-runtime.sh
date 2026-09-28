@@ -51,7 +51,9 @@ node "$TEMPLATE/scripts/prune.mjs" "$WORK"
 
 echo "== pagefind: plain binary instead of pagefind_extended"
 # pagefind's resolver tries pagefind_extended, then pagefind (or $PAGEFIND_BINARY_PATH).
-PF_VER="$(node -p "require('$WORK/node_modules/pagefind/package.json').version")"
+# The path goes in argv, not inside the JS string: Git Bash on Windows converts
+# /tmp/... only when it is a separate argument.
+PF_VER="$(node -p 'require(process.argv[1]).version' "$WORK/node_modules/pagefind/package.json")"
 case "$PLATFORM" in
 	linux-x64) PF_TRIPLE=x86_64-unknown-linux-musl PF_DIR=linux-x64 ;;
 	linux-arm64) PF_TRIPLE=aarch64-unknown-linux-musl PF_DIR=linux-arm64 ;;
