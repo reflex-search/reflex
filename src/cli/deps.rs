@@ -314,10 +314,7 @@ pub(super) fn handle_deps(
                 eprintln!("\nFound {} dependents", dependents.len());
             }
             _ => {
-                anyhow::bail!(
-                    "Unknown format '{}'. Supported: json, tree, table, dot",
-                    format
-                );
+                anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
             }
         }
     } else {
@@ -386,10 +383,7 @@ pub(super) fn handle_deps(
                     eprintln!("\nFound {} dependencies", deps.len());
                 }
                 _ => {
-                    anyhow::bail!(
-                        "Unknown format '{}'. Supported: json, tree, table, dot",
-                        format
-                    );
+                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
                 }
             }
         } else {
@@ -455,10 +449,7 @@ pub(super) fn handle_deps(
                     eprintln!("\nFound {} transitive dependencies", transitive.len());
                 }
                 _ => {
-                    anyhow::bail!(
-                        "Unknown format '{}'. Supported: json, tree, table, dot",
-                        format
-                    );
+                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
                 }
             }
         }

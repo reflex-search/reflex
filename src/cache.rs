@@ -1,8 +1,7 @@
 //! Cache management and memory-mapped I/O
 //!
 //! The cache module handles the `.reflex/` directory structure:
-//! - `meta.db`: Metadata, file hashes, and configuration (SQLite)
-//! - `tokens.bin`: Compressed lexical tokens (binary)
+//! - `meta.db`: Metadata, file fingerprints, dependencies and the symbol cache (SQLite)
 //! - `content.bin`: Memory-mapped file contents (binary)
 //! - `trigrams.bin`: Trigram inverted index (per-file varint blocks, V4 format)
 //! - `config.toml`: Index settings (TOML text)
@@ -20,7 +19,9 @@ pub const CACHE_DIR: &str = ".reflex";
 
 /// File names within the cache directory
 pub const META_DB: &str = "meta.db";
+#[deprecated(note = "tokens.bin is no longer written")]
 pub const TOKENS_BIN: &str = "tokens.bin";
+#[deprecated(note = "hashes.json is no longer written; hashes live in meta.db")]
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
 
@@ -114,9 +115,6 @@ impl CacheManager {
 
         // Create default config.toml
         self.init_config_toml()?;
-
-        // Note: tokens.bin removed - was never used
-        // Note: hashes.json is deprecated - hashes are now stored in meta.db
 
         log::info!("Cache initialized successfully");
         Ok(())
@@ -463,7 +461,7 @@ text_tier = true  # Also index docs, config and every other non-binary file
 # "tracked" (default): every non-binary file that is not gitignored and not under a
 #   dot-directory — ripgrep's defaults (hidden = true walks dot-directories). Lock and generated files are indexed but excluded from
 #   searches unless asked for (include_locks / include_generated / lang).
-# "allowlist": the pre-2.0.0 rule — code plus a fixed docs/config extension list.
+# "allowlist": code plus a fixed docs/config extension list.
 mode = "tracked"
 hidden = false  # true also walks dot-directories (.githooks/), never .git/ or .reflex/
 max_file_size = 10485760  # 10 MB
@@ -475,20 +473,12 @@ patterns = []
 [index.exclude]
 patterns = []
 
-[search]
-default_limit = 100
-fuzzy_threshold = 0.8
-
 [performance]
-parallel_threads = 0  # 0 = auto (80% of available cores), or set a specific number
-compression_level = 3  # zstd level
+parallel_threads = 0  # 0 = auto (80% of available cores, max 32), or set a specific number
+symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, max 32)
 
-[semantic]
-# Semantic query generation using LLMs
-# Translate natural language questions into rfx query commands
-provider = "openrouter"  # Options: openai, anthropic, openrouter
-# model = "openai/gpt-4o-mini"  # Optional: override provider default model
-# auto_execute = false  # Optional: auto-execute queries without confirmation
+# AI provider settings for `rfx ask` / `rfx pulse` live in ~/.reflex/config.toml
+# (run `rfx llm config`), not here.
 "#;
 
         std::fs::write(&config_path, default_config)?;
@@ -1610,13 +1600,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
         let mut index_size_bytes: u64 = 0;
         let mut trigram_index_bytes: u64 = 0;
 
-        for file_name in [
-            META_DB,
-            TOKENS_BIN,
-            CONFIG_TOML,
-            "content.bin",
-            "trigrams.bin",
-        ] {
+        for file_name in [META_DB, CONFIG_TOML, "content.bin", "trigrams.bin"] {
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 index_size_bytes += metadata.len();
@@ -2363,13 +2347,7 @@ provider = "openrouter"  # Options: openai, anthropic, openrouter
     fn calculate_cache_size(&self) -> Result<u64> {
         let mut total_size: u64 = 0;
 
-        for file_name in [
-            META_DB,
-            TOKENS_BIN,
-            CONFIG_TOML,
-            "content.bin",
-            "trigrams.bin",
-        ] {
+        for file_name in [META_DB, CONFIG_TOML, "content.bin", "trigrams.bin"] {
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 total_size += metadata.len();
@@ -2462,11 +2440,6 @@ pub struct BranchInfo {
     pub file_count: usize,
     pub is_dirty: bool,
 }
-
-// TODO: Implement memory-mapped readers for:
-// - SymbolReader (reads from symbols.bin)
-// - TokenReader (reads from tokens.bin)
-// - MetaReader (reads from meta.db)
 
 #[cfg(test)]
 mod tests {
@@ -2886,9 +2859,22 @@ mod tests {
 
         // Verify config contains expected sections
         assert!(config_content.contains("[index]"));
-        assert!(config_content.contains("[search]"));
         assert!(config_content.contains("[performance]"));
         assert!(config_content.contains("max_file_size"));
+        assert!(config_content.contains("symbol_threads"));
+        // Keys nothing reads must not be advertised.
+        for dead in [
+            "[search]",
+            "default_limit",
+            "fuzzy_threshold",
+            "compression_level",
+            "[semantic]",
+        ] {
+            assert!(
+                !config_content.contains(dead),
+                "template advertises unused {dead}"
+            );
+        }
     }
 
     #[test]

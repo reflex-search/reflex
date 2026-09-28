@@ -416,7 +416,8 @@ pub enum Command {
     /// This command is automatically invoked by MCP clients like Claude Code and
     /// should not be run manually.
     ///
-    /// Configuration example for Claude Code (~/.claude/claude_code_config.json):
+    /// Register with Claude Code: `claude mcp add --scope user reflex -- rfx mcp`
+    /// Equivalent JSON (`.mcp.json` or another client's MCP config):
     /// {
     ///   "mcpServers": {
     ///     "reflex": {
@@ -472,7 +473,7 @@ pub enum Command {
         #[arg(long, requires = "islands")]
         max_island_size: Option<usize>,
 
-        /// Output format: tree (default), table, dot
+        /// Output format: tree (default), table
         #[arg(short = 'f', long, default_value = "tree")]
         format: String,
 
@@ -548,7 +549,7 @@ pub enum Command {
         #[arg(short, long, default_value = "1")]
         depth: usize,
 
-        /// Output format: tree (default), table, dot
+        /// Output format: tree (default), table
         #[arg(short = 'f', long, default_value = "tree")]
         format: String,
 
@@ -575,7 +576,7 @@ pub enum Command {
     ///   2. OR set API key via environment variable:
     ///      - OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY
     ///
-    ///   3. Optional: Configure provider in .reflex/config.toml:
+    ///   3. Optional: Configure provider in ~/.reflex/config.toml:
     ///      [semantic]
     ///      provider = "openai"  # or anthropic, openrouter
     ///      model = "gpt-5.1-mini"  # optional, defaults to provider default

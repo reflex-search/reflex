@@ -11,7 +11,7 @@
 //! ```text
 //! Header (32 bytes):
 //!   magic: "RFCT" (4 bytes)
-//!   version: 1 (u32)
+//!   version: 2 (u32)
 //!   num_files: N (u64)
 //!   index_offset: offset to file index (u64)
 //!   reserved: 8 bytes
