@@ -40,18 +40,14 @@ rfx query "TODO" --json --limit 20
 
 ### 3. (Optional) Connect to an AI agent via MCP
 
-Add this to your Claude Code MCP configuration — `~/.claude/claude_code_config.json` for every project, or `.claude/claude_code_config.json` for one project:
+With Claude Code:
 
-```json
-{
-  "mcpServers": {
-    "reflex": {
-      "command": "rfx",
-      "args": ["mcp"]
-    }
-  }
-}
+```bash
+claude mcp add --scope user reflex -- rfx mcp      # every project
+claude mcp add --scope project reflex -- rfx mcp   # this project only (writes .mcp.json)
 ```
+
+For other MCP clients, register a stdio server with command `rfx` and args `["mcp"]`.
 
 Your AI assistant can now call `search_code`, `find_references`, `get_dependencies`, and more.
 
@@ -73,33 +69,10 @@ Your AI assistant can now call `search_code`, `find_references`, `get_dependenci
 
 ### Measured efficiency (A/B vs. built-in AI search)
 
-We A/B-tested an AI coding agent on real code-search tasks **using Reflex (via MCP)** against the **same agent using its built-in search** (ripgrep-backed Grep/Glob) — identical tasks, model and repository, paired per task. The harness lives in [`benches/efficacy/`](benches/efficacy/) and is fully reproducible.
-
-**Setup (powered rerun):** model `claude-sonnet-4-6`; 9 code-search tasks (find-all-usages, symbol locate, dependency and reverse-dependency, hotspot, negative controls); 8 trials per arm (72 observations per arm); run against the Reflex repository.
-
-**Results** — Reflex ÷ built-in, so **< 1.0 means Reflex uses less**:
-
-| Metric | Reflex ÷ built-in | Reading |
-|---|---|---|
-| Task success rate | **1.00** (100% vs 100%) | Equal correctness — no regression |
-| Total tokens (median over tasks) | **1.044**, 95% CI [1.014, 1.262] | Parity: inside the pre-registered ±10% band |
-| Precision of returned locations | ≈ 1.00 both arms | No hallucinated hits either way |
-| Recall on large result sets | Reflex higher (e.g. 0.28 vs 0.008, 0.48 vs 0.27) | More exhaustive answers when there are hundreds of hits |
-| Cost per task (median) | **0.69** | **~31% cheaper** |
-
-**Implications**
-
-- **No-regret replacement for built-in search.** Same correctness, token parity, lower dollar cost. At equal turn counts the per-call overhead of Reflex's richer responses is 1–2%; the spread in the CI comes from turn-count variance, not payload size.
-- **The wins are capability, not token savings.** `find_references` returns a symbol's definition *and* every call site in one call; symbol-kind filtering and the dependency tools have no grep/glob equivalent.
-- **Honest caveats.** One model, one repository. On comprehension-style tasks that span modules, the agent took more turns with Reflex than with built-in search; Reflex's advantage is single-shot reference finding and exhaustive results on large trees.
-
-Reproduce it yourself:
-
-```bash
-benches/efficacy/run-ref222.sh          # the powered run (9 tasks × 8 trials)
-python3 benches/efficacy/runner.py --arms A B --repos reflex --n 3   # a quick thin slice
-python3 benches/efficacy/extract_metrics.py && python3 benches/efficacy/analyze.py
-```
+The A/B harness in [`benches/efficacy/`](benches/efficacy/) runs an AI coding agent on the
+same code-search tasks with Reflex (via MCP) and with its built-in Grep/Glob, paired per task.
+Earlier results were measured on Reflex 1.5.3 and no longer describe the current release.
+They were withdrawn; a rerun on 2.0.3 is in progress and its numbers will appear here.
 
 ---
 
@@ -116,9 +89,9 @@ Measured on a Kubernetes checkout (27,448 indexed files, 245 MB of text) on a 16
 
 The index files are byte-identical before and after, so query results and latency did not change with the indexing rewrite. On the Linux kernel, the symbol pass that used to stall part-way now completes in seconds.
 
-Query latency on the 30 MB latency-harness corpus (medians, through a real `rfx mcp` round-trip): zero-hit search 0.09 ms, common-word first page ~3 ms, regex `fn (get|set)_\w+` ~12 ms, `find_references` ~6 ms.
+Query latency on the 30 MB latency-harness corpus (2.0.0 medians, through a real `rfx mcp` round-trip): zero-hit search 0.07 ms, common-word first page 2.7 ms, regex `fn (get|set)_\w+` 10 ms, `find_references` 6.2 ms.
 
-One honest comparison: on a warm mid-size repository, ripgrep still wins plain one-off scans by 6–10x. Reflex is built for what a linear scan cannot do — symbol and dependency queries, and "every occurrence" on very large trees where scanning every file is the slow part.
+For a plain one-off scan of a mid-size repository, ripgrep remains a strong choice. Reflex is built for what a linear scan cannot do — symbol and dependency queries, and "every occurrence" on very large trees where scanning every file is the slow part.
 
 ---
 
@@ -146,12 +119,12 @@ When connected via MCP, your AI assistant gets these tools:
 | `analyze_summary` | High-level dependency counts and metrics |
 | `gather_context` | Codebase structure and project-type summary |
 
-**Index not found error?** If an MCP tool returns `"Index not found. Run 'rfx index' to build the cache first"`, call `index_project` first, then retry the failed tool.
+**Index not found error?** If an MCP tool returns `"Index not found. Call the index_project tool, then retry."`, call `index_project`, then retry the failed tool.
 
 Three behaviours agents rely on:
 
 - **Whole identifiers by default.** `verify_csrf` does not match `verify_csrf_form_field`; pass `contains: true` for substring matching (`grep -F`) or `ignore_case: true` for `rg -i`. A zero result names the substring count in a `hint`.
-- **Freshness on every response.** `status` and `can_trust_results` compare the working tree (size, mtime, content hash) with what the index holds; a stale index always yields `can_trust_results: false`, and `action_required` names `index_project`.
+- **Freshness on search responses.** `status` and `can_trust_results` compare the working tree (size, mtime, content hash) with what the index holds; a stale index always yields `can_trust_results: false`, and `action_required` names `index_project`.
 - **Lock and generated files stay out of the way.** They are indexed but excluded from results unless you pass `include_locks` / `include_generated`; a zero result caused only by them says so.
 
 See [`docs/mcp-tool-cheatsheet.md`](docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.
@@ -281,7 +254,7 @@ Full symbol extraction (functions, classes, methods, types, etc.) for 15 languag
 
 ### Coverage
 
-Coverage matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …). Hidden paths are not indexed — use grep for those. Lock and generated files are indexed but left out of results unless you pass include_locks / include_generated. Select the non-code tier with `--lang text`; select lock or generated files alone with `--lang lock` / `--lang generated`. `[index] mode = "allowlist"` restores the pre-2.0.0 fixed extension list; `[index] hidden = true` indexes dot-directories (never `.git/` or `.reflex/`). A zero result names its cause in `excluded_reason` (`hidden`, `not_indexed`, `lock_or_generated`, `whole_identifier`) and a `hint`. Files without a symbol parser (the text tiers, Swift) are fully text-searchable but yield no `--symbols` results.
+Coverage matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …). Hidden paths are not indexed unless `[index] hidden = true`. Lock and generated files are indexed but left out of results unless you pass include_locks / include_generated. Select the non-code tier with `--lang text`; select lock or generated files alone with `--lang lock` / `--lang generated`. `[index] mode = "allowlist"` indexes only code plus a fixed docs/config extension list; `[index] hidden = true` indexes dot-directories (never `.git/` or `.reflex/`). A zero result names its cause in `excluded_reason` (`hidden`, `not_indexed`, `lock_or_generated`, `whole_identifier`) and a `hint`. Files without a symbol parser (the text tiers, Swift) are fully text-searchable but yield no `--symbols` results.
 
 ---
 
@@ -291,16 +264,13 @@ Coverage matches ripgrep's defaults: every non-binary file that is not gitignore
 # .reflex/config.toml (project-level)
 [index]
 languages = []          # Empty = all supported languages
-mode = "tracked"        # ripgrep's defaults; "allowlist" = the pre-2.0.0 extension list
+mode = "tracked"        # ripgrep's defaults; "allowlist" = code + a fixed docs/config extension list
 hidden = false          # true walks dot-directories (never .git/ or .reflex/)
 text_tier = true        # index docs, config and data files as `text`
 max_file_size = 10485760  # 10 MB
 # Optional, gitignore rules (a `/` anchors at the root; bare names match anywhere):
 # include.patterns = ["src/**/*.rs"]
 # exclude.patterns = ["vendor/**"]
-
-[search]
-default_limit = 100
 
 [performance]
 parallel_threads = 0    # indexing and query pools; 0 = auto (80% of cores, max 32)
@@ -315,12 +285,12 @@ For AI provider configuration (`rfx ask`, `rfx pulse`), run `rfx llm config`.
 
 ## Architecture
 
-Reflex uses a **trigram-based inverted index** with **runtime symbol detection**:
+Reflex uses a **trigram-based inverted index** with a **background symbol cache**:
 
 - **Indexing**: a thread pool reads and hashes every file, extracts imports with tree-sitter, and extracts trigram postings. Each batch is built per trigram shard in parallel and partial batches are merged by byte copy, so the output is identical whatever the batch boundaries. `trigrams.bin` and `content.bin` are written to a temp file, synced and renamed, never left short.
 - **Symbols**: `rfx index` spawns a detached pass that parses every file once with one combined tree-sitter query per language and stores compressed symbol lists in `meta.db`. Queries parse cache misses on demand, so `--symbols` works before the pass has finished.
 - **Full-text queries**: intersect trigram posting lists → verify candidate lines in parallel. Freshness is judged by file content (size, mtime, hash), not by commit, so a commit of already-indexed files is not "stale".
-- **Symbol queries**: trigrams narrow the candidates → only those files are parsed (or read from the symbol cache).
+- **Symbol queries**: trigrams narrow the candidates → their symbols are read from the cache; only cache misses are parsed.
 
 ```
 .reflex/

@@ -11,18 +11,18 @@
 
 | Goal | Tool | Why |
 |------|------|-----|
-| Known exact name, just need locations | `list_locations` | Cheapest — returns `{path, line}` only, no content |
+| Known exact name, just need locations | `list_locations` | Cheapest — `{locations: [{path, line}], total_locations}`, no content |
 | Need locations **and** code previews | `search_code` | Full results with line numbers + context |
-| Pattern has special chars (`->`, `::`, `()`, regex) | `search_regex` | Required for non-alphanumeric patterns |
-| How many times does X appear? | `count_occurrences` | Returns `{total, files}` — no content loaded |
+| Regex: alternation, wildcards, anchors, `->`, `::` | `search_regex` | Real regular expressions |
+| How many times does X appear? | `count_occurrences` | Total occurrences + file count — no content loaded |
 
 ```
 "Where is UserController used?"
   → list_locations(pattern: "UserController")
 
 "How many places call unwrap()?"
-  → count_occurrences(pattern: "unwrap()")   # has special chars? no → search_code first
-  → count_occurrences + search_regex(pattern: "unwrap\\(")
+  → count_occurrences(pattern: "unwrap()")
+    # brackets are regex-escaped automatically; the rewrite is reported in `warnings`
 ```
 
 ---
@@ -54,8 +54,8 @@
 | Full import tree (deps of deps) | `get_transitive_deps` | Traverses N levels deep (default: 3) |
 
 ```
-"What does src/query.rs depend on?"
-  → get_dependencies(path: "src/query.rs")
+"What does src/query/mod.rs depend on?"
+  → get_dependencies(path: "src/query/mod.rs")
 
 "What breaks if I change models/User.php?"
   → get_dependents(path: "User.php")
@@ -185,11 +185,10 @@ get_dependents(path: "src/auth.rs")
 
 ---
 
-## Argument Names: Canonical vs Aliased (1.7.0)
+## Argument Names: Canonical vs Aliased
 
-Field data from 34 Claude Code sessions: 20 of 21 Reflex failures were `Missing pattern`
-because the agent guessed `query`, `symbol`, `max_results` or `path`. Since 1.7.0 the server
-maps the habitual wrong names to the real ones and tells you about it.
+Agents often guess `query`, `symbol`, `max_results` or `path`. The server maps these
+habitual wrong names to the real ones and tells you about it.
 
 | Canonical key | Accepted aliases (deprecated) | Applies to |
 |---------------|-------------------------------|------------|
@@ -238,69 +237,35 @@ search_ast(
 search_ast(pattern: "(function_item) @fn", lang: "rust")
 ```
 
-**Performance:** `list_locations` ≈ 2ms · `search_code` ≈ 3–10ms · `search_ast` ≈ 500ms–10s+
+**Cost order:** `list_locations` < `search_code` < `search_regex` ≪ `search_ast` (parses every selected file).
 
 ---
 
-## Efficiency Notes (A/B Tested)
+## Efficiency Notes
 
 ### Columnar result format
 
-`search_code` and `search_regex` return results in `{columns, rows}` format by default.
-**Measured savings: 16–24% per-call bytes** vs the legacy `results[]` object shape. The
-`~41%` theoretical estimate assumed file-grouped output; the flat columnar format still
-repeats `path` and `language` on every row, so savings are smaller in practice.
+`search_code` and `search_regex` return results in `{columns, rows}` format by default,
+which avoids repeating JSON keys per match. The flat rows still repeat `path` and
+`language` on every row. To revert to the legacy `results[]` shape: `REFLEX_MCP_COLUMNAR=0`.
 
-To revert to the legacy shape: `REFLEX_MCP_COLUMNAR=0`.
+### Reflex vs built-in grep/glob
 
-### Reflex vs built-in grep/glob (total token cost)
+There are no current A/B numbers. The earlier results (REF-222 and related) were measured
+on Reflex 1.5.3 in 2026-07 and were withdrawn; a rerun on 2.0.3 is in progress.
 
-**At parity with built-in grep/glob on total tokens — real wins are capability and ~31% lower
-cost (REF-192).** Powered A/B rerun (REF-222: n=9 tasks × 8 trials per arm, claude-sonnet-4-6):
-r=1.044, 95% CI [1.014, 1.262] — within the ±10% parity band, 100% task success on both arms,
-arm B showing higher recall on large result sets (graded accuracy).
-
-**REF-176 → REF-217 → REF-222 arc (did parity hold?):** All three runs land at the same point
-estimate (~1.04). REF-217 (n=3, CI width 1.012) was noisy; REF-222 (n=9, CI width 0.248) is 4×
-tighter. The "Indeterminate" label is a method note — the CI upper bound clips 1.262, not a
-regression. Parity was never lost.
-
-*Method note:* At equal turn counts, Reflex overhead is only ~**1–2%** (tool schema context per
-turn). Turn-count variance drives the spread (corr(total_tokens, turns) ≈ 0.99, REF-204).
-
-Per-task ratios (REF-222, n=9 tasks, sorted):
-
-| Task | B/A ratio | Turns A | Turns B |
-|------|-----------|---------|---------|
-| reflex-findall-symbolcache | 1.012 | 2 | 2 |
-| ripgrep-findall-sinkcontext | 1.014 | 2 | 2 |
-| ripgrep-findall-sinkmatch | 1.016 | 2 | 2 |
-| reflex-findall-trigramindex | 1.024 | 2 | 2 |
-| tokio-findall-joinerror | 1.044 | 2 | 2 |
-| tokio-findall-barrier | 1.054 | 2 | 2 |
-| tokio-findall-notified | 1.148 | 2 | 2 |
-| ripgrep-findall-mmapchoice | 1.262 | 2 | 2 |
-| reflex-findall-extract_symbols | 1.450 | 2 | 3 |
-| **Median** | **1.044** | | |
-
-**The extract_symbols outlier (1.45) is a turn-count effect**: arm B used 3 turns (more Reflex tool
-calls) vs arm A's 2 turns (single Grep). All other tasks ran at equal turns → near parity.
-
-**When to prefer Reflex over built-in grep/glob:**
+**When to prefer Reflex over built-in grep/glob** (capabilities, not measured savings):
 - Symbol-aware search (`symbols: true`, `kind: "function"`) — unavailable in grep/glob
 - Dependency analysis (`get_dependencies`, `get_dependents`, `find_hotspots`)
-- Atomic find-all-usages in one call (`find_references`)
-- Large result sets where columnar format reduces payload size
-
-**When built-in grep/glob may be cheaper:** Simple literal string lookups with ≤1 tool call,
-where the context tax outweighs Reflex's capability advantage.
+- Definition plus every usage in one call (`find_references`)
+- Exact counts without loading content (`count_occurrences`, `mode: "count"`)
 
 ### structuredContent: evaluated and rejected
 
 MCP's `outputSchema` / `structuredContent` mechanism was:
 
 1. **Built** — implemented in `src/mcp.rs` with `outputSchema` on all tool responses
-2. **A/B tested** — ratio **0.998**, no measurable token savings
+2. **A/B tested** — no measurable token savings
 3. **Removed** — `content[text]`-only output (current default)
 
 **Root cause:** Claude Code's MCP client transmits *both* `content[text]` *and*

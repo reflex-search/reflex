@@ -1,820 +1,681 @@
 # Reflex HTTP API Reference
 
-This document describes the Reflex HTTP API for programmatic code search integration.
+`rfx serve` runs a small HTTP server that exposes the Reflex index as JSON. Use it
+from editors, scripts and browser tools that cannot run the CLI or speak MCP.
 
 ## Overview
 
-Reflex provides a REST API for integrating code search into editors, CI/CD pipelines, AI coding assistants, and custom tools. The API mirrors the CLI functionality with structured JSON responses.
+- **Base URL:** `http://127.0.0.1:7878`. Change it with `--host` and `--port`.
+- **Workspace:** the server serves the index of the directory it was started in.
+  Start it from the project root.
+- **Format:** JSON responses. Only `POST /index` takes a request body.
+- **Authentication:** none. The server binds to loopback by default. See
+  [Security](#security).
+- **CORS:** any origin, any method, any header.
 
-**Base URL:** `http://localhost:7878` (configurable via `--host` and `--port`)
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/query` | Search the index |
+| `GET` | `/stats` | Index statistics |
+| `POST` | `/index` | Build or update the index |
+| `GET` | `/health` | Liveness check |
 
-**Transport:** HTTP/1.1 with JSON request/response bodies
-
-**Authentication:** None (local-only API, bind to `127.0.0.1` by default)
-
-**CORS:** Enabled for all origins (suitable for browser-based tools)
+Any other path returns `404` with a JSON error body. A known path with the wrong
+method returns `405` with an empty body and an `Allow` header.
 
 ---
 
-## Getting Started
-
-### Start the Server
+## Getting started
 
 ```bash
-# Default configuration (localhost:7878)
-rfx serve
-
-# Custom port
-rfx serve --port 8080
-
-# Bind to all interfaces (use with caution)
-rfx serve --host 0.0.0.0 --port 7878
+cd /path/to/project
+rfx index                         # build the index (or call POST /index later)
+rfx serve                         # 127.0.0.1:7878
+rfx serve --port 8080             # another port
 ```
 
-The server will print available endpoints on startup:
+On startup the server prints its address and endpoints:
 
 ```
 Starting Reflex HTTP server...
   Address: http://127.0.0.1:7878
 
 Endpoints:
-  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>
+  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&ignore_case=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true
   GET  /stats
+  GET  /health
   POST /index
 
 Press Ctrl+C to stop.
 ```
 
-### Quick Test
+Quick test:
 
 ```bash
-# Health check
-curl http://localhost:7878/health
-# → "Reflex is running"
+curl -s http://127.0.0.1:7878/health
+# {"service":"reflex","status":"ok"}
 
-# Simple query
-curl 'http://localhost:7878/query?q=QueryEngine&limit=5' | jq '.'
+curl -s 'http://127.0.0.1:7878/query?q=QueryEngine&limit=5' | jq .
 ```
 
 ---
 
-## Endpoints
+## GET /query
 
-### GET /query
+Search the index. Returns matches grouped by file, plus index freshness and
+pagination.
 
-Search the codebase with full query capabilities.
+### Query parameters
 
-**URL:** `/query`
+Booleans must be the literal strings `true` or `false`. Any other value is a
+`400` (see [Errors](#errors)). Unknown parameters are ignored without a warning.
 
-**Method:** `GET`
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `q` | string | required | The pattern. Must not be empty. |
+| `contains` | bool | `false` | Substring match (`grep -F`) instead of whole-identifier match. |
+| `ignore_case` | bool | `false` | Case-insensitive match (`rg -i`). Works with the default mode, `contains` and `regex`. |
+| `regex` | bool | `false` | Treat `q` as a regular expression (`grep -E`). |
+| `symbols` | bool | `false` | Return symbol definitions only (functions, structs, classes, ...), not every occurrence. |
+| `kind` | string | none | Keep only symbols of this kind, e.g. `function`, `struct`. Case-insensitive. Turns on `symbols`. |
+| `exact` | bool | `false` | Symbol searches only: keep symbols whose name equals `q` exactly. No effect on full-text searches. |
+| `expand` | bool | `false` | For symbol matches, set `preview` to the symbol's full body (`span.start_line` to `span.end_line`). |
+| `lang` | string | none | Only files of this language. See [Languages](#languages). |
+| `file` | string | none | Only files whose path contains this substring. |
+| `limit` | integer | `100` | Maximum matches to return. With `paths=true` and no `limit`, there is no cap. |
+| `offset` | integer | `0` | Skip this many matches before the page starts. |
+| `paths` | bool | `false` | One entry per matching file (its first match). `pagination.total` is then a file count. |
+| `dependencies` | bool | `false` | Add each file's static imports as `dependencies`. |
+| `force` | bool | `false` | Run a query the broad-query guard would refuse (for example a pattern under 3 characters). |
+| `timeout` | integer | `30` | Seconds before the query is abandoned. `0` means no timeout. |
+| `glob` | string | none | Declared, but not usable: any value is rejected with `400`. See [Known limitations](#known-limitations). |
+| `exclude` | string | none | Declared, but not usable: any value is rejected with `400`. See [Known limitations](#known-limitations). |
 
-**Query Parameters:**
+The HTTP API has no parameter for lock files, generated files, excluding the
+text tier, context lines or count mode. See [Known limitations](#known-limitations).
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `q` | string | **Yes** | - | Search pattern (plain text, regex, or trigrams) |
-| `symbols` | boolean | No | `false` | Search symbol definitions only (functions, classes, etc.) |
-| `regex` | boolean | No | `false` | Treat pattern as regex |
-| `exact` | boolean | No | `false` | Exact match (no substring matching) |
-| `lang` | string | No | - | Filter by language (see [Supported Languages](#supported-languages)) |
-| `kind` | string | No | - | Filter by symbol kind (implies `symbols=true`) |
-| `file` | string | No | - | Filter by file path (substring match) |
-| `limit` | integer | No | unlimited | Maximum number of results |
-| `expand` | boolean | No | `false` | Show full symbol body (not just signature) |
-| `timeout` | integer | No | `30` | Query timeout in seconds (0 = no timeout) |
+### Matching
 
-**Response:** `application/json`
+A literal pattern matches **whole identifiers** by default, like `grep -w`.
+`verify_csrf` does not match `verify_csrf_form_field`.
+
+| Mode | How | Behaves like |
+| --- | --- | --- |
+| whole identifier | default | `grep -w` |
+| substring | `contains=true` | `grep -F` |
+| regular expression | `regex=true` | `grep -E` |
+| case-insensitive | add `ignore_case=true` to any of the above | `rg -i` |
+
+- A whole-identifier `ignore_case` search keeps whole-identifier rules: `realmid`
+  finds `RealmId`, not `realm_id`.
+- A literal pattern that contains brackets (`()`, `[]`, `<>`) can never match as a
+  whole identifier. The engine escapes it, runs it as a substring regex, and says
+  so in `warnings`.
+- A whole-identifier search that finds nothing, while substring matches exist,
+  returns a `hint` with the substring count.
+- A symbol search matches the symbol name. `symbols=true&q=Poi` does not find
+  `Point`.
+
+### Which files are searched
+
+- Code, and the plain-text tier (docs, config, templates and every other
+  non-binary file, `language: "text"`), are searched by default.
+- Lock files (`language: "lock"`) and generated files (`language: "generated"`)
+  are indexed but left out. Over HTTP the only way to search them is
+  `lang=lock` or `lang=generated`, which selects that tier alone.
+- A symbol search (`symbols`, `kind`) only returns files with a parser. Text, lock
+  and generated files have none.
+
+### Response
+
+`200 OK`, `application/json`. A real response (trimmed to one file):
+
+```bash
+curl -s 'http://127.0.0.1:7878/query?q=realm_marker&limit=3'
+```
 
 ```json
 {
-  "status": "Fresh" | "Stale" | "Missing",
-  "can_trust_results": boolean,
-  "warning": string | null,
+  "status": "fresh",
+  "can_trust_results": true,
+  "pagination": {
+    "total": 12,
+    "count": 3,
+    "offset": 0,
+    "limit": 3,
+    "has_more": true,
+    "total_is_exact": true
+  },
   "results": [
     {
-      "file": "src/query.rs",
-      "line": 145,
-      "column": 8,
-      "match": "pub struct QueryEngine {",
-      "symbol": "QueryEngine",
-      "kind": "Struct",
-      "language": "Rust",
-      "context_before": ["", "/// Main query execution engine"],
-      "context_after": ["    cache: CacheManager,", "    config: QueryConfig,"]
+      "path": "rust/realm_marker.rs",
+      "language": "rust",
+      "matches": [
+        { "span": { "start_line": 1, "end_line": 1 },
+          "preview": "//! Shared-token fixture: `realm_marker` appears here AND in tests/corpus/text/." },
+        { "span": { "start_line": 5, "end_line": 5 },
+          "preview": "    pub realm_marker: String," },
+        { "span": { "start_line": 10, "end_line": 10 },
+          "preview": "    &cfg.realm_marker" }
+      ]
     }
   ]
 }
 ```
 
-**Response Fields:**
-
-- `status`: Index freshness indicator
-  - `"Fresh"`: Index is up-to-date
-  - `"Stale"`: Working tree has uncommitted changes since last index
-  - `"Missing"`: No index found
-- `can_trust_results`: Whether results can be trusted (false if index is stale/missing)
-- `warning`: Human-readable warning message (null if no warning)
-- `results`: Array of search results (see [SearchResult Schema](#searchresult-schema))
-
-**HTTP Status Codes:**
-
-- `200 OK`: Query successful
-- `400 Bad Request`: Invalid query parameters
-- `500 Internal Server Error`: Query execution failed
-
-**Examples:**
+A symbol match carries `kind` and `symbol`:
 
 ```bash
-# Full-text search
-curl 'http://localhost:7878/query?q=extract_symbols&limit=10'
-
-# Symbol-only search
-curl 'http://localhost:7878/query?q=parse&symbols=true&kind=function'
-
-# Regex search
-curl 'http://localhost:7878/query?q=fn%20test_.*&regex=true'
-
-# Language filter
-curl 'http://localhost:7878/query?q=unwrap&lang=rust&limit=20'
-
-# File path filter
-curl 'http://localhost:7878/query?q=config&file=src/&limit=5'
-
-# Multiple filters
-curl 'http://localhost:7878/query?q=parse&lang=rust&kind=function&symbols=true&expand=true&limit=3'
-
-# Custom timeout (10 seconds)
-curl 'http://localhost:7878/query?q=complex_pattern&timeout=10'
+curl -s 'http://127.0.0.1:7878/query?q=Point&kind=struct&lang=rust&expand=true&limit=1'
 ```
-
-**JavaScript Example:**
-
-```javascript
-async function searchCode(pattern, options = {}) {
-  const params = new URLSearchParams({
-    q: pattern,
-    ...options
-  });
-
-  const response = await fetch(`http://localhost:7878/query?${params}`);
-  const data = await response.json();
-
-  if (!data.can_trust_results) {
-    console.warn('Warning:', data.warning);
-  }
-
-  return data.results;
-}
-
-// Usage
-const results = await searchCode('QueryEngine', {
-  symbols: true,
-  lang: 'rust',
-  limit: 10
-});
-```
-
-**Python Example:**
-
-```python
-import requests
-
-def search_code(pattern, **kwargs):
-    params = {'q': pattern, **kwargs}
-    response = requests.get('http://localhost:7878/query', params=params)
-    response.raise_for_status()
-
-    data = response.json()
-    if not data['can_trust_results']:
-        print(f"Warning: {data['warning']}")
-
-    return data['results']
-
-# Usage
-results = search_code('QueryEngine', symbols=True, lang='rust', limit=10)
-```
-
----
-
-### GET /stats
-
-Get index statistics and metadata.
-
-**URL:** `/stats`
-
-**Method:** `GET`
-
-**Query Parameters:** None
-
-**Response:** `application/json`
 
 ```json
 {
-  "total_files": 1247,
-  "index_size_bytes": 2145728,
-  "last_updated": "2025-11-03T14:32:45Z",
-  "files_by_language": {
-    "Rust": 842,
-    "TypeScript": 305,
-    "Python": 100
+  "status": "fresh",
+  "can_trust_results": true,
+  "pagination": { "total": 3, "count": 1, "offset": 0, "limit": 1, "has_more": true, "total_is_exact": true },
+  "results": [
+    {
+      "path": "rust/attributes.rs",
+      "language": "rust",
+      "matches": [
+        { "kind": "Struct", "symbol": "Point",
+          "span": { "start_line": 14, "end_line": 17 },
+          "preview": "pub struct Point {\n    x: f64,\n    y: f64,\n}" }
+      ]
+    }
+  ]
+}
+```
+
+### Response fields
+
+Optional fields are left out when they do not apply. They are never `null`,
+except `pagination.total` (see below).
+
+| Field | Type | Present | Meaning |
+| --- | --- | --- | --- |
+| `status` | `"fresh"` \| `"stale"` | always | Whether the index matches the files on disk. |
+| `can_trust_results` | bool | always | `false` whenever `status` is `"stale"`, including for a zero-result search. |
+| `warning` | object | when stale | What changed. See [Freshness](#freshness). |
+| `pagination` | object | always | See [Pagination and totals](#pagination-and-totals). |
+| `results` | array | always | One object per file, sorted by path. |
+| `warnings` | string[] | when the engine changed the query | For example the bracket rewrite, or a regex with no 3-character literal that fell back to scanning every line. |
+| `hint` | string | zero results with a known cause | A sentence that explains the zero. |
+| `excluded_reason` | string | with `hint` | `"whole_identifier"`, `"lock_or_generated"`, `"not_indexed"` or `"hidden"`. |
+| `substring_hint_count` | integer | zero-result whole-identifier searches | How many candidate lines contain `q` as a substring. |
+| `excluded_by_default` | integer | zero results where lock or generated files matched | How many candidate files were left out for that reason. |
+
+Each entry in `results`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | Path relative to the workspace root. |
+| `language` | string | Lowercase language name. See [Languages](#languages). |
+| `dependencies` | array | Only with `dependencies=true` and when the file has imports. Each item is `{path, line?, symbols?}`. |
+| `matches` | array | The matches in this file, in line order. |
+
+Each entry in `matches`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `span` | `{start_line, end_line}` | 1-based line range. One line for a text match; the definition's range for a symbol. |
+| `preview` | string | The matching line. For a symbol, the lines from its start (the full body with `expand=true`). |
+| `kind` | string | Symbol matches only: `Function`, `Class`, `Struct`, `Enum`, `Interface`, `Trait`, `Constant`, `Variable`, `Method`, `Module`, `Namespace`, `Type`, `Macro`, `Property`, `Event`, `Import`, `Export` or `Attribute`. |
+| `symbol` | string | Symbol matches only: the symbol name. |
+
+With `dependencies=true`:
+
+```json
+{
+  "path": "python/classes.py",
+  "language": "python",
+  "dependencies": [
+    { "path": "abc", "line": 25, "symbols": ["abc", "ABC", "abstractmethod"] },
+    { "path": "dataclasses", "line": 26, "symbols": ["dataclasses", "dataclass"] },
+    { "path": "typing", "line": 27, "symbols": ["typing", "Optional", "List"] }
+  ],
+  "matches": [ ... ]
+}
+```
+
+### Pagination and totals
+
+`limit` and `offset` count matches, not files. `pagination` has:
+
+| Field | Meaning |
+| --- | --- |
+| `total` | Every match before `offset`/`limit`, or **`null`** when `total_is_exact` is `false`. |
+| `count` | Matches in this response. |
+| `offset` | The offset used. |
+| `limit` | The limit used. Absent when there was none (`paths=true` without `limit`). |
+| `has_more` | More matches exist after this page. |
+| `total_is_exact` | `true` when `total` counts every match. |
+| `approx_total` | An estimate, present only when `total_is_exact` is `false` and an estimate was possible. |
+
+A full-text search with a `limit` stops verifying candidates once the page is
+full. The page is the same as the same slice of a full run, but the total may
+not be known. Then `total` is `null`, `total_is_exact` is `false`,
+`has_more` is `true`, and `approx_total` is a sampled estimate. If only a few
+candidate files or lines remain when the page fills, the search finishes and the
+total is exact. Symbol searches always report an exact total.
+
+Real response, 300 files with 1,800 matches, `limit=3`:
+
+```json
+{ "pagination": { "total": null, "count": 3, "offset": 0, "limit": 3,
+                  "has_more": true, "total_is_exact": false, "approx_total": 1800 } }
+```
+
+A regex with no literal of 3 or more characters verifies every line and gives no
+estimate:
+
+```json
+{ "pagination": { "total": null, "count": 1, "offset": 0, "limit": 1,
+                  "has_more": true, "total_is_exact": false },
+  "warnings": ["Regex pattern 'fn' has no literals (≥3 chars), falling back to full content scan. This may be slow on large codebases. Consider using patterns with literal text."] }
+```
+
+To get an exact count over HTTP, pass a `limit` larger than the number of
+matches. `paths=true` without a `limit` always gives an exact file count.
+`limit=0` returns no matches but still returns `approx_total`.
+
+### Freshness
+
+Every response carries `status` and `can_trust_results`. The index is stale when
+a file on disk differs from what was indexed: edited, added or deleted, committed
+or not. Inside a git repository the check starts from `git status`; outside one it
+stats every file (`details.checked_by` is `"git"` or `"walk"`).
+
+A real stale response after editing one file and adding another:
+
+```json
+{
+  "status": "stale",
+  "can_trust_results": false,
+  "warning": {
+    "reason": "Files changed since the index was built (1 modified, 1 added) — these results may not reflect them",
+    "action_required": "index_project",
+    "files_modified": ["rust/structs.rs"],
+    "files_added": ["rust/zz_probe.rs"],
+    "changed_count": 2,
+    "details": {
+      "current_branch": "main",
+      "indexed_branch": "main",
+      "current_commit": "ea56e89416bbb2ae0114a6d8b28c9b13d9fd4f60",
+      "indexed_commit": "ea56e89416bbb2ae0114a6d8b28c9b13d9fd4f60",
+      "indexed_at": 1790624209,
+      "checked_by": "git"
+    }
   },
-  "lines_by_language": {
-    "Rust": 45230,
-    "TypeScript": 18445,
-    "Python": 5320
-  }
+  "pagination": { ... },
+  "results": [ ... ]
 }
 ```
 
-**Response Fields:**
+- `files_modified`, `files_added` and `files_deleted` are path lists, each left
+  out when empty and capped at 100. `truncated: true` appears when a list was cut.
+- `action_required` names the MCP tool (`index_project`). Over HTTP, call
+  `POST /index`.
+- The verdict is cached for 1 second per workspace (`REFLEX_FRESHNESS_TTL_MS`;
+  `0` turns the cache off).
+- There is no `"missing"` status. A query with no index returns `404`
+  `IndexNotFound`.
 
-- `total_files`: Total number of indexed files
-- `index_size_bytes`: Total cache size in bytes
-- `last_updated`: ISO 8601 timestamp of last indexing operation
-- `files_by_language`: File count breakdown by language
-- `lines_by_language`: Line count breakdown by language
+### Zero results
 
-**HTTP Status Codes:**
-
-- `200 OK`: Stats retrieved successfully
-- `404 Not Found`: No index found (run `POST /index` first)
-- `500 Internal Server Error`: Failed to read stats
-
-**Examples:**
+A zero result explains itself when it can. Whole-identifier miss:
 
 ```bash
-# Get statistics
-curl http://localhost:7878/stats | jq '.'
-
-# Check index size
-curl -s http://localhost:7878/stats | jq '.index_size_bytes / 1024 / 1024 | floor'
-# → Cache size in MB
-
-# Check file count
-curl -s http://localhost:7878/stats | jq '.total_files'
+curl -s 'http://127.0.0.1:7878/query?q=Poin'
 ```
 
-**JavaScript Example:**
-
-```javascript
-async function getStats() {
-  const response = await fetch('http://localhost:7878/stats');
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  }
-  return response.json();
+```json
+{
+  "status": "fresh",
+  "can_trust_results": true,
+  "pagination": { "total": 0, "count": 0, "offset": 0, "limit": 100, "has_more": false, "total_is_exact": true },
+  "results": [],
+  "substring_hint_count": 30,
+  "hint": "0 whole-identifier matches; 30 substring matches — pass contains:true (--contains on the CLI) to see them. Reflex matches whole identifiers by default, so \"Poin\" does not match longer names that merely contain it.",
+  "excluded_reason": "whole_identifier"
 }
+```
 
-// Usage
-const stats = await getStats();
-console.log(`Indexed ${stats.total_files} files (${stats.index_size_bytes} bytes)`);
+Only lock files matched:
+
+```json
+{
+  "status": "fresh",
+  "can_trust_results": true,
+  "pagination": { "total": 0, "count": 0, "offset": 0, "limit": 100, "has_more": false, "total_is_exact": true },
+  "results": [],
+  "substring_hint_count": 0,
+  "hint": "1 candidate file(s) were lock or generated files, which every search leaves out by default — pass include_locks:true / include_generated:true (--include-locks / --include-generated on the CLI), or lang:\"lock\" / lang:\"generated\", to search them.",
+  "excluded_reason": "lock_or_generated",
+  "excluded_by_default": 1
+}
+```
+
+Over HTTP, follow this hint with `lang=lock` or `lang=generated`.
+`include_locks` and `include_generated` are not HTTP parameters.
+
+### Examples
+
+```bash
+# Whole-identifier search (default)
+curl -s 'http://127.0.0.1:7878/query?q=extract_symbols&limit=10'
+
+# Substring search
+curl -s 'http://127.0.0.1:7878/query?q=extract_sym&contains=true'
+
+# Case-insensitive
+curl -s 'http://127.0.0.1:7878/query?q=realmid&ignore_case=true'
+
+# Regex (URL-encode the pattern: `fn new\(`)
+curl -s 'http://127.0.0.1:7878/query?q=fn%20new%5C%28&regex=true'
+
+# Symbol definitions of one kind, full body
+curl -s 'http://127.0.0.1:7878/query?q=Point&kind=struct&expand=true'
+
+# Language and path filters
+curl -s 'http://127.0.0.1:7878/query?q=unwrap&lang=rust&file=src/&limit=20'
+
+# Files that mention a name, no cap
+curl -s 'http://127.0.0.1:7878/query?q=QueryEngine&paths=true'
+
+# Second page
+curl -s 'http://127.0.0.1:7878/query?q=Point&limit=50&offset=50'
+
+# Lock files only
+curl -s 'http://127.0.0.1:7878/query?q=serde&lang=lock'
+
+# Imports of each matching file
+curl -s 'http://127.0.0.1:7878/query?q=QueryEngine&dependencies=true&limit=5'
+```
+
+`curl -G --data-urlencode` saves encoding a pattern by hand:
+
+```bash
+curl -s -G http://127.0.0.1:7878/query --data-urlencode 'q=-> Result<' --data-urlencode 'contains=true'
 ```
 
 ---
 
-### POST /index
+## GET /stats
 
-Trigger indexing or reindexing of the codebase.
+Index statistics. No parameters.
 
-**URL:** `/index`
-
-**Method:** `POST`
-
-**Request Headers:**
-
-- `Content-Type: application/json`
-
-**Request Body:** (optional, default: `{}`)
+```bash
+curl -s http://127.0.0.1:7878/stats
+```
 
 ```json
 {
-  "force": boolean,
-  "languages": [string]
+  "total_files": 93,
+  "index_size_bytes": 740808,
+  "last_updated": "2026-09-28T19:36:49+00:00",
+  "files_by_language": { "Rust": 38, "Text": 18, "TypeScript": 11, "PHP": 6, "Lock": 1 },
+  "lines_by_language": { "Rust": 2169, "Text": 230, "TypeScript": 834, "PHP": 448, "Lock": 1 },
+  "corpus_bytes": 124222,
+  "trigram_index_bytes": 368971
 }
 ```
 
-**Request Fields:**
+| Field | Meaning |
+| --- | --- |
+| `total_files` | Files in the index. |
+| `index_size_bytes` | Combined size of `meta.db`, `config.toml`, `content.bin` and `trigrams.bin` in `.reflex/`. |
+| `last_updated` | When the index was last written (RFC 3339). |
+| `files_by_language` | File count per language. Keys are **capitalized** (`"Rust"`, `"Text"`, `"Lock"`), unlike the lowercase `language` field in query results. |
+| `lines_by_language` | Line count per language, same keys. |
+| `corpus_bytes` | Bytes of indexed source. Left out when 0. |
+| `trigram_index_bytes` | Size of `trigrams.bin`. Left out when 0. |
 
-- `force` (optional, default: `false`): Force full rebuild (ignore incremental cache)
-- `languages` (optional, default: all): Array of language names to index (e.g., `["rust", "typescript"]`)
+Status codes: `200`; `404` `IndexNotFound` when there is no index; `500` on a
+read failure.
 
-**Response:** `application/json`
+---
 
-Same as [GET /stats](#get-stats) response schema.
+## POST /index
 
-**HTTP Status Codes:**
+Build or update the index of the server's workspace. The request blocks until
+indexing finishes and returns the new statistics.
 
-- `200 OK`: Indexing completed successfully
-- `500 Internal Server Error`: Indexing failed
+The body is optional. With no body, no `Content-Type` header, or an empty body,
+the defaults apply. A body that is not valid JSON returns `400` `ParseError`.
+Unknown keys are ignored.
 
-**Examples:**
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `force` | bool | `false` | Delete the existing index and rebuild from scratch. Otherwise only changed files are reindexed. |
+| `languages` | string[] | `[]` (all) | Code languages to index. Text and lock files are indexed either way. Only `rust`/`rs`, `python`/`py`, `javascript`/`js`, `typescript`/`ts`, `vue`, `svelte`, `go`, `java`, `php`, `c` and `cpp`/`c++` are recognized; other names are dropped silently. |
 
 ```bash
-# Incremental index (only changed files)
-curl -X POST http://localhost:7878/index \
-  -H "Content-Type: application/json" \
-  -d '{}'
+# Incremental update
+curl -s -X POST http://127.0.0.1:7878/index
 
-# Force full rebuild
-curl -X POST http://localhost:7878/index \
-  -H "Content-Type: application/json" \
-  -d '{"force": true}'
-
-# Index specific languages
-curl -X POST http://localhost:7878/index \
-  -H "Content-Type: application/json" \
-  -d '{"languages": ["rust", "typescript"]}'
-
-# Force rebuild with language filter
-curl -X POST http://localhost:7878/index \
-  -H "Content-Type: application/json" \
+# Full rebuild of Rust code only
+curl -s -X POST http://127.0.0.1:7878/index \
+  -H 'Content-Type: application/json' \
   -d '{"force": true, "languages": ["rust"]}'
 ```
 
-**JavaScript Example:**
+Response: the [`/stats`](#get-stats) shape, plus change counts for an incremental
+run. Each count is left out when 0:
 
-```javascript
-async function reindex(options = {}) {
-  const response = await fetch('http://localhost:7878/index', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(options)
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  }
-
-  return response.json();
+```json
+{
+  "total_files": 94,
+  "index_size_bytes": 745137,
+  "last_updated": "2026-09-28T19:37:45+00:00",
+  "files_by_language": { "Rust": 39, "Text": 18, "TypeScript": 11, "Lock": 1 },
+  "lines_by_language": { "Rust": 2171, "Text": 230, "TypeScript": 834, "Lock": 1 },
+  "new_files": 1,
+  "modified_files": 1,
+  "unchanged_files": 92,
+  "corpus_bytes": 124258,
+  "trigram_index_bytes": 369124
 }
-
-// Usage
-const stats = await reindex({ force: true });
-console.log(`Indexed ${stats.total_files} files`);
 ```
 
-**Python Example:**
+Other counts that can appear: `deleted_files`, `skipped_too_large`,
+`skipped_bytes_too_large`, `skipped_binary`.
 
-```python
-import requests
-
-def reindex(force=False, languages=None):
-    payload = {'force': force}
-    if languages:
-        payload['languages'] = languages
-
-    response = requests.post(
-        'http://localhost:7878/index',
-        json=payload
-    )
-    response.raise_for_status()
-    return response.json()
-
-# Usage
-stats = reindex(force=True, languages=['rust', 'typescript'])
-print(f"Indexed {stats['total_files']} files")
-```
-
-**Note:** Indexing is **synchronous** and may take several seconds for large codebases. The HTTP request will block until indexing completes.
+If another indexer holds the workspace lock, the call fails at once with `500`
+`IndexLocked`; it does not wait.
 
 ---
 
-### GET /health
-
-Simple health check endpoint for monitoring.
-
-**URL:** `/health`
-
-**Method:** `GET`
-
-**Query Parameters:** None
-
-**Response:** `text/plain`
-
-```
-Reflex is running
-```
-
-**HTTP Status Codes:**
-
-- `200 OK`: Server is healthy
-
-**Examples:**
+## GET /health
 
 ```bash
-# Health check
-curl http://localhost:7878/health
-# → "Reflex is running"
-
-# Use in monitoring scripts
-if curl -sf http://localhost:7878/health > /dev/null; then
-  echo "Reflex is healthy"
-else
-  echo "Reflex is down"
-fi
+curl -s http://127.0.0.1:7878/health
+# {"service":"reflex","status":"ok"}
 ```
+
+Always `200` while the server is up. It does not check the index.
 
 ---
 
-## Data Schemas
+## Errors
 
-### SearchResult Schema
+Errors raised by the handlers have a JSON body:
 
-```typescript
-interface SearchResult {
-  file: string;           // Relative file path
-  line: number;           // Line number (1-indexed)
-  column: number;         // Column number (1-indexed)
-  match: string;          // Matched line content
-  symbol?: string;        // Symbol name (symbol search only)
-  kind?: SymbolKind;      // Symbol kind (symbol search only)
-  language?: Language;    // Language (symbol search only)
-  context_before: string[]; // Lines before match (for context)
-  context_after: string[];  // Lines after match (for context)
-}
+```json
+{ "error": { "kind": "QuerySyntaxError", "message": "Query parameter 'q' cannot be empty" } }
 ```
 
-**SymbolKind Values:**
+| Status | `kind` | When |
+| --- | --- | --- |
+| `400` | `QuerySyntaxError` | Empty `q`; unknown `lang`. |
+| `400` | `ParseError` | `POST /index` body is not valid JSON. |
+| `404` | `IndexNotFound` | No index in the workspace (`/query`, `/stats`). |
+| `404` | `NotFound` | Unknown path. |
+| `500` | `IoError` | Invalid regex; pattern refused by the broad-query guard; query timeout; other failures. |
+| `500` | `CacheCorrupted`, `CacheVersionMismatch`, `IndexLocked`, ... | Index problems. Rebuild with `POST /index` and `{"force": true}`. |
 
-- `"Function"`, `"Class"`, `"Struct"`, `"Enum"`, `"Trait"`, `"Interface"`, `"Type"`, `"Constant"`, `"Variable"`, `"Method"`, `"Property"`, `"Module"`, `"Namespace"`, etc.
+Query-string parsing errors are the exception. A missing `q`, a non-numeric
+`limit`, a boolean other than `true`/`false`, or any `glob`/`exclude` value
+returns `400` with a **plain-text** body:
 
-**Language Values:**
+```
+HTTP/1.1 400 Bad Request
+content-type: text/plain; charset=utf-8
 
-- `"Rust"`, `"Python"`, `"JavaScript"`, `"TypeScript"`, `"Vue"`, `"Svelte"`, `"Go"`, `"Java"`, `"PHP"`, `"C"`, `"Cpp"`, `"CSharp"`, `"Ruby"`, `"Kotlin"`, `"Zig"`
+Failed to deserialize query string: missing field `q`
+```
+
+Clients should check the status code before parsing the body as JSON.
 
 ---
 
-## Supported Languages
+## Languages
 
-The following language identifiers can be used with the `lang` query parameter:
+`lang` accepts these names (case-insensitive):
 
-| Language | Identifier | Aliases |
-|----------|-----------|---------|
+| Language | Name | Aliases |
+| --- | --- | --- |
 | Rust | `rust` | `rs` |
 | Python | `python` | `py` |
 | JavaScript | `javascript` | `js` |
 | TypeScript | `typescript` | `ts` |
-| Vue | `vue` | - |
-| Svelte | `svelte` | - |
-| Go | `go` | - |
-| Java | `java` | - |
-| PHP | `php` | - |
-| C | `c` | - |
+| Vue | `vue` | |
+| Svelte | `svelte` | |
+| Go | `go` | |
+| Java | `java` | |
+| PHP | `php` | |
+| C | `c` | |
 | C++ | `cpp` | `c++` |
 | C# | `csharp` | `cs`, `c#` |
 | Ruby | `ruby` | `rb` |
 | Kotlin | `kotlin` | `kt` |
-| Zig | `zig` | - |
+| Zig | `zig` | |
+| Plain-text tier | `text` | `txt`, `plaintext`, `plain` |
+| Lock files | `lock` | `lockfile`, `lockfiles` |
+| Generated files | `generated` | `gen` |
 
-**Example:**
+The `language` field in results is lowercase: `rust`, `python`, `javascript`,
+`typescript`, `vue`, `svelte`, `go`, `java`, `php`, `c`, `cpp`, `csharp`, `ruby`,
+`kotlin`, `swift`, `zig`, `text`, `lock`, `generated` or `unknown`. New values may
+appear in minor releases. Treat any value you do not recognize like `unknown`.
 
-```bash
-# All of these work
-curl 'http://localhost:7878/query?q=main&lang=rust'
-curl 'http://localhost:7878/query?q=main&lang=rs'
-
-curl 'http://localhost:7878/query?q=console&lang=typescript'
-curl 'http://localhost:7878/query?q=console&lang=ts'
-```
+Swift files are indexed and searchable as text (`language: "swift"`), but `lang`
+does not accept `swift` and symbol searches return nothing for them.
 
 ---
 
-## Error Handling
+## Known limitations
 
-### HTTP Status Codes
+These are current behaviours of `rfx serve`, not design goals.
 
-- `200 OK`: Request successful
-- `400 Bad Request`: Invalid request parameters
-- `404 Not Found`: Resource not found (e.g., no index exists)
-- `500 Internal Server Error`: Server-side error
+- **`glob` and `exclude` cannot be used.** They are declared as lists, and the
+  query-string parser cannot fill a list, so any value (`glob=src/**/*.rs`,
+  repeated or not) returns `400` `Failed to deserialize query string: invalid type:
+  string "...", expected a sequence`. Use `file` (path substring) or `lang`.
+- **No `include_locks`, `include_generated` or `exclude_text`.** These are MCP and
+  CLI options. Over HTTP they are unknown parameters and are ignored. Use
+  `lang=lock` or `lang=generated`.
+- **No count mode and no context lines.** `context_before`/`context_after` never
+  appear in HTTP results.
+- **Unknown query parameters are ignored**, so a misspelled parameter silently
+  has no effect.
+- **`POST /index` does not read `.reflex/config.toml`.** It indexes with built-in
+  defaults, so project settings such as `[index] exclude`, `text_tier`, `mode`,
+  `hidden` and `max_file_size` are not applied. Run `rfx index` if you rely on them.
+- **`POST /index` recognizes fewer language names** than `lang`. `csharp`, `ruby`,
+  `kotlin` and `zig` are dropped; if every name is dropped, all languages are indexed.
+- **Hints and error messages use MCP and CLI names.** A `hint` may say
+  `contains:true` (use `contains=true`) or `include_locks:true` (use `lang=lock`);
+  the broad-query error says `--force` (use `force=true`).
 
-### Error Response Format
+---
 
-Errors return plain text error messages:
+## Client examples
 
-```
-HTTP/1.1 400 Bad Request
-Content-Type: text/plain
-
-Unknown language 'foobar'. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php, python (py), go, java, c, cpp (c++)
-```
-
-**Error Handling in Clients:**
+JavaScript:
 
 ```javascript
-// JavaScript
-try {
-  const response = await fetch('http://localhost:7878/query?q=test');
+async function searchCode(pattern, options = {}) {
+  const params = new URLSearchParams({ q: pattern, ...options });
+  const response = await fetch(`http://127.0.0.1:7878/query?${params}`);
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`HTTP ${response.status}: ${error}`);
+    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }
-  return response.json();
-} catch (error) {
-  console.error('Query failed:', error.message);
+  const data = await response.json();
+  if (!data.can_trust_results) {
+    console.warn('Index is stale:', data.warning?.reason);
+  }
+  // Flatten file groups into path:line entries.
+  return data.results.flatMap(file =>
+    file.matches.map(m => ({ path: file.path, line: m.span.start_line, text: m.preview }))
+  );
 }
+
+const hits = await searchCode('QueryEngine', { symbols: 'true', lang: 'rust', limit: '10' });
 ```
+
+Python:
 
 ```python
-# Python
-try:
-    response = requests.get('http://localhost:7878/query', params={'q': 'test'})
-    response.raise_for_status()
-    return response.json()
-except requests.HTTPError as e:
-    print(f"Query failed: HTTP {e.response.status_code}: {e.response.text}")
-```
-
----
-
-## Integration Patterns
-
-### Editor Plugins
-
-**VSCode Extension Example:**
-
-```javascript
-import * as vscode from 'vscode';
-
-class ReflexSearchProvider implements vscode.TreeDataProvider<SearchResult> {
-  async search(pattern: string): Promise<SearchResult[]> {
-    const response = await fetch(
-      `http://localhost:7878/query?q=${encodeURIComponent(pattern)}&limit=50`
-    );
-    const data = await response.json();
-    return data.results;
-  }
-}
-```
-
-**Neovim Plugin Example:**
-
-```lua
-local function reflex_search(pattern)
-  local url = string.format('http://localhost:7878/query?q=%s', vim.fn.escape(pattern, '&?'))
-  local result = vim.fn.system(string.format('curl -s "%s"', url))
-  local data = vim.fn.json_decode(result)
-  return data.results
-end
-
-vim.api.nvim_create_user_command('ReflexSearch', function(opts)
-  local results = reflex_search(opts.args)
-  -- Display results in quickfix list
-  vim.fn.setqflist(results, 'r')
-  vim.cmd('copen')
-end, { nargs = 1 })
-```
-
-### CI/CD Integration
-
-**Enforce Code Standards:**
-
-```bash
-#!/bin/bash
-# Check for TODO comments in production code
-
-TODOS=$(curl -s 'http://localhost:7878/query?q=TODO&file=src/&limit=100' | jq '.results | length')
-
-if [ "$TODOS" -gt 0 ]; then
-  echo "❌ Found $TODOS TODO comments in src/. Please resolve before merging."
-  exit 1
-fi
-
-echo "✅ No TODO comments found"
-```
-
-**Security Scanning:**
-
-```bash
-#!/bin/bash
-# Check for potential security issues
-
-PATTERNS=("unwrap(" "expect(" "unsafe" ".clone()")
-
-for pattern in "${PATTERNS[@]}"; do
-  COUNT=$(curl -s "http://localhost:7878/query?q=$pattern&count=true" | jq '.results | length')
-  echo "$pattern: $COUNT occurrences"
-done
-```
-
-### AI Agent Integration
-
-**LangChain Tool:**
-
-```python
-from langchain.tools import BaseTool
 import requests
 
-class ReflexCodeSearchTool(BaseTool):
-    name = "reflex_search"
-    description = "Search codebase for patterns, functions, or symbols"
+def search_code(pattern, **params):
+    params = {"q": pattern, **{k: str(v).lower() if isinstance(v, bool) else v
+                               for k, v in params.items()}}
+    response = requests.get("http://127.0.0.1:7878/query", params=params)
+    response.raise_for_status()
+    data = response.json()
+    if not data["can_trust_results"]:
+        print("Index is stale:", data["warning"]["reason"])
+    return [
+        (group["path"], match["span"]["start_line"], match["preview"])
+        for group in data["results"]
+        for match in group["matches"]
+    ]
 
-    def _run(self, query: str, symbols: bool = False, lang: str = None) -> str:
-        params = {'q': query, 'symbols': symbols, 'limit': 10}
-        if lang:
-            params['lang'] = lang
-
-        response = requests.get('http://localhost:7878/query', params=params)
-        data = response.json()
-
-        if not data['results']:
-            return "No results found"
-
-        # Format results for LLM
-        results_text = []
-        for r in data['results']:
-            results_text.append(f"{r['file']}:{r['line']} - {r['match']}")
-
-        return "\n".join(results_text)
+hits = search_code("QueryEngine", symbols=True, lang="rust", limit=10)
 ```
 
-### Monitoring Dashboard
+Python's `requests` sends `True` as the string `True`, which the server rejects
+with `400`. The helper above sends `true`.
 
-**Health Check Endpoint:**
-
-```javascript
-// Check if Reflex server is running
-async function checkHealth() {
-  try {
-    const response = await fetch('http://localhost:7878/health', {
-      method: 'GET',
-      timeout: 5000
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-// Monitor index freshness
-async function checkIndexStatus() {
-  const stats = await fetch('http://localhost:7878/stats').then(r => r.json());
-  const lastUpdated = new Date(stats.last_updated);
-  const hoursSinceUpdate = (Date.now() - lastUpdated) / (1000 * 60 * 60);
-
-  if (hoursSinceUpdate > 24) {
-    console.warn(`Index is ${hoursSinceUpdate.toFixed(1)} hours old. Consider reindexing.`);
-  }
-}
-```
-
----
-
-## Performance Considerations
-
-### Query Optimization
-
-- **Use filters**: Narrow results with `lang`, `kind`, `file` parameters
-- **Set limits**: Use `limit` parameter to avoid large result sets
-- **Use timeouts**: Set `timeout` parameter for expensive queries
-- **Prefer symbols mode**: `symbols=true` is faster for definition lookups
-
-### Caching Strategy
-
-The Reflex server does not cache query results. Each query recomputes from the index. For high-frequency queries:
-
-1. Cache results in your client application
-2. Invalidate cache when files change (use file watcher or polling)
-3. Use `GET /stats` to detect index updates via `last_updated` timestamp
-
-### Concurrent Requests
-
-The HTTP server handles concurrent requests safely. All endpoints can be called in parallel.
-
-**Example: Parallel Queries**
-
-```javascript
-// Search multiple patterns concurrently
-const patterns = ['QueryEngine', 'IndexStats', 'SearchResult'];
-const results = await Promise.all(
-  patterns.map(p => fetch(`http://localhost:7878/query?q=${p}&symbols=true`))
-);
-const data = await Promise.all(results.map(r => r.json()));
-```
-
----
-
-## Security Considerations
-
-### Local-Only Deployment
-
-The Reflex HTTP server is designed for **local-only use**. By default, it binds to `127.0.0.1` (localhost) and is not accessible from the network.
-
-**Do not expose to public networks:**
+Reindex when stale:
 
 ```bash
-# ✅ Safe: localhost only
-rfx serve --host 127.0.0.1
-
-# ⚠️  Caution: accessible on LAN
-rfx serve --host 0.0.0.0
-
-# ❌ Never: public internet
-# Do not expose port 7878 to the internet
+status=$(curl -s 'http://127.0.0.1:7878/query?q=main&limit=0' | jq -r .status)
+[ "$status" = "stale" ] && curl -s -X POST http://127.0.0.1:7878/index > /dev/null
 ```
-
-### No Authentication
-
-The API has **no authentication or authorization**. Anyone with network access to the server can:
-
-- Read your entire codebase via queries
-- Trigger reindexing operations
-- Access file paths and contents
-
-**Mitigation strategies:**
-
-1. Bind to `127.0.0.1` only (default)
-2. Use firewall rules to restrict access
-3. Run behind a reverse proxy with authentication (nginx, Caddy)
-4. Use SSH tunneling for remote access
-
-### CORS Configuration
-
-CORS is enabled for all origins (`Access-Control-Allow-Origin: *`) to support browser-based tools running on `localhost`.
-
-For production use, consider configuring a reverse proxy with stricter CORS policies.
 
 ---
 
-## Troubleshooting
+## Security
 
-### Server Won't Start
+`rfx serve` is built for local, single-user use.
 
-**Error:** `Failed to bind to 127.0.0.1:7878`
+- **Loopback by default.** It binds to `127.0.0.1:7878`.
+- **No authentication.** There are no API keys, tokens, access controls or rate
+  limits. Anyone who can reach the port can read every indexed file through
+  `/query` and trigger `POST /index`.
+- **Permissive CORS.** Any origin may call the API from a browser.
+- **Non-loopback hosts.** `--host 0.0.0.0` (or any address other than
+  `127.0.0.1`, `::1` or `localhost`) exposes the index to the network. The server
+  prints a warning on stderr when it starts this way. Do not do this on shared or
+  internet-facing machines.
 
-**Solution:** Port is already in use. Check for existing Reflex instances:
+For remote access, put a reverse proxy with authentication in front of it, or use
+an SSH tunnel:
 
 ```bash
-# Check if port is in use
-lsof -i :7878
-
-# Kill existing server
-pkill rfx
-
-# Use a different port
-rfx serve --port 8080
+ssh -L 7878:127.0.0.1:7878 devbox    # then query http://127.0.0.1:7878 locally
 ```
 
-### Index Not Found (404)
-
-**Error:** `GET /stats` returns `404 Not Found`
-
-**Solution:** No index exists. Run indexing first:
-
-```bash
-# Via API
-curl -X POST http://localhost:7878/index
-
-# Or via CLI
-rfx index
-```
-
-### Query Timeout
-
-**Error:** Query takes too long and times out
-
-**Solution:**
-
-1. Increase timeout: `GET /query?q=pattern&timeout=60`
-2. Narrow search with filters: `&lang=rust&file=src/`
-3. Use symbols mode: `&symbols=true`
-4. Reindex for better performance: `POST /index`
-
-### Empty Results
-
-**Error:** Query returns `results: []` but you expect matches
-
-**Troubleshooting:**
-
-1. Check if pattern is too specific
-2. Try full-text search instead of symbols: remove `symbols=true`
-3. Check language filter matches file types: `&lang=rust`
-4. Verify files are indexed: `GET /stats`
-
 ---
 
-## API Versioning
+## Further reading
 
-The Reflex API currently has **no versioning**. The API is stable for the v1.x release series.
-
-**Breaking changes** will be introduced in major version bumps (e.g., v2.0.0) and will be documented in the CHANGELOG.md.
-
-**Compatibility promise:**
-
-- Existing endpoints will not be removed in minor/patch versions
-- New optional parameters may be added in minor versions
-- Response schema may be extended (new fields added) in minor versions
-- Clients should ignore unknown fields for forward compatibility
-
----
-
-## Further Reading
-
-- [README.md](README.md): Quick start guide and CLI reference
-- [ARCHITECTURE.md](ARCHITECTURE.md): System design and internals
-- [CLAUDE.md](CLAUDE.md): Development workflow and project philosophy
-- [CHANGELOG.md](CHANGELOG.md): Version history and release notes
-
----
-
-**Questions or issues?** Open an issue at [github.com/reflex-search/reflex/issues](https://github.com/reflex-search/reflex/issues)
+- [README](../README.md): installation and CLI usage
+- [MCP tool cheatsheet](mcp-tool-cheatsheet.md): the MCP server, which has more
+  search options than HTTP
+- [Architecture](ARCHITECTURE.md): how the index works
+- [Changelog](../CHANGELOG.md)

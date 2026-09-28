@@ -25,18 +25,23 @@ Reflex uses **trigram-based indexing** to enable instant full-text search across
 | **Trigram Indexer** | Extracts trigrams from all code files; builds inverted index (trigram → file locations) |
 | **Content Store** | Stores full file contents (memory-mapped); enables context extraction around matches |
 | **Query Engine** | Intersects trigram posting lists; verifies matches; returns line-by-line results with context |
-| **Runtime Symbol Parser** | Uses Tree-sitter to parse candidate files at query time (only files matching trigrams) |
-| **Background Symbol Indexer** | Daemonized process that pre-caches symbols for faster queries on large codebases |
-| **Symbol Cache** | Persistent storage of parsed symbols (803-line caching system for instant symbol lookups) |
+| **Runtime Symbol Parser** | Uses Tree-sitter to parse candidate files that miss the symbol cache, at query time |
+| **Background Symbol Indexer** | `rfx index-symbols-internal`, spawned by `rfx index`; parses every file with a grammar and fills the symbol cache |
+| **Symbol Cache** | zstd-compressed symbol blobs in `meta.db` (`src/symbol_cache.rs`); symbol queries read it first |
 | **CLI / API Layer** | Single binary for human and programmatic use (CLI and optional HTTP/MCP) |
 | **Watcher (optional)** | Incrementally updates index on file changes |
 
 ### Index Cache Structure (`.reflex/`)
     .reflex/
-      meta.db          # SQLite: file metadata, stats, config
-      trigrams.bin     # Inverted index: trigram → [file_id, line_no] posting lists
-      content.bin      # Memory-mapped full file contents for context extraction
-      config.toml      # Project settings (index, search, performance)
+      meta.db          # SQLite: files + freshness fingerprints, branches, stats, dependencies, exports, symbol cache
+      trigrams.bin     # Inverted index (V4): trigram → [file_id, line_no] posting lists
+      content.bin      # Memory-mapped full file contents (V2) for verification and context
+      config.toml      # Project settings (index, performance)
+      index.lock       # Advisory lock held by `rfx index` for the whole run
+      indexing.status  # Progress of the background symbol pass (`rfx index status`)
+      pulse/           # Pulse docs-site cache (only after `rfx pulse`)
+
+See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats.
 
 ### User Configuration (`~/.reflex/`)
     ~/.reflex/
@@ -104,11 +109,11 @@ Claude Code may register MCP tools as *deferred*: their schemas are not in conte
 If Reflex tools appear in a deferred-tools list, load them first with
 `ToolSearch("select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references")`.
 The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`
-(never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. Since 1.7.0 the
+(never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. The
 server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a
 did-you-mean error, and numeric strings like `"40"` are coerced.
 
-### Matching semantics (1.7.2)
+### Matching semantics
 
 Literal search matches **whole identifiers** by default. `verify_csrf` does **not**
 match `verify_csrf_form_field`. Three modes, each with a case-insensitive variant:
@@ -123,9 +128,8 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 - `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
   `find_references` (not `search_regex`, which is already substring-based).
 - `ignore_case` is available on those four **and** `search_regex` (where it prepends
-  `(?i)`). Since 2.0.0 a `(?i)` literal is looked up in the trigram index under every
-  case variant, so it costs about what the case-sensitive query costs; before, any `i`
-  flag forced a scan of every line. A whole-identifier `ignore_case` search keeps
+  `(?i)`). A `(?i)` literal is looked up in the trigram index under every case
+  variant, so it costs about what the case-sensitive query costs. A whole-identifier `ignore_case` search keeps
   whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
   `kind: text_match`, and produces no zero-result substring `hint`. Counts match
   ripgrep `-i` exactly, including the Unicode folds of `k` (KELVIN SIGN) and `s`
@@ -133,20 +137,25 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 - A pattern containing brackets (`()`, `[]`, `<>`) is regex-escaped and run through the
   regex path automatically, with the rewrite reported in `warnings`. Whole-identifier
   matching wraps the pattern as `\b…\b`, which a pattern ending in `)` or `>` can
-  never satisfy — `unwrap()` used to return a silent `0`. Since 2.0.0 the rewrite lives
-  in the engine, so `rfx query`, `rfx serve` and MCP all apply it: the CLI prints
+  never satisfy. The rewrite lives in the engine, so `rfx query`, `rfx serve` and MCP
+  all apply it: the CLI prints
   `Warning:` on stderr and carries `warnings[]` / `hint` in `--json` output.
 - A zero result carries a `hint` naming the substring count:
   `"0 whole-identifier matches; 89 substring matches — pass contains:true"`.
 
-### Freshness contract (1.7.2)
+### Freshness contract
 
-Every response carries `status` and `can_trust_results`. Staleness now includes
-**uncommitted working-tree changes**, not just commit moves:
+List-mode `search_code` / `search_regex` responses and `check_index_status` carry `status` and
+`can_trust_results`. **Known gap (2.0.3):** `find_references`, `list_locations`,
+`count_occurrences` and every `mode: "count"` response carry `status` only, or nothing —
+no `can_trust_results`, even when stale (see `.context/TODO.md`, Open bugs). Freshness is judged by
+**file content, not by commit**: every indexed file has a recorded fingerprint (size,
+mtime, blake3 hash), and the index is stale only when a file on disk differs from it —
+edited, added or deleted, committed or not.
 
 ```json
 { "status": "stale", "can_trust_results": false,
-  "reason": "Working tree has uncommitted changes since indexing (1 modified, 1 added)",
+  "reason": "Files changed since the index was built (1 modified, 1 added)",
   "action_required": "index_project",
   "files_modified": ["src/storage/mod.rs"],
   "files_added": ["src/storage/zz_probe.rs"],
@@ -156,19 +165,23 @@ Every response carries `status` and `can_trust_results`. Staleness now includes
 
 - **A stale index always yields `can_trust_results: false`.** No exception — including
   a zero-result search, which is exactly where an agent concludes "no callers".
-- `files_modified` was a `u32` count before 1.7.2 and is now a path list (**breaking**).
-  Lists cap at 100 per category; `truncated` says when.
+- Edit → stale; `index_project` → fresh again, with no commit needed. Committing
+  already-indexed content, or switching to a branch with the same tree, stays fresh
+  (`details.indexed_commit` and `details.current_commit` may differ). Reverting a file
+  after its edit was indexed IS stale.
+- `details.checked_by` is `git` (candidates from `git status`, confirmed by fingerprint)
+  or `walk` (every file is stat'ed: no git repository, or the git candidate query failed).
+- The file lists are paths, capped at 100 per category; `truncated` says when.
 - `action_required` names the MCP tool (`index_project`), never the CLI.
-- Checked via `git status --porcelain`, memoised for 1s per workspace
-  (`REFLEX_FRESHNESS_TTL_MS`; `0` disables). `check_index_status` always bypasses it.
-- **Limitation**: outside a git repository, working-tree changes are not detected.
+- The verdict is memoised for 1 s per workspace (`REFLEX_FRESHNESS_TTL_MS`; `0`
+  disables). `check_index_status` always bypasses the memo.
 
 **Core search:**
 | Tool | Purpose |
 |------|---------|
 | `check_index_status` | Check if index is fresh before searching |
 | `search_code` | Full-text search with previews (default limit: 200) |
-| `search_regex` | Regex pattern search (use for `->`, `::`, `()`, etc.) |
+| `search_regex` | Regex pattern search (use for `->`, `::`, alternation, etc.) |
 | `list_locations` | Path+line only — cheapest, no content loaded |
 | `count_occurrences` | Count matches without loading content |
 | `find_references` | Definition + all usages in one atomic call (default limit: 200) |
@@ -194,9 +207,7 @@ See [`docs/mcp-tool-cheatsheet.md`](./docs/mcp-tool-cheatsheet.md) for a decisio
 
 **Columnar result format (`search_code` / `search_regex`, list mode):** To cut token
 cost from repeated JSON keys, these two tools return matches in a columnar shape
-instead of an array of per-file objects. Measured payload savings: **16–24%** on typical
-query results (the `~41%` estimate assumed file-grouped output; flat columnar still
-repeats `path`/`language` per row):
+instead of an array of per-file objects (flat rows still repeat `path`/`language`):
 
 ```json
 {
@@ -228,7 +239,7 @@ shape. `count` mode (`{count, pattern}`) and the other tools are unaffected.
 `paths: true` returns `{status, can_trust_results, paths, total_files}` (plus
 `has_more` when a `limit` cut the list) with no rows at all.
 
-### Early termination and totals (2.0.0)
+### Early termination and totals
 
 A list-mode `search_code` / `search_regex` call verifies candidates in path order
 and **stops once the page is full** (`offset + limit` results). The page is identical
@@ -246,7 +257,7 @@ inexact total as `Found 10 results (~1234 total, estimated)` and points at `--co
 Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 `best_total()` (exact, else estimate, else page end; for thresholds only).
 
-### Glob rules (2.0.0)
+### Glob rules
 
 `glob` / `exclude` (every MCP search tool), `rfx query --glob` / `--exclude` and
 `[index] include.patterns` / `exclude.patterns` follow **gitignore / ripgrep rules**:
@@ -259,8 +270,7 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 | `target/` | any `target/` directory and everything under it |
 | `src/*.rs` | directly in `src/`; `*` never crosses `/` |
 
-Before 2.0.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also matched
-`vendor/src/`. `./` and a leading `/` are dropped.
+`./` and a leading `/` are dropped.
 
 ### Latency diagnostics
 
@@ -284,42 +294,34 @@ Before 2.0.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also ma
   hand zstd-compressed symbol blobs to a single writer thread that commits in 1024-file
   batches. `rfx index status` shows `parsed`/`cached`/`write_failed` counts and the phase.
   Files with no symbol parser (text tiers, Swift) are skipped, not stored as empty rows.
-  Kubernetes (27k files, 15k with a parser): 45 s → ~5 s on 8 threads.
+  Kubernetes (27k files, 15k with a parser): 44.9 s → 3.4 s on 8 threads (2.0.0, 2026-09-23).
 - `rfx index` uses the same pool rule. It reads, hashes, extracts imports and trigram
   postings in the pool, builds each batch per trigram shard in parallel, and merges
   partials by byte copy (`src/trigram_build.rs`); output is byte-identical whatever
   the batch boundaries. Batches are bounded by files and bytes
   (`REFLEX_INDEX_BATCH_FILES`, default 5000; `REFLEX_INDEX_BATCH_BYTES`, default
   48 MiB). `RUST_LOG=info rfx index` prints per-phase timings. Kubernetes (27k files,
-  245 MB) indexes from scratch in ~8 s on 16 cores (2.0.0: 532 s, 95% of it in
-  per-import SQLite lookups).
+  245 MB) indexes from scratch in ~8 s on 16 cores (2.0.0, 2026-09-23; 1.7.2 took
+  532 s, 95% of it in per-import SQLite lookups).
 - `tests/latency_budget.rs` (`cargo test --release --test latency_budget -- --ignored
   --nocapture --test-threads=1`) measures the field-test query shapes in-process and
   through a real `rfx mcp` stdio round-trip; CI asserts budgets with
   `REFLEX_LATENCY_BUDGET=1`.
 
-**MCP efficiency — measured A/B results:**
-- **Columnar format saves 16–24% per-call bytes** on `search_code`/`search_regex` payloads.
-- **Reflex vs built-in grep/glob: at parity on total tokens; real wins are capability and cost.**
-  Powered A/B rerun (REF-222: n=9 tasks × 8 trials × claude-sonnet-4-6): r=1.044, 95% CI
-  [1.014, 1.262] — within the ±10% parity band, 100% task success on both arms, arm B showing
-  higher recall on large result sets (graded accuracy). The REF-176 → REF-217 (n=3, r=1.047,
-  wide CI) → REF-222 (n=9, r=1.044, 4× tighter CI) arc confirms parity was never lost — the
-  CI shrank, the point estimate held. The real wins over grep/glob are **capability** (atomic
-  `find_references`, symbol filtering, dependency analysis — unavailable in built-in tools) and
-  **~31% lower cost** (REF-192). *Method note:* at equal turn counts Reflex overhead is only
-  ~1–2%; turn-count variance drives the CI spread (corr ≈ 0.99, REF-204).
-- **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was built,
-  A/B tested (ratio 0.998 — no measurable savings because Claude Code transmits *both*
-  `content[text]` and `structuredContent`), and removed. Do not re-attempt unless using a client
-  that honors `outputSchema` and drops the text block. See [`docs/mcp-tool-cheatsheet.md`](./docs/mcp-tool-cheatsheet.md)
-  for the full efficiency notes.
+**MCP efficiency:**
+- **No current A/B numbers.** Earlier A/B results against built-in grep/glob were measured
+  on 1.5.3 (2026-07) and were removed; a rerun on 2.0.3 is in progress (`.context/TODO.md`).
+  Do not quote old efficiency figures.
+- **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
+  built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
+  so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
+  and drops the text block.
 
 ---
 
 ## AST Pattern Matching
 
-⚠️ **PERFORMANCE WARNING**: AST queries are **SLOW** (500ms-10s+) and scan the **ENTIRE codebase**. **Use `--symbols` instead in 95% of cases** (10-100x faster).
+⚠️ **PERFORMANCE WARNING**: AST queries are **SLOW** — they parse every `--lang` file that `--glob` selects, with no trigram narrowing. **Use `--symbols` instead in almost every case**; it reads the symbol cache.
 
 **When to use** (RARE):
 - Need to match code structure, not just text (e.g., "all async functions with try/catch blocks")
@@ -335,7 +337,7 @@ Before 2.0.0 every relative pattern got a `**/` prefix, so `src/**/*.rs` also ma
 rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 ```
 
-**Performance**: 2-5ms (full-text) vs 3-10ms (--symbols) vs 500ms-10s+ (--ast). **ALWAYS use `--glob` with AST queries.**
+**ALWAYS use `--glob` with AST queries.**
 
 ---
 
@@ -354,7 +356,6 @@ rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 - **React/JSX**: Components, hooks, TypeScript support
 - **Attributes/Annotations**: `--kind Attribute` finds annotation definitions (Rust proc macros, Java @interface, Kotlin annotation class, PHP #[Attribute], C# Attribute classes)
 
-**Coverage**: 90%+ of all codebases across web, mobile, systems, enterprise, and AI/ML development.
 
 ### Plain-Text Tier (every non-binary file)
 
@@ -362,7 +363,7 @@ Reflex indexes non-code files, because **agents do not partition searches by fil
 type**. A config key lives in the YAML, the Rust struct *and* the spec paragraph;
 returning only the struct and a confident `0` for the rest is a wrong answer.
 
-**Coverage rule (2.0.0, `[index] mode = "tracked"`, the default)**: ripgrep's defaults —
+**Coverage rule (`[index] mode = "tracked"`, the default)**: ripgrep's defaults —
 every non-binary file (no NUL byte anywhere) that is not excluded by `.gitignore` /
 `.ignore` / `.rgignore` / `[index] exclude` and not under a dot-directory (`.github/`,
 `.githooks/`, `.cargo/`; `[index] hidden = true` walks them). So `OWNERS`, `SECURITY_CONTACTS`,
@@ -395,7 +396,7 @@ marker is **not** read (the query engine derives language from the path).
 - **Select the text tier**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
 - **Exclude it**: `exclude_text: true` on the four full-text MCP tools.
 - **Turn it off**: `[index] text_tier = false` in `.reflex/config.toml`.
-- **Old rule**: `[index] mode = "allowlist"` restores the pre-2.0.0 behaviour — code by
+- **Allowlist mode**: `[index] mode = "allowlist"` indexes only code by
   extension plus the fixed list `md mdx txt yaml yml toml json proto html htm sh bash
   ini cfg sql graphql bru` and the names `Makefile`, `Dockerfile`, `Justfile`; lock and
   generated files are not indexed. For trees where the long tail of data files is not
@@ -473,8 +474,8 @@ Designed for **codebase structure analysis**:
 - **Core Algorithm**: Trigram-based inverted index (inspired by Zoekt/Google Code Search)
 - **Crates**:
   - **Indexing**: Custom trigram extraction, `memmap2` (zero-copy I/O)
-  - **Parsing**: `tree-sitter` + language grammars (runtime symbol parsing at query time)
-  - **Storage**: `rusqlite` (metadata), custom binary format (trigrams + content)
+  - **Parsing**: `tree-sitter` + language grammars (background symbol pass, cache misses at query time, imports)
+  - **Storage**: `rusqlite` (metadata, symbol cache), custom binary formats (trigrams + content), `zstd` (symbol blobs)
   - **Incremental**: `blake3` (content hashing), `ignore` (gitignore support)
   - **Performance**: `rayon` (parallel indexing), memory-mapped I/O
   - **CLI**: `clap` (argument parsing), `serde_json` (JSON output)
@@ -497,59 +498,36 @@ Designed for **codebase structure analysis**:
 
 ---
 
-## Runtime Symbol Detection Architecture
+## Symbol Detection Architecture
 
-Reflex uses a unique **runtime symbol detection** approach that combines the speed of trigram indexing with the precision of tree-sitter parsing:
+Symbol queries combine the trigram index with tree-sitter, and a persistent cache sits
+between them.
 
-### How It Works
+1. **`rfx index`**: extracts trigrams (and imports, with tree-sitter) from every file,
+   writes `trigrams.bin` and `content.bin`, then spawns the background symbol pass.
+2. **Background symbol pass** (`rfx index-symbols-internal`): parses every file that has
+   a grammar, runs one combined tree-sitter query per language per file
+   (`parsers::LanguageQueries`), and stores zstd symbol blobs in `meta.db`
+   (`src/symbol_cache.rs`). Files with no grammar (text tiers, Swift) are skipped.
+3. **Query time** (`--symbols`, `--kind`, `find_references`):
+   1. Trigram search narrows the tree to candidate files.
+   2. Candidates are read from the symbol cache; a cache miss (pass still running, or a
+      file changed) is parsed on demand with the same extractors.
+   3. Results are filtered to symbol definitions.
 
-1. **Indexing Phase** (no tree-sitter parsing):
-   - Extract trigrams from all files → build inverted index
-   - Store full file contents in memory-mapped content.bin
-   - No symbol extraction or tree-sitter parsing during indexing
-
-2. **Query Phase** (lazy parsing only when needed):
-   - **Full-text queries**: Use trigrams only (instant results)
-   - **Symbol queries** (`--symbols` or `--kind function`):
-     1. Trigram search narrows 62K files → ~10-100 candidates
-     2. Parse only candidate files with tree-sitter (2-224ms overhead)
-     3. Filter to symbol definitions and return results
-
-### Performance Benefits
-
-| Approach | Indexing Time | Query Time | Memory Usage |
-|----------|---------------|------------|--------------|
-| **Old (indexed symbols)** | Slow (parse all files) | 4125ms (load 3.3M symbols) | High (symbols.bin) |
-| **New (runtime parsing)** | Fast (trigrams only) | 2-224ms (parse 10 files) | Low (no symbols.bin) |
-
-**Improvement**: 2000x faster on small codebases (4125ms → 2ms), 18x faster on Linux kernel (4125ms → 224ms)
-
-### Why This Works
-
-- **Trigrams are excellent filters**: Reduce search space by 100-1000x
-- **Most queries are full-text**: Symbol filtering is the minority case
-- **Parsing is fast**: Tree-sitter parses 10 files in ~2ms
-- **Lazy evaluation wins**: Parse only what's needed, when it's needed
-
-### Architecture Simplification
-
-Removed components:
-- `symbols.bin` (entire symbol storage file)
-- `SymbolWriter` (~250 lines of serialization code)
-- `SymbolReader` (~250 lines of deserialization code)
-
-Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
+Full-text queries never touch tree-sitter. New symbol kinds go into the language's
+`SYMBOL_QUERIES`, never a separate per-kind `QueryCursor`.
 
 ---
 
 ## Design Notes
 - **Trigram Algorithm**: Extracts 3-character substrings; builds inverted index for O(1) lookups
-- **Runtime Symbol Detection**: Parse only candidate files at query time (10-100 files vs 62K+ files at index time)
-- **Incremental by content**: Files reindexed only if `blake3` hash changes
+- **Symbol detection**: symbol cache first, tree-sitter on cache misses among trigram candidates (see above)
+- **Change detection by content**: an index run with no changed `blake3` hash is skipped; any change rebuilds `content.bin` and `trigrams.bin` in full
 - **Memory-mapped I/O**: Zero-copy access to trigrams.bin and content.bin
 - **Regex support**: Extracts guaranteed trigrams from patterns; falls back to full scan if needed
 - **Deterministic**: Same query always returns same results (sorted by file:line)
-- **Respects .gitignore**: Uses `ignore` crate to skip untracked files
+- **Respects .gitignore**: Uses the `ignore` crate to skip gitignored files (untracked, non-ignored files are indexed)
 - **Programmatic output**: File-grouped results with spans and previews:
   ```json
   {
@@ -612,25 +590,24 @@ Located in the workspace's `.reflex/` directory.
 **Purpose**: Project-specific settings for indexing and search behavior.
 
 **Sections**:
-- `[index]`: Languages, the plain-text tier, file size limits, symlink handling
-- `[search]`: Default result limits, fuzzy matching thresholds
-- `[performance]`: Thread count, compression levels
+- `[index]`: Languages, the plain-text tier, coverage mode, hidden files, file size limits, symlink handling, include/exclude patterns
+- `[performance]`: Thread counts for querying, indexing and the background symbol pass
 
 **Example**:
 ```toml
 [index]
-languages = []  # Empty = all supported languages
-text_tier = true  # Also index docs and config (md, yaml, toml, json, proto, html, sh, sql)
+languages = []  # Empty = all supported languages (does not affect the text tier)
+text_tier = true  # Also index docs, config and every other non-binary file
+mode = "tracked"  # every non-binary, non-gitignored file; "allowlist" = code + fixed docs/config list
+hidden = false    # true also walks dot-directories (.githooks/), never .git/ or .reflex/
 max_file_size = 10485760  # 10 MB
+follow_symlinks = false
 # gitignore rules: a pattern with `/` is anchored at the root, a bare name matches anywhere.
 # include.patterns = ["src/**/*.rs", "docs/**"]   # whitelist (directories are still walked)
 # exclude.patterns = ["vendor/**", "*.generated.rs"]
 
-[search]
-default_limit = 100
-
 [performance]
-parallel_threads = 0  # 0 = auto (80% of cores)
+parallel_threads = 0  # 0 = auto (80% of cores, max 32)
 symbol_threads = 0  # background symbol pass (rfx index-symbols-internal); 0 = auto (50% of cores, max 32)
 ```
 
@@ -700,43 +677,18 @@ The `.context/` directory contains planning documents, research notes, and decis
   - Discovering new tasks or requirements
   - Making architectural decisions that affect the roadmap
   - Changing priorities or timelines
-- Contains:
-  - MVP goals and success criteria
-  - Task breakdown by module with priority levels (P0/P1/P2/P3)
-  - Implementation phases and timeline
-  - Open questions and design decisions
-  - Performance targets and benchmarks
-  - Maintenance strategy and update policy
+- Contains only live work: in-progress projects, open bugs, current policy (decisions
+  still in force), open follow-ups and the backlog. Finished work moves to CHANGELOG.md
+  or is deleted (git keeps history).
 
-#### Optional Research Files
+#### Research Files
 
-Create RESEARCH.md files as needed to cache important findings:
-
-**`.context/TREE_SITTER_RESEARCH.md`** - Tree-sitter grammar investigation
-- Document findings about each language grammar
-- Node types and AST structure for symbol extraction
-- Query patterns and examples
-- Quirks, gotchas, and edge cases
-- Version compatibility notes
-
-**`.context/PERFORMANCE_RESEARCH.md`** - Optimization findings
-- Benchmarking results and bottleneck analysis
-- Memory-mapping techniques and best practices
-- Indexing speed optimizations
-- Query latency improvements
-- Cache format trade-offs
-
-**`.context/BINARY_FORMAT_RESEARCH.md`** - Data serialization decisions
-- Binary format design rationale
-- Alternatives considered and rejected
-- Serialization library comparisons (bincode, rkyv, custom)
-- Versioning and migration strategies
-
-**`.context/LANGUAGE_SPECIFIC_NOTES.md`** - Per-language implementation details
-- Language-specific symbol extraction challenges
-- Parser implementation patterns
-- Testing strategies for each language
-- Real-world codebase findings
+Create `{TOPIC}_RESEARCH.md` files to cache findings from a focused investigation.
+See `.context/README.md` for the files that exist today (formats, trigram design,
+performance rounds, symbol detection). Rules:
+- Date every measurement and name the Reflex version it was taken on.
+- Include what was tried and why it did not work (avoid repeated dead ends).
+- When the code changes what a file describes, update it or add a dated banner.
 
 ### AI Assistant Workflow
 
@@ -754,7 +706,7 @@ When working on Reflex, AI assistants should:
    - Add new tasks as they're discovered
 
 3. **Before Ending Session:**
-   - Ensure all task statuses are accurate
+   - Ensure all task statuses are accurate; move finished work out of TODO.md (CHANGELOG.md or delete)
    - Document any blocking issues or open questions
    - Update implementation notes if approach changed
    - Commit research findings to appropriate RESEARCH.md files
@@ -766,7 +718,7 @@ When working on Reflex, AI assistants should:
    - Cross-reference related TODO.md tasks
 
 5. **Decision Documentation:**
-   - Major decisions go in `.context/TODO.md` under "Notes & Design Decisions"
+   - Decisions still in force go in `.context/TODO.md` under "Current policy"
    - Technical deep-dives go in specific RESEARCH.md files
    - Quick notes and TODOs stay in source code comments
 
@@ -789,7 +741,7 @@ touch .context/RUST_PARSER_RESEARCH.md
 # - Document key decisions
 
 # 5. Implement based on research
-# 6. Update TODO.md to completed
+# 6. Remove the finished task from TODO.md; record user-visible changes in CHANGELOG.md
 # 7. Reference RESEARCH.md in code comments
 ```
 

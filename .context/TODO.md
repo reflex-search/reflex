@@ -21,9 +21,9 @@ docs/ and `.context/`, then reruns the efficacy A/B on 2.0.3 with `claude-sonnet
 | Part | Scope | Status |
 | --- | --- | --- |
 | C | `.context/` rewrite (this file, research files) | completed |
-| B | CLAUDE.md, README.md, docs/ | in progress |
-| B4 | Source text: MCP descriptions, cache.rs comments, dead config keys, `--format dot` help | pending |
-| D1 | Efficacy harness fixes (pinned corpus, model flag, isolation) | pending |
+| B | CLAUDE.md, README.md, docs/ | completed |
+| B4 | Source text: MCP descriptions, cache.rs comments, dead config keys, `--format dot` help | completed |
+| D1 | Efficacy harness fixes (pinned corpus, model flag, isolation) | completed |
 | D2 | Rerun REF-222-style and REF-225-style A/B + columnar payload script | pending |
 | D3 | Publish `.context/EFFICACY-2.0.3.md` + README/CLAUDE.md numbers | pending |
 
@@ -73,6 +73,13 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
+- **Stale index, but no `can_trust_results: false`** (found 2026-09-28). `find_references`,
+  `list_locations` and `count_occurrences` return `status` only (`src/mcp.rs` ~L1688,
+  ~L1774, ~L3027); `mode: "count"` returns only `{count, pattern}`; `check_index_status`
+  with no index returns only `{status, action_required}`; `rfx query --count --json`
+  returns `{count, timing_ms}`. This breaks current policy 2 exactly where it matters:
+  a zero from `find_references` on a stale index reads as "no callers". Every tool
+  description's FRESHNESS paragraph promises the field. CLAUDE.md now states the gap.
 - **`find_references` silently drops call sites on any line containing a URL.**
   `src/line_filter.rs:83` does `line.find("//")` and treats anything after it as a
   comment. `https://` contains `//`, so:
@@ -88,6 +95,22 @@ failed Zola build still exits 0.
   Found 2026-09-22; still present in 2.0.3.
 - **`max_posting_list_entries` (500k, `src/models.rs:590`) silently drops files past the
   cap.** Found in the 2026-09-22 latency round.
+- **`rfx serve` defects** (found 2026-09-28 while rewriting `docs/API.md`; listed there
+  under "Known limitations"):
+  1. `glob` / `exclude` are unusable: declared as lists, the query-string parser cannot
+     fill a list, so any value returns 400 "expected a sequence".
+  2. Unknown query parameters are ignored silently, so `include_locks`,
+     `include_generated`, `exclude_text` do nothing over HTTP (the lock-file zero `hint`
+     still tells callers to pass `include_locks:true`).
+  3. `POST /index` ignores `.reflex/config.toml` (built-in defaults); MCP `index_project`
+     (`rebuild_index` in `src/mcp.rs`) does the same. `rfx index` loads the file.
+  4. `POST /index` knows only 11 language names; `csharp`, `ruby`, `kotlin`, `zig` are
+     dropped silently (and an all-unknown list indexes everything).
+  5. Invalid regex and too-broad queries return 500 `IoError` instead of 400; the
+     too-broad message says `--force` instead of `force=true`.
+  6. Missing `q` / bad integer / bad boolean → 400 `text/plain`, not JSON.
+  7. `kind=bogus` → zero results with a misleading `contains:true` hint.
+  8. `/stats` language keys are capitalized, unlike the lowercase `language` field.
 - **Qt Linguist `.ts` XML files are parsed as TypeScript.** On O3DE, one such file took
   19 s of a 21 s symbol pass (issue #39). Needs a content sniff (`<!DOCTYPE TS>`).
 
