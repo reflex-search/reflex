@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "2.0.1"
+version = "2.0.3"
 edition = "2024"
 exclude = ["pulse-template/node_modules", "pulse-template/dist", "pulse-template/.astro-cache", "pulse-template/bundle"]
 authors = ["Reflex Contributors"]

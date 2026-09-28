@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [2.0.3] - 2026-09-28
+
 ### ⚠️ Breaking (Pulse)
 
 - **`rfx pulse generate` builds the site with Astro Starlight instead of Zola, and `-o` now holds the finished static HTML** (was a Zola project with HTML in `-o/public/`). Upload `pulse-site/` as is; for GitHub Pages change `path: pulse-site/public` to `path: pulse-site`. An existing Zola output directory is refused until you pass `--clean`. Building needs **Node 22.12+** on `PATH` (or `REFLEX_PULSE_NODE`); the template's pinned packages (the site runtime) install once per template version into `~/.reflex/pulse/runtime/<id>/`, from a prebuilt checksummed tarball when one is published for the platform, else with `npm ci --ignore-scripts` (override the root with `REFLEX_PULSE_HOME`, or point `REFLEX_PULSE_RUNTIME` at a prepared directory). Node and `node_modules` never ship inside the rfx binary. Zola and Pagefind are no longer downloaded to `~/.reflex/bin`.
@@ -25,7 +27,7 @@
 
 Library: `LlmProvider` gains `complete_request(&CompletionRequest) -> CompletionResponse` (system prompt, `OutputMode`, `max_tokens`, usage, stop reason), `model()` and `caps()`; failures carry a classified `ProviderError` (`downcast_ref`). `complete()` and `rfx ask` are unchanged. `pulse::llm_cache` is removed; `pulse::write` replaces it.
 
-## [Unreleased] - 2.0.0
+## [2.0.0] - 2026-09-23
 
 A major version: the on-disk index formats, the MCP pagination fields, glob anchoring, the freshness contract and the default coverage rule all change (below). Every existing `.reflex/` cache is rebuilt once by `rfx index`.
 
