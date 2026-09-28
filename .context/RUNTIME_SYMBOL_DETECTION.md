@@ -1,7 +1,13 @@
 # Runtime Symbol Detection Research
 
 **Date**: 2025-11-03
-**Status**: ✅ Implemented and validated
+**Status**: ✅ Implemented 2025-11-03; **superseded in part.**
+
+> **2026-09-28 note.** Symbols are no longer parsed only at query time. `rfx index` spawns
+> `rfx index-symbols-internal`, which caches zstd symbol blobs in `meta.db`
+> (`SYMBOL_FORMAT_VERSION` 3, 2.0.0). Symbol queries read that cache first and parse only
+> cache misses. The timings below are from 2025-11 builds and are not current.
+> See `BINARY_FORMAT_RESEARCH.md` §2 and CHANGELOG.md 2.0.0.
 
 ## Overview
 

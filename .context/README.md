@@ -1,120 +1,36 @@
 # `.context/` Directory
 
-This directory contains planning documents, research notes, and decision logs to maintain context across development sessions.
+Planning documents, research notes and decision records that keep context across
+development sessions (human and AI). Committed to git.
 
-## Purpose
+## Files
 
-The `.context/` directory serves as a **persistent knowledge base** for Reflex development, enabling:
-- Continuity across development sessions (human and AI)
-- Decision tracking and rationale
-- Research caching to avoid duplicate work
-- Onboarding for new contributors
-- AI assistant collaboration and handoff
+| File | What it holds |
+| --- | --- |
+| `TODO.md` | **Required reading at session start.** Live work only: in-progress projects, open bugs, current policy, open follow-ups, backlog. |
+| `BINARY_FORMAT_RESEARCH.md` | Reference for the on-disk formats: `trigrams.bin` V4, `content.bin` V2, the `meta.db` symbol cache. |
+| `TRIGRAM_RESEARCH.md` | Trigram indexing design and the resolved design questions. |
+| `RUNTIME_SYMBOL_DETECTION.md` | 2025-11 decision to parse symbols at query time; now superseded in part by the background symbol cache. |
+| `PERFORMANCE_RESEARCH.md` | Dated benchmark and latency rounds. Only the 2026-09 sections describe the 2.0.x format. |
+| `PULSE_RENDERER_SPIKE.md` | Pulse M0a renderer spike (2026-09-26). |
+| `REF-222-decision.md` | Historical A/B record (1.5.3, 2026-07). Not current. |
 
-## Core Files
+## Rules
 
-### `TODO.md` (Required)
-**Primary task tracking and implementation roadmap**
+- **Keep `TODO.md` live.** When work finishes, move its record to CHANGELOG.md (user-visible)
+  or delete it (git keeps history). Do not leave finished work as "COMPLETED" sections.
+- **Date every measurement.** A number carries the Reflex version and the date it was
+  measured. A number from an older format or release is labelled historical, or removed.
+- **Research files** (`{TOPIC}_RESEARCH.md`, uppercase): create one for a focused
+  investigation. Include version numbers, what was tried, and what did not work.
+  When the code changes what a research file describes, update the file or add a dated
+  banner that says which parts no longer hold.
+- **Code wins.** When a file here and the code disagree, fix the file.
 
-Contains:
-- Executive summary of project status
-- MVP goals and success criteria
-- Task breakdown by module (P0/P1/P2/P3 priorities)
-- Implementation phases and timeline
-- Open questions and design decisions
-- Performance targets
-- Maintenance strategy
+## Workflow for AI assistants
 
-**Usage:**
-- Read at start of every session
-- Update task statuses as work progresses
-- Add new tasks as discovered
-- Document architectural decisions
+See "Context Management & AI Workflow" in `CLAUDE.md`.
 
-### Research Files (Optional)
-
-Create `*_RESEARCH.md` files as needed to cache important findings:
-
-- **`TREE_SITTER_RESEARCH.md`** - Grammar investigation, node types, query patterns
-- **`PERFORMANCE_RESEARCH.md`** - Benchmarks, optimizations, bottleneck analysis
-- **`BINARY_FORMAT_RESEARCH.md`** - Serialization design, format comparisons
-- **`LANGUAGE_SPECIFIC_NOTES.md`** - Per-language implementation details
-- **`{TOPIC}_RESEARCH.md`** - Any other focused investigation
-
-## Workflow for AI Assistants
-
-See the **"Context Management & AI Workflow"** section in `CLAUDE.md` for detailed instructions.
-
-### Quick Reference:
-
-1. **Start session:** Read `CLAUDE.md` → Read `TODO.md`
-2. **During work:** Update `TODO.md` task statuses, create/update RESEARCH.md files
-3. **End session:** Ensure all statuses accurate, document blockers
-4. **Research:** Create focused RESEARCH.md files with examples and version numbers
-
-## File Naming Conventions
-
-- `TODO.md` - Main task tracker (required)
-- `{TOPIC}_RESEARCH.md` - Research findings (uppercase, descriptive)
-- `README.md` - This file (explains the directory)
-
-## Version Control
-
-All `.context/` files **should be committed to git**. They are part of the project documentation and help maintain development continuity.
-
-## Examples
-
-### Good RESEARCH.md Structure
-
-```markdown
-# Tree-sitter Rust Grammar Research
-
-**Last Updated:** 2025-10-31
-**Grammar Version:** tree-sitter-rust 0.23
-
-## Node Types for Symbol Extraction
-
-### Functions
-- Node kind: `function_item`
-- Name field: `name` (identifier)
-- Parameters: `parameters` (parameter_list)
-- Example AST: ...
-
-### Structs
-- Node kind: `struct_item`
-- Fields: ...
-
-## Edge Cases
-
-### Procedural Macros
-...
-
-## References
-- https://github.com/tree-sitter/tree-sitter-rust
-- Grammar docs: ...
-```
-
-### Good TODO.md Update
-
-```markdown
-#### P0: Tree-sitter Integration (CRITICAL PATH)
-- [x] Set up Tree-sitter grammar dependencies (Line 83)
-- [x] Add tree-sitter-rust to Cargo.toml - COMPLETED 2025-10-31
-- [ ] Add tree-sitter-python to Cargo.toml
-- [in_progress] Implement Rust parser (src/parsers/rust.rs)
-  - Started: 2025-10-31
-  - Status: Completed basic node traversal, working on macro handling
-  - See: .context/RUST_PARSER_RESEARCH.md for findings
-  - Blocker: Need to understand proc_macro AST representation
-```
-
-## Maintenance
-
-- Keep TODO.md up to date with actual project state
-- Archive completed RESEARCH.md files or integrate findings into docs
-- Update timestamps when making significant changes
-- Cross-reference between TODO.md and RESEARCH.md files
-
----
-
-**Remember:** The `.context/` directory is your memory between sessions. Use it well!
+1. Start: read `CLAUDE.md`, then `TODO.md`.
+2. During work: update task status in `TODO.md`; write findings into a research file.
+3. End: make every status accurate; record blockers and open questions.

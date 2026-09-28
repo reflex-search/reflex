@@ -1,6 +1,9 @@
 # Performance Research & Baselines
 
-## Criterion Benchmark Baseline (2026-05-13)
+> Every section is dated. Only the 2026-09-22/23 sections describe the current (2.0.x)
+> index format; earlier numbers predate `trigrams.bin` V4 and the WP1–WP7 rounds.
+
+## Criterion Benchmark Baseline (2026-05-13) — pre-2.0, historical
 
 Measured on the `feature/code-quality-refactor` branch.
 Run with: `cargo bench --bench trigram_bench`

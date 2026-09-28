@@ -1,8 +1,8 @@
 # Trigram Index Implementation Research
 
 **Date:** 2025-10-31
-**Status:** Architecture Design Complete, Ready for Implementation
-**Related:** See CLAUDE.md for project vision, TODO.md for task breakdown
+**Status:** Implemented. The live on-disk format is `trigrams.bin` V4 (2.0.0), specified in
+`BINARY_FORMAT_RESEARCH.md` §3. Sections below that describe earlier formats are design history.
 
 ---
 
@@ -442,19 +442,16 @@ fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
 
 ---
 
-## Open Questions & TODOs
+## Resolved design questions
 
-- [ ] Should we case-fold trigrams? (e.g., "Ext" → "ext")
-  - **Recommendation:** No, keep case-sensitive for deterministic results
-
-- [ ] How to handle Unicode?
-  - **Recommendation:** UTF-8 bytes, trigrams can span character boundaries
-
-- [ ] Should posting lists be compressed?
-  - **Recommendation:** Not for MVP (optimize later if index too large)
-
-- [ ] How to handle very long posting lists (common trigrams)?
-  - **Recommendation:** Skip or truncate lists >10k entries (rare trigrams are more useful)
+- Case: trigrams are case-sensitive. A `(?i)` literal is looked up under every case
+  variant (2.0.0), so it costs about what the case-sensitive query costs.
+- Unicode: trigrams are UTF-8 bytes and may span character boundaries. A non-ASCII
+  literal under `(?i)` falls back to a scan.
+- Compression: V4 posting lists are varint-encoded, one posting per distinct trigram per line.
+- Very common trigrams: `max_posting_list_entries` caps a list at 500k (known defect: files
+  past the cap are dropped silently, see TODO.md), and `search_candidates` skips a list
+  larger than 2 bytes per surviving candidate.
 
 ---
 

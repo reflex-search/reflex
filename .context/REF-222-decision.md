@@ -1,5 +1,9 @@
 # REF-222 Decision Record: Powered A/B Efficacy Results (2026-07-03)
 
+> **Historical — not current.** Measured on Reflex 1.5.3 (build 6e549ca) with
+> claude-sonnet-4-6. It predates the 1.7.0–2.0.3 changes. Do not quote these numbers.
+> A rerun on 2.0.3 is in progress (see TODO.md).
+
 ## Summary
 
 Powered rerun of the Reflex columnar MCP vs. grep/glob token efficiency study.
