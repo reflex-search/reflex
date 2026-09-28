@@ -432,9 +432,12 @@ def build_claude_cmd(
         "--output-format", "stream-json",
         "--mcp-config", str(mcp_config_path),
         "--model", model,
-        # Load only the corpus repo's own settings: the operator's user-level hooks,
-        # plugins and output style must not leak into trials.
-        "--setting-sources", "project",
+        # Load no settings sources: the operator's user-level hooks, plugins and
+        # output style must not leak into trials, and a corpus CLAUDE.md must not
+        # either — the pinned reflex corpus's CLAUDE.md tells agents to ToolSearch
+        # for mcp__reflex__* tools, which sent the control arm hunting for tools it
+        # does not have (REF-190's confound). ripgrep/tokio have no CLAUDE.md.
+        "--setting-sources", "",
         # User skills still load under --setting-sources; their listing adds prompt
         # text unrelated to the task. Disable them in every arm.
         "--disable-slash-commands",

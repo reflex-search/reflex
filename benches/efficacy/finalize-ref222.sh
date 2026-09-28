@@ -179,7 +179,7 @@ Scored against ripgrep oracle ground truth (never Reflex — to avoid circularit
 - [x] Build SHA verified from `rfx mcp` startup diagnostic: `{RUN_BUILD}`
 - [x] columnar=on confirmed via startup diagnostic before run
 - [x] Model pinned: `{RUN_MODEL}` on both arms (req #2)
-- [x] User settings excluded: `--setting-sources project`
+- [x] No settings sources or CLAUDE.md loaded: `--setting-sources ""`, `--disable-slash-commands`
 - [x] Reflex corpus: pinned clone `benches/efficacy/corpus/reflex` (repos.md SHA)
 - [x] Tool count in system:init: verified via probe_mcp_flags() pre-flight
 
