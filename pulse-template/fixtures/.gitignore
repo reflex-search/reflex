@@ -1,0 +1,4 @@
+# pulse-template/.gitignore ignores bundle/ and pulse.config.json (the staged site).
+# The smoke fixture needs both committed: the runtime tarball smoke test builds it.
+!smoke/bundle/
+!smoke/pulse.config.json

@@ -1,0 +1,1 @@
+{"title":"Output formats","description":"format::render prints one word: count line per word.","template":"doc","badges":[],"headings":[],"html":"<p><code>format::render</code> prints one <code>word: count</code> line per word.</p>\n<pre class=\"pulse-mermaid\" data-links=\"{}\">flowchart LR\n  text --&gt; Tally --&gt; render\n</pre>","mermaid":true}

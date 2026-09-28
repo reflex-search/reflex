@@ -1,0 +1,110 @@
+{
+  "base": "/reflex/",
+  "build": {
+    "incremental": true,
+    "pageSource": "fs"
+  },
+  "generator": "rfx 2.0.1",
+  "sidebar": {
+    "docs": [
+      {
+        "label": "Overview",
+        "slug": ""
+      },
+      {
+        "collapsed": false,
+        "items": [
+          {
+            "label": "Output formats",
+            "slug": "docs/guides/formats"
+          }
+        ],
+        "label": "Guides"
+      },
+      {
+        "collapsed": false,
+        "items": [
+          {
+            "collapsed": false,
+            "items": [
+              {
+                "label": "tally",
+                "slug": "docs/reference/tally"
+              },
+              {
+                "label": "Tally",
+                "slug": "docs/reference/tally/tally"
+              },
+              {
+                "label": "Error",
+                "slug": "docs/reference/tally/error"
+              },
+              {
+                "collapsed": true,
+                "items": [
+                  {
+                    "label": "tally::format",
+                    "slug": "docs/reference/tally/format"
+                  }
+                ],
+                "label": "format"
+              }
+            ],
+            "label": "tally"
+          }
+        ],
+        "label": "Reference"
+      },
+      {
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Changelog",
+            "slug": "docs/changelog"
+          },
+          {
+            "label": "v0.2.0",
+            "slug": "docs/changelog/0-2-0"
+          }
+        ],
+        "label": "Changelog"
+      }
+    ],
+    "internals": [
+      {
+        "label": "Architecture",
+        "slug": "internals"
+      },
+      {
+        "label": "Dependency map",
+        "slug": "internals/dependency-map"
+      },
+      {
+        "collapsed": false,
+        "items": [
+          {
+            "label": "src",
+            "slug": "internals/modules/src"
+          }
+        ],
+        "label": "Modules"
+      }
+    ]
+  },
+  "sidebarFullTreeMax": 800,
+  "tabs": [
+    {
+      "href": "/",
+      "id": "docs",
+      "label": "Docs",
+      "prefix": "/docs/"
+    },
+    {
+      "href": "/internals/",
+      "id": "internals",
+      "label": "Internals",
+      "prefix": "/internals/"
+    }
+  ],
+  "title": "Tally"
+}
