@@ -1,6 +1,32 @@
 {
   "schema": 1,
-  "deps_hash": "",
+  "deps_hash": "c4431504bb22",
   "release_base": "https://github.com/reflex-search/reflex/releases/download",
-  "assets": {}
+  "assets": {
+    "darwin-arm64": {
+      "name": "pulse-runtime-c4431504bb22-darwin-arm64.tar.zst",
+      "sha256": "afe81e089e3078fdb4ad981369695de0def0896510b4df9651792ac2e2a1974a",
+      "size": 30773407
+    },
+    "darwin-x64": {
+      "name": "pulse-runtime-c4431504bb22-darwin-x64.tar.zst",
+      "sha256": "cc7480bae0a457dff887cd67ab891ea7c98dc90f3c6e5147385af50ac5c04ddf",
+      "size": 32240291
+    },
+    "linux-arm64": {
+      "name": "pulse-runtime-c4431504bb22-linux-arm64.tar.zst",
+      "sha256": "18882a3122dca7817622ea5906b4bb4c4dbb3c48c85b5d8eb2e257941d1836a7",
+      "size": 31301444
+    },
+    "linux-x64": {
+      "name": "pulse-runtime-c4431504bb22-linux-x64.tar.zst",
+      "sha256": "cd6de235fec30ea908fe3fcec14836745ac828c3858bb6908b89770e6e490ff3",
+      "size": 32909948
+    },
+    "win32-x64": {
+      "name": "pulse-runtime-c4431504bb22-win32-x64.tar.zst",
+      "sha256": "815860796ff6ed45e6632f59c066020816bae0f7cedec305917f2f245a58cebd",
+      "size": 32259930
+    }
+  }
 }
