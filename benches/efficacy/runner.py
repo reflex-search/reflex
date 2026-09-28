@@ -102,7 +102,10 @@ ARMS = {
         # --dangerously-skip-permissions keeps tool approval consistent across all arms
         "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
         "disallowed_tools": [],
-        "allowed_tools": [],
+        # Current Claude Code exposes Grep/Glob only when --allowedTools names them;
+        # without this list the control arm has no Grep/Glob at all (seen 2026-09-28).
+        # Same built-ins as the MCP arms, minus the Reflex tools.
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS,
         "append_system_prompt": None,
     },
     "B": {
@@ -432,15 +435,17 @@ def build_claude_cmd(
         # Load only the corpus repo's own settings: the operator's user-level hooks,
         # plugins and output style must not leak into trials.
         "--setting-sources", "project",
+        # User skills still load under --setting-sources; their listing adds prompt
+        # text unrelated to the task. Disable them in every arm.
+        "--disable-slash-commands",
     ]
 
     # Arm-specific flags
     cmd.extend(arm_cfg["extra_flags"])
 
-    # Explicit tool allowlist — forces eager MCP schema loading, eliminating
-    # the ToolSearch deferred-schema wasted turns seen in Phase 4 arms B/C.
-    # Arm A omits this (uses --dangerously-skip-permissions instead) so it
-    # remains a clean control with no explicit tool enumeration.
+    # Explicit tool allowlist. Every arm passes one: current Claude Code enables
+    # Grep/Glob only when listed. Reflex MCP schemas stay deferred behind
+    # ToolSearch regardless (the realistic default for agents).
     if arm_cfg.get("allowed_tools"):
         cmd.extend(["--allowedTools"] + arm_cfg["allowed_tools"])
 
