@@ -11,7 +11,7 @@
 # OUT_DIR/verify/sites/smoke/ (so Node's upward resolution finds
 # OUT_DIR/verify/node_modules) and builds it with
 #   node <runtime>/node_modules/astro/bin/astro.mjs build --root <site>
-# from an unrelated working directory.
+# from the site directory, as rfx does.
 set -euo pipefail
 
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -109,8 +109,9 @@ if [[ $VERIFY == 1 ]]; then
 	cp -r "$TEMPLATE/src" "$TEMPLATE/public" "$TEMPLATE/astro.config.mjs" "$TEMPLATE/package.json" "$SITE/"
 	# fixtures/smoke is a real `rfx pulse generate --no-build` bundle (base /reflex/).
 	cp -r "$TEMPLATE/fixtures/smoke/." "$SITE/"
-	# Run from an unrelated cwd, with no node_modules anywhere above it, to prove resolution
-	# goes through <runtime>/node_modules only.
-	(cd / && ASTRO_TELEMETRY_DISABLED=1 node "$RT/node_modules/astro/bin/astro.mjs" build --root "$SITE")
+	# Run the way rfx does (runtime.rs: cwd = the site): packages resolve upward to
+	# <runtime>/node_modules only. Astro writes .astro/ under the cwd, so an unrelated
+	# cwd breaks on Windows (EXDEV when it is on another drive).
+	(cd "$SITE" && ASTRO_TELEMETRY_DISABLED=1 node "$RT/node_modules/astro/bin/astro.mjs" build --root "$SITE")
 	node "$TEMPLATE/scripts/smoke-check.mjs" "$SITE" || { echo "verify: smoke checks FAILED"; exit 1; }
 fi
