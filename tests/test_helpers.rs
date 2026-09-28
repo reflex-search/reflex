@@ -576,12 +576,18 @@ pub mod synthetic_corpus {
         .expect("write corpus marker");
     }
 
-    /// Root of the cached corpus for `seed`: `<CARGO_TARGET_DIR|target>/latency_corpus/<seed>`.
+    /// Root of the cached corpus for `seed`: `$CARGO_TARGET_DIR/latency_corpus/<seed>`,
+    /// else `<temp dir>/reflex-latency-corpus/<seed>`.
+    ///
+    /// Never the default `./target`: it is gitignored, and the indexer follows
+    /// ripgrep's rules (parent `.gitignore` files included), so a corpus there
+    /// indexes 0 files and every query returns 0 hits.
     pub fn root_for(seed: u64) -> PathBuf {
-        let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
-        PathBuf::from(target)
-            .join("latency_corpus")
-            .join(seed.to_string())
+        let base = match std::env::var_os("CARGO_TARGET_DIR") {
+            Some(t) => PathBuf::from(t).join("latency_corpus"),
+            None => std::env::temp_dir().join("reflex-latency-corpus"),
+        };
+        base.join(seed.to_string())
     }
 
     /// Generate (if needed) and index (if `.reflex/meta.db` is absent) the
@@ -603,9 +609,17 @@ pub mod synthetic_corpus {
         if !cache.check_schema_hash().unwrap_or(false) {
             let _ = cache.clear();
         }
-        Indexer::new(CacheManager::new(&root), IndexConfig::default())
+        let stats = Indexer::new(CacheManager::new(&root), IndexConfig::default())
             .index(&root, false)
             .expect("index synthetic corpus");
+        assert!(
+            stats.total_files >= DEFAULT_FILES,
+            "the synthetic corpus at {} indexed {} of {} files; is it under a gitignored \
+             directory? Set CARGO_TARGET_DIR outside the repository",
+            root.display(),
+            stats.total_files,
+            DEFAULT_FILES
+        );
         root
     }
 }

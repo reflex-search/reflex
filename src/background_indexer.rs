@@ -1338,45 +1338,26 @@ mod tests {
     }
 
     /// A batch the writer cannot commit is retried once, then counted apart from
-    /// parse failures and named in `error`. Holds the database for the whole run
-    /// (two busy timeouts of 5 s), so this test takes ~11 s.
+    /// parse failures and named in `error`. A trigger rejects every symbol insert,
+    /// so the failure does not depend on timing (an earlier version raced a thread
+    /// holding an exclusive lock against the writer and flaked on CI).
     #[test]
     fn write_failure_is_counted_apart_from_parse_failures() {
         let temp = workspace(5);
         index_workspace(temp.path());
-        let db = temp.path().join(".reflex").join("meta.db");
-
-        // Let the pass read its file rows first, then take the write lock.
-        let blocker = crate::cache::open_meta_db(&db).unwrap();
-        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
-        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        // With the lock held from the start, the pass cannot even read. Instead,
-        // block only the writer: release, start the pass in a thread, re-lock once
-        // it is parsing.
-        blocker.execute_batch("COMMIT").unwrap();
-
         let cache_path = temp.path().join(".reflex");
-        let blocker_thread = {
-            let db = db.clone();
-            let cache_path = cache_path.clone();
-            std::thread::spawn(move || {
-                for _ in 0..500 {
-                    if let Ok(Some(st)) = BackgroundIndexer::get_status(&cache_path)
-                        && st.phase == "parsing"
-                    {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                let conn = crate::cache::open_meta_db(&db).unwrap();
-                conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
-                // Hold it longer than two busy timeouts plus the retry pause.
-                std::thread::sleep(std::time::Duration::from_millis(11_500));
-                conn.execute_batch("COMMIT").unwrap();
-            })
-        };
+
+        let conn = crate::cache::open_meta_db(cache_path.join("meta.db")).unwrap();
+        SymbolCache::ensure_schema(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_symbol_writes BEFORE INSERT ON symbols
+             BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
         let result = indexer.run();
-        blocker_thread.join().unwrap();
 
         assert!(result.is_ok(), "{result:?}");
         let st = &indexer.status;
