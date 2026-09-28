@@ -44,29 +44,23 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Index codebase
-        run: ./target/release/rfx index
+      - name: Put rfx on PATH
+        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
-      - name: Restore LLM cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: .reflex/pulse/llm-cache
-          key: pulse-llm-cache-${{ github.sha }}
-          restore-keys: pulse-llm-cache-
-
+      # The same composite action other repositories use (with rfx-version: latest).
       - name: Generate Pulse site
-        run: ./target/release/rfx pulse generate --base-url "https://pulse.rfx-search.dev" --title "Reflex" --concurrency 4
-
-      - name: Save LLM cache
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: ./.github/actions/pulse
         with:
-          path: .reflex/pulse/llm-cache
-          key: pulse-llm-cache-${{ github.sha }}
+          rfx-version: none
+          output: pulse-site
+          base-url: https://pulse.rfx-search.dev
+          title: Reflex
+          args: --concurrency 4
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
         with:
-          path: pulse-site/public
+          path: pulse-site
 
   deploy:
     needs: build

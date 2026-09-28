@@ -5,16 +5,21 @@
 //! and litellm proxies. The API key is optional since many local servers do
 //! not require authentication.
 
-use super::LlmProvider;
+use super::wire::{self, ChatFormat};
+use super::{CompletionRequest, CompletionResponse, LlmProvider, ProviderCaps};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 pub struct OpenAiCompatibleProvider {
     client: reqwest::Client,
     api_key: Option<String>,
     model: String,
     base_url: String,
+    /// Weakest output format known to work. Local servers vary widely, so this starts at
+    /// `json_schema` and downgrades on the first rejection.
+    format_cap: AtomicU8,
 }
 
 impl OpenAiCompatibleProvider {
@@ -44,6 +49,7 @@ impl OpenAiCompatibleProvider {
             api_key: api_key.filter(|k| !k.is_empty()),
             model,
             base_url: normalized_base,
+            format_cap: AtomicU8::new(ChatFormat::JsonSchema.as_u8()),
         })
     }
 }
@@ -126,6 +132,36 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
     fn default_model(&self) -> &str {
         ""
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        let cap = ChatFormat::from_u8(self.format_cap.load(Ordering::Relaxed));
+        ProviderCaps {
+            system_role: true,
+            json_object: cap != ChatFormat::None,
+            json_schema: cap == ChatFormat::JsonSchema,
+            reports_usage: false,
+        }
+    }
+
+    async fn complete_request(&self, req: &CompletionRequest<'_>) -> Result<CompletionResponse> {
+        let url = format!("{}/chat/completions", self.base_url);
+        wire::chat_complete(
+            self.name(),
+            &self.client,
+            &url,
+            self.api_key.as_deref(),
+            &[],
+            &self.model,
+            req,
+            &self.format_cap,
+            &|_, _| {},
+        )
+        .await
     }
 }
 

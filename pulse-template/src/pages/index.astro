@@ -1,0 +1,7 @@
+---
+// The site home: the Docs tab landing page (route `/`).
+import PulsePage from '../layouts/PulsePage.astro';
+declare const __PULSE_ROOT__: string;
+---
+
+<PulsePage pageFile={`${__PULSE_ROOT__}/bundle/pages/index.json`} />

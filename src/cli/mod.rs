@@ -733,16 +733,17 @@ pub enum Command {
         command: Option<SnapshotSubcommand>,
     },
 
-    /// Generate codebase intelligence surfaces (changelog, wiki, map, site)
+    /// Generate a documentation site from the index (plus changelog, map, glossary)
     ///
-    /// Pulse turns structural facts from the index into browsable documentation.
-    /// The `generate` command creates a Zola project and builds it into a static HTML site.
+    /// Pulse turns the index into a docs site: a Docs tab for users (guides, API and
+    /// CLI reference, changelog) and an Internals tab for contributors. `generate`
+    /// builds it with Astro/Starlight into plain static HTML.
     ///
     /// Examples:
+    ///   rfx pulse generate --no-llm          # Full static site in ./pulse-site
+    ///   rfx pulse serve                      # Preview it
     ///   rfx pulse changelog --no-llm         # Structural-only changelog
-    ///   rfx pulse wiki --no-llm             # Generate wiki pages
     ///   rfx pulse map                        # Architecture map (mermaid)
-    ///   rfx pulse generate --no-llm          # Full static site (Zola)
     Pulse {
         #[command(subcommand)]
         command: PulseSubcommand,
@@ -801,6 +802,91 @@ pub enum SnapshotSubcommand {
     },
 }
 
+/// LLM writing options for `rfx pulse generate`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PulseLlmArgs {
+    /// LLM writing: `on` (call on cache misses), `off`, or `cache-only` (never call;
+    /// use cached answers, e.g. in CI jobs without secrets)
+    #[arg(long, value_name = "MODE", default_value = "on")]
+    pub llm: String,
+
+    /// Skip LLM narration (same as `--llm off`)
+    #[arg(long)]
+    pub no_llm: bool,
+
+    /// Ignore cached LLM answers. Bare flag = all; or a comma list of kinds
+    /// (overview, modules, architecture, guides, timeline, glossary, changelog)
+    /// and task-id globs (e.g. `module:src/pulse*`)
+    #[arg(long, value_name = "SCOPES", num_args = 0..=1, default_missing_value = "all")]
+    pub force_renarrate: Option<String>,
+
+    /// Print the LLM plan (tasks, cache hits, estimated tokens) and exit without
+    /// calling the provider or writing the site
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Stop planning LLM calls once estimated input+output tokens reach this cap;
+    /// the rest are deferred to later runs (default: [pulse.write] max_llm_tokens)
+    #[arg(long, value_name = "TOKENS")]
+    pub max_llm_tokens: Option<u64>,
+
+    /// Model for Pulse only (default: [pulse.write] model, then the `rfx ask` model)
+    #[arg(long, value_name = "MODEL")]
+    pub llm_model: Option<String>,
+
+    /// LLM answer cache directory (default: .reflex/pulse/write-cache)
+    #[arg(long, value_name = "DIR")]
+    pub llm_cache_dir: Option<PathBuf>,
+
+    /// Keep cache entries that this run did not use
+    #[arg(long)]
+    pub no_prune: bool,
+
+    /// Maximum concurrent LLM requests (default: [pulse.write] concurrency, 4)
+    #[arg(long)]
+    pub concurrency: Option<usize>,
+
+    /// Print every LLM sentence the grounding gate dropped, and why
+    #[arg(long)]
+    pub explain: bool,
+}
+
+impl PulseLlmArgs {
+    pub fn to_options(&self) -> anyhow::Result<crate::pulse::write::WriteOptions> {
+        use crate::pulse::write::{ForceScope, LlmMode, WriteOptions};
+        let mode = if self.no_llm {
+            LlmMode::Off
+        } else {
+            self.llm.parse::<LlmMode>().map_err(anyhow::Error::msg)?
+        };
+        Ok(WriteOptions {
+            mode,
+            force: self
+                .force_renarrate
+                .as_deref()
+                .map(ForceScope::parse)
+                .unwrap_or_default(),
+            dry_run: self.dry_run,
+            concurrency: self.concurrency,
+            max_llm_tokens: self.max_llm_tokens,
+            cache_dir: self.llm_cache_dir.clone(),
+            no_prune: self.no_prune,
+            model: self.llm_model.clone(),
+            explain: self.explain,
+        })
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PulseRuntimeCommand {
+    /// Print the runtime id (a cache key for CI)
+    Key,
+    /// Show Node, the runtime directory and whether a prebuilt runtime exists
+    Status,
+    /// Install the runtime now (prebuilt download, else `npm ci`)
+    Install,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum PulseSubcommand {
     /// Generate a product-level changelog from recent commits
@@ -822,21 +908,6 @@ pub enum PulseSubcommand {
         pretty: bool,
     },
 
-    /// Generate living wiki pages
-    Wiki {
-        /// Skip LLM narration
-        #[arg(long)]
-        no_llm: bool,
-
-        /// Output directory for markdown files
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Export an architecture map
     Map {
         /// Output format (mermaid, d2)
@@ -852,17 +923,18 @@ pub enum PulseSubcommand {
         zoom: Option<String>,
     },
 
-    /// Generate a complete static site (Zola project + HTML build)
+    /// Generate the documentation site (static HTML)
     ///
-    /// Creates a Zola project with markdown content, templates, and CSS,
-    /// then downloads Zola and builds it into a static HTML site.
-    /// The --base-url maps to Zola's base_url config.
+    /// Builds the Docs Model from the index, optionally fills narrative sections
+    /// with a grounded LLM pass, renders every page to HTML and lays the site out
+    /// with Astro/Starlight. Needs Node 22.12+; the site runtime is downloaded once
+    /// (see `rfx pulse runtime status`). --base-url sets the host and path prefix.
     Generate {
-        /// Output directory for the Zola project
+        /// Output directory for the static site (plain HTML, ready for any CDN)
         #[arg(short, long, default_value = "pulse-site")]
         output: PathBuf,
 
-        /// Base URL for the site (maps to Zola's base_url)
+        /// Where the site is served from: `/`, `/docs/`, or `https://host/sub/`
         #[arg(long, default_value = "/")]
         base_url: String,
 
@@ -870,25 +942,16 @@ pub enum PulseSubcommand {
         #[arg(long)]
         title: Option<String>,
 
-        /// Surfaces to include (comma-separated: wiki,changelog,map,onboard,timeline,glossary,explorer)
-        #[arg(long)]
+        /// Deprecated: the site's sections are no longer selectable (ignored)
+        #[arg(long, hide = true)]
         include: Option<String>,
 
-        /// Skip LLM narration
-        #[arg(long)]
-        no_llm: bool,
-
-        /// Clean output directory before generating
+        /// Replace the output directory even if rfx pulse did not create it
         #[arg(long)]
         clean: bool,
 
-        /// Force re-narration (ignore LLM cache)
-        #[arg(long)]
-        force_renarrate: bool,
-
-        /// Maximum concurrent LLM requests (0 = unlimited, default)
-        #[arg(long, default_value = "0")]
-        concurrency: usize,
+        #[command(flatten)]
+        llm: PulseLlmArgs,
 
         /// Maximum directory depth for module discovery (1=top-level only, 2=default)
         #[arg(long, default_value = "2")]
@@ -897,14 +960,24 @@ pub enum PulseSubcommand {
         /// Minimum file count for a module to be included
         #[arg(long, default_value = "1")]
         min_files: usize,
+
+        /// Write the site project (template + page bundle) but do not install the
+        /// runtime or build HTML; prints where the project is
+        #[arg(long)]
+        no_build: bool,
+
+        /// Never download or install anything (the runtime must already be installed)
+        #[arg(long)]
+        offline: bool,
+
+        /// Show the full `astro build` output
+        #[arg(long)]
+        verbose_build: bool,
     },
 
-    /// Serve the generated site locally
-    ///
-    /// Starts a local development server for the Pulse site.
-    /// Uses Zola's built-in server with live reload.
+    /// Serve a generated site locally (under its base path)
     Serve {
-        /// Directory containing the generated Zola project
+        /// Directory containing the generated site
         #[arg(short, long, default_value = "pulse-site")]
         output: PathBuf,
 
@@ -912,31 +985,49 @@ pub enum PulseSubcommand {
         #[arg(short, long, default_value = "1111")]
         port: u16,
 
-        /// Open browser automatically
-        #[arg(long, default_value = "true")]
-        open: bool,
+        /// Address to bind (loopback by default)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Do not open a browser
+        #[arg(long)]
+        no_open: bool,
     },
 
-    /// Generate a developer onboarding guide
-    Onboard {
-        /// Skip LLM narration
-        #[arg(long)]
-        no_llm: bool,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+    /// Inspect or install the site runtime (Astro/Starlight packages)
+    Runtime {
+        #[command(subcommand)]
+        command: PulseRuntimeCommand,
     },
 
-    /// Show development timeline from git history
-    Timeline {
-        /// Output as JSON
+    /// Build the Docs Model (tabs, pages, facts) without rendering it
+    ///
+    /// Prints a summary, or the full model with --json. The model is what the site
+    /// renderer consumes; its JSON is deterministic, so it diffs well.
+    Model {
+        /// Print the full model as JSON
         #[arg(long)]
         json: bool,
+
+        /// Site title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Maximum directory depth for module discovery (1=top-level only, 2=default)
+        #[arg(long, default_value = "2")]
+        depth: u8,
+
+        /// Minimum source files for a module to be included
+        #[arg(long, default_value = "1")]
+        min_files: usize,
     },
 
     /// Generate cross-cutting symbol glossary
     Glossary {
+        /// Skip LLM concept generation (structural evidence only)
+        #[arg(long)]
+        no_llm: bool,
+
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -1319,11 +1410,6 @@ impl Cli {
                     json,
                     pretty,
                 } => pulse::handle_pulse_changelog(count, no_llm, json, pretty),
-                PulseSubcommand::Wiki {
-                    no_llm,
-                    output,
-                    json,
-                } => pulse::handle_pulse_wiki(no_llm, output, json),
                 PulseSubcommand::Map {
                     format,
                     output,
@@ -1334,32 +1420,42 @@ impl Cli {
                     base_url,
                     title,
                     include,
-                    no_llm,
                     clean,
-                    force_renarrate,
-                    concurrency,
+                    llm,
                     depth,
                     min_files,
-                } => pulse::handle_pulse_generate(
+                    no_build,
+                    offline,
+                    verbose_build,
+                } => pulse::handle_pulse_generate(pulse::GenerateArgs {
                     output,
                     base_url,
                     title,
                     include,
-                    no_llm,
                     clean,
-                    force_renarrate,
-                    concurrency,
+                    write: llm.to_options()?,
                     depth,
                     min_files,
-                ),
-                PulseSubcommand::Serve { output, port, open } => {
-                    pulse::handle_pulse_serve(output, port, open)
+                    no_build,
+                    offline,
+                    verbose_build,
+                }),
+                PulseSubcommand::Serve {
+                    output,
+                    port,
+                    host,
+                    no_open,
+                } => crate::pulse::serve::serve(&output, &host, port, !no_open),
+                PulseSubcommand::Runtime { command } => pulse::handle_pulse_runtime(command),
+                PulseSubcommand::Model {
+                    json,
+                    title,
+                    depth,
+                    min_files,
+                } => pulse::handle_pulse_model(json, title, depth, min_files),
+                PulseSubcommand::Glossary { no_llm, json } => {
+                    pulse::handle_pulse_glossary(no_llm, json)
                 }
-                PulseSubcommand::Onboard { no_llm, json } => {
-                    pulse::handle_pulse_onboard(no_llm, json)
-                }
-                PulseSubcommand::Timeline { json } => pulse::handle_pulse_timeline(json),
-                PulseSubcommand::Glossary { json } => pulse::handle_pulse_glossary(json),
             },
             Some(Command::Llm { command }) => match command {
                 LlmSubcommand::Config => llm::handle_llm_config(),

@@ -1,0 +1,8 @@
+---
+import PulsePage from '../../layouts/PulsePage.astro';
+import { tabPaths } from '../../lib/paths';
+
+export const getStaticPaths = () => tabPaths('internals');
+---
+
+<PulsePage {...Astro.props} />

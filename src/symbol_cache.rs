@@ -40,31 +40,45 @@ const BLOB_COMPRESS_MIN: usize = 256;
 /// zstd level: fast, and this JSON is repetitive enough that higher levels gain little.
 const BLOB_ZSTD_LEVEL: i32 = 3;
 
-/// Serialize symbols for the `symbols_json` column.
-pub fn encode_symbols(symbols: &[SearchResult]) -> Result<Vec<u8>> {
-    let json = serde_json::to_vec(symbols).context("Failed to serialize symbols")?;
+/// Serialize any value as a compact blob: zstd-compressed JSON behind [`BLOB_MAGIC`],
+/// or raw JSON when shorter than [`BLOB_COMPRESS_MIN`]. Pulse's API cache uses it too.
+pub fn encode_json_blob<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
+    let json = serde_json::to_vec(value).context("Failed to serialize blob")?;
     if json.len() < BLOB_COMPRESS_MIN {
         return Ok(json);
     }
     let compressed =
-        zstd::bulk::compress(&json, BLOB_ZSTD_LEVEL).context("Failed to compress symbols")?;
+        zstd::bulk::compress(&json, BLOB_ZSTD_LEVEL).context("Failed to compress blob")?;
     let mut out = Vec::with_capacity(BLOB_MAGIC.len() + compressed.len());
     out.extend_from_slice(&BLOB_MAGIC);
     out.extend_from_slice(&compressed);
     Ok(out)
 }
 
+/// Deserialize a blob written by [`encode_json_blob`] (or raw JSON).
+pub fn decode_json_blob<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    if let Some(body) = bytes.strip_prefix(&BLOB_MAGIC) {
+        let json = zstd::decode_all(body).context("Failed to decompress blob")?;
+        return serde_json::from_slice(&json).context("Failed to deserialize blob");
+    }
+    if matches!(bytes.first(), Some(b'[') | Some(b'{')) {
+        return serde_json::from_slice(bytes).context("Failed to deserialize blob");
+    }
+    anyhow::bail!("Unrecognised blob encoding ({} bytes)", bytes.len())
+}
+
+/// Serialize symbols for the `symbols_json` column.
+pub fn encode_symbols(symbols: &[SearchResult]) -> Result<Vec<u8>> {
+    encode_json_blob(symbols).context("Failed to encode symbols")
+}
+
 /// Deserialize a `symbols_json` column value written by [`encode_symbols`] (or a
 /// raw JSON array).
 pub fn decode_symbols(bytes: &[u8]) -> Result<Vec<SearchResult>> {
-    if let Some(body) = bytes.strip_prefix(&BLOB_MAGIC) {
-        let json = zstd::decode_all(body).context("Failed to decompress symbols")?;
-        return serde_json::from_slice(&json).context("Failed to deserialize cached symbols");
+    if bytes.first() == Some(&b'{') {
+        anyhow::bail!("Unrecognised symbol blob encoding ({} bytes)", bytes.len());
     }
-    if bytes.first() == Some(&b'[') {
-        return serde_json::from_slice(bytes).context("Failed to deserialize cached symbols");
-    }
-    anyhow::bail!("Unrecognised symbol blob encoding ({} bytes)", bytes.len())
+    decode_json_blob(bytes).context("Failed to deserialize cached symbols")
 }
 
 /// Read the `symbols_json` column at `idx`, whether stored as BLOB (v3) or TEXT.

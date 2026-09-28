@@ -1,0 +1,82 @@
+---
+// One Pulse page: HTML rendered and sanitised by `rfx pulse`, inside Starlight's chrome.
+import fs from 'node:fs/promises';
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import pulse from '../../pulse.config.json';
+
+interface Props {
+	pageFile: string;
+}
+const page = JSON.parse(await fs.readFile(Astro.props.pageFile, 'utf8'));
+const base = (pulse.base ?? '/').replace(/\/$/, '');
+const splash = page.template === 'splash';
+// First real page in the Docs sidebar (depth-first), for the hero's primary action.
+const firstSlug = (nodes: any[] = []): string | undefined => {
+	for (const n of nodes) {
+		if (n.slug) return n.slug;
+		const s = firstSlug(n.items);
+		if (s) return s;
+	}
+};
+const firstDocs = firstSlug(((pulse.sidebar as any).docs ?? []).filter((n: any) => n.slug !== ''));
+const internals = (pulse.tabs as any[]).find((t) => t.id === 'internals');
+const frontmatter: Record<string, unknown> = { title: page.title, description: page.description, pagefind: true };
+if (splash) {
+	frontmatter.template = 'splash';
+	frontmatter.hero = {
+		title: page.title,
+		tagline: page.description,
+		actions: [
+			firstDocs && { text: 'Read the docs', link: `${base}/${firstDocs}/`, icon: 'right-arrow' },
+			internals && { text: 'Architecture', link: `${base}${internals.href}`, variant: 'minimal' },
+		].filter(Boolean),
+	};
+}
+---
+
+<StarlightPage frontmatter={frontmatter as any} headings={page.headings}>
+	{page.badges?.length > 0 && !splash && (
+		<p class="pulse-badges">{page.badges.map((b: string) => <span class="pulse-badge">{b}</span>)}</p>
+	)}
+	<Fragment set:html={page.html} />
+</StarlightPage>
+
+<script>
+	// Mermaid is ~2 MB of JS: load it only on pages that have a diagram.
+	const nodes = Array.from(document.querySelectorAll<HTMLElement>('pre.pulse-mermaid'));
+	if (nodes.length > 0) {
+		for (const n of nodes) n.dataset.src = n.textContent ?? '';
+		const bindLinks = (pre: HTMLElement) => {
+			// data-links maps node ids to hrefs; Rust never puts URLs in the diagram source.
+			let links: Record<string, string> = {};
+			try {
+				links = JSON.parse(pre.dataset.links ?? '{}');
+			} catch {}
+			for (const g of Array.from(pre.querySelectorAll<SVGGElement>('g.node'))) {
+				// Mermaid ids look like `mermaid-<n>-flowchart-<node>-<i>`.
+				const m = /flowchart-(.+)-\d+$/.exec(g.id);
+				const id = m ? m[1] : undefined;
+				if (!id || !(id in links)) continue;
+				g.style.cursor = 'pointer';
+				g.setAttribute('role', 'link');
+				g.setAttribute('tabindex', '0');
+				const go = () => (window.location.href = links[id]);
+				g.addEventListener('click', go);
+				g.addEventListener('keydown', (e) => (e.key === 'Enter' ? go() : undefined));
+			}
+		};
+		const render = async () => {
+			const { default: mermaid } = await import('mermaid');
+			const dark = document.documentElement.dataset.theme === 'dark';
+			mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
+			for (const n of nodes) {
+				n.removeAttribute('data-processed');
+				n.textContent = n.dataset.src ?? '';
+			}
+			await mermaid.run({ nodes });
+			nodes.forEach(bindLinks);
+		};
+		render();
+		new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+	}
+</script>

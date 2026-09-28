@@ -14,6 +14,84 @@ pub struct PulseConfig {
     pub retention: RetentionConfig,
     #[serde(default)]
     pub thresholds: ThresholdConfig,
+    #[serde(default)]
+    pub write: WriteSettings,
+    #[serde(default)]
+    pub docs: DocsSettings,
+}
+
+/// `[pulse.docs]`: what the Docs tab documents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocsSettings {
+    /// Document library APIs (default: true). Set false for a CLI-first project.
+    #[serde(default = "default_true")]
+    pub library: bool,
+    /// Only these module paths and their children (`reflex::query`). Empty = all public.
+    #[serde(default)]
+    pub include: Vec<String>,
+}
+
+impl Default for DocsSettings {
+    fn default() -> Self {
+        Self {
+            library: true,
+            include: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `[pulse.write]`: the LLM writing pass.
+///
+/// CLI flags override these. Provider credentials stay in `~/.reflex/config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteSettings {
+    /// Provider for Pulse only (default: the `[semantic]` provider used by `rfx ask`).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model for Pulse only. Docs usually deserve a stronger model than query generation.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Cache directory, relative to the workspace root (default: `.reflex/pulse/write-cache`).
+    /// Entries hold no timestamps, so the directory is safe to commit or keep in CI caches.
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+    /// Successful runs whose cache entries survive pruning (default: 3).
+    #[serde(default = "default_keep_runs")]
+    pub keep_runs: usize,
+    /// Leave provider and model out of the cache key, so switching models keeps old text.
+    #[serde(default)]
+    pub cache_model_agnostic: bool,
+    /// Concurrent LLM calls (default: 4).
+    #[serde(default = "default_write_concurrency")]
+    pub concurrency: usize,
+    /// Stop planning calls once estimated input+output tokens reach this cap.
+    #[serde(default)]
+    pub max_llm_tokens: Option<u64>,
+}
+
+impl Default for WriteSettings {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            cache_dir: None,
+            keep_runs: default_keep_runs(),
+            cache_model_agnostic: false,
+            concurrency: default_write_concurrency(),
+            max_llm_tokens: None,
+        }
+    }
+}
+
+fn default_keep_runs() -> usize {
+    3
+}
+fn default_write_concurrency() -> usize {
+    4
 }
 
 /// Snapshot retention policy
@@ -103,10 +181,20 @@ fn default_line_count_growth() -> f64 {
     2.0
 }
 
-/// Load Pulse configuration from the project's `.reflex/config.toml`
+/// Load Pulse configuration.
 ///
-/// Falls back to defaults if the `[pulse]` section is missing.
+/// A `pulse.toml` at the workspace root (next to `.reflex/`) wins: it can be committed,
+/// while `.reflex/` is usually ignored. It uses the same sections without the `pulse.`
+/// prefix (`[docs]`, `[write]`). Otherwise the `[pulse]` section of
+/// `.reflex/config.toml` is used, else defaults.
 pub fn load_pulse_config(cache_path: &Path) -> Result<PulseConfig> {
+    if let Some(root) = cache_path.parent() {
+        let committed = root.join("pulse.toml");
+        if committed.exists() {
+            let content = std::fs::read_to_string(&committed)?;
+            return Ok(toml::from_str(&content)?);
+        }
+    }
     let config_path = cache_path.join("config.toml");
 
     if !config_path.exists() {
@@ -159,5 +247,43 @@ mod tests {
         assert_eq!(config.retention.daily, 14);
         assert_eq!(config.retention.weekly, 4); // default
         assert_eq!(config.thresholds.fan_in_warning, 10); // default
+        assert_eq!(config.write.keep_runs, 3); // default
+    }
+
+    #[test]
+    fn test_root_pulse_toml_wins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".reflex")).unwrap();
+        std::fs::write(
+            dir.path().join(".reflex/config.toml"),
+            "[pulse.docs]\nlibrary = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("pulse.toml"),
+            "[docs]\nlibrary = false\ninclude = [\"x::y\"]\n",
+        )
+        .unwrap();
+        let c = load_pulse_config(&dir.path().join(".reflex")).unwrap();
+        assert!(!c.docs.library);
+        assert_eq!(c.docs.include, vec!["x::y"]);
+        assert_eq!(c.retention.daily, 7);
+    }
+
+    #[test]
+    fn test_deserialize_write_settings() {
+        let toml_str = r#"
+            [pulse.write]
+            model = "claude-sonnet-5"
+            cache_dir = "docs/.pulse-cache"
+            max_llm_tokens = 200000
+        "#;
+        let table: toml::Value = toml_str.parse().unwrap();
+        let config: PulseConfig = table.get("pulse").unwrap().clone().try_into().unwrap();
+        assert_eq!(config.write.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(config.write.cache_dir.as_deref(), Some("docs/.pulse-cache"));
+        assert_eq!(config.write.max_llm_tokens, Some(200_000));
+        assert_eq!(config.write.concurrency, 4);
+        assert!(!config.write.cache_model_agnostic);
     }
 }

@@ -4,10 +4,12 @@
 //! to 200+ models across providers (Claude, GPT, Gemini, Llama, etc.).
 //! It adds a "sort" strategy for provider routing (by price, speed, or throughput).
 
-use super::LlmProvider;
+use super::wire::{self, ChatFormat};
+use super::{CompletionRequest, CompletionResponse, LlmProvider, ProviderCaps};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 /// Model info fetched from OpenRouter API
@@ -92,6 +94,8 @@ pub struct OpenRouterProvider {
     api_key: String,
     model: String,
     sort: String,
+    /// Weakest output format known to work (see [`ChatFormat`]).
+    format_cap: AtomicU8,
 }
 
 impl OpenRouterProvider {
@@ -126,6 +130,7 @@ impl OpenRouterProvider {
             api_key,
             model: model.unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string()),
             sort,
+            format_cap: AtomicU8::new(ChatFormat::JsonSchema.as_u8()),
         })
     }
 }
@@ -231,6 +236,47 @@ impl LlmProvider for OpenRouterProvider {
 
     fn default_model(&self) -> &str {
         "anthropic/claude-sonnet-4"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        let cap = ChatFormat::from_u8(self.format_cap.load(Ordering::Relaxed));
+        ProviderCaps {
+            system_role: true,
+            json_object: cap != ChatFormat::None,
+            json_schema: cap == ChatFormat::JsonSchema,
+            reports_usage: true,
+        }
+    }
+
+    async fn complete_request(&self, req: &CompletionRequest<'_>) -> Result<CompletionResponse> {
+        let sort = self.sort.clone();
+        // With a response_format, route only to backends that honor it.
+        let extend = move |body: &mut serde_json::Value, format: ChatFormat| {
+            body["provider"] = json!({
+                "sort": sort,
+                "allow_fallbacks": true,
+                "require_parameters": format != ChatFormat::None,
+            });
+        };
+        wire::chat_complete(
+            self.name(),
+            &self.client,
+            "https://openrouter.ai/api/v1/chat/completions",
+            Some(&self.api_key),
+            &[
+                ("HTTP-Referer", "https://github.com/reflex-search/reflex"),
+                ("X-Title", "Reflex"),
+            ],
+            &self.model,
+            req,
+            &self.format_cap,
+            &extend,
+        )
+        .await
     }
 }
 

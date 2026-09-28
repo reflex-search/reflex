@@ -3,18 +3,43 @@
 //! Accepts a pre-configured list of response strings and returns them in order,
 //! cycling back to the start once exhausted.  Gated behind `#[cfg(test)]` so it
 //! never ships in release builds.
+//!
+//! For [`LlmProvider::complete_request`] it also records every request, can route
+//! responses by request (`routed`), inject failures (`fail_first`), and reports
+//! fake usage so budget tests have numbers to work with.
 
-use super::LlmProvider;
+use super::{
+    CompletionRequest, CompletionResponse, LlmProvider, ProviderError, ProviderErrorKind,
+    StopReason, Usage,
+};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// A request as the mock saw it.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct RecordedRequest {
+    pub tag: String,
+    pub system: String,
+    pub user: String,
+    pub output: &'static str,
+    pub max_tokens: u32,
+}
+
+#[cfg(test)]
+type Router = dyn Fn(&CompletionRequest<'_>) -> Result<String> + Send + Sync;
 
 /// A deterministic, zero-I/O LLM provider for unit tests.
 #[cfg(test)]
 pub struct MockLlmProvider {
     responses: Vec<String>,
     call_count: Arc<AtomicUsize>,
+    router: Option<Box<Router>>,
+    fail_first: Mutex<(usize, Option<ProviderErrorKind>)>,
+    requests: Mutex<Vec<RecordedRequest>>,
+    model: String,
 }
 
 #[cfg(test)]
@@ -24,6 +49,10 @@ impl MockLlmProvider {
         Self {
             responses: responses.into_iter().map(Into::into).collect(),
             call_count: Arc::new(AtomicUsize::new(0)),
+            router: None,
+            fail_first: Mutex::new((0, None)),
+            requests: Mutex::new(Vec::new()),
+            model: "mock-model".to_string(),
         }
     }
 
@@ -32,9 +61,48 @@ impl MockLlmProvider {
         Self::new(vec![response])
     }
 
-    /// Number of times `complete` has been called.
+    /// Answer each structured request with `router(req)`. An `Err` whose root cause is a
+    /// [`ProviderError`] is returned as is, so tests can script per-task failures.
+    pub fn routed(
+        router: impl Fn(&CompletionRequest<'_>) -> Result<String> + Send + Sync + 'static,
+    ) -> Self {
+        let mut m = Self::new(Vec::<String>::new());
+        m.router = Some(Box::new(router));
+        m
+    }
+
+    /// Fail the first `n` structured calls with `kind`.
+    pub fn fail_first(self, n: usize, kind: ProviderErrorKind) -> Self {
+        *self.fail_first.lock().unwrap() = (n, Some(kind));
+        self
+    }
+
+    /// Report a different model id (for cache-key tests).
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.model = model.to_string();
+        self
+    }
+
+    /// Number of times `complete` or `complete_request` has been called.
     pub fn call_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
+    }
+
+    /// Every structured request so far, in call order.
+    pub fn requests(&self) -> Vec<RecordedRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// A classified error, as a real provider would return it.
+    pub fn error(kind: ProviderErrorKind) -> anyhow::Error {
+        ProviderError {
+            provider: "mock".into(),
+            kind,
+            status: None,
+            retry_after: None,
+            body: format!("injected {kind:?}"),
+        }
+        .into()
     }
 }
 
@@ -55,6 +123,46 @@ impl LlmProvider for MockLlmProvider {
 
     fn default_model(&self) -> &str {
         "mock-model"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    async fn complete_request(&self, req: &CompletionRequest<'_>) -> Result<CompletionResponse> {
+        self.requests.lock().unwrap().push(RecordedRequest {
+            tag: req.tag.to_string(),
+            system: req.system.to_string(),
+            user: req.user.to_string(),
+            output: req.output.label(),
+            max_tokens: req.max_tokens,
+        });
+        {
+            let mut ff = self.fail_first.lock().unwrap();
+            if ff.0 > 0 {
+                ff.0 -= 1;
+                let kind = ff.1.unwrap_or(ProviderErrorKind::Server);
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                return Err(Self::error(kind));
+            }
+        }
+        let text = match &self.router {
+            Some(router) => {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                router(req)?
+            }
+            None => self.complete(req.user, req.output.is_json()).await?,
+        };
+        Ok(CompletionResponse {
+            usage: Some(Usage {
+                input_tokens: ((req.system.len() + req.user.len()) / 4) as u32,
+                output_tokens: (text.len() / 4) as u32,
+                cached_input_tokens: 0,
+            }),
+            text,
+            stop: StopReason::End,
+            model: self.model.clone(),
+        })
     }
 }
 
