@@ -13,6 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG_FILE="$SCRIPT_DIR/results/ref225-arm-a.log"
 
 N=8
+MODEL="${MODEL:-claude-sonnet-5}"
 DRY_RUN=""
 
 while [[ $# -gt 0 ]]; do
@@ -20,6 +21,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --n=*) N="${1#--n=}"; shift ;;
     --n) N="${2:-8}"; shift 2 ;;
+    --model=*) MODEL="${1#--model=}"; shift ;;
+    --model) MODEL="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -29,7 +32,7 @@ mkdir -p "$SCRIPT_DIR/results"
 echo "=== REF-225 Phase 1b: Arm-A validation run ===" | tee -a "$LOG_FILE"
 echo "  Arm:   A (grep/glob only; no MCP)" | tee -a "$LOG_FILE"
 echo "  N:     $N trials per task" | tee -a "$LOG_FILE"
-echo "  Model: claude-sonnet-4-6" | tee -a "$LOG_FILE"
+echo "  Model: $MODEL" | tee -a "$LOG_FILE"
 echo "  Tasks: 16 iteration-forcing tasks (iteration-forcing.yaml)" | tee -a "$LOG_FILE"
 echo "  Log:   $LOG_FILE" | tee -a "$LOG_FILE"
 echo "  Goal:  Verify median arm-A assistant_turns >= 4 before unblinding arm-B" | tee -a "$LOG_FILE"
@@ -70,7 +73,7 @@ python3 benches/efficacy/runner.py \
   --arms A \
   --tasks "${IF_TASKS[@]}" \
   --n "$N" \
-  --model claude-sonnet-4-6 \
+  --model "$MODEL" \
   --skip-build \
   --skip-index \
   $DRY_RUN \

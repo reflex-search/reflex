@@ -21,7 +21,7 @@ log() { echo "[p2-watcher $(date -u +%H:%M:%SZ)] $*"; }
 
 P2_PID=""
 [ -f "$P2_PID_FILE" ] && P2_PID=$(cat "$P2_PID_FILE" 2>/dev/null)
-[ -z "$P2_PID" ] && P2_PID=3476155
+[ -z "$P2_PID" ] && { echo "no $P2_PID_FILE; nothing to watch" >&2; exit 1; }
 
 log "watching Phase 2 pid $P2_PID"
 WAITED=0; MAX_WAIT=28800   # 8h ceiling

@@ -125,12 +125,18 @@ def fmt_float(v, dp=3):
         return "N/A"
     return f"{v:.{dp}f}"
 
-report = f"""# REF-222 Powered A/B Efficacy Results
-## Reflex (columnar MCP) vs. grep/glob — n=8 trials, 9 tasks, claude-sonnet-4-6
+import datetime as _dt, os as _os
+RUN_MODEL = _os.environ.get("MODEL", "unknown")
+RUN_RFX = _os.environ.get("RFX_VERSION", "unknown")
+RUN_BUILD = _os.environ.get("BUILD_SHA", "unknown")
+RUN_DATE = _dt.date.today().isoformat()
 
-**Date:** 2026-07-03
-**Binary:** rfx v1.5.3, build=6e549ca, columnar=on
-**Model (both arms):** claude-sonnet-4-6
+report = f"""# Powered A/B Efficacy Results (REF-222 design)
+## Reflex (columnar MCP) vs. grep/glob — n=8 trials, 9 tasks, {RUN_MODEL}
+
+**Date:** {RUN_DATE}
+**Binary:** rfx {RUN_RFX}, build={RUN_BUILD}, columnar=on
+**Model (both arms):** {RUN_MODEL}
 **Arms:** A = grep/glob control, B = Reflex columnar MCP
 **Task count:** 9 find_all_usages tasks (3 reflex + 3 ripgrep + 3 tokio)
 **Trials per arm:** 8
@@ -147,7 +153,7 @@ report = f"""# REF-222 Powered A/B Efficacy Results
 | **Warm** (primary) | {fmt_float(warm_r)} | [{fmt_float(warm_ci[0])}, {fmt_float(warm_ci[1])}] | {fmt_float(ci_width, 3)} | **{warm_verdict}** |
 | Cold | {fmt_float(cold_r)} | [{fmt_float(cold_ci[0])}, {fmt_float(cold_ci[1])}] | — | — |
 
-**Interpretation:** A ratio < 0.90 with CI below 1.0 = Reflex better. A ratio > 1.10 with CI above 1.0 = Reflex worse. CI straddling 1.0 = parity. ({warm_verdict})
+**Decision rule (pre-registered, `analyze.py`):** better = r < 0.90 and CI high < 1.00; worse = r > 1.10 and CI low > 1.00; no difference = CI straddles 1.00; otherwise indeterminate. ({warm_verdict})
 
 ### Turn-count distribution (REF-204 confound control)
 - Arm A (grep/glob): {fmt_turns(turns_by_arm['A'])}
@@ -170,19 +176,18 @@ Scored against ripgrep oracle ground truth (never Reflex — to avoid circularit
 ## Binary Hygiene Checklist (REF-222 req #5)
 - [x] Built via `CARGO_TARGET_DIR=/scratch/cache/target` (pinned)
 - [x] Binary path: `/scratch/cache/target/release/rfx`
-- [x] Build SHA verified from `rfx mcp` startup diagnostic: `6e549ca`
+- [x] Build SHA verified from `rfx mcp` startup diagnostic: `{RUN_BUILD}`
 - [x] columnar=on confirmed via startup diagnostic before run
-- [x] Model pinned: `claude-sonnet-4-6` on both arms (req #2)
+- [x] Model pinned: `{RUN_MODEL}` on both arms (req #2)
+- [x] User settings excluded: `--setting-sources project`
+- [x] Reflex corpus: pinned clone `benches/efficacy/corpus/reflex` (repos.md SHA)
 - [x] Tool count in system:init: verified via probe_mcp_flags() pre-flight
 
 ---
 
 ## Conclusion
 
-{warm_verdict} — The 95% CI is [{fmt_float(warm_ci[0])}, {fmt_float(warm_ci[1])}] (width {fmt_float(ci_width, 3)})
-vs. REF-217's [1.016, 2.028] (width 1.012). This powered run with 9 tasks × 8 trials
-substantially narrows the confidence interval and provides a defensible answer to the
-"did we lose parity?" question.
+{warm_verdict} — The 95% CI is [{fmt_float(warm_ci[0])}, {fmt_float(warm_ci[1])}] (width {fmt_float(ci_width, 3)}).
 
 Accuracy is graded (not binary): see the precision/recall table above for per-arm, per-task scores.
 

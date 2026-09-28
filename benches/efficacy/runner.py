@@ -39,8 +39,10 @@ CONFIGS_DIR = SCRIPT_DIR / "configs"
 CORPUS_DIR = SCRIPT_DIR / "corpus"
 
 # Maps repo id → the local checkout directory Claude should run in.
+# The reflex corpus is a pinned clone (repos.md), never the live checkout: answer keys
+# were written for that SHA, and edits to the live tree must not leak into trials.
 CORPUS_REPOS: dict[str, Path] = {
-    "reflex": REPO_ROOT,
+    "reflex": CORPUS_DIR / "reflex",
     "ripgrep": CORPUS_DIR / "ripgrep",
     "tokio": CORPUS_DIR / "tokio",
 }
@@ -135,43 +137,6 @@ ARMS = {
             "Choose whichever tool you think is best for each specific task. Do not give "
             "systematic preference to any particular category of tool."
         ),
-    },
-    # -----------------------------------------------------------------------
-    # RETIRED (REF-215 / REF-217): structuredContent was removed from the MCP
-    # server entirely in REF-215. The env vars REFLEX_MCP_STRUCTURED_CONTENT and
-    # REFLEX_MCP_SC_STAGE2 are no longer recognised by the binary and are silently
-    # ignored, making B_sc / B_nosc / B_sc2 byte-for-byte identical to plain arm B.
-    # These arm defs are preserved here for historical reference (Phase 4 / REF-204
-    # results are in results/B_sc*/ and results/B_nosc*/), but they are NOT included
-    # in the default arms list and should not be used for new runs. See REF-217 for
-    # the current A-vs-B columnar comparison.
-    # -----------------------------------------------------------------------
-    "B_sc": {
-        "description": "[RETIRED REF-215] structuredContent ON arm — structuredContent removed; identical to arm B",
-        "mcp_command": "TARGET_RELEASE_RFX",
-        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
-        "disallowed_tools": [],
-        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
-        "append_system_prompt": None,
-        "mcp_env": None,
-    },
-    "B_nosc": {
-        "description": "[RETIRED REF-215] structuredContent OFF arm — toggle no longer recognised; identical to arm B",
-        "mcp_command": "TARGET_RELEASE_RFX",
-        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
-        "disallowed_tools": [],
-        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
-        "append_system_prompt": None,
-        "mcp_env": {"REFLEX_MCP_STRUCTURED_CONTENT": "0"},
-    },
-    "B_sc2": {
-        "description": "[RETIRED REF-215] structuredContent Stage 2 arm — toggle no longer recognised; identical to arm B",
-        "mcp_command": "TARGET_RELEASE_RFX",
-        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
-        "disallowed_tools": [],
-        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
-        "append_system_prompt": None,
-        "mcp_env": {"REFLEX_MCP_SC_STAGE2": "1"},
     },
 }
 
@@ -464,6 +429,9 @@ def build_claude_cmd(
         "--output-format", "stream-json",
         "--mcp-config", str(mcp_config_path),
         "--model", model,
+        # Load only the corpus repo's own settings: the operator's user-level hooks,
+        # plugins and output style must not leak into trials.
+        "--setting-sources", "project",
     ]
 
     # Arm-specific flags
@@ -606,7 +574,7 @@ def run_baseline(
     baseline_task = {
         "id": "_baseline",
         "prompt": "Reply with the single word: ready",
-        "_repo_dir": REPO_ROOT,
+        "_repo_dir": CORPUS_REPOS["reflex"],
     }
     return run_trial(
         arm_name=arm_name,
@@ -625,9 +593,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Reflex efficacy A/B runner harness (Phase 2)"
     )
-    # Active arms only (B_sc / B_nosc / B_sc2 retired in REF-215/REF-217 — kept
-    # in ARMS dict for historical reference but excluded from the default run).
-    ACTIVE_ARMS = [k for k in ARMS if k not in ("B_sc", "B_nosc", "B_sc2")]
+    ACTIVE_ARMS = list(ARMS.keys())
     parser.add_argument(
         "--arms",
         nargs="+",
@@ -659,8 +625,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="claude-sonnet-4-6",
-        help="Model ID to use (default: claude-sonnet-4-6)",
+        default="claude-sonnet-5",
+        help="Model ID to use (default: claude-sonnet-5)",
     )
     parser.add_argument(
         "--skip-build",
@@ -740,7 +706,7 @@ def main() -> None:
             if not args.dry_run:
                 verify_mcp_arm_flags(arm_name, rfx_bin, arm_cfg.get("mcp_env"))
 
-            # Per-arm MCP context-tax baseline (always runs from REPO_ROOT)
+            # Per-arm MCP context-tax baseline (runs in the pinned reflex corpus)
             result = run_baseline(
                 arm_name=arm_name,
                 arm_cfg=arm_cfg,

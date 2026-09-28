@@ -34,7 +34,7 @@ TASKS_DIR = SCRIPT_DIR / "tasks"
 # Maps repo id → corpus checkout dir (mirrors runner.py)
 REPO_ROOT = SCRIPT_DIR.parent.parent.resolve()
 CORPUS_REPOS = {
-    "reflex": REPO_ROOT,
+    "reflex": SCRIPT_DIR / "corpus" / "reflex",  # pinned clone, see repos.md
     "ripgrep": SCRIPT_DIR / "corpus" / "ripgrep",
     "tokio": SCRIPT_DIR / "corpus" / "tokio",
 }

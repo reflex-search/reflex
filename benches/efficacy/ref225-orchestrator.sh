@@ -31,12 +31,13 @@ log "started; waiting for arm-A run to complete"
 # 1. Wait for the arm-A run to finish (by PID if known, else by log marker).
 ARM_A_PID=""
 [ -f "$ARM_A_PID_FILE" ] && ARM_A_PID=$(cat "$ARM_A_PID_FILE" 2>/dev/null)
-# Fall back to the known PID if the file is absent.
-[ -z "$ARM_A_PID" ] && ARM_A_PID=3159431
+# No PID file means nothing to wait for: a hardcoded fallback PID could match an
+# unrelated process after a reboot.
+[ -z "$ARM_A_PID" ] && log "no $ARM_A_PID_FILE; not waiting"
 
 WAITED=0
 MAX_WAIT=18000   # 5h ceiling
-while kill -0 "$ARM_A_PID" 2>/dev/null; do
+while [ -n "$ARM_A_PID" ] && kill -0 "$ARM_A_PID" 2>/dev/null; do
   sleep 60
   WAITED=$((WAITED + 60))
   if [ "$WAITED" -ge "$MAX_WAIT" ]; then
