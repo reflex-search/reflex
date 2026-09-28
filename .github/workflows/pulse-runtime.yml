@@ -102,10 +102,15 @@ jobs:
         run: |
           name="pulse-runtime-${{ needs.key.outputs.id }}-${{ matrix.platform }}.tar.zst"
           mv "$RUNNER_TEMP/rt/pulse-runtime-${{ matrix.platform }}.tar.zst" "$RUNNER_TEMP/rt/$name"
-          sum="$( (sha256sum "$RUNNER_TEMP/rt/$name" 2>/dev/null || shasum -a 256 "$RUNNER_TEMP/rt/$name") | cut -d' ' -f1)"
-          size="$(node -p "require('fs').statSync(process.argv[1]).size" "$RUNNER_TEMP/rt/$name")"
-          printf '{"platform":"%s","name":"%s","sha256":"%s","size":%s}\n' \
-            "${{ matrix.platform }}" "$name" "$sum" "$size" > "$RUNNER_TEMP/rt/${{ matrix.platform }}.json"
+          # Node, not sha256sum: on Windows sha256sum prefixes the hash with "\" when the
+          # path has backslashes (RUNNER_TEMP is D:\a\_temp), which broke the JSON.
+          node -e '
+            const fs = require("fs"), crypto = require("crypto");
+            const [file, platform, name, out] = process.argv.slice(1);
+            const bytes = fs.readFileSync(file);
+            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+            fs.writeFileSync(out, JSON.stringify({ platform, name, sha256, size: bytes.length }) + "\n");
+          ' "$RUNNER_TEMP/rt/$name" "${{ matrix.platform }}" "$name" "$RUNNER_TEMP/rt/${{ matrix.platform }}.json"
           cat "$RUNNER_TEMP/rt/${{ matrix.platform }}.json"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
