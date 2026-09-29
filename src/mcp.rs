@@ -607,7 +607,7 @@ fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<
                     "properties": {
                         "force": {
                             "type": "boolean",
-                            "description": "Force full rebuild (ignore incremental)"
+                            "description": "Rebuild even when no file changed"
                         },
                         "languages": {
                             "type": "array",
