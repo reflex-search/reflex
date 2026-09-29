@@ -551,10 +551,18 @@ impl IndexSnapshot {
     /// removed a file between reading the manifest and opening it), or the legacy
     /// fixed names when there is no manifest.
     pub fn open(cache_dir: &Path) -> Result<Self> {
+        Self::open_reading(cache_dir, || read_manifest(cache_dir))
+    }
+
+    /// [`Self::open`] with the manifest read by `read` (each attempt reads it again).
+    fn open_reading(
+        cache_dir: &Path,
+        mut read: impl FnMut() -> Result<Option<Manifest>>,
+    ) -> Result<Self> {
         let mut last: Option<anyhow::Error> = None;
         for attempt in 0..5u64 {
-            let manifest = read_manifest(cache_dir)
-                .map_err(|e| ReflexError::CacheCorrupted(format!("content.bin: {e:#}")))?;
+            let manifest =
+                read().map_err(|e| ReflexError::CacheCorrupted(format!("content.bin: {e:#}")))?;
             let result = match manifest {
                 None => return Self::open_legacy(cache_dir),
                 Some(m) => Self::open_manifest(cache_dir, m),
@@ -993,6 +1001,51 @@ mod tests {
         assert_eq!(tomb.get(4), 0);
         write_tomb_file(&path, &[]).unwrap();
         assert_eq!(TombPlan::load(&path).unwrap().get(3), 0);
+    }
+
+    /// A reader that meets a manifest naming a file that is gone (a publish in
+    /// between) retries and opens the snapshot the next manifest names; with no
+    /// next manifest it reports the cache corrupted.
+    #[test]
+    fn open_retries_while_a_publish_replaces_the_manifest() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        write(root, "a.rs", "fn alpha() {}\n");
+        index_unlimited(root);
+        let cache = root.join(".reflex");
+        let good = read_manifest(&cache).unwrap().unwrap();
+        let mut files = good.base.clone();
+        files.content = "content.999.bin".to_string();
+        let broken = Manifest::for_base(
+            good.generation + 1,
+            files,
+            good.live_trigrams,
+            good.live_corpus_bytes,
+        );
+
+        // The first read sees the manifest a publish is about to replace.
+        let mut reads = 0;
+        let snapshot = IndexSnapshot::open_reading(&cache, || {
+            reads += 1;
+            Ok(Some(if reads == 1 {
+                broken.clone()
+            } else {
+                good.clone()
+            }))
+        })
+        .expect("a retry opens the next manifest");
+        assert_eq!(reads, 2);
+        assert_eq!(snapshot.generation(), Some(good.generation));
+
+        write_manifest(&cache, &broken).unwrap();
+        let err = IndexSnapshot::open(&cache).unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<ReflexError>(),
+                Some(ReflexError::CacheCorrupted(_))
+            ),
+            "{err:#}"
+        );
     }
 
     fn index_unlimited(root: &Path) {
