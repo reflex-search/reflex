@@ -6,13 +6,15 @@
 //! 29 MB corpus that put a ~50 ms floor under every call, including a zero-hit
 //! search through the resident `rfx mcp` server.
 //!
-//! [`OpenIndex`] holds both memory maps, a path→file-id map, and a rayon pool
-//! sized from `[performance] parallel_threads`. Handles live in a process-wide
-//! registry keyed by the canonical cache directory, so the MCP server, the HTTP
-//! server, and the CLI all share one open per index. A handle is reused while
-//! the on-disk files carry the same fingerprint (device, inode, size, mtime);
-//! an indexer run invalidates it explicitly, and an `rfx index` from another
-//! process is caught by the fingerprint compare on the next lookup.
+//! [`OpenIndex`] holds the [`IndexSnapshot`] (the memory maps of every store the
+//! manifest names), a path→file-id map, and a rayon pool sized from
+//! `[performance] parallel_threads`. Handles live in a process-wide registry keyed
+//! by the canonical cache directory, so the MCP server, the HTTP server, and the
+//! CLI all share one open per index. A handle is reused while `manifest.json` and
+//! the `content.bin` / `trigrams.bin` links carry the same fingerprint (device,
+//! inode, size, mtime); an indexer run invalidates it explicitly, and an
+//! `rfx index` from another process is caught by the fingerprint compare on the
+//! next lookup (every publish renames a new manifest into place).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,9 +23,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::{Context, Result};
 
 use crate::cache::CacheManager;
-use crate::content_store::ContentReader;
 use crate::errors::ReflexError;
-use crate::trigram::TrigramIndex;
+use crate::snapshot::IndexSnapshot;
 
 /// Identity of one on-disk file, cheap to read (one `stat`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,32 +54,41 @@ impl FileStamp {
     }
 }
 
-/// Fingerprint of the two binary stores a handle was opened from.
-///
-/// `trigrams` is `None` when `trigrams.bin` is absent and the index was rebuilt
-/// in memory from `content.bin`.
+/// Fingerprint of the snapshot a handle was opened from: the manifest (renamed
+/// into place by every publish) and the `content.bin` / `trigrams.bin` links (a
+/// cache without a manifest has only those). Any of them may be absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fingerprint {
-    content: FileStamp,
+    manifest: Option<FileStamp>,
+    content: Option<FileStamp>,
     trigrams: Option<FileStamp>,
 }
 
 impl Fingerprint {
     fn current(cache_dir: &Path) -> std::io::Result<Self> {
-        let content = FileStamp::of(&cache_dir.join("content.bin"))?;
-        let trigrams = FileStamp::of(&cache_dir.join("trigrams.bin")).ok();
-        Ok(Self { content, trigrams })
+        let manifest = FileStamp::of(&cache_dir.join(crate::snapshot::MANIFEST)).ok();
+        let content = FileStamp::of(&cache_dir.join(crate::snapshot::FIXED_CONTENT)).ok();
+        let trigrams = FileStamp::of(&cache_dir.join(crate::snapshot::FIXED_TRIGRAMS)).ok();
+        if manifest.is_none() && content.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no manifest.json and no content.bin",
+            ));
+        }
+        Ok(Self {
+            manifest,
+            content,
+            trigrams,
+        })
     }
 }
 
 /// Everything a query needs from the index, opened once.
 pub struct OpenIndex {
     cache_dir: PathBuf,
-    /// Memory-mapped `content.bin`.
-    pub content: ContentReader,
-    /// Memory-mapped `trigrams.bin` (or an in-memory rebuild when the file is absent).
-    pub trigrams: TrigramIndex,
-    /// `path → file_id`, with any leading `./` stripped, built on first use.
+    /// The stores: content, paths and candidate lookups by file id.
+    pub snapshot: IndexSnapshot,
+    /// `path → file_id` of live files, with any leading `./` stripped, built on first use.
     /// Only symbol and AST queries need it; a full-text query never pays for it.
     path_to_id: OnceLock<HashMap<String, u32>>,
     /// Query-side thread pool, sized from `[performance] parallel_threads`, built
@@ -103,7 +113,7 @@ impl std::fmt::Debug for OpenIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenIndex")
             .field("cache_dir", &self.cache_dir)
-            .field("files", &self.content.file_count())
+            .field("files", &self.snapshot.live_file_count())
             .field("threads", &self.threads)
             .finish()
     }
@@ -119,39 +129,7 @@ const QUERY_AUTO_THREAD_CAP: usize = 32;
 impl OpenIndex {
     fn open(cache: &CacheManager, fingerprint: Fingerprint) -> Result<Self> {
         let cache_dir = cache.path().to_path_buf();
-
-        let content = ContentReader::open(cache_dir.join("content.bin"))
-            .map_err(|e| ReflexError::CacheCorrupted(format!("content.bin: {e:#}")))?;
-
-        let trigrams_path = cache_dir.join("trigrams.bin");
-        let trigrams = if trigrams_path.exists() {
-            match TrigramIndex::load(&trigrams_path) {
-                Ok(index) => index,
-                // A format from another Reflex version is not corruption (see
-                // `ReflexError::CacheVersionMismatch`): serve from an in-memory
-                // rebuild, and let the schema-hash check report the index stale
-                // so the caller re-indexes.
-                Err(e) if e.to_string().contains("Unsupported trigrams.bin version") => {
-                    log::warn!("{}; rebuilding trigram index in memory for this process", e);
-                    super::result::rebuild_trigram_index(&content)?
-                }
-                Err(e) => {
-                    return Err(ReflexError::CacheCorrupted(format!("trigrams.bin: {e:#}")).into());
-                }
-            }
-        } else {
-            log::debug!("trigrams.bin not found, rebuilding from content store");
-            super::result::rebuild_trigram_index(&content)?
-        };
-
-        if trigrams.file_count() != content.file_count() {
-            return Err(ReflexError::CacheCorrupted(format!(
-                "trigrams.bin lists {} files but content.bin holds {} (index written by two runs?)",
-                trigrams.file_count(),
-                content.file_count()
-            ))
-            .into());
-        }
+        let snapshot = IndexSnapshot::open(&cache_dir)?;
 
         let config = cache.load_index_config().unwrap_or_else(|e| {
             log::debug!("Using default index config for query pool: {}", e);
@@ -163,15 +141,14 @@ impl OpenIndex {
         log::debug!(
             "Opened index {}: {} files, {} trigrams, {} query threads",
             cache_dir.display(),
-            content.file_count(),
-            trigrams.trigram_count(),
+            snapshot.live_file_count(),
+            snapshot.trigram_count(),
             threads
         );
 
         Ok(Self {
             cache_dir,
-            content,
-            trigrams,
+            snapshot,
             path_to_id: OnceLock::new(),
             pool: OnceLock::new(),
             threads,
@@ -182,7 +159,22 @@ impl OpenIndex {
         })
     }
 
-    /// The fingerprint table, read once per handle.
+    /// Whether meta.db's rows go with this handle's snapshot (same generation).
+    /// Between an index run's two commits (manifest, then meta.db) they do not.
+    /// A cache without a manifest has nothing to compare and always matches.
+    pub fn meta_matches_snapshot(&self, conn: &rusqlite::Connection) -> bool {
+        let Some(generation) = self.snapshot.generation() else {
+            return true;
+        };
+        crate::meta_update::get_statistic(conn, crate::indexer::INDEX_GENERATION_KEY)
+            .ok()
+            .flatten()
+            .and_then(|g| g.parse::<u64>().ok())
+            == Some(generation)
+    }
+
+    /// The fingerprint table, read once per handle (not memoised while meta.db is
+    /// behind the snapshot, so the next call sees the committed rows).
     pub fn fingerprints(
         &self,
         cache: &CacheManager,
@@ -191,6 +183,13 @@ impl OpenIndex {
             return Ok(Arc::clone(fp));
         }
         let loaded = Arc::new(cache.load_fingerprints()?);
+        let in_step = self
+            .meta_conn()
+            .map(|conn| self.meta_matches_snapshot(&conn))
+            .unwrap_or(false);
+        if !in_step {
+            return Ok(loaded);
+        }
         // A concurrent first caller may have won the race; either table is fine.
         let _ = self.fingerprints.set(Arc::clone(&loaded));
         Ok(Arc::clone(self.fingerprints.get().expect("set above")))
@@ -215,24 +214,21 @@ impl OpenIndex {
         Ok(m.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
-    /// Number of files in the index.
+    /// Number of live files in the index.
     pub fn file_count(&self) -> usize {
-        self.content.file_count()
+        self.snapshot.live_file_count()
     }
 
-    /// Array file id for a path as stored in the index (a leading `./` is ignored).
+    /// Store file id of a live file, by path as stored in the index (a leading
+    /// `./` is ignored).
     pub fn file_id_for(&self, path: &str) -> Option<u32> {
         let normalized = path.strip_prefix("./").unwrap_or(path);
         let map = self.path_to_id.get_or_init(|| {
-            let mut map = HashMap::with_capacity(self.content.file_count());
-            for id in 0..self.content.file_count() {
-                if let Some(p) = self
-                    .content
-                    .get_file_path(id as u32)
-                    .and_then(|p| p.to_str())
-                {
+            let mut map = HashMap::with_capacity(self.snapshot.live_file_count());
+            for id in self.snapshot.live_ids() {
+                if let Some(p) = self.snapshot.get_file_path(id).and_then(|p| p.to_str()) {
                     map.entry(p.strip_prefix("./").unwrap_or(p).to_string())
-                        .or_insert(id as u32);
+                        .or_insert(id);
                 }
             }
             map
@@ -240,9 +236,9 @@ impl OpenIndex {
         map.get(normalized).copied()
     }
 
-    /// Path for an array file id, without a leading `./`.
+    /// Path for a store file id, without a leading `./`.
     pub fn path_of(&self, file_id: u32) -> Option<&str> {
-        self.content
+        self.snapshot
             .get_file_path(file_id)
             .and_then(|p| p.to_str())
             .map(|p| p.strip_prefix("./").unwrap_or(p))

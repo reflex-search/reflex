@@ -1255,6 +1255,7 @@ impl InteractiveApp {
         // Be careful not to delete the entire directory as it might be recreated immediately
         let files_to_remove = [
             "meta.db",
+            crate::snapshot::MANIFEST,
             "trigrams.bin",
             "content.bin",
             "symbols.db",

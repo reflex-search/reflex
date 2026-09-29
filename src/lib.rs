@@ -49,6 +49,7 @@ pub mod pulse;
 pub mod query;
 pub mod regex_trigrams;
 pub mod semantic;
+pub mod snapshot;
 pub mod symbol_cache;
 pub mod trigram;
 pub mod trigram_build;

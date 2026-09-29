@@ -11,7 +11,6 @@ pub mod roles;
 pub mod surface;
 
 use crate::cache::CacheManager;
-use crate::content_store::ContentReader;
 use crate::models::Language;
 use anyhow::{Context, Result};
 pub use roles::FileRole;
@@ -51,18 +50,18 @@ pub struct FileInfo {
     pub hash: String,
 }
 
-/// Reads indexed file contents from `content.bin`.
+/// Reads indexed file contents from the index stores.
 pub struct ContentAccess {
-    reader: Option<ContentReader>,
+    reader: Option<crate::snapshot::IndexSnapshot>,
     ids: std::collections::HashMap<String, u32>,
 }
 
 impl ContentAccess {
     pub fn open(cache: &CacheManager) -> Self {
-        let reader = ContentReader::open(cache.path().join("content.bin")).ok();
+        let reader = crate::snapshot::IndexSnapshot::open(cache.path()).ok();
         let mut ids = std::collections::HashMap::new();
         if let Some(r) = &reader {
-            for id in 0..r.file_count() as u32 {
+            for id in r.live_ids() {
                 if let Some(p) = r.get_file_path(id).and_then(|p| p.to_str()) {
                     ids.insert(p.strip_prefix("./").unwrap_or(p).to_string(), id);
                 }
@@ -205,7 +204,7 @@ impl Corpus {
                 .find(|f| f.path.eq_ignore_ascii_case(c))
                 .map(|f| f.path.clone())
         })?;
-        let reader = ContentReader::open(cache.path().join("content.bin")).ok()?;
+        let reader = crate::snapshot::IndexSnapshot::open(cache.path()).ok()?;
         let id = reader.get_file_id_by_path(&path)?;
         let content = reader.get_file_content(id).ok()?.to_string();
         Some(DocFile { path, content })

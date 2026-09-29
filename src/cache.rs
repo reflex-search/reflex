@@ -549,8 +549,12 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             );
         }
 
+        // The stores the manifest names (or the fixed names of a cache without
+        // one); messages use the logical names.
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+
         // Check trigrams.bin if it exists
-        let trigrams_path = self.cache_path.join("trigrams.bin");
+        let trigrams_path = summary.trigram_files[0].clone();
         if trigrams_path.exists() {
             use std::io::Read;
 
@@ -581,7 +585,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         }
 
         // Check content.bin if it exists
-        let content_path = self.cache_path.join("content.bin");
+        let content_path = summary.content_files[0].clone();
         if content_path.exists() {
             use std::io::Read;
 
@@ -1456,22 +1460,31 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let mut index_size_bytes: u64 = 0;
         let mut trigram_index_bytes: u64 = 0;
 
-        for file_name in [META_DB, CONFIG_TOML, "content.bin", "trigrams.bin"] {
-            let file_path = self.cache_path.join(file_name);
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+        for file_path in [
+            self.cache_path.join(META_DB),
+            self.cache_path.join(CONFIG_TOML),
+        ]
+        .iter()
+        .chain(summary.files())
+        {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
                 index_size_bytes += metadata.len();
-                if file_name == "trigrams.bin" {
-                    trigram_index_bytes = metadata.len();
-                }
+            }
+        }
+        for file_path in &summary.trigram_files {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
+                trigram_index_bytes += metadata.len();
             }
         }
 
-        // Raw corpus size: content.bin stores the concatenated file bytes
-        // directly after its 32-byte header, and `index_offset` (bytes 16..24)
-        // marks where they end. Read just the header; never load the store.
-        let corpus_bytes: u64 = {
+        // Raw corpus size: the manifest records the live text bytes. A cache
+        // without one: content.bin stores the concatenated file bytes directly
+        // after its 32-byte header, and `index_offset` (bytes 16..24) marks where
+        // they end. Read just the header; never load the store.
+        let corpus_bytes: u64 = summary.live_corpus_bytes.unwrap_or_else(|| {
             use std::io::Read;
-            std::fs::File::open(self.cache_path.join("content.bin"))
+            std::fs::File::open(&summary.content_files[0])
                 .ok()
                 .and_then(|mut f| {
                     let mut header = [0u8; 32];
@@ -1483,7 +1496,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                     Some(index_offset.saturating_sub(32))
                 })
                 .unwrap_or(0)
-        };
+        });
 
         // Get file count breakdown by language (branch-aware if possible)
         let mut files_by_language = std::collections::HashMap::new();
@@ -2203,9 +2216,15 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     fn calculate_cache_size(&self) -> Result<u64> {
         let mut total_size: u64 = 0;
 
-        for file_name in [META_DB, CONFIG_TOML, "content.bin", "trigrams.bin"] {
-            let file_path = self.cache_path.join(file_name);
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+        for file_path in [
+            self.cache_path.join(META_DB),
+            self.cache_path.join(CONFIG_TOML),
+        ]
+        .iter()
+        .chain(summary.files())
+        {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
                 total_size += metadata.len();
             }
         }

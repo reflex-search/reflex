@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
-use crate::content_store::ContentReader;
 use crate::parsers::ParserFactory;
 use crate::symbol_cache::SymbolCache;
 
@@ -572,16 +571,41 @@ impl BackgroundIndexer {
         conn.execute_batch("PRAGMA synchronous=NORMAL")
             .context("Failed to set synchronous=NORMAL")?;
 
-        let content_path = self.cache_path.join("content.bin");
-        if !content_path.exists() {
+        let has_index = self.cache_path.join(crate::snapshot::MANIFEST).exists()
+            || self
+                .cache_path
+                .join(crate::snapshot::FIXED_CONTENT)
+                .exists();
+        if !has_index {
             log::info!("No content.bin found - index is empty, nothing to process");
             self.status.total_files = 0;
             self.status.processed_files = 0;
             self.write_status()?;
             return Ok(());
         }
-        let content_reader =
-            ContentReader::open(&content_path).context("Failed to open content.bin")?;
+        let content_reader = crate::snapshot::IndexSnapshot::open(&self.cache_path)
+            .context("Failed to open content.bin")?;
+
+        // The stores and meta.db are published one after the other. A snapshot of
+        // another generation than meta.db's rows (a run stopped between the two, or
+        // is between them now) would cache one version's symbols under another
+        // version's hash: parse nothing until they agree.
+        if let Some(generation) = content_reader.generation() {
+            let meta_generation =
+                crate::meta_update::get_statistic(&conn, crate::indexer::INDEX_GENERATION_KEY)?
+                    .and_then(|g| g.parse::<u64>().ok());
+            if meta_generation != Some(generation) {
+                log::warn!(
+                    "Index generation {} but meta.db rows are generation {:?}; skipping the symbol pass",
+                    generation,
+                    meta_generation
+                );
+                self.status.total_files = 0;
+                self.status.processed_files = 0;
+                self.write_status()?;
+                return Ok(());
+            }
+        }
 
         // `path → (file_id, hash)` for every indexed file and the set of cached
         // keys: two queries, instead of two queries plus a connection per file.
@@ -591,7 +615,7 @@ impl BackgroundIndexer {
         let cached_keys =
             SymbolCache::load_cached_keys_on(&conn).context("Failed to load cached symbol keys")?;
 
-        let total_files = content_reader.file_count();
+        let total_files = content_reader.live_file_count();
         self.status.total_files = total_files;
         log::info!("Found {} indexed files to process", total_files);
 
@@ -616,7 +640,7 @@ impl BackgroundIndexer {
         let mut cached = 0usize;
         let mut no_parser = 0usize;
         let mut no_hash = 0usize;
-        for content_id in 0..total_files as u32 {
+        for content_id in content_reader.live_ids() {
             let Some(path) = content_reader.get_file_path(content_id) else {
                 no_hash += 1;
                 continue;
@@ -972,7 +996,7 @@ impl BackgroundIndexer {
     /// Parse symbols from a file using content.bin
     fn parse_symbols(
         &self,
-        content_reader: &ContentReader,
+        content_reader: &crate::snapshot::IndexSnapshot,
         file_id: u32,
         path: &str,
     ) -> Result<ParseOutcome> {

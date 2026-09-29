@@ -307,7 +307,7 @@ fn verify_files_streaming(
 ) -> VerifyOutcome {
     use rayon::prelude::*;
 
-    let content = &open.content;
+    let content = &open.snapshot;
 
     // Resolve path + language once per file, drop files the filters reject, and
     // sort by the path string the results will carry.
@@ -704,7 +704,7 @@ impl QueryEngine {
 
         // The shared index handle, for extracting context lines
         let open_opt = self.open_index().ok();
-        let content_reader_opt = open_opt.as_deref().map(|o| &o.content);
+        let content_reader_opt = open_opt.as_deref().map(|o| &o.snapshot);
 
         // Convert to FileGroupedResult and load dependencies
         let mut file_results: Vec<FileGroupedResult> = grouped
@@ -1476,7 +1476,7 @@ impl QueryEngine {
         if filter.expand {
             // Fetch full symbol bodies from the shared content store
             if let Ok(open) = self.open_index() {
-                let content_reader = &open.content;
+                let content_reader = &open.snapshot;
                 for result in &mut results {
                     // Only expand if the result has a meaningful span (not just a single line)
                     if result.span.start_line < result.span.end_line {
@@ -1638,7 +1638,7 @@ impl QueryEngine {
 
         // The shared content store
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Build glob matchers ONCE before file iteration (performance optimization)
         let include_matcher = result::build_glob_set(&filter.glob_patterns, "glob");
@@ -1648,8 +1648,8 @@ impl QueryEngine {
         // Get all files matching the language and glob filters
         let mut candidates: Vec<SearchResult> = Vec::new();
 
-        for file_id in 0..content_reader.file_count() {
-            let file_path = match content_reader.get_file_path(file_id as u32) {
+        for file_id in content_reader.live_ids() {
+            let file_path = match content_reader.get_file_path(file_id) {
                 Some(p) => p,
                 None => continue,
             };
@@ -1759,7 +1759,7 @@ impl QueryEngine {
         if filter.expand
             && let Ok(open) = self.open_index()
         {
-            let content_reader = &open.content;
+            let content_reader = &open.snapshot;
             {
                 for result in &mut results {
                     if result.span.start_line < result.span.end_line
@@ -1927,7 +1927,7 @@ impl QueryEngine {
         if filter.expand
             && let Ok(open) = self.open_index()
         {
-            let content_reader = &open.content;
+            let content_reader = &open.snapshot;
             {
                 for result in &mut results {
                     if result.span.start_line < result.span.end_line
@@ -2030,7 +2030,7 @@ impl QueryEngine {
 
         // The shared index handle (content store + file-id map + meta.db connection)
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Group candidates by file, filtering out unsupported languages
         let mut files_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -2234,8 +2234,17 @@ impl QueryEngine {
             }
             parsed_symbols.extend(symbols);
         }
-        // Best-effort: a failed cache write must never fail the query.
-        if let Err(e) = crate::symbol_cache::SymbolCache::batch_set_by_id_on(&mut conn, &to_cache) {
+        // Best-effort: a failed cache write must never fail the query. Written only
+        // while meta.db's rows go with the snapshot the content came from: between
+        // the two publishes of an index run the key could name another version.
+        if !open.meta_matches_snapshot(&conn) {
+            log::debug!(
+                "Index is mid-publish; not caching {} parses",
+                to_cache.len()
+            );
+        } else if let Err(e) =
+            crate::symbol_cache::SymbolCache::batch_set_by_id_on(&mut conn, &to_cache)
+        {
             log::debug!(
                 "Failed to cache symbols for {} files: {}",
                 to_cache.len(),
@@ -2379,7 +2388,7 @@ impl QueryEngine {
 
         // The shared index handle (content store + file-id map)
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Collect unique file paths from candidates and load their contents
         use std::collections::HashMap;
@@ -2454,7 +2463,7 @@ impl QueryEngine {
 
         // The shared content store
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Build glob matchers if specified (for filtering)
         let include_matcher = result::build_glob_set(&filter.glob_patterns, "glob");
@@ -2464,8 +2473,8 @@ impl QueryEngine {
         // Scan all files and filter by language + glob patterns
         let mut candidates: Vec<SearchResult> = Vec::new();
 
-        for file_id in 0..content_reader.file_count() {
-            let file_path = match content_reader.get_file_path(file_id as u32) {
+        for file_id in content_reader.live_ids() {
+            let file_path = match content_reader.get_file_path(file_id) {
                 Some(p) => p,
                 None => continue,
             };
@@ -2545,7 +2554,7 @@ impl QueryEngine {
         budget: Option<usize>,
     ) -> Result<(Vec<SearchResult>, CandidateStats)> {
         let open = self.open_index()?;
-        let trigram_index = &open.trigrams;
+        let trigram_index = &open.snapshot;
 
         // Patterns shorter than 3 chars have no trigrams, so the trigram index always
         // returns empty.  Fall back to a linear scan of the content store so that
@@ -2626,13 +2635,13 @@ impl QueryEngine {
     ) -> Result<Vec<SearchResult>> {
         use rayon::prelude::*;
 
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
         let pattern_owned = pattern.to_string();
-        let file_count = content_reader.file_count();
         let matcher = LineMatcher::new(pattern, filter)?;
 
         let results: Vec<SearchResult> = open.pool().install(|| {
-            (0..file_count as u32)
+            content_reader
+                .live_ids()
                 .collect::<Vec<_>>()
                 .par_iter()
                 .flat_map(|&file_id| {
@@ -2691,7 +2700,7 @@ impl QueryEngine {
             "Linear scan (short pattern '{}') found {} results across {} files",
             pattern,
             results.len(),
-            file_count
+            content_reader.live_file_count()
         );
         Ok(results)
     }
@@ -2777,7 +2786,8 @@ impl QueryEngine {
                 }
                 warnings.push(text);
             }
-            (0..open.content.file_count() as u32)
+            open.snapshot
+                .live_ids()
                 .map(|id| (id, LineSet::All))
                 .collect()
         } else {
@@ -2805,10 +2815,10 @@ impl QueryEngine {
                     {
                         need_exotic = true;
                     }
-                    open.trigrams
+                    open.snapshot
                         .search_candidates_fold(literal.text.as_bytes())
                 } else {
-                    open.trigrams.search_candidates(&literal.text)
+                    open.snapshot.search_candidates(&literal.text)
                 };
                 log::debug!(
                     "Literal '{}' (ci={}) found on {} candidate lines",
@@ -2820,7 +2830,7 @@ impl QueryEngine {
                 sources += 1;
             }
             if need_exotic {
-                locations.extend(open.trigrams.exotic_fold_lines());
+                locations.extend(open.snapshot.exotic_fold_lines());
                 sources += 1;
             }
             if sources > 1 {

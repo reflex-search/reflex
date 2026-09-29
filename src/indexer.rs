@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
-use crate::content_store::{ContentReader, ContentWriter};
+use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexMode, IndexStats, Language};
 #[cfg(unix)]
 use crate::output;
@@ -58,6 +58,10 @@ struct FileProcessingResult {
 /// `statistics` key of the resolver config digest the dependency rows were
 /// resolved with (see [`crate::dependency_resolve::ResolverConfigs::digest`]).
 const RESOLVER_DIGEST_KEY: &str = "resolver_config_digest";
+
+/// `statistics` key of the manifest generation meta.db's rows go with. A manifest
+/// of another generation means a run stopped between the two commits.
+pub const INDEX_GENERATION_KEY: &str = "index_generation";
 
 /// File in `.reflex/` whose mtime is an index run's start (see `run_marker`).
 const RUN_MARKER: &str = ".index-run";
@@ -117,6 +121,8 @@ struct MetaWrite<'a> {
     commit: Option<&'a str>,
     resolver_configs: &'a crate::dependency_resolve::ResolverConfigs,
     full_deps: bool,
+    /// Generation of the manifest these rows go with.
+    generation: u64,
 }
 
 /// (new, modified, unchanged) of `(path, hash)` pairs against a branch's hashes.
@@ -819,13 +825,23 @@ impl Indexer {
 
         // What meta.db holds: one row per path of the last indexed tree.
         let meta_path = cache_dir.join(crate::cache::META_DB);
-        let (stored, stored_digest) = {
+        let (stored, stored_digest, meta_generation) = {
             let conn = crate::cache::open_meta_db(&meta_path)?;
             (
                 crate::meta_update::load_stored_files(&conn)?,
                 crate::meta_update::get_statistic(&conn, RESOLVER_DIGEST_KEY)?,
+                crate::meta_update::get_statistic(&conn, INDEX_GENERATION_KEY)?
+                    .and_then(|g| g.parse::<u64>().ok()),
             )
         };
+        // The snapshot currently published, and the generation the next publish takes.
+        let prev_manifest = crate::snapshot::read_manifest(&cache_dir).ok().flatten();
+        let generation = prev_manifest
+            .as_ref()
+            .map(|m| m.generation)
+            .max(meta_generation)
+            .unwrap_or(0)
+            + 1;
 
         // Step 1: walk the tree. In parallel, ask git for the branch and the dirty
         // paths, and find the resolver configs (each is its own walk or subprocess).
@@ -954,7 +970,11 @@ impl Indexer {
             || stored_digest.as_deref() != Some(resolver_configs.digest.as_str());
         let content_changed = added > 0 || modified > 0 || !gone.is_empty();
 
-        if !content_changed && !full_deps && schema_ok && self.stores_intact(stored.len()) {
+        if !content_changed
+            && !full_deps
+            && schema_ok
+            && self.stores_intact(stored.len(), meta_generation)
+        {
             log::info!("No files changed - skipping index rebuild");
             return self.refresh_unchanged(RefreshUnchanged {
                 rels: &rels,
@@ -989,7 +1009,8 @@ impl Indexer {
         let mut content_writer = ContentWriter::new();
 
         // Initialize content writer to start streaming writes immediately
-        let content_path = self.cache.path().join("content.bin");
+        let (content_name, trigrams_name) = crate::snapshot::base_file_names(generation);
+        let content_path = cache_dir.join(&content_name);
         content_writer
             .init(content_path.clone())
             .context("Failed to initialize content writer")?;
@@ -1227,50 +1248,18 @@ impl Indexer {
             &existing_hashes,
         );
 
-        let meta_start = Instant::now();
-        self.write_meta(MetaWrite {
-            root,
-            rels: &rels,
-            indexed: &indexed,
-            stored: &stored,
-            status: &status,
-            dirty_paths: &dirty_paths,
-            branch: &branch,
-            commit: commit.as_deref(),
-            resolver_configs: &resolver_configs,
-            full_deps,
-        })?;
-
-        // Update branch metadata
-        self.cache.update_branch_metadata(
-            &branch,
-            commit.as_deref(),
-            indexed.len(),
-            git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
-        )?;
-
-        // Force WAL checkpoint to ensure background processes see all committed data
-        // This is critical when spawning background symbol indexer immediately after
-        self.cache
-            .checkpoint_wal()
-            .context("Failed to checkpoint WAL")?;
-        log::info!(
-            "phase meta.db (files, branches, dependencies, exports): {} ms",
-            meta_start.elapsed().as_millis()
-        );
-
         log::info!("Indexed {} files", files_indexed);
 
         // Step 4: Write trigram index.
-        // Crash-safe write: `TrigramIndex::write` streams into `trigrams.bin.tmp`,
-        // syncs, then renames over `trigrams.bin` (see `atomic_write`). A crash
-        // mid-write leaves the previous index untouched; the no-change path checks
-        // the stores before trusting them.
+        // Crash-safe write: the builder streams into `trigrams.<g>.bin.tmp`, syncs,
+        // then renames it into place (see `atomic_write`). Nothing names the new
+        // files until the manifest below does, so a crash leaves the previous
+        // snapshot as it was.
         *progress_status.lock().unwrap() = "Writing trigram index...".to_string();
         if show_progress {
             pb.set_message("Writing trigram index...".to_string());
         }
-        let trigrams_path = self.cache.path().join("trigrams.bin");
+        let trigrams_path = cache_dir.join(&trigrams_name);
         let write_start = Instant::now();
         trigram_builder
             .write(&pool, &trigrams_path)
@@ -1291,12 +1280,70 @@ impl Indexer {
             .finalize_if_needed()
             .context("Failed to finalize content store")?;
         log::info!(
-            "Wrote {} files ({} bytes) to content.bin",
+            "Wrote {} files ({} bytes) to {}",
             content_writer.file_count(),
-            content_writer.content_size()
+            content_writer.content_size(),
+            content_name
         );
 
-        // Step 6: Update SQLite statistics from database totals (branch-aware)
+        // Step 6: Publish. The manifest rename is the commit point of the stores;
+        // meta.db follows in one transaction that records the same generation.
+        // A crash between the two leaves a manifest ahead of meta.db: the changed
+        // files read as stale (their rows are older than the stores), and the next
+        // run sees the generations differ and rebuilds.
+        let manifest = crate::snapshot::Manifest::for_base(
+            generation,
+            crate::snapshot::SegmentFiles {
+                content: content_name.clone(),
+                trigrams: trigrams_name.clone(),
+                files: content_writer.file_count() as u64,
+                content_bytes: std::fs::metadata(&content_path)?.len(),
+                trigrams_bytes: std::fs::metadata(&trigrams_path)?.len(),
+            },
+            trigram_builder.trigram_count() as u64,
+            content_writer.content_size() as u64,
+        );
+        crate::snapshot::write_manifest(&cache_dir, &manifest)?;
+        crate::snapshot::link_fixed_names(&cache_dir, &manifest);
+
+        let meta_start = Instant::now();
+        self.write_meta(MetaWrite {
+            root,
+            rels: &rels,
+            indexed: &indexed,
+            stored: &stored,
+            status: &status,
+            dirty_paths: &dirty_paths,
+            branch: &branch,
+            commit: commit.as_deref(),
+            resolver_configs: &resolver_configs,
+            full_deps,
+            generation,
+        })?;
+
+        // Update branch metadata
+        self.cache.update_branch_metadata(
+            &branch,
+            commit.as_deref(),
+            indexed.len(),
+            git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
+        )?;
+
+        // Force WAL checkpoint to ensure background processes see all committed data
+        // This is critical when spawning background symbol indexer immediately after
+        self.cache
+            .checkpoint_wal()
+            .context("Failed to checkpoint WAL")?;
+        log::info!(
+            "phase meta.db (files, branches, dependencies, exports): {} ms",
+            meta_start.elapsed().as_millis()
+        );
+
+        // Readers in this process reopen; files no manifest names any more go.
+        crate::query::invalidate_caches(root);
+        crate::snapshot::remove_unreferenced(&cache_dir, &manifest, prev_manifest.as_ref());
+
+        // Step 7: Update SQLite statistics from database totals (branch-aware)
         *progress_status.lock().unwrap() = "Updating statistics...".to_string();
         if show_progress {
             pb.set_message("Updating statistics...".to_string());
@@ -1340,39 +1387,34 @@ impl Indexer {
             .unwrap_or_else(|_| std::time::SystemTime::now())
     }
 
-    /// Whether `content.bin` and `trigrams.bin` are complete and hold `expected`
-    /// files (the rows of the last indexed tree).
-    fn stores_intact(&self, expected: usize) -> bool {
-        let content = self.cache.path().join("content.bin");
-        let trigrams = self.cache.path().join("trigrams.bin");
-        let trigram_files = {
-            use std::io::Read;
-            std::fs::File::open(&trigrams).ok().and_then(|mut f| {
-                let mut header = [0u8; 24];
-                f.read_exact(&mut header).ok()?;
-                (&header[..4] == b"RFTG")
-                    .then(|| u64::from_le_bytes(header[16..24].try_into().unwrap()))
-            })
-        };
-        let Some(trigram_files) = trigram_files else {
-            log::warn!("trigrams.bin missing, corrupted or too small - forcing rebuild");
-            return false;
-        };
-        match ContentReader::open(&content) {
-            Ok(reader) if reader.file_count() == expected && trigram_files == expected as u64 => {
-                true
-            }
-            Ok(reader) => {
-                log::warn!(
-                    "Stores hold {} / {} files but meta.db lists {} - forcing rebuild",
-                    reader.file_count(),
-                    trigram_files,
-                    expected
-                );
-                false
+    /// Whether the published snapshot is complete, holds `expected` files (the rows
+    /// of the last indexed tree) and is the one meta.db's rows go with.
+    fn stores_intact(&self, expected: usize, meta_generation: Option<u64>) -> bool {
+        match crate::snapshot::IndexSnapshot::open(self.cache.path()) {
+            Ok(snapshot) => {
+                if snapshot.generation().is_none() {
+                    log::info!("Index written before the manifest - rebuilding");
+                    false
+                } else if snapshot.generation() != meta_generation {
+                    log::warn!(
+                        "Manifest generation {:?} but meta.db rows are generation {:?} (a run stopped between the two) - rebuilding",
+                        snapshot.generation(),
+                        meta_generation
+                    );
+                    false
+                } else if snapshot.live_file_count() != expected {
+                    log::warn!(
+                        "Stores hold {} files but meta.db lists {} - rebuilding",
+                        snapshot.live_file_count(),
+                        expected
+                    );
+                    false
+                } else {
+                    true
+                }
             }
             Err(e) => {
-                log::warn!("content.bin invalid ({}) - forcing rebuild", e);
+                log::warn!("Index stores unusable ({:#}) - rebuilding", e);
                 false
             }
         }
@@ -1589,6 +1631,12 @@ impl Indexer {
             &tx,
             RESOLVER_DIGEST_KEY,
             &w.resolver_configs.digest,
+            now,
+        )?;
+        crate::meta_update::set_statistic(
+            &tx,
+            INDEX_GENERATION_KEY,
+            &w.generation.to_string(),
             now,
         )?;
         tx.commit()?;

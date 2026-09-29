@@ -599,18 +599,17 @@ No dependency data will be included for {} files.",
                         .push(result.clone());
                 }
 
-                // Load ContentReader for extracting context lines
-                use crate::content_store::ContentReader;
+                // Open the index stores for extracting context lines
                 let local_cache = CacheManager::new(".");
-                let content_path = local_cache.path().join("content.bin");
-                let content_reader_opt = ContentReader::open(&content_path).ok();
+                let content_reader_opt =
+                    crate::snapshot::IndexSnapshot::open(local_cache.path()).ok();
 
                 let mut file_results: Vec<FileGroupedResult> = grouped
                     .into_iter()
                     .map(|(path, file_matches)| {
                         // Get file_id for context extraction
-                        // Note: We use ContentReader's get_file_id_by_path() which returns array indices,
-                        // not database file_ids (which are AUTO INCREMENT values)
+                        // Note: get_file_id_by_path() returns store file ids, not
+                        // database file_ids
                         let normalized_path = path.strip_prefix("./").unwrap_or(&path);
                         let file_id_for_context = if let Some(reader) = &content_reader_opt {
                             reader.get_file_id_by_path(normalized_path)
