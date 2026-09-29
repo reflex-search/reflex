@@ -28,8 +28,10 @@ Decisions (with the user, 2026-09-29):
 | Step | Status |
 | --- | --- |
 | 0. Golden harness (`benches/incremental/`), pre-change baseline, perf baseline | done (idle perf baseline still to record) |
-| Stage 0: stable metadata, walk order, change detection without reading, per-file deps | pending |
-| Stage 1: manifest + `IndexSnapshot`, planning size, delta + tombstones, library path | pending |
+| Stage 0: stable metadata, walk order, change detection without reading, per-file deps | done (commits `cc920df`, `6798edd`); golden identical |
+| Stage 1: manifest + `IndexSnapshot` (`9f342d6`), planning size (`29dfb43`, golden diff 0 on 4 corpora) | done |
+| Stage 1: delta + tombstones + publish protocol + threshold merge (`rfx index` path) | done 2026-09-29: golden identical fresh and after scripted updates (4 corpora); `tests/incremental_delta.rs` |
+| Stage 1: library path `Indexer::update_paths`; property, crash, concurrency, cross-version tests | pending |
 | Stage 2: delta merge from snapshot content; tiering / skip-pointer measurements | pending |
 
 ---

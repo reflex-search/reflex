@@ -445,6 +445,12 @@ impl ContentReader {
         })
     }
 
+    /// Length in bytes of a file's content, from the entry table alone (no page of
+    /// content is touched).
+    pub fn file_len(&self, file_id: u32) -> Option<u64> {
+        self.entry(file_id).map(|e| e.length)
+    }
+
     /// Get file content by file_id
     pub fn get_file_content(&self, file_id: u32) -> Result<&str> {
         let entry = self

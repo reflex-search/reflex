@@ -69,6 +69,12 @@ code_files() { # <tree>
 }
 
 index() { "$1" index --quiet >/dev/null; }
+# The manifest generation of <tree>'s index; 0 without a manifest (2.0.3).
+generation() {
+  python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["generation"])
+except FileNotFoundError: print(0)' "$1/.reflex/manifest.json"
+}
 
 cmd_updates() { # <rfx> <label>
   local bin="$1" label="$2"
@@ -109,7 +115,15 @@ cmd_updates() { # <rfx> <label>
     cp -p "$bak/$b" "$t/$b"; mv "$t/$cfile.renamed.$ext" "$t/$cfile"; index "$bin" "$t"
     cp -p "$bak/$d" "$t/$d"; index "$bin" "$t"
     rm -rf "$bak"
+    local gen_before gen_after
+    gen_before="$(generation "$t")"
     python3 "$HERE/golden.py" run --rfx "$bin" --tree "$t" --out "$GOLD/$label-upd/$c"
+    gen_after="$(generation "$t")"
+    # A cache cleared behind the battery's back (a forced rebuild) restarts at 1.
+    if ((gen_after < gen_before)); then
+      echo "error: $c: generation fell from $gen_before to $gen_after (a forced rebuild)" >&2
+      return 1
+    fi
     mv "$t/.reflex" "$t/.reflex-inc"
     index "$bin" "$t"
     python3 "$HERE/golden.py" run --rfx "$bin" --tree "$t" --out "$GOLD/$label-upd-fresh/$c"

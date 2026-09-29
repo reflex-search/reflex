@@ -127,6 +127,27 @@ pub fn extract_trigram_run(text: &str, scratch: &mut Vec<u64>) -> TrigramRun {
     TrigramRun { keys, shard_starts }
 }
 
+/// `(trigram, planning size)` of one file's postings, ascending by trigram: the
+/// file's block in each of its trigrams' lists (see `trigram::block_plan_size`).
+pub(crate) fn run_plan_sizes(run: &TrigramRun) -> Vec<(Trigram, u32)> {
+    let mut out = Vec::new();
+    let keys = &run.keys;
+    let mut i = 0;
+    while i < keys.len() {
+        let t = key_trigram(keys[i]);
+        let mut j = i + 1;
+        while j < keys.len() && key_trigram(keys[j]) == t {
+            j += 1;
+        }
+        out.push((
+            t,
+            crate::trigram::block_plan_size(keys[i..j].iter().map(|&k| key_line(k))),
+        ));
+        i = j;
+    }
+    out
+}
+
 /// Where a flushed batch lives.
 enum PartialSource {
     Memory(Vec<u8>),

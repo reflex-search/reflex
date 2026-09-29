@@ -1517,6 +1517,13 @@ impl TrigramIndex {
         self.plan.is_some()
     }
 
+    /// Every trigram of the directory, ascending (lazy mode).
+    pub(crate) fn trigrams(&self) -> impl Iterator<Item = Trigram> + '_ {
+        let mmap = self.mmap.as_ref();
+        (0..if mmap.is_some() { self.num_trigrams } else { 0 })
+            .map(move |i| read_u32(mmap.expect("lazy"), HEADER_SIZE + i * DIR_ENTRY_SIZE))
+    }
+
     /// One trigram's list as the planner sees it (lazy mode): its bytes and its
     /// planning size (on-disk bytes when no planning sizes are attached).
     pub(crate) fn list_part(&self, trigram: Trigram) -> Option<(ListPart<'_>, u64)> {

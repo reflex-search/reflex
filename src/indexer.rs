@@ -92,6 +92,39 @@ struct IndexedFile {
     imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
 }
 
+/// Inputs of `Indexer::try_delta_update`.
+struct DeltaUpdate<'a> {
+    root: &'a Path,
+    files: &'a [PathBuf],
+    rels: &'a [String],
+    metas: &'a [Option<std::fs::Metadata>],
+    status: &'a [FileStatus],
+    stored: &'a HashMap<String, crate::meta_update::StoredFile>,
+    existing_hashes: &'a HashMap<String, String>,
+    dirty_paths: &'a std::collections::HashSet<String>,
+    branch: &'a str,
+    commit: Option<&'a str>,
+    git_dirty: bool,
+    resolver_configs: &'a crate::dependency_resolve::ResolverConfigs,
+    run_start: std::time::SystemTime,
+    generation: u64,
+    pool: &'a rayon::ThreadPool,
+    deleted_file_count: usize,
+    /// (too large, bytes too large, binary)
+    skipped: (usize, u64, usize),
+}
+
+/// What `Indexer::process_file` reads from the run.
+struct ProcessCtx<'a> {
+    root: &'a Path,
+    files: &'a [PathBuf],
+    rels: &'a [String],
+    stored: &'a HashMap<String, crate::meta_update::StoredFile>,
+    run_start: std::time::SystemTime,
+    full_deps: bool,
+    tsconfigs: &'a HashMap<PathBuf, crate::parsers::tsconfig::PathAliasMap>,
+}
+
 /// Inputs of `Indexer::refresh_unchanged`.
 struct RefreshUnchanged<'a> {
     rels: &'a [String],
@@ -113,7 +146,12 @@ struct RefreshUnchanged<'a> {
 struct MetaWrite<'a> {
     root: &'a Path,
     rels: &'a [String],
-    indexed: &'a [IndexedFile],
+    /// Discovery indices of the files in the new snapshot, in walk order.
+    present: &'a [usize],
+    /// Files read this run, in walk order (a subset of `present`).
+    written: &'a [IndexedFile],
+    metas: &'a [Option<std::fs::Metadata>],
+    run_start: std::time::SystemTime,
     stored: &'a HashMap<String, crate::meta_update::StoredFile>,
     status: &'a [FileStatus],
     dirty_paths: &'a std::collections::HashSet<String>,
@@ -375,7 +413,16 @@ pub struct Indexer {
     config: IndexConfig,
     /// `(max_files, max_bytes)` per batch; `None` = defaults / env overrides.
     batch_limits: Option<(usize, u64)>,
+    /// `(max_files, max_bytes)` of the delta before it is merged into a new base;
+    /// `None` = [`DELTA_MAX_FILES`] and [`DELTA_MAX_CORPUS_PERCENT`] of the corpus.
+    merge_limits: Option<(usize, u64)>,
 }
+
+/// Files the delta may hold before an update merges it into a new base.
+pub const DELTA_MAX_FILES: usize = 2000;
+/// Text bytes the delta may hold, as a percentage of the live corpus, before an
+/// update merges it into a new base.
+pub const DELTA_MAX_CORPUS_PERCENT: u64 = 5;
 
 /// Default cap on files per batch.
 pub const BATCH_MAX_FILES: usize = 5000;
@@ -644,6 +691,7 @@ impl Indexer {
             cache,
             config,
             batch_limits: None,
+            merge_limits: None,
         }
     }
 
@@ -653,6 +701,20 @@ impl Indexer {
     #[doc(hidden)]
     pub fn set_batch_limits(&mut self, max_files: usize, max_bytes: u64) {
         self.batch_limits = Some((max_files, max_bytes));
+    }
+
+    /// Override the delta's merge limits (files, text bytes). For tests: a small
+    /// tree would otherwise merge on every update under the 5 % rule.
+    #[doc(hidden)]
+    pub fn set_merge_limits(&mut self, max_files: usize, max_bytes: u64) {
+        self.merge_limits = Some((max_files, max_bytes));
+    }
+
+    fn merge_limits(&self, live_corpus_bytes: u64) -> (usize, u64) {
+        self.merge_limits.unwrap_or((
+            DELTA_MAX_FILES,
+            live_corpus_bytes * DELTA_MAX_CORPUS_PERCENT / 100,
+        ))
     }
 
     fn batch_limits(&self) -> (usize, u64) {
@@ -969,12 +1031,9 @@ impl Indexer {
             || !extraction_ok
             || stored_digest.as_deref() != Some(resolver_configs.digest.as_str());
         let content_changed = added > 0 || modified > 0 || !gone.is_empty();
+        let stores_ok = schema_ok && self.stores_intact(stored.len(), meta_generation);
 
-        if !content_changed
-            && !full_deps
-            && schema_ok
-            && self.stores_intact(stored.len(), meta_generation)
-        {
+        if !content_changed && !full_deps && stores_ok {
             log::info!("No files changed - skipping index rebuild");
             return self.refresh_unchanged(RefreshUnchanged {
                 rels: &rels,
@@ -989,6 +1048,31 @@ impl Indexer {
                 run_start,
                 skipped: (skipped_too_large, skipped_bytes_too_large, skipped_binary),
             });
+        }
+        if content_changed && !full_deps && stores_ok {
+            let update = DeltaUpdate {
+                root,
+                files: &files,
+                rels: &rels,
+                metas: &metas,
+                status: &status,
+                stored: &stored,
+                existing_hashes: &existing_hashes,
+                dirty_paths: &dirty_paths,
+                branch: &branch,
+                commit: commit.as_deref(),
+                git_dirty: git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
+                resolver_configs: &resolver_configs,
+                run_start,
+                generation,
+                pool: &pool,
+                deleted_file_count,
+                skipped: (skipped_too_large, skipped_bytes_too_large, skipped_binary),
+            };
+            match self.try_delta_update(update)? {
+                Some(stats) => return Ok(stats),
+                None => log::info!("The delta would pass its limits - building a new base"),
+            }
         }
         if full_deps {
             log::info!(
@@ -1100,72 +1184,22 @@ impl Indexer {
             // `map_init` gives each worker one reusable trigram sort buffer.
             let counter_clone = Arc::clone(&progress_counter);
             let tsconfigs = &resolver_configs.tsconfigs;
+            let ctx = ProcessCtx {
+                root,
+                files: &files,
+                rels: &rels,
+                stored: &stored,
+                run_start,
+                full_deps,
+                tsconfigs,
+            };
             let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
                 batch_range
                     .into_par_iter()
                     .map_init(Vec::<u64>::new, |trigram_scratch, i| {
-                        let file_path = &files[i];
-                        let path_str = file_path.to_string_lossy().to_string();
-
-                        // Stat BEFORE the read. If the file changes between the two,
-                        // the recorded (size, mtime) is older than the bytes, so the
-                        // next check re-hashes it rather than trusting a stat that
-                        // matches.
-                        let (size, mtime_ns) = std::fs::metadata(file_path)
-                            .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
-                            .unwrap_or((0, 0));
-
-                        // Read file content once (used for hashing, trigrams, and
-                        // parsing). The hash is of the RAW bytes, so the freshness
-                        // check can hash a file on disk and compare. Invalid UTF-8
-                        // (a Latin-1 `.po`, an old doc) is decoded lossily rather than
-                        // dropped: ripgrep searches those bytes, and an agent expects
-                        // the same.
-                        let bytes = match std::fs::read(file_path) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                log::warn!("Failed to read {}: {}", path_str, e);
-                                counter_clone.fetch_add(1, Ordering::Relaxed);
-                                return None;
-                            }
-                        };
-                        let hash = self.hash_content(&bytes);
-                        let content = match String::from_utf8(bytes) {
-                            Ok(s) => s,
-                            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-                        };
-
-                        // Detect language
-                        let language = Language::from_path(file_path);
-
-                        // Count lines in the file
-                        let line_count = content.lines().count();
-
-                        // Trigram postings, sorted, without a file id (assigned
-                        // serially below).
-                        let trigram_run =
-                            crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
-
-                        // Imports and re-exports: for every file when they are all
-                        // rewritten, else for files whose bytes changed (including a
-                        // file that changed again since it was classified).
-                        let unchanged = stored.get(&rels[i]).is_some_and(|row| row.hash == hash);
-                        let imports = (full_deps || !unchanged).then(|| {
-                            extract_imports(language, &content, &path_str, root, tsconfigs)
-                        });
-
+                        let result = self.process_file(&ctx, i, trigram_scratch);
                         counter_clone.fetch_add(1, Ordering::Relaxed);
-
-                        Some(FileProcessingResult {
-                            hash,
-                            content,
-                            language,
-                            line_count,
-                            size,
-                            mtime_ns,
-                            imports,
-                            trigram_run,
-                        })
+                        result
                     })
                     .collect()
             });
@@ -1308,10 +1342,14 @@ impl Indexer {
         crate::snapshot::link_fixed_names(&cache_dir, &manifest);
 
         let meta_start = Instant::now();
+        let present: Vec<usize> = indexed.iter().map(|f| f.index).collect();
         self.write_meta(MetaWrite {
             root,
             rels: &rels,
-            indexed: &indexed,
+            present: &present,
+            written: &indexed,
+            metas: &metas,
+            run_start,
             stored: &stored,
             status: &status,
             dirty_paths: &dirty_paths,
@@ -1376,6 +1414,422 @@ impl Indexer {
         );
 
         Ok(stats)
+    }
+
+    /// Apply this run's changes as a delta on the published base: the added and
+    /// modified files are read, the delta is rebuilt from them and the unchanged
+    /// files of the previous delta, and the base files they supersede (or that
+    /// are gone) are tombstoned. `Ok(None)` when the delta would pass its limits:
+    /// the caller then builds a new base (a merge).
+    fn try_delta_update(&self, u: DeltaUpdate<'_>) -> Result<Option<IndexStats>> {
+        use crate::snapshot::{IndexSnapshot, Manifest, SegmentFiles};
+        let cache_dir = self.cache.path().to_path_buf();
+        let snapshot = IndexSnapshot::open(&cache_dir)?;
+        let Some(prev) = snapshot.manifest().cloned() else {
+            return Ok(None);
+        };
+        let base_len = snapshot.base_len();
+        let delta_start = Instant::now();
+
+        // Live base files and the previous delta's files, by path.
+        let mut base_ids: HashMap<&str, u32> = HashMap::new();
+        for id in 0..base_len {
+            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str()) {
+                base_ids.insert(p, id);
+            }
+        }
+        let mut old_delta: HashMap<&str, u32> = HashMap::new();
+        for id in base_len..snapshot.id_bound() {
+            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str()) {
+                old_delta.insert(p, id);
+            }
+        }
+
+        // Read the added and modified files.
+        let changed: Vec<usize> = (0..u.rels.len())
+            .filter(|&i| matches!(u.status[i], FileStatus::Added | FileStatus::Modified))
+            .collect();
+        let ctx = ProcessCtx {
+            root: u.root,
+            files: u.files,
+            rels: u.rels,
+            stored: u.stored,
+            run_start: u.run_start,
+            full_deps: false,
+            tsconfigs: &u.resolver_configs.tsconfigs,
+        };
+        let read: Vec<(usize, Option<FileProcessingResult>)> = u.pool.install(|| {
+            changed
+                .par_iter()
+                .map_init(Vec::<u64>::new, |scratch, &i| {
+                    (i, self.process_file(&ctx, i, scratch))
+                })
+                .collect()
+        });
+        let mut fresh: HashMap<usize, FileProcessingResult> = HashMap::new();
+        let mut unreadable: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (i, result) in read {
+            match result {
+                Some(r) => {
+                    fresh.insert(i, r);
+                }
+                None => {
+                    unreadable.insert(i);
+                }
+            }
+        }
+
+        // The files of the new snapshot, in walk order (an unreadable file is gone).
+        let present: Vec<usize> = (0..u.rels.len())
+            .filter(|i| !unreadable.contains(i))
+            .collect();
+        let present_paths: HashMap<&str, usize> =
+            present.iter().map(|&i| (u.rels[i].as_str(), i)).collect();
+
+        // The new delta: read files, and the previous delta's files that are
+        // still present and unchanged, in walk order.
+        enum Source {
+            Fresh(usize),
+            Old(u32),
+        }
+        let mut entries: Vec<(usize, Source)> = Vec::new();
+        for &i in &present {
+            if fresh.contains_key(&i) {
+                entries.push((i, Source::Fresh(i)));
+            } else if let Some(&id) = old_delta.get(u.rels[i].as_str()) {
+                entries.push((i, Source::Old(id)));
+            }
+        }
+        let entry_len = |src: &Source| -> Result<u64> {
+            Ok(match src {
+                Source::Fresh(i) => fresh[i].content.len() as u64,
+                Source::Old(id) => snapshot.get_file_content(*id)?.len() as u64,
+            })
+        };
+        let mut delta_bytes = 0u64;
+        for (_, src) in &entries {
+            delta_bytes += entry_len(src)?;
+        }
+        let (max_files, max_bytes) = self.merge_limits(prev.live_corpus_bytes);
+        if entries.len() > max_files || delta_bytes > max_bytes {
+            log::info!(
+                "Delta of {} files / {} bytes passes its limits ({} files / {} bytes)",
+                entries.len(),
+                delta_bytes,
+                max_files,
+                max_bytes
+            );
+            return Ok(None);
+        }
+
+        // Base files superseded by a read file, or gone from the tree.
+        let mut new_dead: Vec<u32> = base_ids
+            .iter()
+            .filter(|(path, _)| match present_paths.get(*path) {
+                Some(i) => fresh.contains_key(i),
+                None => true,
+            })
+            .map(|(_, &id)| id)
+            .collect();
+        new_dead.sort_unstable();
+        let mut tombstones: Vec<u32> = prev.tombstones.clone();
+        tombstones.extend(&new_dead);
+        tombstones.sort_unstable();
+        tombstones.dedup();
+
+        // Their planning sizes, added to the previous tombstones'.
+        let mut tomb: std::collections::BTreeMap<crate::trigram::Trigram, u64> = snapshot
+            .tomb()
+            .map(|t| t.entries().map(|(t, n)| (t, n as u64)).collect())
+            .unwrap_or_default();
+        let dead_sizes: Vec<Vec<(crate::trigram::Trigram, u32)>> = u.pool.install(|| {
+            new_dead
+                .par_iter()
+                .map_init(Vec::<u64>::new, |scratch, &id| {
+                    let content = snapshot.get_file_content(id).unwrap_or("");
+                    let run = crate::trigram_build::extract_trigram_run(content, scratch);
+                    crate::trigram_build::run_plan_sizes(&run)
+                })
+                .collect()
+        });
+        for sizes in dead_sizes {
+            for (t, n) in sizes {
+                *tomb.entry(t).or_default() += n as u64;
+            }
+        }
+
+        // Write the delta stores (generation files: nothing names them yet).
+        let (delta_content, delta_trigrams, delta_plan, tomb_name) =
+            crate::snapshot::delta_file_names(u.generation);
+        let delta = if entries.is_empty() {
+            None
+        } else {
+            let runs: Vec<Option<TrigramRun>> = u.pool.install(|| {
+                entries
+                    .par_iter()
+                    .map_init(Vec::<u64>::new, |scratch, (_, src)| match src {
+                        Source::Fresh(_) => None,
+                        Source::Old(id) => Some(crate::trigram_build::extract_trigram_run(
+                            snapshot.get_file_content(*id).unwrap_or(""),
+                            scratch,
+                        )),
+                    })
+                    .collect()
+            });
+            let mut builder = TrigramIndexBuilder::new(cache_dir.join("trigram_temp"));
+            let mut writer = ContentWriter::new();
+            let content_path = cache_dir.join(&delta_content);
+            writer
+                .init(content_path.clone())
+                .context("Failed to initialize the delta content store")?;
+            for ((i, src), run) in entries.iter().zip(runs) {
+                let path = PathBuf::from(&u.rels[*i]);
+                match src {
+                    Source::Fresh(k) => {
+                        let f = fresh.get_mut(k).expect("read file");
+                        let run = std::mem::take(&mut f.trigram_run);
+                        builder.add_file(path.clone(), run);
+                        writer.add_file(path, &f.content);
+                    }
+                    Source::Old(id) => {
+                        builder.add_file(path.clone(), run.expect("old delta run"));
+                        writer.add_file(path, snapshot.get_file_content(*id)?);
+                    }
+                }
+            }
+            let trigrams_path = cache_dir.join(&delta_trigrams);
+            builder
+                .write_with_plan(u.pool, &trigrams_path, Some(&cache_dir.join(&delta_plan)))
+                .context("Failed to write the delta trigram index")?;
+            writer
+                .finalize_if_needed()
+                .context("Failed to finalize the delta content store")?;
+            Some(SegmentFiles {
+                content: delta_content.clone(),
+                trigrams: delta_trigrams.clone(),
+                plan: Some(delta_plan.clone()),
+                files: writer.file_count() as u64,
+                content_bytes: std::fs::metadata(&content_path)?.len(),
+                trigrams_bytes: std::fs::metadata(&trigrams_path)?.len(),
+            })
+        };
+        let tomb_entries: Vec<(crate::trigram::Trigram, u32)> = tomb
+            .iter()
+            .map(|(&t, &n)| (t, n.min(u32::MAX as u64) as u32))
+            .collect();
+        let tomb_file = if tombstones.is_empty() {
+            None
+        } else {
+            crate::snapshot::write_tomb_file(&cache_dir.join(&tomb_name), &tomb_entries)?;
+            Some(tomb_name)
+        };
+
+        // What a full build of this tree would record: its trigrams and its text.
+        let base_plan = |t: crate::trigram::Trigram| -> u64 {
+            snapshot
+                .base()
+                .trigrams
+                .list_part(t)
+                .map_or(0, |(_, plan)| plan)
+        };
+        let dead_in_base: std::collections::HashSet<crate::trigram::Trigram> = tomb
+            .iter()
+            .filter(|(t, n)| base_plan(**t) <= **n)
+            .map(|(t, _)| *t)
+            .collect();
+        let mut revived = 0u64;
+        if delta.is_some() {
+            let index = crate::trigram::TrigramIndex::load(cache_dir.join(&delta_trigrams))?;
+            for t in index.trigrams() {
+                let base_live = base_plan(t) > 0 && !dead_in_base.contains(&t);
+                if !base_live {
+                    revived += 1;
+                }
+            }
+        }
+        let live_trigrams =
+            snapshot.base().trigrams.trigram_count() as u64 - dead_in_base.len() as u64 + revived;
+        let dead_set: std::collections::HashSet<u32> = tombstones.iter().copied().collect();
+        // Lengths come from the entry table: reading the content would page in (and
+        // UTF-8 check) the whole base on every update.
+        let mut live_corpus = delta_bytes;
+        for id in 0..base_len {
+            if !dead_set.contains(&id) {
+                live_corpus += snapshot.base().content.file_len(id).unwrap_or(0);
+            }
+        }
+
+        // Publish: fixed names first (an older binary must not read the base alone
+        // once it is incomplete), then the manifest, then meta.db.
+        let manifest = Manifest::new(
+            u.generation,
+            prev.base.clone(),
+            delta,
+            tombstones,
+            tomb_file,
+            live_trigrams,
+            live_corpus,
+        );
+        if !manifest.base_only() {
+            crate::snapshot::unlink_fixed_names(&cache_dir);
+        }
+        crate::snapshot::write_manifest(&cache_dir, &manifest)?;
+        crate::snapshot::link_fixed_names(&cache_dir, &manifest);
+        log::info!(
+            "phase delta: {} files ({} read), {} tombstones, {} ms",
+            manifest.delta.as_ref().map_or(0, |d| d.files),
+            fresh.len(),
+            manifest.tombstones.len(),
+            delta_start.elapsed().as_millis()
+        );
+
+        let written: Vec<IndexedFile> = present
+            .iter()
+            .filter_map(|i| {
+                fresh.remove(i).map(|r| IndexedFile {
+                    index: *i,
+                    hash: r.hash,
+                    language: r.language,
+                    line_count: r.line_count,
+                    size: r.size,
+                    mtime_ns: r.mtime_ns,
+                    imports: r.imports,
+                })
+            })
+            .collect();
+        let written_hash: HashMap<usize, &str> =
+            written.iter().map(|f| (f.index, f.hash.as_str())).collect();
+        let hashes: Vec<(&str, &str)> = present
+            .iter()
+            .map(|&i| {
+                let rel = u.rels[i].as_str();
+                let hash = written_hash
+                    .get(&i)
+                    .copied()
+                    .or_else(|| u.stored.get(rel).map(|s| s.hash.as_str()))
+                    .unwrap_or("");
+                (rel, hash)
+            })
+            .collect();
+        let (new_files, modified_files, unchanged_files) =
+            breakdown(hashes.into_iter(), u.existing_hashes);
+
+        let meta_start = Instant::now();
+        self.write_meta(MetaWrite {
+            root: u.root,
+            rels: u.rels,
+            present: &present,
+            written: &written,
+            metas: u.metas,
+            run_start: u.run_start,
+            stored: u.stored,
+            status: u.status,
+            dirty_paths: u.dirty_paths,
+            branch: u.branch,
+            commit: u.commit,
+            resolver_configs: u.resolver_configs,
+            full_deps: false,
+            generation: u.generation,
+        })?;
+        self.cache
+            .update_branch_metadata(u.branch, u.commit, present.len(), u.git_dirty)?;
+        self.cache
+            .checkpoint_wal()
+            .context("Failed to checkpoint WAL")?;
+        log::info!(
+            "phase meta.db (files, branches, dependencies, exports): {} ms",
+            meta_start.elapsed().as_millis()
+        );
+
+        crate::query::invalidate_caches(u.root);
+        drop(snapshot);
+        crate::snapshot::remove_unreferenced(&cache_dir, &manifest, Some(&prev));
+
+        self.cache.update_stats(u.branch)?;
+        self.cache.update_schema_hash()?;
+        self.cache.update_extraction_hash()?;
+
+        let mut stats = self.cache.stats_on_branch(Some(u.branch.to_string()))?;
+        stats.new_files = new_files;
+        stats.modified_files = modified_files;
+        stats.deleted_files = u.deleted_file_count;
+        stats.unchanged_files = unchanged_files;
+        stats.skipped_too_large = u.skipped.0;
+        stats.skipped_bytes_too_large = u.skipped.1;
+        stats.skipped_binary = u.skipped.2;
+        Ok(Some(stats))
+    }
+
+    /// Read one discovered file: stat, bytes, hash, text, trigram run, and imports
+    /// when they may have changed. `None` when it cannot be read.
+    fn process_file(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        i: usize,
+        trigram_scratch: &mut Vec<u64>,
+    ) -> Option<FileProcessingResult> {
+        let file_path = &ctx.files[i];
+        let path_str = file_path.to_string_lossy().to_string();
+
+        // Stat BEFORE the read. If the file changes between the two, the recorded
+        // (size, mtime) is older than the bytes, so the next check re-hashes it
+        // rather than trusting a stat that matches.
+        let (size, mtime_ns) = std::fs::metadata(file_path)
+            .map(|md| {
+                (
+                    md.len(),
+                    crate::cache::recorded_mtime_ns(&md, ctx.run_start),
+                )
+            })
+            .unwrap_or((0, 0));
+
+        // Read file content once (used for hashing, trigrams, and parsing). The
+        // hash is of the RAW bytes, so the freshness check can hash a file on disk
+        // and compare. Invalid UTF-8 (a Latin-1 `.po`, an old doc) is decoded
+        // lossily rather than dropped: ripgrep searches those bytes, and an agent
+        // expects the same.
+        let bytes = match std::fs::read(file_path) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("Failed to read {}: {}", path_str, e);
+                return None;
+            }
+        };
+        let hash = self.hash_content(&bytes);
+        let content = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
+
+        // Detect language
+        let language = Language::from_path(file_path);
+
+        // Count lines in the file
+        let line_count = content.lines().count();
+
+        // Trigram postings, sorted, without a file id (assigned serially).
+        let trigram_run = crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
+
+        // Imports and re-exports: for every file when they are all rewritten, else
+        // for files whose bytes changed (including a file that changed again since
+        // it was classified).
+        let unchanged = ctx
+            .stored
+            .get(&ctx.rels[i])
+            .is_some_and(|row| row.hash == hash);
+        let imports = (ctx.full_deps || !unchanged)
+            .then(|| extract_imports(language, &content, &path_str, ctx.root, ctx.tsconfigs));
+
+        Some(FileProcessingResult {
+            hash,
+            content,
+            language,
+            line_count,
+            size,
+            mtime_ns,
+            imports,
+            trigram_run,
+        })
     }
 
     /// Write the marker whose mtime is this run's race threshold; returns it (or the
@@ -1504,31 +1958,28 @@ impl Indexer {
     fn write_meta(&self, w: MetaWrite<'_>) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         let seqs = crate::meta_update::plan_walk_seq(
-            &w.indexed
+            &w.present
                 .iter()
-                .map(|f| w.stored.get(&w.rels[f.index]).map(|s| s.walk_seq))
+                .map(|&i| w.stored.get(&w.rels[i]).map(|s| s.walk_seq))
                 .collect::<Vec<_>>(),
         );
+        let written: HashMap<usize, &IndexedFile> =
+            w.written.iter().map(|f| (f.index, f)).collect();
 
         let mut rows: Vec<crate::cache::FileRow> = Vec::new();
-        let mut row_index: Vec<usize> = Vec::new(); // position in `indexed` of each row
+        let mut row_files: Vec<usize> = Vec::new(); // discovery index of each row
         let mut walk = Vec::new();
         let mut flips = Vec::new();
-        for (k, f) in w.indexed.iter().enumerate() {
-            let rel = &w.rels[f.index];
+        let mut touched = Vec::new();
+        for (k, &i) in w.present.iter().enumerate() {
+            let rel = &w.rels[i];
             let dirty = w.dirty_paths.contains(rel);
-            match w.stored.get(rel) {
-                // Bytes and fingerprint as stored: only the walk position and the
-                // dirty flag can move.
-                Some(row) if row.hash == f.hash && w.status[f.index] == FileStatus::Unchanged => {
-                    if seqs[k] != row.walk_seq {
-                        walk.push((row.id, seqs[k]));
-                    }
-                    if dirty != row.dirty {
-                        flips.push((row.id, dirty));
-                    }
-                }
-                _ => {
+            let stored = w.stored.get(rel);
+            match written.get(&i) {
+                Some(f)
+                    if !(w.status[i] == FileStatus::Unchanged
+                        && stored.is_some_and(|row| row.hash == f.hash)) =>
+                {
                     rows.push(crate::cache::FileRow {
                         path: rel.clone(),
                         hash: f.hash.clone(),
@@ -1539,12 +1990,30 @@ impl Indexer {
                         dirty,
                         walk_seq: seqs[k],
                     });
-                    row_index.push(k);
+                    row_files.push(i);
+                }
+                _ => {
+                    // Not read this run (or read with the bytes and fingerprint
+                    // stored): only the walk position, the fingerprint of a touched
+                    // file and the dirty flag can move.
+                    let Some(row) = stored else { continue };
+                    if seqs[k] != row.walk_seq {
+                        walk.push((row.id, seqs[k]));
+                    }
+                    if w.status[i] == FileStatus::Touched && !written.contains_key(&i) {
+                        let (size, mtime) = w.metas[i]
+                            .as_ref()
+                            .map(|md| (md.len(), crate::cache::recorded_mtime_ns(md, w.run_start)))
+                            .unwrap_or((0, 0));
+                        touched.push((row.id, size, mtime, dirty));
+                    } else if dirty != row.dirty {
+                        flips.push((row.id, dirty));
+                    }
                 }
             }
         }
         let present: std::collections::HashSet<&str> =
-            w.indexed.iter().map(|f| w.rels[f.index].as_str()).collect();
+            w.present.iter().map(|&i| w.rels[i].as_str()).collect();
         let deleted: Vec<i64> = w
             .stored
             .iter()
@@ -1552,9 +2021,9 @@ impl Indexer {
             .map(|(_, row)| row.id)
             .collect();
         let paths_changed = !deleted.is_empty()
-            || w.indexed
+            || w.present
                 .iter()
-                .any(|f| !w.stored.contains_key(&w.rels[f.index]));
+                .any(|&i| !w.stored.contains_key(&w.rels[i]));
 
         let mut conn = crate::cache::open_meta_db(self.cache.path().join(crate::cache::META_DB))?;
         let tx = conn
@@ -1564,27 +2033,29 @@ impl Indexer {
         crate::meta_update::delete_files(&tx, &deleted)?;
         let new_ids = crate::meta_update::upsert_files(&tx, &rows, now)?;
         crate::meta_update::set_walk_seqs(&tx, &walk)?;
+        crate::meta_update::refresh_stats(&tx, &touched)?;
         crate::meta_update::set_dirty_flags(&tx, &flips)?;
         let branch_id = self
             .cache
             .get_or_create_branch_id(&tx, w.branch, w.commit)?;
         crate::meta_update::sync_branch_rows(&tx, branch_id, now)?;
         log::info!(
-            "meta.db: {} rows written, {} deleted, {} moved, {} dirty flags",
+            "meta.db: {} rows written, {} deleted, {} moved, {} touched, {} dirty flags",
             rows.len(),
             deleted.len(),
             walk.len(),
+            touched.len(),
             flips.len()
         );
 
-        // id of every indexed file, by position in `indexed`.
-        let mut ids: Vec<i64> = w
-            .indexed
+        // id of every file read this run, by discovery index.
+        let mut ids: HashMap<usize, i64> = w
+            .written
             .iter()
-            .map(|f| w.stored.get(&w.rels[f.index]).map(|s| s.id).unwrap_or(0))
+            .filter_map(|f| w.stored.get(&w.rels[f.index]).map(|s| (f.index, s.id)))
             .collect();
-        for (k, id) in row_index.iter().zip(new_ids) {
-            ids[*k] = id;
+        for (i, id) in row_files.iter().zip(new_ids) {
+            ids.insert(*i, id);
         }
 
         let resolver = crate::dependency::PathResolver::from_conn(&tx)
@@ -1596,12 +2067,12 @@ impl Indexer {
         }
         // In walk order: the row order a full build produces.
         let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
-        for (k, f) in w.indexed.iter().enumerate() {
+        for f in w.written {
             let Some((imports, exports)) = &f.imports else {
                 continue;
             };
             let rel = &w.rels[f.index];
-            let file_id = ids[k];
+            let file_id = ids[&f.index];
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
