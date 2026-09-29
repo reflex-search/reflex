@@ -45,7 +45,7 @@ HASHMAP_FIELDS = {"files_by_language", "lines_by_language"}
 
 # Commands whose line order is random in 2.0.3 itself (HashMap iteration): lines
 # after the first are compared as a sorted set.
-UNORDERED_TEXT = {"d_deps_reverse_text"}
+UNORDERED_TEXT = {"d_deps_reverse_text", "d_deps_depth_table", "p_map", "p_map_d2", "p_map_zoom"}
 
 # JSON outputs whose list order is random in 2.0.3 itself (transitive deps come from
 # a HashMap): every list of objects is compared as a sorted set.
@@ -197,6 +197,13 @@ ANALYZE = [
 ]
 
 OTHER = [
+    ("p_map", ["pulse", "map"]),
+    ("p_map_d2", ["pulse", "map", "--format", "d2"]),
+    ("p_map_zoom", ["pulse", "map", "--zoom", "src"]),
+    ("p_glossary", ["pulse", "glossary", "--no-llm", "--json"]),
+    ("p_model", ["pulse", "model", "--json"]),
+    ("p_changelog", ["pulse", "changelog", "--no-llm"]),
+    ("p_snapshot", ["snapshot"]),
     ("s_stats", ["stats"]),
     ("s_stats_json", ["stats", "--json"]),
     ("s_list_files", ["list-files", "--json"]),
@@ -325,6 +332,8 @@ def run_battery(bin_path, tree, out_dir, do_index):
         ("d_deps", ["deps", first, "--json"]),
         ("d_deps_reverse", ["deps", hot, "--reverse", "--json"]),
         ("d_deps_depth", ["deps", first, "--depth", "2", "--json"]),
+        ("d_deps_depth_tree", ["deps", first, "--depth", "2"]),
+        ("d_deps_depth_table", ["deps", first, "--depth", "2", "--format", "table"]),
         ("d_deps_text", ["deps", first]),
         ("d_deps_reverse_text", ["deps", hot, "--reverse"]),
     ]:

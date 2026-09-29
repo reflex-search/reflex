@@ -178,8 +178,9 @@ Output determinism (found 2026-09-29 by `benches/incremental/golden.sh`; all in 
 - `rfx stats --json` and every `IndexStats` JSON print `files_by_language` /
   `lines_by_language` in `HashMap` order.
 - `rfx deps <file> --reverse` (text) lists dependents in random order.
-- `rfx deps --depth N --json` and MCP `get_transitive_deps` list files in random order
-  (`transitive.keys()` of a `HashMap`).
+- `rfx deps --depth N --json` / `--format table` and MCP `get_transitive_deps` list files
+  in random order (`transitive.keys()` of a `HashMap`).
+- `rfx pulse map` (mermaid and d2) prints edges of equal weight in random order.
 - The golden harness compares these as sets; making them sorted is a separate change.
 
 Query latency:
