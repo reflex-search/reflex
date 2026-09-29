@@ -35,21 +35,85 @@ impl StoredFile {
 pub fn load_stored_files(conn: &Connection) -> Result<HashMap<String, StoredFile>> {
     let mut stmt =
         conn.prepare("SELECT path, id, size, mtime_ns, hash, walk_seq, dirty_at_index FROM files")?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            StoredFile {
-                id: r.get(1)?,
-                size: r.get::<_, i64>(2)? as u64,
-                mtime_ns: r.get(3)?,
-                hash: r.get(4)?,
-                walk_seq: r.get(5)?,
-                dirty: r.get::<_, i64>(6)? != 0,
-            },
-        ))
-    })?;
+    let rows = stmt.query_map([], stored_file)?;
     rows.collect::<Result<HashMap<_, _>, _>>()
         .context("Failed to read files rows")
+}
+
+fn stored_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, StoredFile)> {
+    Ok((
+        r.get::<_, String>(0)?,
+        StoredFile {
+            id: r.get(1)?,
+            size: r.get::<_, i64>(2)? as u64,
+            mtime_ns: r.get(3)?,
+            hash: r.get(4)?,
+            walk_seq: r.get(5)?,
+            dirty: r.get::<_, i64>(6)? != 0,
+        },
+    ))
+}
+
+/// The `files` rows at each of `paths` or under it (a directory): what a library
+/// update needs, by index lookups.
+pub fn load_rows_under(conn: &Connection, paths: &[String]) -> Result<HashMap<String, StoredFile>> {
+    const COLUMNS: &str = "path, id, size, mtime_ns, hash, walk_seq, dirty_at_index";
+    let mut exact = conn.prepare_cached(&format!("SELECT {COLUMNS} FROM files WHERE path = ?"))?;
+    // `p/` < every path under `p` < `p0` ('0' follows '/').
+    let mut under = conn.prepare_cached(&format!(
+        "SELECT {COLUMNS} FROM files WHERE path > ? AND path < ?"
+    ))?;
+    let mut out = HashMap::new();
+    for p in paths {
+        for row in exact.query_map([p], stored_file)? {
+            let (path, file) = row?;
+            out.insert(path, file);
+        }
+        for row in under.query_map([format!("{p}/"), format!("{p}0")], stored_file)? {
+            let (path, file) = row?;
+            out.insert(path, file);
+        }
+    }
+    Ok(out)
+}
+
+/// Number of `files` rows.
+pub fn count_files(conn: &Connection) -> Result<usize> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get::<_, i64>(0))? as usize)
+}
+
+/// Rows of `files` in `walk_seq` order, probed by value: the first row at or after
+/// `seq` (or, with `before`, the last row before it) whose id is not in `skip`.
+pub fn row_near_seq(
+    conn: &Connection,
+    seq: i64,
+    before: bool,
+    skip: &std::collections::HashSet<i64>,
+) -> Result<Option<(i64, String, i64)>> {
+    let sql = if before {
+        "SELECT id, path, walk_seq FROM files WHERE walk_seq < ? ORDER BY walk_seq DESC LIMIT 16"
+    } else {
+        "SELECT id, path, walk_seq FROM files WHERE walk_seq >= ? ORDER BY walk_seq LIMIT 16"
+    };
+    let mut stmt = conn.prepare_cached(sql)?;
+    let mut from = seq;
+    loop {
+        let rows: Vec<(i64, String, i64)> = stmt
+            .query_map([from], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let Some(last) = rows.last().map(|r| r.2) else {
+            return Ok(None);
+        };
+        let full = rows.len() == 16;
+        if let Some(row) = rows.into_iter().find(|r| !skip.contains(&r.0)) {
+            return Ok(Some(row));
+        }
+        if !full {
+            return Ok(None);
+        }
+        // Sixteen skipped rows in a row: continue past them.
+        from = if before { last } else { last + 1 };
+    }
 }
 
 /// Upsert `rows` (keeping each path's id); returns their ids, in order.
@@ -142,6 +206,25 @@ pub fn sync_branch_rows(conn: &Connection, branch_id: i64, now: i64) -> Result<u
              WHERE fb.file_id = f.id AND fb.branch_id = ?1 AND fb.hash = f.hash)",
         rusqlite::params![branch_id, now],
     )?)
+}
+
+/// Point `branch_id`'s rows of the given files at their hashes: `(file id, hash)`.
+/// A run on the branch that last synced every row (see [`sync_branch_rows`]) needs
+/// only the rows it rewrote.
+pub fn set_branch_rows(
+    conn: &Connection,
+    branch_id: i64,
+    rows: &[(i64, &str)],
+    now: i64,
+) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
+         VALUES (?, ?, ?, ?)",
+    )?;
+    for (id, hash) in rows {
+        stmt.execute(rusqlite::params![id, branch_id, hash, now])?;
+    }
+    Ok(())
 }
 
 /// `statistics.value` for `key`, if set.

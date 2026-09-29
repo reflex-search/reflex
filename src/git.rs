@@ -238,19 +238,28 @@ impl WorktreeChanges {
 
 /// One `git status --porcelain=v1 -z` record: the two status columns and the path.
 fn porcelain_records(root: &Path) -> Result<Vec<(u8, u8, String)>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--no-renames",
-            "--ignored=no",
-        ])
-        .output()
-        .context("Failed to execute git status")?;
+    porcelain_records_in(root, &[])
+}
+
+/// [`porcelain_records`] limited to `pathspecs` (literal paths; a directory covers
+/// everything under it). An empty list means the whole tree.
+fn porcelain_records_in(root: &Path, pathspecs: &[&str]) -> Result<Vec<(u8, u8, String)>> {
+    let mut command = Command::new("git");
+    if !pathspecs.is_empty() {
+        command.arg("--literal-pathspecs");
+    }
+    command.arg("-C").arg(root).args([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--no-renames",
+        "--ignored=no",
+    ]);
+    if !pathspecs.is_empty() {
+        command.arg("--").args(pathspecs);
+    }
+    let output = command.output().context("Failed to execute git status")?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -290,6 +299,43 @@ pub fn changed_paths(root: impl AsRef<Path>) -> Result<HashSet<String>> {
         .into_iter()
         .map(|(_, _, p)| p)
         .collect())
+}
+
+/// The paths `git status` lists among `pathspecs` (see [`changed_paths`]). Costs
+/// what the named paths cost, not what the whole tree costs.
+pub fn changed_paths_in(root: impl AsRef<Path>, pathspecs: &[&str]) -> Result<HashSet<String>> {
+    if pathspecs.is_empty() {
+        return Ok(HashSet::new());
+    }
+    Ok(porcelain_records_in(root.as_ref(), pathspecs)?
+        .into_iter()
+        .map(|(_, _, p)| p)
+        .collect())
+}
+
+/// HEAD's commit and branch name (`HEAD` when detached), from one `git rev-parse`:
+/// the same values [`get_current_commit`] and [`get_current_branch`] return.
+pub fn head_commit_and_branch(root: impl AsRef<Path>) -> Result<(String, String)> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root.as_ref())
+        .args(["rev-parse", "HEAD", "--abbrev-ref", "HEAD"])
+        .output()
+        .context("Failed to execute git rev-parse")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let text = String::from_utf8(output.stdout).context("Invalid UTF-8 from git rev-parse")?;
+    let mut lines = text.lines().map(str::trim);
+    match (lines.next(), lines.next()) {
+        (Some(commit), Some(branch)) if !commit.is_empty() && !branch.is_empty() => {
+            Ok((commit.to_string(), branch.to_string()))
+        }
+        _ => anyhow::bail!("git rev-parse printed {:?}", text),
+    }
 }
 
 /// Paths that differ between two commits (`git diff --name-only`).

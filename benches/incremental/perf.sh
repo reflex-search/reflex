@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Performance gates for the incremental-index work.
 #
-#   perf.sh <rfx> <label> [tree] [runs]
+#   perf.sh <rfx> <label> [tree] [runs] [update_paths_timing]
 #
 # On a scratch clone (default /scratch/cache/k8s-incremental; never the original):
 #   cold      rm -rf .reflex; rfx index
 #   nochange  rfx index with nothing changed
 #   edit1     append one line to one file; rfx index      (then reverted, not timed)
+#   library   with the 5th argument (the `update_paths_timing` example binary): a
+#             1-file edit through Indexer::update_paths until searchable, then an
+#             add and a delete (see examples/update_paths_timing.rs)
 # Each line: scenario, wall seconds, peak RSS, and the 1-minute load average at start.
 # The background symbol pass is allowed to finish before every measurement.
 # `RUST_LOG=info` phase lines of one 1-file edit go to <label>.edit1.log.
 set -euo pipefail
 
-BIN="$1"; LABEL="$2"; TREE="${3:-/scratch/cache/k8s-incremental}"; RUNS="${4:-3}"
+BIN="$1"; LABEL="$2"; TREE="${3:-/scratch/cache/k8s-incremental}"; RUNS="${4:-3}"; LIB="${5:-}"
 TIME=/run/current-system/sw/bin/time
 OUT="${PERF_OUT:-/scratch/cache/incremental-perf}"
 mkdir -p "$OUT"
@@ -68,3 +71,12 @@ git checkout -- "$EDIT_FILE"
 wait_symbols
 "$BIN" index --quiet >/dev/null 2>&1
 echo "# phase log: $OUT/$LABEL.edit1.log" | tee -a "$REPORT"
+
+# The library path, in-process.
+if [[ -n "$LIB" ]]; then
+  wait_symbols
+  echo "# library path (update_paths), load at start $(cut -d' ' -f1 /proc/loadavg)" | tee -a "$REPORT"
+  RUST_LOG=info "$LIB" . "$EDIT_FILE" "$RUNS" 2>"$OUT/$LABEL.library.log" | tee -a "$REPORT"
+  git checkout -- "$EDIT_FILE"
+  echo "# library phase log: $OUT/$LABEL.library.log" | tee -a "$REPORT"
+fi

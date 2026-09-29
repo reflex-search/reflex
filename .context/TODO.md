@@ -24,14 +24,19 @@ Decisions (with the user, 2026-09-29):
    stops (`CacheCorrupted`) instead of serving the base.
 3. A schema-hash change forces one full rebuild (the fast-path check was dead).
 4. `files.walk_seq` keeps walk order for every db-id-ordered output.
+5. `Indexer::update_paths` asks `git status` about the named paths only (a whole-tree
+   status costs 0.3–0.7 s on Kubernetes). So `branches.is_dirty` can stay `true` after
+   every edit is reverted, until the next `rfx index`; meanwhile `rfx stats` can miss its
+   "Uncommitted changes not indexed" line. Search results and freshness stay exact.
 
 | Step | Status |
 | --- | --- |
 | 0. Golden harness (`benches/incremental/`), pre-change baseline, perf baseline | done (idle perf baseline still to record) |
 | Stage 0: stable metadata, walk order, change detection without reading, per-file deps | done (commits `cc920df`, `6798edd`); golden identical |
 | Stage 1: manifest + `IndexSnapshot` (`9f342d6`), planning size (`29dfb43`, golden diff 0 on 4 corpora) | done |
-| Stage 1: delta + tombstones + publish protocol + threshold merge (`rfx index` path) | done 2026-09-29: golden identical fresh and after scripted updates (4 corpora); `tests/incremental_delta.rs` |
-| Stage 1: library path `Indexer::update_paths`; property, crash, concurrency, cross-version tests | pending |
+| Stage 1: delta + tombstones + publish protocol + threshold merge (`rfx index` path) | done 2026-09-29 (`112a82a`): golden identical fresh and after scripted updates (4 corpora); `tests/incremental_delta.rs` |
+| Stage 1: library path `Indexer::update_paths`, property test (`tests/incremental_equivalence.rs`, 40×30 steps ignored run), crash test (`tests/incremental_crash.rs`) | done 2026-09-29: k8s 1-file edit 73–103 ms at load 9 (idle run pending); decision 5 |
+| Stage 1: concurrency, cross-version tests | pending |
 | Stage 2: delta merge from snapshot content; tiering / skip-pointer measurements | pending |
 
 ---
@@ -164,14 +169,25 @@ From 2.0.0 (2026-09-23):
 ## 🔭 Open follow-ups
 
 Indexing and freshness:
-- **Incremental index path.** Any change still rewrites `content.bin`/`trigrams.bin` in
-  full and reprocesses every file. Now scheduled as part of Backlog §1 step A.
+- **Incremental index path.** In progress on `feature/incremental-index` (see the
+  section at the top): a change now publishes a delta segment instead of rewriting the stores.
 - The read pool is the indexing floor (3.4 s on Kubernetes, tree-sitter parsing every
   file for imports). A line-scan `#include`/`import` extractor needs an equivalence test first.
 - Lexical `..` resolution instead of `canonicalize()` in `c.rs`/`cpp.rs` (resolves more
   includes; changes `rfx deps` output).
-- `batch_update_files_and_branch` SELECTs each id after insert (0.9 s on Kubernetes);
-  `RETURNING id` would trim it.
+- Found during the incremental work (2026-09-29), not fixed (each changes output or
+  needs its own decision):
+  - 2.0.3 reports `fresh` after returning to a previously indexed branch without a
+    reindex (found reading `cache.rs` ~1324–1328 of 2.0.3).
+  - A tracked file that `.gitignore` starts to ignore is reported as `added` by every
+    freshness check (git lists it; the walker skips it), on a fresh build too.
+  - The resolver-config walk ignores `[index]` include/exclude patterns (`PathPolicy`);
+    kept for identical dependency rows.
+  - The version-mismatch self-heal in `cli/index.rs` drops `--languages`.
+  - `OpenIndex::posting_cap` is unused and the build-side cap is never applied.
+  - Import resolution that reads the disk (`.exists()` in `rust.rs`, `canonicalize` in
+    `c.rs`/`cpp.rs`/`zig.rs`/`ruby.rs`) can change without any indexed path changing; an
+    update only sees it when a named path changes.
 - `cleanup_stale` tail: instrumented, not yet measured on a large repo.
 - `@generated` content marker (needs language persisted in the index).
 - Bytes-per-line minified guard (deferred; V4 per-line postings bound the cost).

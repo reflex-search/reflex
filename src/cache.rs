@@ -166,6 +166,11 @@ impl CacheManager {
             "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
             [],
         )?;
+        // Walk-order probes of a library update (`Indexer::update_paths`).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_walk_seq ON files(walk_seq)",
+            [],
+        )?;
 
         // Create statistics table
         conn.execute(
@@ -1020,7 +1025,11 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     pub fn update_stats(&self, branch: &str) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn = open_meta_db(&db_path).context("Failed to open meta.db for stats update")?;
+        Self::update_stats_on(&conn, branch)
+    }
 
+    /// [`Self::update_stats`] on an open connection (inside the caller's transaction).
+    pub(crate) fn update_stats_on(conn: &Connection, branch: &str) -> Result<()> {
         // Count files for specific branch only (branch-aware statistics)
         let total_files: usize = conn
             .query_row(
@@ -1093,6 +1102,11 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     pub fn update_extraction_hash(&self) -> Result<()> {
         let conn = open_meta_db(self.cache_path.join(META_DB))
             .context("Failed to open meta.db for extraction hash update")?;
+        Self::update_extraction_hash_on(&conn)
+    }
+
+    /// [`Self::update_extraction_hash`] on an open connection.
+    pub(crate) fn update_extraction_hash_on(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             [
@@ -1272,7 +1286,11 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let db_path = self.cache_path.join(META_DB);
         let conn =
             open_meta_db(&db_path).context("Failed to open meta.db for schema hash update")?;
+        Self::update_schema_hash_on(&conn)
+    }
 
+    /// [`Self::update_schema_hash`] on an open connection.
+    pub(crate) fn update_schema_hash_on(conn: &Connection) -> Result<()> {
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         let now = chrono::Utc::now().timestamp();
 
@@ -1381,15 +1399,19 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let total_files: usize = if let Some(ref branch) = current_branch {
             log::debug!("stats(): Counting files for branch '{}'", branch);
 
-            // Debug: Check all branches
-            let branches: Vec<(i64, String, i64)> = conn
-                .prepare("SELECT id, name, file_count FROM branches")
-                .and_then(|mut stmt| {
-                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                        .map(|rows| rows.collect())
-                })
-                .and_then(|result| result)
-                .unwrap_or_default();
+            // Debug: Check all branches (two full scans: only when debug is on)
+            let debug = log::log_enabled!(log::Level::Debug);
+            let branches: Vec<(i64, String, i64)> = if !debug {
+                Vec::new()
+            } else {
+                conn.prepare("SELECT id, name, file_count FROM branches")
+                    .and_then(|mut stmt| {
+                        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                            .map(|rows| rows.collect())
+                    })
+                    .and_then(|result| result)
+                    .unwrap_or_default()
+            };
 
             for (id, name, count) in &branches {
                 log::debug!(
@@ -1401,8 +1423,10 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             }
 
             // Debug: Count file_branches per branch
-            let fb_counts: Vec<(String, i64)> = conn
-                .prepare(
+            let fb_counts: Vec<(String, i64)> = if !debug {
+                Vec::new()
+            } else {
+                conn.prepare(
                     "SELECT b.name, COUNT(*) FROM file_branches fb
                  JOIN branches b ON fb.branch_id = b.id
                  GROUP BY b.name",
@@ -1412,7 +1436,8 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                         .map(|rows| rows.collect())
                 })
                 .and_then(|result| result)
-                .unwrap_or_default();
+                .unwrap_or_default()
+            };
 
             for (name, count) in &fb_counts {
                 log::debug!(
@@ -1456,47 +1481,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             )
             .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
 
-        // Calculate total cache size (all binary files)
-        let mut index_size_bytes: u64 = 0;
-        let mut trigram_index_bytes: u64 = 0;
-
-        let summary = crate::snapshot::store_summary(&self.cache_path);
-        for file_path in [
-            self.cache_path.join(META_DB),
-            self.cache_path.join(CONFIG_TOML),
-        ]
-        .iter()
-        .chain(summary.files())
-        {
-            if let Ok(metadata) = std::fs::metadata(file_path) {
-                index_size_bytes += metadata.len();
-            }
-        }
-        for file_path in &summary.trigram_files {
-            if let Ok(metadata) = std::fs::metadata(file_path) {
-                trigram_index_bytes += metadata.len();
-            }
-        }
-
-        // Raw corpus size: the manifest records the live text bytes. A cache
-        // without one: content.bin stores the concatenated file bytes directly
-        // after its 32-byte header, and `index_offset` (bytes 16..24) marks where
-        // they end. Read just the header; never load the store.
-        let corpus_bytes: u64 = summary.live_corpus_bytes.unwrap_or_else(|| {
-            use std::io::Read;
-            std::fs::File::open(&summary.content_files[0])
-                .ok()
-                .and_then(|mut f| {
-                    let mut header = [0u8; 32];
-                    f.read_exact(&mut header).ok()?;
-                    if &header[..4] != b"RFCT" {
-                        return None;
-                    }
-                    let index_offset = u64::from_le_bytes(header[16..24].try_into().ok()?);
-                    Some(index_offset.saturating_sub(32))
-                })
-                .unwrap_or(0)
-        });
+        let (index_size_bytes, trigram_index_bytes, corpus_bytes) = self.store_sizes();
 
         // Get file count breakdown by language (branch-aware if possible)
         let mut files_by_language = std::collections::HashMap::new();
@@ -1584,6 +1569,54 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             trigram_index_bytes,
             ..Default::default()
         })
+    }
+
+    /// On-disk size of the cache, of its trigram stores, and the live corpus
+    /// bytes (see `stats_on_branch`).
+    pub(crate) fn store_sizes(&self) -> (u64, u64, u64) {
+        // Calculate total cache size (all binary files)
+        let mut index_size_bytes: u64 = 0;
+        let mut trigram_index_bytes: u64 = 0;
+
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+        for file_path in [
+            self.cache_path.join(META_DB),
+            self.cache_path.join(CONFIG_TOML),
+        ]
+        .iter()
+        .chain(summary.files())
+        {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
+                index_size_bytes += metadata.len();
+            }
+        }
+        for file_path in &summary.trigram_files {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
+                trigram_index_bytes += metadata.len();
+            }
+        }
+
+        // Raw corpus size: the manifest records the live text bytes. A cache
+        // without one: content.bin stores the concatenated file bytes directly
+        // after its 32-byte header, and `index_offset` (bytes 16..24) marks where
+        // they end. Read just the header; never load the store.
+        let corpus_bytes: u64 = summary.live_corpus_bytes.unwrap_or_else(|| {
+            use std::io::Read;
+            std::fs::File::open(&summary.content_files[0])
+                .ok()
+                .and_then(|mut f| {
+                    let mut header = [0u8; 32];
+                    f.read_exact(&mut header).ok()?;
+                    if &header[..4] != b"RFCT" {
+                        return None;
+                    }
+                    let index_offset = u64::from_le_bytes(header[16..24].try_into().ok()?);
+                    Some(index_offset.saturating_sub(32))
+                })
+                .unwrap_or(0)
+        });
+
+        (index_size_bytes, trigram_index_bytes, corpus_bytes)
     }
 
     // ===== Branch-aware indexing methods =====
@@ -1791,7 +1824,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     }
 
     /// The most recently written branch row, whatever its name.
-    fn latest_branch_info_on(conn: &Connection) -> Result<BranchInfo> {
+    pub(crate) fn latest_branch_info_on(conn: &Connection) -> Result<BranchInfo> {
         let info = conn.query_row(
             "SELECT name, commit_sha, last_indexed, file_count, is_dirty FROM branches
              ORDER BY last_indexed DESC LIMIT 1",
@@ -1841,7 +1874,17 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let db_path = self.cache_path.join(META_DB);
         let conn =
             open_meta_db(&db_path).context("Failed to open meta.db for branch metadata update")?;
+        Self::update_branch_metadata_on(&conn, branch, commit_sha, file_count, is_dirty)
+    }
 
+    /// [`Self::update_branch_metadata`] on an open connection.
+    pub(crate) fn update_branch_metadata_on(
+        conn: &Connection,
+        branch: &str,
+        commit_sha: Option<&str>,
+        file_count: usize,
+        is_dirty: bool,
+    ) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         let is_dirty_int = if is_dirty { 1 } else { 0 };
 

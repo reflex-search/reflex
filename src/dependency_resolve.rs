@@ -64,8 +64,42 @@ pub fn find_nearest_tsconfig<'a>(
     None
 }
 
+/// The file under `.reflex/` that lists the config files the last walk found, so
+/// an update that does not walk can parse the same configs.
+pub const CONFIG_LIST: &str = "resolver-configs.json";
+
+/// Whether a file with this name is a resolver config (one the config walk keeps).
+pub fn is_resolver_config_name(name: &str) -> bool {
+    matches!(
+        name,
+        "go.mod"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "pyproject.toml"
+            | "setup.py"
+            | "setup.cfg"
+            | "composer.json"
+            | "tsconfig.json"
+            | "Cargo.toml"
+    ) || name.ends_with(".gemspec")
+}
+
+/// [`ConfigFiles`] on disk: paths relative to the root, `/`-separated.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+struct ConfigList {
+    go_mods: Vec<String>,
+    java: Vec<String>,
+    python: Vec<String>,
+    gemspecs: Vec<String>,
+    cargo_tomls: Vec<String>,
+    composer: Vec<String>,
+    tsconfigs: Vec<String>,
+    walk_error: Option<String>,
+}
+
 /// The config files one walk found, per kind, in walk order.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ConfigFiles {
     go_mods: Vec<PathBuf>,
     java: Vec<PathBuf>,
@@ -203,6 +237,45 @@ impl ConfigFiles {
         h.finalize().to_hex().to_string()
     }
 
+    fn to_list(&self, root: &Path) -> ConfigList {
+        let rel = |paths: &Vec<PathBuf>| -> Vec<String> {
+            paths
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect()
+        };
+        ConfigList {
+            go_mods: rel(&self.go_mods),
+            java: rel(&self.java),
+            python: rel(&self.python),
+            gemspecs: rel(&self.gemspecs),
+            cargo_tomls: rel(&self.cargo_tomls),
+            composer: rel(&self.composer),
+            tsconfigs: rel(&self.tsconfigs),
+            walk_error: self.walk_error.clone(),
+        }
+    }
+
+    fn from_list(root: &Path, list: &ConfigList) -> Self {
+        let abs =
+            |paths: &Vec<String>| -> Vec<PathBuf> { paths.iter().map(|p| root.join(p)).collect() };
+        Self {
+            go_mods: abs(&list.go_mods),
+            java: abs(&list.java),
+            python: abs(&list.python),
+            gemspecs: abs(&list.gemspecs),
+            cargo_tomls: abs(&list.cargo_tomls),
+            composer: abs(&list.composer),
+            tsconfigs: abs(&list.tsconfigs),
+            walk_error: list.walk_error.clone(),
+        }
+    }
+
     fn check_walk(&self) -> anyhow::Result<()> {
         match &self.walk_error {
             Some(e) => Err(anyhow::anyhow!("{}", e)),
@@ -224,13 +297,66 @@ pub struct ResolverConfigs {
     /// Digest of every input above (see `ConfigFiles::digest`). An index run
     /// whose digest differs from the stored one re-resolves every file.
     pub digest: String,
+    /// The config files these were parsed from.
+    files: ConfigFiles,
 }
 
 impl ResolverConfigs {
     /// Find and parse every resolver config under `root`. A kind that fails to parse
     /// is logged and left empty, as before.
     pub fn discover(root: &Path) -> Self {
-        let files = ConfigFiles::walk(root);
+        Self::parse(root, ConfigFiles::walk(root))
+    }
+
+    /// Parse the config files listed in `cache_dir` by [`Self::save_list`], without
+    /// walking. `None` when there is no list. The caller compares the digest with
+    /// the stored one: a listed file that changed shows there.
+    pub fn from_saved_list(root: &Path, cache_dir: &Path) -> Option<Self> {
+        let bytes = std::fs::read(cache_dir.join(CONFIG_LIST)).ok()?;
+        let list: ConfigList = serde_json::from_slice(&bytes).ok()?;
+        Some(Self::parse(root, ConfigFiles::from_list(root, &list)))
+    }
+
+    /// Write the list of config files (atomically) unless it is already there.
+    pub fn save_list(&self, root: &Path, cache_dir: &Path) -> anyhow::Result<()> {
+        let list = self.files.to_list(root);
+        let path = cache_dir.join(CONFIG_LIST);
+        if let Ok(bytes) = std::fs::read(&path)
+            && serde_json::from_slice::<ConfigList>(&bytes).ok().as_ref() == Some(&list)
+        {
+            return Ok(());
+        }
+        let tmp = crate::atomic_write::tmp_path_for(&path);
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&list)?)?;
+        crate::atomic_write::atomic_replace(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// Whether any of `rels` (relative, `/`-separated) is a listed config file or
+    /// a directory above one.
+    pub fn lists_any_under(&self, root: &Path, rels: &[String]) -> bool {
+        let list = self.files.to_list(root);
+        [
+            &list.go_mods,
+            &list.java,
+            &list.python,
+            &list.gemspecs,
+            &list.cargo_tomls,
+            &list.composer,
+            &list.tsconfigs,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|p| {
+            rels.iter().any(|rel| {
+                p == rel
+                    || p.strip_prefix(rel.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            })
+        })
+    }
+
+    fn parse(root: &Path, files: ConfigFiles) -> Self {
         let digest = files.digest(root);
 
         let tsconfigs = crate::parsers::tsconfig::parse_tsconfigs_from(&files.tsconfigs)
@@ -364,6 +490,7 @@ impl ResolverConfigs {
             rust_crates,
             php_psr4,
             digest,
+            files,
         }
     }
 }

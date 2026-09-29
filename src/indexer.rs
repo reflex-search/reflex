@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::cache::CacheManager;
+use crate::cache::{CacheManager, WALK_SEQ_GAP};
 use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexMode, IndexStats, Language};
 #[cfg(unix)]
@@ -92,16 +92,45 @@ struct IndexedFile {
     imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
 }
 
-/// Inputs of `Indexer::try_delta_update`.
-struct DeltaUpdate<'a> {
+/// One added or modified file a delta update reads.
+struct Rewrite {
+    rel: String,
+    /// The path to read, as the walker names it.
+    path: PathBuf,
+    walk_seq: i64,
+    dirty: bool,
+}
+
+/// A delta update's change set (see `Indexer::publish_delta`): `rfx index` builds
+/// it from a full walk, `update_paths` from the named paths. Rows and store
+/// entries it does not name stay as they are.
+struct DeltaChanges<'a> {
     root: &'a Path,
-    files: &'a [PathBuf],
-    rels: &'a [String],
-    metas: &'a [Option<std::fs::Metadata>],
-    status: &'a [FileStatus],
-    stored: &'a HashMap<String, crate::meta_update::StoredFile>,
-    existing_hashes: &'a HashMap<String, String>,
-    dirty_paths: &'a std::collections::HashSet<String>,
+    /// Added and modified files, in walk order.
+    rewrites: Vec<Rewrite>,
+    /// Rows of files gone from the index: `(path, id)`.
+    deleted: Vec<(String, i64)>,
+    /// Rows with the same bytes and a new stat: `(id, size, mtime_ns, dirty)`.
+    touched: Vec<(i64, u64, i64, bool)>,
+    /// Rows whose walk position moved: `(id, walk_seq)`.
+    walk_moves: Vec<(i64, i64)>,
+    /// Rows whose dirty flag flipped: `(id, dirty)`.
+    flips: Vec<(i64, bool)>,
+    /// The rows of the rewritten paths that have one.
+    stored: HashMap<String, crate::meta_update::StoredFile>,
+    /// Re-sync every branch row (the branch may not be the one last synced);
+    /// otherwise only the rewritten rows are set.
+    sync_all_branch_rows: bool,
+    /// Return the statistics `rfx index` prints (per-language counts: a scan of
+    /// every row); otherwise the counts and sizes only.
+    full_stats: bool,
+    /// Files in the index after the update (unreadable rewrites not subtracted).
+    live_files: usize,
+    /// (new, modified, unchanged) of the files not rewritten, against the branch's
+    /// own hashes.
+    breakdown_rest: (usize, usize, usize),
+    /// The branch's own hashes of the rewritten paths.
+    branch_hashes: HashMap<String, String>,
     branch: &'a str,
     commit: Option<&'a str>,
     git_dirty: bool,
@@ -138,6 +167,19 @@ struct RefreshUnchanged<'a> {
     /// `Some(dirty)` inside git.
     git_dirty: Option<bool>,
     run_start: std::time::SystemTime,
+    /// (too large, bytes too large, binary)
+    skipped: (usize, u64, usize),
+}
+
+/// Inputs of `Indexer::refresh_named`.
+struct RefreshNamed<'a> {
+    touched: &'a [(i64, u64, i64, bool)],
+    flips: &'a [(i64, bool)],
+    walk_moves: &'a [(i64, i64)],
+    branch: &'a str,
+    commit: Option<&'a str>,
+    git_dirty: bool,
+    live_files: usize,
     /// (too large, bytes too large, binary)
     skipped: (usize, u64, usize),
 }
@@ -416,7 +458,13 @@ pub struct Indexer {
     /// `(max_files, max_bytes)` of the delta before it is merged into a new base;
     /// `None` = [`DELTA_MAX_FILES`] and [`DELTA_MAX_CORPUS_PERCENT`] of the corpus.
     merge_limits: Option<(usize, u64)>,
+    /// Crash tests: the write point at which the process aborts.
+    abort_at: Option<String>,
 }
+
+/// Exit code of a process stopped by `Indexer::set_abort_point`.
+#[doc(hidden)]
+pub const ABORT_EXIT_CODE: i32 = 86;
 
 /// Files the delta may hold before an update merges it into a new base.
 pub const DELTA_MAX_FILES: usize = 2000;
@@ -635,6 +683,175 @@ struct Discovered {
     skipped_binary: usize,
 }
 
+/// The paths a library update names, relative to the root (`/`-separated): the
+/// walk goes down through their ancestors and into them, and nowhere else.
+#[derive(Debug, Default)]
+struct Targets {
+    /// Each named path (a file or a directory).
+    exact: std::collections::HashSet<String>,
+    /// Every proper ancestor directory of a named path.
+    ancestors: std::collections::HashSet<String>,
+}
+
+impl Targets {
+    fn new(paths: &[String]) -> Self {
+        let mut out = Self::default();
+        for p in paths {
+            let mut end = p.len();
+            while let Some(slash) = p[..end].rfind('/') {
+                out.ancestors.insert(p[..slash].to_string());
+                end = slash;
+            }
+            out.exact.insert(p.clone());
+        }
+        out
+    }
+
+    /// Whether `rel` is a named path or lies under one.
+    fn covers(&self, rel: &str) -> bool {
+        if self.exact.contains(rel) {
+            return true;
+        }
+        let mut end = rel.len();
+        while let Some(slash) = rel[..end].rfind('/') {
+            if self.exact.contains(&rel[..slash]) {
+                return true;
+            }
+            end = slash;
+        }
+        false
+    }
+
+    /// Whether the walk enters `rel`: the root, an ancestor of a named path, or a
+    /// path a named path covers.
+    fn admits(&self, rel: &str) -> bool {
+        rel.is_empty() || self.ancestors.contains(rel) || self.covers(rel)
+    }
+}
+
+/// Walk positions for the files a library update rewrites (`rewrites`, in walk
+/// order; each with its row when it has one), found by probing `files` in
+/// `walk_seq` order with the walk-order comparator. A rewritten file keeps its
+/// position while its neighbours still bracket it; a new or moved one gets a
+/// value between the rows that now bracket it. Rows in `skip` (deleted) are left
+/// out. `None` when a comparison cannot be made or a gap has no room: the caller
+/// then runs a full index, which renumbers.
+fn place_rewrites(
+    conn: &rusqlite::Connection,
+    walk: &mut crate::walk_order::WalkOrder<'_>,
+    rewrites: &[(&str, Option<&crate::meta_update::StoredFile>)],
+    skip: &std::collections::HashSet<i64>,
+) -> Result<Option<HashMap<String, i64>>> {
+    use crate::meta_update::row_near_seq;
+    use std::cmp::Ordering::{Greater, Less};
+    let mut skip = skip.clone();
+    let mut kept: HashMap<&str, i64> = HashMap::new();
+    // Rows whose neighbours no longer bracket them are placed anew; a row moved
+    // out can change another's neighbours, so check again until nothing moves.
+    let mut moved: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for _ in 0..4 {
+        kept.clear();
+        let mut changed = false;
+        for (path, row) in rewrites {
+            let Some(row) = row else { continue };
+            if moved.contains(path) {
+                continue;
+            }
+            let before = row_near_seq(conn, row.walk_seq, true, &skip)?;
+            let after = row_near_seq(conn, row.walk_seq + 1, false, &skip)?;
+            let fits = before
+                .as_ref()
+                .is_none_or(|(_, p, _)| walk.cmp(p, path) == Some(Less))
+                && after
+                    .as_ref()
+                    .is_none_or(|(_, p, _)| walk.cmp(path, p) == Some(Less));
+            if fits {
+                kept.insert(path, row.walk_seq);
+            } else {
+                moved.insert(path);
+                skip.insert(row.id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let bounds: (Option<i64>, Option<i64>) =
+        conn.query_row("SELECT MIN(walk_seq), MAX(walk_seq) FROM files", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+    // Each file to place, with the positions of the rows that bracket it.
+    let mut gaps: Vec<(&str, Option<i64>, Option<i64>)> = Vec::new();
+    for (path, row) in rewrites {
+        if row.is_some() && !moved.contains(path) {
+            continue;
+        }
+        let (before, after) = match bounds {
+            (Some(min), Some(max)) => {
+                // The smallest position whose first row comes after `path`.
+                let (mut lo, mut hi) = (min, max + 1);
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    let after_path = match row_near_seq(conn, mid, false, &skip)? {
+                        None => true,
+                        Some((_, q, _)) => match walk.cmp(&q, path) {
+                            Some(Greater) => true,
+                            Some(Less) => false,
+                            _ => return Ok(None),
+                        },
+                    };
+                    if after_path {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                (
+                    row_near_seq(conn, lo, true, &skip)?.map(|r| r.2),
+                    row_near_seq(conn, lo, false, &skip)?.map(|r| r.2),
+                )
+            }
+            _ => (None, None),
+        };
+        gaps.push((path, before, after));
+    }
+    let mut out: HashMap<String, i64> = kept
+        .into_iter()
+        .map(|(p, seq)| (p.to_string(), seq))
+        .collect();
+    // Files that share a gap are spread over it, in walk order.
+    let mut i = 0;
+    while i < gaps.len() {
+        let (_, before, after) = gaps[i];
+        let mut j = i;
+        while j < gaps.len() && (gaps[j].1, gaps[j].2) == (before, after) {
+            j += 1;
+        }
+        let k = (j - i) as i64;
+        for (n, (path, _, _)) in gaps[i..j].iter().enumerate() {
+            let n = n as i64;
+            let seq = match (before, after) {
+                (Some(a), Some(b)) => {
+                    let step = (b - a) / (k + 1);
+                    if step < 1 {
+                        return Ok(None);
+                    }
+                    a.checked_add(step * (n + 1))
+                }
+                (Some(a), None) => a.checked_add(WALK_SEQ_GAP * (n + 1)),
+                (None, Some(b)) => b.checked_sub(WALK_SEQ_GAP * (k - n)),
+                (None, None) => Some(WALK_SEQ_GAP * n),
+            };
+            let Some(seq) = seq else { return Ok(None) };
+            out.insert(path.to_string(), seq);
+        }
+        i = j;
+    }
+    Ok(Some(out))
+}
+
 /// `file_path` relative to `root` with forward slashes (a path that is not under
 /// `root` loses a leading `./`): the path the stores and meta.db use, the same
 /// on every OS.
@@ -674,6 +891,98 @@ pub fn looks_binary(path: &Path) -> bool {
     }
 }
 
+/// Phase timings of one run, logged as one line.
+struct Laps {
+    last: Instant,
+    line: String,
+}
+
+impl Laps {
+    fn new() -> Self {
+        Self {
+            last: Instant::now(),
+            line: String::new(),
+        }
+    }
+
+    fn lap(&mut self, name: &str) {
+        use std::fmt::Write;
+        let _ = write!(
+            self.line,
+            " {}={:.1}",
+            name,
+            self.last.elapsed().as_secs_f64() * 1000.0
+        );
+        self.last = Instant::now();
+    }
+}
+
+/// What `Indexer::update_paths` does with one named path.
+enum Named {
+    /// Nothing indexed can depend on it (outside the tree, `.git/`, `.reflex/`).
+    Skip,
+    /// It needs a full run: an ignore file, the project config, a resolver config,
+    /// the root itself, or a path that leaves the root.
+    Full,
+    /// A path under the root, relative and `/`-separated.
+    Path(String),
+}
+
+fn classify_named(root: &Path, abs_root: &Path, path: &Path) -> Named {
+    let rel = if path.is_absolute() {
+        match path
+            .strip_prefix(root)
+            .or_else(|_| path.strip_prefix(abs_root))
+        {
+            Ok(rel) => rel,
+            Err(_) => return Named::Skip,
+        }
+    } else {
+        path
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            std::path::Component::CurDir => {}
+            _ => return Named::Full,
+        }
+    }
+    let Some(name) = parts.last() else {
+        return Named::Full;
+    };
+    if parts[0] == ".git" {
+        return Named::Skip;
+    }
+    if parts[0] == crate::cache::CACHE_DIR {
+        return if parts.len() == 2 && parts[1] == "config.toml" {
+            Named::Full
+        } else {
+            Named::Skip
+        };
+    }
+    if matches!(name.as_str(), ".gitignore" | ".ignore" | ".rgignore")
+        || crate::dependency_resolve::is_resolver_config_name(name)
+    {
+        return Named::Full;
+    }
+    Named::Path(parts.join("/"))
+}
+
+/// Whether a directory holds a file named like a resolver config at any depth (no
+/// ignore rules: a superset of what the config walk would find).
+fn holds_resolver_config(dir: &Path) -> bool {
+    ignore::WalkBuilder::new(dir)
+        .standard_filters(false)
+        .build()
+        .flatten()
+        .any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(crate::dependency_resolve::is_resolver_config_name)
+        })
+}
+
 /// Drops the shared query handles for a workspace when an index run ends,
 /// on every exit path including errors and panics.
 struct InvalidateOnDrop(std::path::PathBuf);
@@ -692,6 +1001,7 @@ impl Indexer {
             config,
             batch_limits: None,
             merge_limits: None,
+            abort_at: None,
         }
     }
 
@@ -708,6 +1018,22 @@ impl Indexer {
     #[doc(hidden)]
     pub fn set_merge_limits(&mut self, max_files: usize, max_bytes: u64) {
         self.merge_limits = Some((max_files, max_bytes));
+    }
+
+    /// Abort the process at a named write point, to test crash safety. A delta
+    /// publish has `delta-files` (stores written), `unlinked` (fixed names
+    /// removed), `manifest` (published) and `meta` (meta.db committed); a full
+    /// build has `base-files`, `base-manifest` and `base-meta`.
+    #[doc(hidden)]
+    pub fn set_abort_point(&mut self, point: &str) {
+        self.abort_at = Some(point.to_string());
+    }
+
+    fn abort_point(&self, point: &str) {
+        if self.abort_at.as_deref() == Some(point) {
+            // No destructor, no later write: what a killed process leaves.
+            std::process::exit(ABORT_EXIT_CODE);
+        }
     }
 
     fn merge_limits(&self, live_corpus_bytes: u64) -> (usize, u64) {
@@ -742,6 +1068,374 @@ impl Indexer {
     /// Build or update the index for the given root directory
     pub fn index(&self, root: impl AsRef<Path>, show_progress: bool) -> Result<IndexStats> {
         self.index_with_callback(root, show_progress, None)
+    }
+
+    /// Bring the index up to date with changes to `paths` alone, without walking
+    /// the tree: for a caller that already knows what changed (a file watcher, an
+    /// editor). `paths` are files or directories, absolute or relative to `root`,
+    /// that were added, modified or deleted; a rename names both paths.
+    ///
+    /// When every changed path is named, the index then holds what
+    /// [`Indexer::index`] would build. The run falls back to [`Indexer::index`]
+    /// when the change cannot be applied alone: an ignore file, `.reflex/config.toml`
+    /// or a resolver config (`go.mod`, `tsconfig.json`, ...) is involved, the branch
+    /// changed, the delta would pass its merge limits, or the index is not one an
+    /// update can start from.
+    pub fn update_paths(&self, root: impl AsRef<Path>, paths: &[PathBuf]) -> Result<IndexStats> {
+        let root = root.as_ref();
+        match self.try_update_paths(root, paths)? {
+            Some(stats) => Ok(stats),
+            None => {
+                log::info!("update_paths: the change needs a full index run");
+                self.index(root, false)
+            }
+        }
+    }
+
+    /// [`Self::update_paths`] without the fallback: `None` when a full run is
+    /// needed (nothing was written). For tests that check which path ran.
+    #[doc(hidden)]
+    pub fn try_update_paths(&self, root: &Path, paths: &[PathBuf]) -> Result<Option<IndexStats>> {
+        let started = Instant::now();
+        let mut laps = Laps::new();
+        let cache_dir = self.cache.path().to_path_buf();
+        if !cache_dir.join(crate::cache::META_DB).exists() {
+            return Ok(None);
+        }
+        let abs_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let mut named: Vec<String> = Vec::new();
+        for path in paths {
+            match classify_named(root, &abs_root, path) {
+                Named::Skip => {}
+                Named::Full => return Ok(None),
+                Named::Path(rel) => named.push(rel),
+            }
+        }
+        named.sort();
+        named.dedup();
+
+        // `git status` of the named paths runs while the rest is prepared.
+        let in_git = crate::git::is_git_repo(root);
+        let spawn_status = |specs: Vec<String>| {
+            let root = root.to_path_buf();
+            std::thread::spawn(move || {
+                if specs.len() > 1000 {
+                    crate::git::changed_paths(&root)
+                } else {
+                    let refs: Vec<&str> = specs.iter().map(String::as_str).collect();
+                    crate::git::changed_paths_in(&root, &refs)
+                }
+            })
+        };
+        let mut status_jobs = Vec::new();
+        if in_git && !named.is_empty() {
+            status_jobs.push(spawn_status(named.clone()));
+        }
+
+        // The start of a run, as in `index_with_callback`.
+        let _index_lock = crate::atomic_write::IndexLock::acquire_with_timeout(
+            &cache_dir,
+            std::time::Duration::from_secs(self.config.lock_wait_secs),
+        )?;
+        crate::atomic_write::remove_stale_tmp(&cache_dir);
+        crate::query::invalidate_caches(root);
+        let _invalidate_on_exit = InvalidateOnDrop(root.to_path_buf());
+        self.yield_to_symbol_pass(&cache_dir)?;
+        laps.lap("lock");
+        self.cache.assert_writable(false)?;
+        if !self.cache.check_schema_hash().unwrap_or(false)
+            || !self.cache.check_extraction_hash().unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let run_start = self.run_marker(&cache_dir);
+        laps.lap("checks");
+
+        let conn = crate::cache::open_meta_db(cache_dir.join(crate::cache::META_DB))?;
+        let file_count = crate::meta_update::count_files(&conn)?;
+        let stored_digest = crate::meta_update::get_statistic(&conn, RESOLVER_DIGEST_KEY)?;
+        let meta_generation = crate::meta_update::get_statistic(&conn, INDEX_GENERATION_KEY)?
+            .and_then(|g| g.parse::<u64>().ok());
+        let (Some(generation), Ok(indexed)) =
+            (meta_generation, CacheManager::latest_branch_info_on(&conn))
+        else {
+            return Ok(None);
+        };
+        if !self.stores_intact(file_count, meta_generation) {
+            return Ok(None);
+        }
+        let generation = generation + 1;
+        laps.lap("snapshot");
+
+        // The resolver configs the last walk found, unchanged since.
+        let Some(resolver_configs) =
+            crate::dependency_resolve::ResolverConfigs::from_saved_list(root, &cache_dir)
+        else {
+            return Ok(None);
+        };
+        if stored_digest.as_deref() != Some(resolver_configs.digest.as_str()) {
+            return Ok(None);
+        }
+        laps.lap("configs");
+
+        // Git: still the branch last indexed; a HEAD that moved adds what it changed.
+        let (branch, commit) = if in_git {
+            let Ok((commit, branch)) = crate::git::head_commit_and_branch(root) else {
+                return Ok(None);
+            };
+            (branch, Some(commit))
+        } else {
+            ("_default".to_string(), None)
+        };
+        if branch != indexed.branch {
+            return Ok(None);
+        }
+        if let Some(commit) = &commit
+            && *commit != indexed.commit_sha
+        {
+            let Ok(moved) = crate::git::diff_names(root, &indexed.commit_sha, commit) else {
+                return Ok(None);
+            };
+            let mut extra: Vec<String> = Vec::new();
+            for path in moved {
+                match classify_named(root, &abs_root, Path::new(&path)) {
+                    Named::Skip => {}
+                    Named::Full => return Ok(None),
+                    Named::Path(rel) => {
+                        if named.binary_search(&rel).is_err() {
+                            extra.push(rel);
+                        }
+                    }
+                }
+            }
+            if !extra.is_empty() {
+                status_jobs.push(spawn_status(extra.clone()));
+                named.extend(extra);
+                named.sort();
+                named.dedup();
+            }
+        }
+        if resolver_configs.lists_any_under(root, &named)
+            || named.iter().any(|rel| {
+                let dir = root.join(rel);
+                dir.is_dir() && holds_resolver_config(&dir)
+            })
+        {
+            return Ok(None);
+        }
+        let targets = Arc::new(Targets::new(&named));
+        laps.lap("git");
+
+        // The rows at and under the named paths, and those paths as a full walk
+        // would see them now.
+        let stored = crate::meta_update::load_rows_under(&conn, &named)?;
+        let Discovered {
+            files: found_files,
+            rels: found_rels,
+            metas: found_metas,
+            skipped_too_large,
+            skipped_bytes_too_large,
+            skipped_binary,
+            ..
+        } = self.discover_files_in(root, &stored, Some(Arc::clone(&targets)))?;
+        let found: HashMap<&str, usize> = found_rels
+            .iter()
+            .enumerate()
+            .map(|(i, rel)| (rel.as_str(), i))
+            .collect();
+        laps.lap("walk");
+
+        // What changed, by the rules of a full run.
+        let num_threads = crate::models::resolve_thread_count(self.config.parallel_threads, 32);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .context("Failed to create thread pool")?;
+        let to_hash: Vec<usize> = (0..found_rels.len())
+            .filter(|&i| {
+                stored.get(&found_rels[i]).is_some_and(|row| {
+                    !found_metas[i]
+                        .as_ref()
+                        .is_some_and(|md| row.stat_matches(md))
+                })
+            })
+            .collect();
+        let hashed: Vec<(usize, Option<String>)> = pool.install(|| {
+            to_hash
+                .par_iter()
+                .map(|&i| {
+                    let hash = std::fs::read(&found_files[i])
+                        .ok()
+                        .map(|b| self.hash_content(&b));
+                    (i, hash)
+                })
+                .collect()
+        });
+        let mut found_status: Vec<FileStatus> = found_rels
+            .iter()
+            .map(|rel| {
+                if stored.contains_key(rel) {
+                    FileStatus::Unchanged
+                } else {
+                    FileStatus::Added
+                }
+            })
+            .collect();
+        for (i, hash) in hashed {
+            found_status[i] = match hash {
+                Some(h) if h == stored[&found_rels[i]].hash => FileStatus::Touched,
+                _ => FileStatus::Modified,
+            };
+        }
+        let rewritten =
+            |i: usize| matches!(found_status[i], FileStatus::Added | FileStatus::Modified);
+        // Indexed paths at or under a named path that the walk no longer yields.
+        let deleted: Vec<&str> = {
+            let mut d: Vec<&str> = stored
+                .keys()
+                .map(String::as_str)
+                .filter(|p| !found.contains_key(p))
+                .collect();
+            d.sort_unstable();
+            d
+        };
+        laps.lap("hash");
+
+        // Walk positions of the rewritten files.
+        let to_place: Vec<(&str, Option<&crate::meta_update::StoredFile>)> = (0..found_rels.len())
+            .filter(|&i| rewritten(i))
+            .map(|i| (found_rels[i].as_str(), stored.get(&found_rels[i])))
+            .collect();
+        let deleted_ids: std::collections::HashSet<i64> =
+            deleted.iter().map(|p| stored[*p].id).collect();
+        let mut walk_order = crate::walk_order::WalkOrder::new(root);
+        let Some(seq_of) = place_rewrites(&conn, &mut walk_order, &to_place, &deleted_ids)? else {
+            return Ok(None);
+        };
+        drop(conn);
+        let added = found_status
+            .iter()
+            .filter(|s| **s == FileStatus::Added)
+            .count();
+        let live_files = file_count - deleted.len() + added;
+        laps.lap("order");
+
+        // Dirty flags of the named paths as `git status` lists them now; every other
+        // row keeps the flag it has.
+        let mut now_dirty: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for job in status_jobs {
+            match job.join() {
+                Ok(Ok(paths)) => now_dirty.extend(paths),
+                _ => return Ok(None),
+            }
+        }
+        let git_dirty = in_git && (indexed.is_dirty || !now_dirty.is_empty());
+        laps.lap("dirty");
+
+        let mut rewrites = Vec::new();
+        let mut rewrite_rows = HashMap::new();
+        let (mut touched, mut flips) = (Vec::new(), Vec::new());
+        for (i, rel) in found_rels.iter().enumerate() {
+            let dirty = now_dirty.contains(rel);
+            let row = stored.get(rel);
+            if rewritten(i) {
+                rewrites.push(Rewrite {
+                    rel: rel.clone(),
+                    path: found_files[i].clone(),
+                    walk_seq: seq_of[rel],
+                    dirty,
+                });
+                if let Some(row) = row {
+                    rewrite_rows.insert(rel.clone(), row.clone());
+                }
+            } else if let Some(row) = row {
+                if found_status[i] == FileStatus::Touched {
+                    let (size, mtime) = found_metas[i]
+                        .as_ref()
+                        .map(|md| (md.len(), crate::cache::recorded_mtime_ns(md, run_start)))
+                        .unwrap_or((0, 0));
+                    touched.push((row.id, size, mtime, dirty));
+                } else if dirty != row.dirty {
+                    flips.push((row.id, dirty));
+                }
+            }
+        }
+        // The branch's own hashes of the rewritten paths; every other file's row
+        // matches its hash (the last run on this branch synced them all).
+        let branch_hashes: HashMap<String, String> = {
+            let conn = crate::cache::open_meta_db(cache_dir.join(crate::cache::META_DB))?;
+            let mut stmt = conn.prepare(
+                "SELECT fb.hash FROM file_branches fb
+                 JOIN files f ON f.id = fb.file_id
+                 JOIN branches b ON b.id = fb.branch_id
+                 WHERE b.name = ? AND f.path = ?",
+            )?;
+            let mut out = HashMap::new();
+            for r in &rewrites {
+                let hash: Option<String> = rusqlite::OptionalExtension::optional(
+                    stmt.query_row(rusqlite::params![branch, r.rel], |row| row.get(0)),
+                )?;
+                if let Some(hash) = hash {
+                    out.insert(r.rel.clone(), hash);
+                }
+            }
+            out
+        };
+        let skipped = (skipped_too_large, skipped_bytes_too_large, skipped_binary);
+        let rewritten_count = rewrites.len();
+        laps.lap("change_set");
+
+        let result = if deleted.is_empty() && rewrites.is_empty() {
+            self.refresh_named(RefreshNamed {
+                touched: &touched,
+                flips: &flips,
+                walk_moves: &[],
+                branch: &branch,
+                commit: commit.as_deref(),
+                git_dirty,
+                live_files,
+                skipped,
+            })
+            .map(Some)
+        } else {
+            let deleted_file_count = deleted.iter().filter(|p| !root.join(p).exists()).count();
+            self.publish_delta(DeltaChanges {
+                root,
+                rewrites,
+                deleted: deleted
+                    .iter()
+                    .map(|p| (p.to_string(), stored[*p].id))
+                    .collect(),
+                touched,
+                walk_moves: Vec::new(),
+                flips,
+                stored: rewrite_rows,
+                sync_all_branch_rows: false,
+                full_stats: false,
+                live_files,
+                breakdown_rest: (0, 0, live_files - rewritten_count),
+                branch_hashes,
+                branch: &branch,
+                commit: commit.as_deref(),
+                git_dirty,
+                resolver_configs: &resolver_configs,
+                run_start,
+                generation,
+                pool: &pool,
+                deleted_file_count,
+                skipped,
+            })
+        };
+        laps.lap("publish");
+        log::info!(
+            "update_paths: {} named paths, {} rewritten, {} deleted in {} ms;{}",
+            named.len(),
+            rewritten_count,
+            deleted.len(),
+            started.elapsed().as_millis(),
+            laps.line
+        );
+        result
     }
 
     /// How long to wait for a running symbol pass to yield the database.
@@ -918,6 +1612,10 @@ impl Indexer {
         let git_state = git_state.map_err(|_| anyhow::anyhow!("git state thread panicked"))??;
         let resolver_configs =
             resolver_configs.map_err(|_| anyhow::anyhow!("resolver config walk panicked"))?;
+        // For `update_paths`, which parses the same configs without walking.
+        if let Err(e) = resolver_configs.save_list(root, &cache_dir) {
+            log::warn!("Failed to save the resolver config list: {:#}", e);
+        }
         let Discovered {
             files,
             rels,
@@ -1050,15 +1748,70 @@ impl Indexer {
             });
         }
         if content_changed && !full_deps && stores_ok {
-            let update = DeltaUpdate {
+            // The change set from the whole walk: walk positions planned over every
+            // file, dirty flags from `git status`.
+            let seqs = crate::meta_update::plan_walk_seq(
+                &rels
+                    .iter()
+                    .map(|rel| stored.get(rel).map(|s| s.walk_seq))
+                    .collect::<Vec<_>>(),
+            );
+            let mut rewrites = Vec::new();
+            let mut rewrite_rows = HashMap::new();
+            let mut branch_hashes = HashMap::new();
+            let (mut touched, mut walk_moves, mut flips) = (Vec::new(), Vec::new(), Vec::new());
+            let mut rest: Vec<(&str, &str)> = Vec::new();
+            for i in 0..total_files {
+                let rel = &rels[i];
+                let dirty = dirty_paths.contains(rel);
+                match (status[i], stored.get(rel)) {
+                    (FileStatus::Added | FileStatus::Modified, row) => {
+                        rewrites.push(Rewrite {
+                            rel: rel.clone(),
+                            path: files[i].clone(),
+                            walk_seq: seqs[i],
+                            dirty,
+                        });
+                        if let Some(row) = row {
+                            rewrite_rows.insert(rel.clone(), row.clone());
+                        }
+                        if let Some(h) = existing_hashes.get(rel) {
+                            branch_hashes.insert(rel.clone(), h.clone());
+                        }
+                    }
+                    (_, Some(row)) => {
+                        if seqs[i] != row.walk_seq {
+                            walk_moves.push((row.id, seqs[i]));
+                        }
+                        if status[i] == FileStatus::Touched {
+                            let (size, mtime) = metas[i]
+                                .as_ref()
+                                .map(|md| {
+                                    (md.len(), crate::cache::recorded_mtime_ns(md, run_start))
+                                })
+                                .unwrap_or((0, 0));
+                            touched.push((row.id, size, mtime, dirty));
+                        } else if dirty != row.dirty {
+                            flips.push((row.id, dirty));
+                        }
+                        rest.push((rel.as_str(), row.hash.as_str()));
+                    }
+                    (_, None) => unreachable!("an unchanged file has a row"),
+                }
+            }
+            let changes = DeltaChanges {
                 root,
-                files: &files,
-                rels: &rels,
-                metas: &metas,
-                status: &status,
-                stored: &stored,
-                existing_hashes: &existing_hashes,
-                dirty_paths: &dirty_paths,
+                rewrites,
+                deleted: gone.iter().map(|p| ((*p).clone(), stored[*p].id)).collect(),
+                touched,
+                walk_moves,
+                flips,
+                stored: rewrite_rows,
+                sync_all_branch_rows: true,
+                full_stats: true,
+                live_files: total_files,
+                breakdown_rest: breakdown(rest.into_iter(), &existing_hashes),
+                branch_hashes,
                 branch: &branch,
                 commit: commit.as_deref(),
                 git_dirty: git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
@@ -1069,7 +1822,7 @@ impl Indexer {
                 deleted_file_count,
                 skipped: (skipped_too_large, skipped_bytes_too_large, skipped_binary),
             };
-            match self.try_delta_update(update)? {
+            match self.publish_delta(changes)? {
                 Some(stats) => return Ok(stats),
                 None => log::info!("The delta would pass its limits - building a new base"),
             }
@@ -1338,8 +2091,10 @@ impl Indexer {
             trigram_builder.trigram_count() as u64,
             content_writer.content_size() as u64,
         );
+        self.abort_point("base-files");
         crate::snapshot::write_manifest(&cache_dir, &manifest)?;
         crate::snapshot::link_fixed_names(&cache_dir, &manifest);
+        self.abort_point("base-manifest");
 
         let meta_start = Instant::now();
         let present: Vec<usize> = indexed.iter().map(|f| f.index).collect();
@@ -1359,6 +2114,7 @@ impl Indexer {
             full_deps,
             generation,
         })?;
+        self.abort_point("base-meta");
 
         // Update branch metadata
         self.cache.update_branch_metadata(
@@ -1416,13 +2172,15 @@ impl Indexer {
         Ok(stats)
     }
 
-    /// Apply this run's changes as a delta on the published base: the added and
-    /// modified files are read, the delta is rebuilt from them and the unchanged
-    /// files of the previous delta, and the base files they supersede (or that
-    /// are gone) are tombstoned. `Ok(None)` when the delta would pass its limits:
-    /// the caller then builds a new base (a merge).
-    fn try_delta_update(&self, u: DeltaUpdate<'_>) -> Result<Option<IndexStats>> {
+    /// Apply a change set as a delta on the published base: the rewritten files
+    /// are read, the delta is rebuilt from them and the previous delta's files the
+    /// change set leaves alone, and the base files they supersede (or that are
+    /// gone) are tombstoned. `meta.db` changes only the rows the change set names,
+    /// in one transaction. `Ok(None)` when the delta would pass its limits (nothing
+    /// is written): the caller then builds a new base (a merge).
+    fn publish_delta(&self, c: DeltaChanges<'_>) -> Result<Option<IndexStats>> {
         use crate::snapshot::{IndexSnapshot, Manifest, SegmentFiles};
+        use rusqlite::OptionalExtension;
         let cache_dir = self.cache.path().to_path_buf();
         let snapshot = IndexSnapshot::open(&cache_dir)?;
         let Some(prev) = snapshot.manifest().cloned() else {
@@ -1430,85 +2188,99 @@ impl Indexer {
         };
         let base_len = snapshot.base_len();
         let delta_start = Instant::now();
+        let mut laps = Laps::new();
 
-        // Live base files and the previous delta's files, by path.
-        let mut base_ids: HashMap<&str, u32> = HashMap::new();
-        for id in 0..base_len {
-            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str()) {
-                base_ids.insert(p, id);
-            }
-        }
-        let mut old_delta: HashMap<&str, u32> = HashMap::new();
-        for id in base_len..snapshot.id_bound() {
-            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str()) {
-                old_delta.insert(p, id);
-            }
-        }
-
-        // Read the added and modified files.
-        let changed: Vec<usize> = (0..u.rels.len())
-            .filter(|&i| matches!(u.status[i], FileStatus::Added | FileStatus::Modified))
-            .collect();
+        // Read the rewritten files.
+        let rels: Vec<String> = c.rewrites.iter().map(|r| r.rel.clone()).collect();
+        let files: Vec<PathBuf> = c.rewrites.iter().map(|r| r.path.clone()).collect();
         let ctx = ProcessCtx {
-            root: u.root,
-            files: u.files,
-            rels: u.rels,
-            stored: u.stored,
-            run_start: u.run_start,
+            root: c.root,
+            files: &files,
+            rels: &rels,
+            stored: &c.stored,
+            run_start: c.run_start,
             full_deps: false,
-            tsconfigs: &u.resolver_configs.tsconfigs,
+            tsconfigs: &c.resolver_configs.tsconfigs,
         };
-        let read: Vec<(usize, Option<FileProcessingResult>)> = u.pool.install(|| {
-            changed
-                .par_iter()
-                .map_init(Vec::<u64>::new, |scratch, &i| {
-                    (i, self.process_file(&ctx, i, scratch))
+        let mut read: Vec<Option<FileProcessingResult>> = c.pool.install(|| {
+            (0..rels.len())
+                .into_par_iter()
+                .map_init(Vec::<u64>::new, |scratch, i| {
+                    self.process_file(&ctx, i, scratch)
                 })
                 .collect()
         });
-        let mut fresh: HashMap<usize, FileProcessingResult> = HashMap::new();
-        let mut unreadable: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for (i, result) in read {
-            match result {
-                Some(r) => {
-                    fresh.insert(i, r);
-                }
-                None => {
-                    unreadable.insert(i);
+        laps.lap("read");
+
+        // An unreadable file is gone, as in a full run: its row goes too.
+        let mut deleted = c.deleted;
+        let mut live_files = c.live_files;
+        for (k, r) in read.iter().enumerate() {
+            if r.is_none() {
+                live_files -= 1;
+                if let Some(row) = c.stored.get(&rels[k]) {
+                    deleted.push((rels[k].clone(), row.id));
                 }
             }
         }
 
-        // The files of the new snapshot, in walk order (an unreadable file is gone).
-        let present: Vec<usize> = (0..u.rels.len())
-            .filter(|i| !unreadable.contains(i))
+        // Store entries that go: every rewritten and every deleted path. Base files
+        // among them are tombstoned; the previous delta keeps the others.
+        let gone: std::collections::HashSet<&str> = rels
+            .iter()
+            .map(String::as_str)
+            .chain(deleted.iter().map(|(p, _)| p.as_str()))
             .collect();
-        let present_paths: HashMap<&str, usize> =
-            present.iter().map(|&i| (u.rels[i].as_str(), i)).collect();
+        let mut new_dead: Vec<u32> = Vec::new();
+        for id in 0..base_len {
+            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str())
+                && gone.contains(p)
+            {
+                new_dead.push(id);
+            }
+        }
+        let survivors: Vec<(String, u32)> = (base_len..snapshot.id_bound())
+            .filter_map(|id| {
+                let p = snapshot.get_file_path(id)?.to_str()?;
+                (!gone.contains(p)).then(|| (p.to_string(), id))
+            })
+            .collect();
 
-        // The new delta: read files, and the previous delta's files that are
-        // still present and unchanged, in walk order.
+        // The new delta: read files and survivors, in walk order.
         enum Source {
             Fresh(usize),
             Old(u32),
         }
-        let mut entries: Vec<(usize, Source)> = Vec::new();
-        for &i in &present {
-            if fresh.contains_key(&i) {
-                entries.push((i, Source::Fresh(i)));
-            } else if let Some(&id) = old_delta.get(u.rels[i].as_str()) {
-                entries.push((i, Source::Old(id)));
+        let survivor_seqs: HashMap<String, i64> = if survivors.is_empty() {
+            HashMap::new()
+        } else {
+            let conn = crate::cache::open_meta_db(cache_dir.join(crate::cache::META_DB))?;
+            let mut stmt = conn.prepare("SELECT walk_seq FROM files WHERE path = ?")?;
+            let mut out = HashMap::new();
+            for (p, _) in &survivors {
+                if let Some(seq) = stmt.query_row([p], |r| r.get::<_, i64>(0)).optional()? {
+                    out.insert(p.clone(), seq);
+                }
+            }
+            out
+        };
+        let mut entries: Vec<(i64, String, Source)> = Vec::new();
+        for (k, r) in read.iter().enumerate() {
+            if r.is_some() {
+                entries.push((c.rewrites[k].walk_seq, rels[k].clone(), Source::Fresh(k)));
             }
         }
-        let entry_len = |src: &Source| -> Result<u64> {
-            Ok(match src {
-                Source::Fresh(i) => fresh[i].content.len() as u64,
-                Source::Old(id) => snapshot.get_file_content(*id)?.len() as u64,
-            })
-        };
+        for (p, id) in survivors {
+            let seq = survivor_seqs.get(&p).copied().unwrap_or(i64::MAX);
+            entries.push((seq, p, Source::Old(id)));
+        }
+        entries.sort_by_key(|(seq, _, _)| *seq);
         let mut delta_bytes = 0u64;
-        for (_, src) in &entries {
-            delta_bytes += entry_len(src)?;
+        for (_, _, src) in &entries {
+            delta_bytes += match src {
+                Source::Fresh(k) => read[*k].as_ref().map_or(0, |f| f.content.len() as u64),
+                Source::Old(id) => snapshot.get_file_content(*id)?.len() as u64,
+            };
         }
         let (max_files, max_bytes) = self.merge_limits(prev.live_corpus_bytes);
         if entries.len() > max_files || delta_bytes > max_bytes {
@@ -1522,16 +2294,6 @@ impl Indexer {
             return Ok(None);
         }
 
-        // Base files superseded by a read file, or gone from the tree.
-        let mut new_dead: Vec<u32> = base_ids
-            .iter()
-            .filter(|(path, _)| match present_paths.get(*path) {
-                Some(i) => fresh.contains_key(i),
-                None => true,
-            })
-            .map(|(_, &id)| id)
-            .collect();
-        new_dead.sort_unstable();
         let mut tombstones: Vec<u32> = prev.tombstones.clone();
         tombstones.extend(&new_dead);
         tombstones.sort_unstable();
@@ -1542,7 +2304,7 @@ impl Indexer {
             .tomb()
             .map(|t| t.entries().map(|(t, n)| (t, n as u64)).collect())
             .unwrap_or_default();
-        let dead_sizes: Vec<Vec<(crate::trigram::Trigram, u32)>> = u.pool.install(|| {
+        let dead_sizes: Vec<Vec<(crate::trigram::Trigram, u32)>> = c.pool.install(|| {
             new_dead
                 .par_iter()
                 .map_init(Vec::<u64>::new, |scratch, &id| {
@@ -1557,17 +2319,18 @@ impl Indexer {
                 *tomb.entry(t).or_default() += n as u64;
             }
         }
+        laps.lap("tombstones");
 
         // Write the delta stores (generation files: nothing names them yet).
         let (delta_content, delta_trigrams, delta_plan, tomb_name) =
-            crate::snapshot::delta_file_names(u.generation);
+            crate::snapshot::delta_file_names(c.generation);
         let delta = if entries.is_empty() {
             None
         } else {
-            let runs: Vec<Option<TrigramRun>> = u.pool.install(|| {
+            let runs: Vec<Option<TrigramRun>> = c.pool.install(|| {
                 entries
                     .par_iter()
-                    .map_init(Vec::<u64>::new, |scratch, (_, src)| match src {
+                    .map_init(Vec::<u64>::new, |scratch, (_, _, src)| match src {
                         Source::Fresh(_) => None,
                         Source::Old(id) => Some(crate::trigram_build::extract_trigram_run(
                             snapshot.get_file_content(*id).unwrap_or(""),
@@ -1582,11 +2345,11 @@ impl Indexer {
             writer
                 .init(content_path.clone())
                 .context("Failed to initialize the delta content store")?;
-            for ((i, src), run) in entries.iter().zip(runs) {
-                let path = PathBuf::from(&u.rels[*i]);
+            for ((_, rel, src), run) in entries.iter().zip(runs) {
+                let path = PathBuf::from(rel);
                 match src {
                     Source::Fresh(k) => {
-                        let f = fresh.get_mut(k).expect("read file");
+                        let f = read[*k].as_mut().expect("read file");
                         let run = std::mem::take(&mut f.trigram_run);
                         builder.add_file(path.clone(), run);
                         writer.add_file(path, &f.content);
@@ -1599,7 +2362,7 @@ impl Indexer {
             }
             let trigrams_path = cache_dir.join(&delta_trigrams);
             builder
-                .write_with_plan(u.pool, &trigrams_path, Some(&cache_dir.join(&delta_plan)))
+                .write_with_plan(c.pool, &trigrams_path, Some(&cache_dir.join(&delta_plan)))
                 .context("Failed to write the delta trigram index")?;
             writer
                 .finalize_if_needed()
@@ -1623,6 +2386,7 @@ impl Indexer {
             crate::snapshot::write_tomb_file(&cache_dir.join(&tomb_name), &tomb_entries)?;
             Some(tomb_name)
         };
+        laps.lap("write");
 
         // What a full build of this tree would record: its trigrams and its text.
         let base_plan = |t: crate::trigram::Trigram| -> u64 {
@@ -1658,11 +2422,12 @@ impl Indexer {
                 live_corpus += snapshot.base().content.file_len(id).unwrap_or(0);
             }
         }
+        laps.lap("live");
 
         // Publish: fixed names first (an older binary must not read the base alone
         // once it is incomplete), then the manifest, then meta.db.
         let manifest = Manifest::new(
-            u.generation,
+            c.generation,
             prev.base.clone(),
             delta,
             tombstones,
@@ -1670,93 +2435,178 @@ impl Indexer {
             live_trigrams,
             live_corpus,
         );
+        self.abort_point("delta-files");
         if !manifest.base_only() {
             crate::snapshot::unlink_fixed_names(&cache_dir);
         }
+        self.abort_point("unlinked");
         crate::snapshot::write_manifest(&cache_dir, &manifest)?;
         crate::snapshot::link_fixed_names(&cache_dir, &manifest);
+        self.abort_point("manifest");
         log::info!(
             "phase delta: {} files ({} read), {} tombstones, {} ms",
             manifest.delta.as_ref().map_or(0, |d| d.files),
-            fresh.len(),
+            read.iter().filter(|r| r.is_some()).count(),
             manifest.tombstones.len(),
             delta_start.elapsed().as_millis()
         );
+        laps.lap("manifest");
 
-        let written: Vec<IndexedFile> = present
-            .iter()
-            .filter_map(|i| {
-                fresh.remove(i).map(|r| IndexedFile {
-                    index: *i,
-                    hash: r.hash,
-                    language: r.language,
-                    line_count: r.line_count,
-                    size: r.size,
-                    mtime_ns: r.mtime_ns,
-                    imports: r.imports,
-                })
-            })
-            .collect();
-        let written_hash: HashMap<usize, &str> =
-            written.iter().map(|f| (f.index, f.hash.as_str())).collect();
-        let hashes: Vec<(&str, &str)> = present
-            .iter()
-            .map(|&i| {
-                let rel = u.rels[i].as_str();
-                let hash = written_hash
-                    .get(&i)
-                    .copied()
-                    .or_else(|| u.stored.get(rel).map(|s| s.hash.as_str()))
-                    .unwrap_or("");
-                (rel, hash)
-            })
-            .collect();
-        let (new_files, modified_files, unchanged_files) =
-            breakdown(hashes.into_iter(), u.existing_hashes);
-
+        // meta.db: the named rows, their dependencies, the statistics and the
+        // branch row, in one transaction.
         let meta_start = Instant::now();
-        self.write_meta(MetaWrite {
-            root: u.root,
-            rels: u.rels,
-            present: &present,
-            written: &written,
-            metas: u.metas,
-            run_start: u.run_start,
-            stored: u.stored,
-            status: u.status,
-            dirty_paths: u.dirty_paths,
-            branch: u.branch,
-            commit: u.commit,
-            resolver_configs: u.resolver_configs,
-            full_deps: false,
-            generation: u.generation,
-        })?;
-        self.cache
-            .update_branch_metadata(u.branch, u.commit, present.len(), u.git_dirty)?;
+        let now = chrono::Utc::now().timestamp();
+        let mut rows: Vec<crate::cache::FileRow> = Vec::new();
+        let mut row_k: Vec<usize> = Vec::new();
+        for (k, r) in read.iter().enumerate() {
+            if let Some(f) = r {
+                rows.push(crate::cache::FileRow {
+                    path: rels[k].clone(),
+                    hash: f.hash.clone(),
+                    language: format!("{:?}", f.language),
+                    line_count: f.line_count,
+                    size: f.size,
+                    mtime_ns: f.mtime_ns,
+                    dirty: c.rewrites[k].dirty,
+                    walk_seq: c.rewrites[k].walk_seq,
+                });
+                row_k.push(k);
+            }
+        }
+        let paths_changed =
+            !deleted.is_empty() || rows.iter().any(|r| !c.stored.contains_key(&r.path));
+        let mut conn = crate::cache::open_meta_db(cache_dir.join(crate::cache::META_DB))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("Failed to begin meta.db transaction")?;
+        let deleted_ids: Vec<i64> = deleted.iter().map(|(_, id)| *id).collect();
+        crate::meta_update::delete_files(&tx, &deleted_ids)?;
+        let ids = crate::meta_update::upsert_files(&tx, &rows, now)?;
+        crate::meta_update::set_walk_seqs(&tx, &c.walk_moves)?;
+        crate::meta_update::refresh_stats(&tx, &c.touched)?;
+        crate::meta_update::set_dirty_flags(&tx, &c.flips)?;
+        let branch_id = self
+            .cache
+            .get_or_create_branch_id(&tx, c.branch, c.commit)?;
+        if c.sync_all_branch_rows {
+            crate::meta_update::sync_branch_rows(&tx, branch_id, now)?;
+        } else {
+            let branch_rows: Vec<(i64, &str)> = ids
+                .iter()
+                .zip(&rows)
+                .map(|(id, row)| (*id, row.hash.as_str()))
+                .collect();
+            crate::meta_update::set_branch_rows(&tx, branch_id, &branch_rows, now)?;
+        }
+        log::info!(
+            "meta.db: {} rows written, {} deleted, {} moved, {} touched, {} dirty flags",
+            rows.len(),
+            deleted_ids.len(),
+            c.walk_moves.len(),
+            c.touched.len(),
+            c.flips.len()
+        );
+        laps.lap("rows");
+
+        let resolver = crate::dependency::PathResolver::from_conn(&tx)
+            .context("Failed to load file paths for dependency resolution")?;
+        laps.lap("resolver");
+        let ctx = crate::dependency_resolve::ResolverContext::new(c.root, c.resolver_configs);
+        let mut writer = crate::dependency::DependencyWriter::new(&tx);
+        let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        for (&k, &file_id) in row_k.iter().zip(&ids) {
+            let Some((imports, exports)) = read[k].as_ref().and_then(|f| f.imports.as_ref()) else {
+                continue;
+            };
+            let rel = &rels[k];
+            resolved_here.insert(file_id);
+            let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
+            writer.replace_dependencies(file_id, &deps)?;
+            writer.clear_exports(file_id)?;
+            for export in exports {
+                let resolved = ctx.resolve_export(rel, export, &resolver);
+                writer.insert_export(
+                    file_id,
+                    export.exported_symbol.as_deref(),
+                    &export.source_path,
+                    resolved,
+                    export.line_number,
+                )?;
+            }
+        }
+        let (deps_written, exports_written) = writer.counts();
+        // An added or removed path can change how an unchanged file's imports
+        // resolve (suffix matches, ambiguity, the first of several candidates).
+        let reresolved = if paths_changed {
+            reresolve(&tx, &ctx, &resolver, &resolved_here)?
+        } else {
+            0
+        };
+        laps.lap("deps");
+
+        crate::meta_update::set_statistic(
+            &tx,
+            RESOLVER_DIGEST_KEY,
+            &c.resolver_configs.digest,
+            now,
+        )?;
+        crate::meta_update::set_statistic(
+            &tx,
+            INDEX_GENERATION_KEY,
+            &c.generation.to_string(),
+            now,
+        )?;
+        CacheManager::update_branch_metadata_on(&tx, c.branch, c.commit, live_files, c.git_dirty)?;
+        CacheManager::update_stats_on(&tx, c.branch)?;
+        CacheManager::update_schema_hash_on(&tx)?;
+        CacheManager::update_extraction_hash_on(&tx)?;
+        laps.lap("stamps");
+        tx.commit()?;
+        self.abort_point("meta");
+        laps.lap("commit");
         self.cache
             .checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
+        log::info!(
+            "dependencies: {} rows, {} exports written; {} rows re-resolved",
+            deps_written,
+            exports_written,
+            reresolved
+        );
         log::info!(
             "phase meta.db (files, branches, dependencies, exports): {} ms",
             meta_start.elapsed().as_millis()
         );
 
-        crate::query::invalidate_caches(u.root);
+        crate::query::invalidate_caches(c.root);
         drop(snapshot);
         crate::snapshot::remove_unreferenced(&cache_dir, &manifest, Some(&prev));
+        laps.lap("cleanup");
 
-        self.cache.update_stats(u.branch)?;
-        self.cache.update_schema_hash()?;
-        self.cache.update_extraction_hash()?;
-
-        let mut stats = self.cache.stats_on_branch(Some(u.branch.to_string()))?;
+        let (mut new_files, mut modified_files, mut unchanged_files) = c.breakdown_rest;
+        for (k, r) in read.iter().enumerate() {
+            if let Some(f) = r {
+                match c.branch_hashes.get(&rels[k]) {
+                    None => new_files += 1,
+                    Some(old) if *old != f.hash => modified_files += 1,
+                    _ => unchanged_files += 1,
+                }
+            }
+        }
+        let mut stats = if c.full_stats {
+            self.cache.stats_on_branch(Some(c.branch.to_string()))?
+        } else {
+            self.light_stats(live_files, now)
+        };
+        laps.lap("stats");
+        log::info!("delta update phases:{}", laps.line);
         stats.new_files = new_files;
         stats.modified_files = modified_files;
-        stats.deleted_files = u.deleted_file_count;
+        stats.deleted_files = c.deleted_file_count;
         stats.unchanged_files = unchanged_files;
-        stats.skipped_too_large = u.skipped.0;
-        stats.skipped_bytes_too_large = u.skipped.1;
-        stats.skipped_binary = u.skipped.2;
+        stats.skipped_too_large = c.skipped.0;
+        stats.skipped_bytes_too_large = c.skipped.1;
+        stats.skipped_binary = c.skipped.2;
         Ok(Some(stats))
     }
 
@@ -1878,6 +2728,55 @@ impl Indexer {
     /// Nothing to write to the stores: bring meta.db up to date (fingerprints of
     /// touched files, dirty flags, walk positions, this branch's rows, the branch
     /// metadata and the statistics timestamp) and report.
+    /// The statistics of a library update: counts and sizes, without the
+    /// per-language maps (they scan every row).
+    fn light_stats(&self, total_files: usize, now: i64) -> IndexStats {
+        let (index_size_bytes, trigram_index_bytes, corpus_bytes) = self.cache.store_sizes();
+        IndexStats {
+            total_files,
+            index_size_bytes,
+            last_updated: chrono::DateTime::from_timestamp(now, 0)
+                .unwrap_or_else(chrono::Utc::now)
+                .to_rfc3339(),
+            corpus_bytes,
+            trigram_index_bytes,
+            ..Default::default()
+        }
+    }
+
+    /// A library update that changed no content: the named rows' stats, flags and
+    /// positions, the branch row and the statistics (what `refresh_unchanged`
+    /// does for a whole walk).
+    fn refresh_named(&self, r: RefreshNamed<'_>) -> Result<IndexStats> {
+        let mut conn = crate::cache::open_meta_db(self.cache.path().join(crate::cache::META_DB))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("Failed to begin meta.db transaction")?;
+        crate::meta_update::set_walk_seqs(&tx, r.walk_moves)?;
+        crate::meta_update::refresh_stats(&tx, r.touched)?;
+        crate::meta_update::set_dirty_flags(&tx, r.flips)?;
+        if r.commit.is_some() {
+            CacheManager::update_branch_metadata_on(
+                &tx,
+                r.branch,
+                r.commit,
+                r.live_files,
+                r.git_dirty,
+            )?;
+        }
+        CacheManager::update_stats_on(&tx, r.branch)?;
+        tx.commit()?;
+        let mut stats = self.light_stats(r.live_files, chrono::Utc::now().timestamp());
+        stats.new_files = 0;
+        stats.modified_files = 0;
+        stats.deleted_files = 0;
+        stats.unchanged_files = r.live_files;
+        stats.skipped_too_large = r.skipped.0;
+        stats.skipped_bytes_too_large = r.skipped.1;
+        stats.skipped_binary = r.skipped.2;
+        Ok(stats)
+    }
+
     fn refresh_unchanged(&self, r: RefreshUnchanged<'_>) -> Result<IndexStats> {
         let now = chrono::Utc::now().timestamp();
         let seqs = crate::meta_update::plan_walk_seq(
@@ -1957,6 +2856,7 @@ impl Indexer {
     /// rest when files were added or removed).
     fn write_meta(&self, w: MetaWrite<'_>) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
+        let mut laps = Laps::new();
         let seqs = crate::meta_update::plan_walk_seq(
             &w.present
                 .iter()
@@ -2025,6 +2925,7 @@ impl Indexer {
                 .iter()
                 .any(|&i| !w.stored.contains_key(&w.rels[i]));
 
+        laps.lap("plan");
         let mut conn = crate::cache::open_meta_db(self.cache.path().join(crate::cache::META_DB))?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -2035,10 +2936,12 @@ impl Indexer {
         crate::meta_update::set_walk_seqs(&tx, &walk)?;
         crate::meta_update::refresh_stats(&tx, &touched)?;
         crate::meta_update::set_dirty_flags(&tx, &flips)?;
+        laps.lap("rows");
         let branch_id = self
             .cache
             .get_or_create_branch_id(&tx, w.branch, w.commit)?;
         crate::meta_update::sync_branch_rows(&tx, branch_id, now)?;
+        laps.lap("branch_rows");
         log::info!(
             "meta.db: {} rows written, {} deleted, {} moved, {} touched, {} dirty flags",
             rows.len(),
@@ -2060,6 +2963,7 @@ impl Indexer {
 
         let resolver = crate::dependency::PathResolver::from_conn(&tx)
             .context("Failed to load file paths for dependency resolution")?;
+        laps.lap("resolver");
         let ctx = crate::dependency_resolve::ResolverContext::new(w.root, w.resolver_configs);
         let mut writer = crate::dependency::DependencyWriter::new(&tx);
         if w.full_deps {
@@ -2091,6 +2995,7 @@ impl Indexer {
             }
         }
         let (deps_written, exports_written) = writer.counts();
+        laps.lap("deps");
 
         // An added or removed path can change how an unchanged file's imports
         // resolve (suffix matches, ambiguity, the first of several candidates).
@@ -2111,7 +3016,10 @@ impl Indexer {
             &w.generation.to_string(),
             now,
         )?;
+        laps.lap("reresolve");
         tx.commit()?;
+        laps.lap("commit");
+        log::info!("meta.db write phases:{}", laps.line);
         log::info!(
             "dependencies: {} rows, {} exports written; {} rows re-resolved",
             deps_written,
@@ -2131,10 +3039,38 @@ impl Indexer {
         root: &Path,
         stored: &HashMap<String, crate::meta_update::StoredFile>,
     ) -> Result<Discovered> {
+        self.discover_files_in(root, stored, None)
+    }
+
+    /// [`Self::discover_files`] limited to `targets` (all files when `None`): the
+    /// same walker and rules, entering only the named paths and their ancestors, so
+    /// every ignore file on the way applies exactly as in a full walk.
+    fn discover_files_in(
+        &self,
+        root: &Path,
+        stored: &HashMap<String, crate::meta_update::StoredFile>,
+        targets: Option<Arc<Targets>>,
+    ) -> Result<Discovered> {
         let mut out = Discovered::default();
 
         let policy = self.path_policy(root);
-        let walker = Self::walk_builder(root, &self.config, &policy).build();
+        let mut builder = Self::walk_builder(root, &self.config, &policy);
+        if let Some(targets) = targets {
+            // Replaces the walker's own entry filter, so repeat it.
+            let hidden = policy.hidden();
+            let root_buf = root.to_path_buf();
+            builder.filter_entry(move |e| {
+                if hidden {
+                    let name = e.file_name();
+                    if name == ".git" || name == crate::cache::CACHE_DIR {
+                        return false;
+                    }
+                }
+                let rel = normalize_rel(&root_buf, e.path());
+                targets.admits(&rel)
+            });
+        }
+        let walker = builder.build();
 
         for entry in walker {
             let entry = entry?;
