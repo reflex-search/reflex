@@ -41,6 +41,9 @@ pub struct SegmentFiles {
     pub content: String,
     /// `trigrams.bin`-format file name.
     pub trigrams: String,
+    /// Planning sizes of `trigrams` (see `trigram::plan_size`), when written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     /// Files in the segment (both stores hold this many).
     pub files: u64,
     /// Byte sizes of the two files, checked at open.
@@ -95,15 +98,19 @@ impl Manifest {
 
     /// Every file name this manifest refers to.
     pub fn files(&self) -> Vec<&str> {
-        vec![self.base.content.as_str(), self.base.trigrams.as_str()]
+        let mut out = vec![self.base.content.as_str(), self.base.trigrams.as_str()];
+        out.extend(self.base.plan.as_deref());
+        out
     }
 }
 
-/// `content.<g>.bin` / `trigrams.<g>.bin` of a base built at generation `g`.
-pub fn base_file_names(generation: u64) -> (String, String) {
+/// `content.<g>.bin` / `trigrams.<g>.bin` / `trigrams.<g>.plan` of a base built
+/// at generation `g`.
+pub fn base_file_names(generation: u64) -> (String, String, String) {
     (
         format!("content.{generation}.bin"),
         format!("trigrams.{generation}.bin"),
+        format!("trigrams.{generation}.plan"),
     )
 }
 
@@ -111,10 +118,12 @@ pub fn base_file_names(generation: u64) -> (String, String) {
 /// it when no manifest names it).
 fn is_generation_file(name: &str) -> bool {
     let parts: Vec<&str> = name.split('.').collect();
-    matches!(
-        parts.as_slice(),
-        ["content" | "trigrams", g, "bin"] if !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit())
-    )
+    let digits = |g: &str| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit());
+    match parts.as_slice() {
+        ["content" | "trigrams", g, "bin"] => digits(g),
+        ["trigrams", g, "plan"] => digits(g),
+        _ => false,
+    }
 }
 
 /// Read the manifest; `Ok(None)` when there is none (a cache from before it).
@@ -276,9 +285,13 @@ impl IndexSnapshot {
     }
 
     fn open_files(cache_dir: &Path, manifest: Option<Manifest>) -> Result<Self> {
-        let (content_name, trigrams_name) = match &manifest {
-            Some(m) => (m.base.content.clone(), m.base.trigrams.clone()),
-            None => (FIXED_CONTENT.to_string(), FIXED_TRIGRAMS.to_string()),
+        let (content_name, trigrams_name, plan_name) = match &manifest {
+            Some(m) => (
+                m.base.content.clone(),
+                m.base.trigrams.clone(),
+                m.base.plan.clone(),
+            ),
+            None => (FIXED_CONTENT.to_string(), FIXED_TRIGRAMS.to_string(), None),
         };
         let content_path = cache_dir.join(&content_name);
         let trigrams_path = cache_dir.join(&trigrams_name);
@@ -298,7 +311,7 @@ impl IndexSnapshot {
         let content = ContentReader::open(&content_path)
             .map_err(|e| ReflexError::CacheCorrupted(format!("content.bin: {e:#}")))?;
 
-        let trigrams = if trigrams_path.exists() {
+        let mut trigrams = if trigrams_path.exists() {
             match TrigramIndex::load(&trigrams_path) {
                 Ok(index) => index,
                 // A format from another Reflex version is not corruption (see
@@ -326,6 +339,25 @@ impl IndexSnapshot {
             log::debug!("trigrams.bin not found, rebuilding from content store");
             crate::query::result::rebuild_trigram_index(&content)?
         };
+
+        // Planning sizes: the early-stop planner reads them instead of on-disk
+        // bytes (an index without them plans by bytes, as before).
+        if let Some(plan) = &plan_name {
+            let plan_path = cache_dir.join(plan);
+            if !plan_path.exists() {
+                return Err(anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{} is missing", plan),
+                ))
+                .context(ReflexError::CacheCorrupted(format!(
+                    "trigrams.bin: {} is missing",
+                    plan
+                ))));
+            }
+            trigrams
+                .attach_plan(&plan_path)
+                .map_err(|e| ReflexError::CacheCorrupted(format!("trigrams.bin: {e:#}")))?;
+        }
 
         if trigrams.file_count() != content.file_count() {
             return Err(ReflexError::CacheCorrupted(format!(
@@ -450,6 +482,8 @@ pub struct StoreSummary {
     pub content_files: Vec<PathBuf>,
     /// `trigrams.bin`-format files of the snapshot.
     pub trigram_files: Vec<PathBuf>,
+    /// Sidecars of the snapshot (planning sizes).
+    pub other_files: Vec<PathBuf>,
     /// Text bytes of the live files, when a manifest records it.
     pub live_corpus_bytes: Option<u64>,
     /// Distinct trigrams of the live files, when a manifest records it.
@@ -459,7 +493,10 @@ pub struct StoreSummary {
 impl StoreSummary {
     /// Every store file of the snapshot.
     pub fn files(&self) -> impl Iterator<Item = &PathBuf> {
-        self.content_files.iter().chain(&self.trigram_files)
+        self.content_files
+            .iter()
+            .chain(&self.trigram_files)
+            .chain(&self.other_files)
     }
 }
 
@@ -470,12 +507,14 @@ pub fn store_summary(cache_dir: &Path) -> StoreSummary {
         Ok(Some(m)) => StoreSummary {
             content_files: vec![cache_dir.join(&m.base.content)],
             trigram_files: vec![cache_dir.join(&m.base.trigrams)],
+            other_files: m.base.plan.iter().map(|p| cache_dir.join(p)).collect(),
             live_corpus_bytes: Some(m.live_corpus_bytes),
             live_trigrams: Some(m.live_trigrams),
         },
         _ => StoreSummary {
             content_files: vec![cache_dir.join(FIXED_CONTENT)],
             trigram_files: vec![cache_dir.join(FIXED_TRIGRAMS)],
+            other_files: Vec::new(),
             live_corpus_bytes: None,
             live_trigrams: None,
         },
@@ -490,6 +529,8 @@ mod tests {
     fn generation_file_names() {
         assert!(is_generation_file("content.12.bin"));
         assert!(is_generation_file("trigrams.3.bin"));
+        assert!(is_generation_file("trigrams.3.plan"));
+        assert!(!is_generation_file("content.3.plan"));
         assert!(!is_generation_file("content.bin"));
         assert!(!is_generation_file("trigrams.bin"));
         assert!(!is_generation_file("content.x.bin"));
@@ -499,12 +540,13 @@ mod tests {
     #[test]
     fn manifest_round_trip_and_checksum() {
         let temp = tempfile::TempDir::new().unwrap();
-        let (content, trigrams) = base_file_names(7);
+        let (content, trigrams, plan) = base_file_names(7);
         let m = Manifest::for_base(
             7,
             SegmentFiles {
                 content,
                 trigrams,
+                plan: Some(plan),
                 files: 3,
                 content_bytes: 100,
                 trigrams_bytes: 200,

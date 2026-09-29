@@ -365,8 +365,439 @@ impl FileLocation {
 /// streaming four ~750 KB lists that removed no candidate.
 const SKIP_BYTES_PER_CANDIDATE: usize = 2;
 
+/// Length in bytes of `v` as a varint.
+#[inline]
+pub(crate) fn varint_len(v: u32) -> u32 {
+    match v {
+        0..=0x7F => 1,
+        0x80..=0x3FFF => 2,
+        0x4000..=0x1F_FFFF => 3,
+        0x20_0000..=0xFFF_FFFF => 4,
+        _ => 5,
+    }
+}
+
+/// Planning size of one file's block: `1 + len(varint(n_lines << 1))` plus the
+/// line-delta varints. That is the block's V4 encoding with the file-id delta
+/// counted as one byte, whatever its real length.
+pub(crate) fn block_plan_size(lines: impl IntoIterator<Item = u32>) -> u32 {
+    let mut n = 0u32;
+    let mut size = 0u32;
+    let mut prev = 0u32;
+    for line in lines {
+        size += varint_len(line.wrapping_sub(prev));
+        prev = line;
+        n += 1;
+    }
+    1 + varint_len(n << 1) + size
+}
+
+/// Planning size of a sorted posting list: the sum of its blocks' planning sizes.
+///
+/// The early-stop planner orders and stops by this, not by on-disk bytes. On-disk
+/// bytes include each block's file-id delta, which depends on file ids; this
+/// does not, and it adds up per file. So an index made of a base, a delta and
+/// tombstones plans exactly like a full build of the same tree. It equals the
+/// on-disk size whenever every file-id delta is below 128.
+pub(crate) fn plan_size(locations: &[FileLocation]) -> u32 {
+    let mut total = 0u32;
+    let mut i = 0;
+    while i < locations.len() {
+        let file_id = locations[i].file_id;
+        let mut j = i + 1;
+        while j < locations.len() && locations[j].file_id == file_id {
+            j += 1;
+        }
+        total += block_plan_size(locations[i..j].iter().map(|l| l.line_no));
+        i = j;
+    }
+    total
+}
+
+const PLAN_MAGIC: &[u8; 4] = b"RFPL";
+const PLAN_VERSION: u32 = 1;
+const PLAN_HEADER: usize = 16;
+
+/// `trigrams.<g>.plan`: the planning size of each directory entry, in directory
+/// order. Header: magic `RFPL`, version u32, entry count u64; then one u32 each.
+pub(crate) struct PlanSizes {
+    mmap: memmap2::Mmap,
+    count: usize,
+}
+
+impl PlanSizes {
+    fn load(path: &Path) -> Result<Self> {
+        let file =
+            File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+        let mmap = unsafe {
+            memmap2::Mmap::map(&file)
+                .with_context(|| format!("Failed to mmap {}", path.display()))?
+        };
+        if mmap.len() < PLAN_HEADER || &mmap[0..4] != PLAN_MAGIC {
+            anyhow::bail!("{} is not a planning-size file", path.display());
+        }
+        if read_u32(&mmap, 4) != PLAN_VERSION {
+            anyhow::bail!("{} has an unsupported version", path.display());
+        }
+        let count = read_u64(&mmap, 8) as usize;
+        if mmap.len() != PLAN_HEADER + count * 4 {
+            anyhow::bail!("{} is truncated", path.display());
+        }
+        Ok(Self { mmap, count })
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> u32 {
+        read_u32(&self.mmap, PLAN_HEADER + index * 4)
+    }
+}
+
+/// Write a planning-size file (tmp + fsync + rename).
+pub(crate) fn write_plan_file(path: &Path, sizes: &[u32]) -> Result<()> {
+    let tmp = crate::atomic_write::tmp_path_for(path);
+    {
+        let mut w = std::io::BufWriter::new(
+            File::create(&tmp).with_context(|| format!("Failed to create {}", tmp.display()))?,
+        );
+        w.write_all(PLAN_MAGIC)?;
+        w.write_all(&PLAN_VERSION.to_le_bytes())?;
+        w.write_all(&(sizes.len() as u64).to_le_bytes())?;
+        for size in sizes {
+            w.write_all(&size.to_le_bytes())?;
+        }
+        w.flush()?;
+        w.get_ref().sync_all()?;
+    }
+    crate::atomic_write::atomic_replace(&tmp, path)
+        .with_context(|| format!("Failed to move {} into place", path.display()))
+}
+
+/// Dead file ids (one bit per id) of one segment.
+pub(crate) type DeadIds = [u64];
+
+#[inline]
+fn is_dead(dead: Option<&DeadIds>, id: u32) -> bool {
+    dead.is_some_and(|bits| {
+        bits.get((id / 64) as usize)
+            .is_some_and(|w| w & (1u64 << (id % 64)) != 0)
+    })
+}
+
+/// One segment's part of a trigram's posting list.
+#[derive(Clone, Copy)]
+pub(crate) struct ListPart<'a> {
+    /// The V4-encoded list.
+    pub data: &'a [u8],
+    /// Added to every decoded file id (the segment's first global id).
+    pub id_offset: u32,
+    /// Global ids to leave out (superseded or deleted files of this segment).
+    pub dead: Option<&'a DeadIds>,
+}
+
+/// A trigram's posting list over the segments of an index, as the planner sees it.
+pub(crate) struct TrigramList<'a> {
+    pub trigram: Trigram,
+    /// Planning size of the live postings; 0 means no live posting.
+    pub plan: u64,
+    /// Parts in ascending id order (each part's ids lie above the previous part's).
+    pub parts: Vec<ListPart<'a>>,
+}
+
+/// Every live posting of `list`, ascending.
+fn decode_list(list: &TrigramList) -> Result<Vec<FileLocation>> {
+    let mut out = Vec::new();
+    for part in &list.parts {
+        let mut cursor = PostingCursor::new(part.data)?;
+        while let Some(loc) = cursor.current() {
+            let id = loc.file_id + part.id_offset;
+            if !is_dead(part.dead, id) {
+                out.push(FileLocation::new(id, loc.line_no));
+            }
+            cursor.advance()?;
+        }
+    }
+    Ok(out)
+}
+
+/// The slice of `cands` whose ids fall in `parts[k]`'s range.
+fn part_range(cands: &[FileLocation], parts: &[ListPart], k: usize) -> std::ops::Range<usize> {
+    let lo = cands.partition_point(|c| c.file_id < parts[k].id_offset);
+    let hi = match parts.get(k + 1) {
+        Some(next) => cands.partition_point(|c| c.file_id < next.id_offset),
+        None => cands.len(),
+    };
+    lo..hi
+}
+
+/// Candidates shifted into a part's own id space.
+fn to_local(cands: &[FileLocation], offset: u32) -> Vec<FileLocation> {
+    cands
+        .iter()
+        .map(|c| FileLocation::new(c.file_id - offset, c.line_no))
+        .collect()
+}
+
+/// The candidates (sorted, key-unique, never dead) present in `list`.
+fn intersect_list(cands: &[FileLocation], list: &TrigramList) -> Result<Vec<FileLocation>> {
+    if let [part] = list.parts.as_slice()
+        && part.id_offset == 0
+    {
+        let mut cursor = PostingCursor::new(part.data)?;
+        return intersect_with_cursor(cands, &mut cursor);
+    }
+    let mut out = Vec::new();
+    for (k, part) in list.parts.iter().enumerate() {
+        let range = part_range(cands, &list.parts, k);
+        let local = to_local(&cands[range], part.id_offset);
+        let mut cursor = PostingCursor::new(part.data)?;
+        for hit in intersect_with_cursor(&local, &mut cursor)? {
+            out.push(FileLocation::new(hit.file_id + part.id_offset, hit.line_no));
+        }
+    }
+    Ok(out)
+}
+
+/// Set `keep[i]` for every candidate present in `list`.
+fn mark_list(cands: &[FileLocation], list: &TrigramList, keep: &mut [bool]) -> Result<()> {
+    for (k, part) in list.parts.iter().enumerate() {
+        let range = part_range(cands, &list.parts, k);
+        let mut cursor = PostingCursor::new(part.data)?;
+        if part.id_offset == 0 {
+            mark_with_cursor(&cands[range.clone()], &mut cursor, &mut keep[range])?;
+        } else {
+            let local = to_local(&cands[range.clone()], part.id_offset);
+            mark_with_cursor(&local, &mut cursor, &mut keep[range])?;
+        }
+    }
+    Ok(())
+}
+
+/// Candidate lines for a pattern's trigrams (sorted, deduplicated), each given as
+/// its list or `None` when absent. Smallest planning size first; with
+/// `allow_skip`, stop once the next list is much larger than the candidates left.
+pub(crate) fn plan_intersection(
+    lists: Vec<Option<TrigramList>>,
+    allow_skip: bool,
+) -> Vec<FileLocation> {
+    // Any missing (or fully dead) list means the pattern cannot match.
+    let mut lists: Vec<TrigramList> = match lists.into_iter().collect::<Option<Vec<_>>>() {
+        Some(l) => l,
+        None => return vec![],
+    };
+    if lists.is_empty() || lists.iter().any(|l| l.plan == 0) {
+        return vec![];
+    }
+
+    // Smallest list first: it is the only one fully decoded.
+    lists.sort_by_key(|l| l.plan);
+
+    let mut cands = match decode_list(&lists[0]) {
+        Ok(locations) => locations,
+        Err(e) => {
+            log::warn!(
+                "Failed to decompress posting list for trigram {}: {}",
+                lists[0].trigram,
+                e
+            );
+            return vec![];
+        }
+    };
+    cands.dedup_by_key(|l| key(l));
+
+    // Stream the remaining lists against the shrinking candidate set.
+    for list in &lists[1..] {
+        if cands.is_empty() {
+            break;
+        }
+        // Lists are ascending, so once one is too big to be worth decoding, all
+        // the remaining ones are too.
+        if allow_skip && list.plan as usize > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
+            log::debug!(
+                "Intersection stopped early: {} candidates, next list {} bytes",
+                cands.len(),
+                list.plan
+            );
+            break;
+        }
+        match intersect_list(&cands, list) {
+            Ok(next) => cands = next,
+            Err(e) => {
+                log::warn!(
+                    "Failed to decompress posting list for trigram {}: {}",
+                    list.trigram,
+                    e
+                );
+                return vec![];
+            }
+        }
+    }
+    cands
+}
+
+/// Case-insensitive candidate lines: `windows[w]` holds the lists of window `w`'s
+/// case variants that are present. See [`TrigramIndex::search_candidates_fold`].
+pub(crate) fn plan_fold_intersection(windows: Vec<Vec<TrigramList>>) -> Vec<FileLocation> {
+    // A window with no live variant cannot match in any casing.
+    let mut ws: Vec<(u64, Vec<TrigramList>)> = Vec::with_capacity(windows.len());
+    for variants in windows {
+        let live: Vec<TrigramList> = variants.into_iter().filter(|l| l.plan > 0).collect();
+        if live.is_empty() {
+            return vec![];
+        }
+        let weight = live.iter().map(|l| l.plan).sum();
+        ws.push((weight, live));
+    }
+    if ws.is_empty() {
+        return vec![];
+    }
+    ws.sort_by_key(|w| w.0);
+    let t_lookup = std::time::Instant::now();
+
+    // Cheapest window: decode every variant and merge.
+    let mut cands: Vec<FileLocation> = Vec::new();
+    for list in &ws[0].1 {
+        match decode_list(list) {
+            Ok(l) => cands.extend(l),
+            Err(e) => {
+                log::warn!(
+                    "Failed to decompress posting list for trigram {}: {}",
+                    list.trigram,
+                    e
+                );
+                return vec![];
+            }
+        }
+    }
+    let t_decode = t_lookup.elapsed();
+    let raw = cands.len();
+    cands.sort_unstable();
+    cands.dedup_by_key(|l| key(l));
+    log::debug!(
+        "Fold first window: {} variants, {} bytes, {} raw postings -> {} keys; decode {:?}, sort+dedup {:?}",
+        ws[0].1.len(),
+        ws[0].0,
+        raw,
+        cands.len(),
+        t_decode,
+        t_lookup.elapsed() - t_decode
+    );
+
+    for (weight, lists) in &ws[1..] {
+        if cands.is_empty() {
+            break;
+        }
+        // Each variant walks the whole candidate set once (one seek per
+        // candidate, about the cost of decoding one byte), on top of decoding its
+        // list. Kubernetes, `(?i)kubernetes`: the second window cost 20 ms to drop
+        // 20k of 134k candidates, which the verifier would have handled in 0.3 ms.
+        let cost = (*weight as usize).saturating_add(lists.len().saturating_mul(cands.len()));
+        if cost > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
+            log::debug!(
+                "Fold intersection stopped early: {} candidates, next window {} bytes x {} variants",
+                cands.len(),
+                weight,
+                lists.len()
+            );
+            break;
+        }
+        let mut keep = vec![false; cands.len()];
+        let mut window_ok = true;
+        for list in lists {
+            if let Err(e) = mark_list(&cands, list, &mut keep) {
+                // Skipping a window keeps the result a superset.
+                log::warn!(
+                    "Failed to read posting list for trigram {}: {}; window skipped",
+                    list.trigram,
+                    e
+                );
+                window_ok = false;
+                break;
+            }
+        }
+        if !window_ok {
+            continue;
+        }
+        cands = cands
+            .iter()
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(c, _)| *c)
+            .collect();
+    }
+    cands
+}
+
+/// A list held by one segment.
+pub(crate) fn single_list(trigram: Trigram, part: ListPart<'_>, plan: u64) -> TrigramList<'_> {
+    TrigramList {
+        trigram,
+        plan,
+        parts: vec![part],
+    }
+}
+
+/// A pattern's distinct trigrams, sorted; empty when it is too short (the caller
+/// then scans).
+pub(crate) fn pattern_trigrams(pattern: &str) -> Vec<Trigram> {
+    if pattern.len() < 3 {
+        // Pattern too short for trigrams - caller must fall back to full scan
+        return vec![];
+    }
+    let mut trigrams = extract_trigrams(pattern);
+    // A repeated trigram (e.g. "aaaa") would otherwise be intersected with itself
+    trigrams.sort_unstable();
+    trigrams.dedup();
+    trigrams
+}
+
+/// The case variants of each 3-byte window of an ASCII literal (identical windows
+/// once, sorted); `None` when the literal is too short or not ASCII.
+pub(crate) fn fold_windows(literal: &[u8]) -> Option<Vec<Vec<Trigram>>> {
+    if literal.len() < 3 || !literal.is_ascii() {
+        return None;
+    }
+    // Variant set per window; identical windows are intersected once.
+    let mut windows: Vec<Vec<Trigram>> = literal.windows(3).map(case_variants).collect();
+    windows.sort_unstable();
+    windows.dedup();
+    Some(windows)
+}
+
+/// The trigrams whose lines hold a Kelvin sign (`E2 84 AA`) or a long s
+/// (`C5 BF`), for [`TrigramIndex::exotic_fold_lines`]: every `C5 BF ?` trigram
+/// (one range), and the Kelvin sign and every `? C5 BF` trigram (singles).
+pub(crate) const EXOTIC_LONG_S_RANGE: (Trigram, Trigram) = (0xC5_BF_00, 0xC5_BF_FF);
+pub(crate) fn exotic_singles() -> impl Iterator<Item = Trigram> {
+    const KELVIN: Trigram = 0xE2_84_AA;
+    std::iter::once(KELVIN).chain((0u32..=0xFF).map(|first| first << 16 | 0xC5_BF))
+}
+
+/// Every live posting of `lists`, merged, sorted and deduplicated.
+pub(crate) fn union_lists(lists: &[TrigramList]) -> Vec<FileLocation> {
+    let mut out = Vec::new();
+    for list in lists {
+        match decode_list(list) {
+            Ok(l) => out.extend(l),
+            Err(e) => log::warn!(
+                "Failed to decompress posting list for trigram {}: {}",
+                list.trigram,
+                e
+            ),
+        }
+    }
+    out.sort_unstable();
+    out.dedup_by_key(|l| key(l));
+    out
+}
+
 #[derive(Debug, Clone)]
 struct DirectoryEntry {
+    /// Position in the directory (the planning-size file is indexed the same way)
+    index: usize,
     /// The trigram value (for binary search)
     trigram: Trigram,
     /// Absolute byte offset in the file where compressed data starts
@@ -409,6 +840,9 @@ pub struct TrigramIndex {
     /// Cap on posting list size; 0 = unlimited. Enforced at finalize time.
     /// Bounds query latency for high-frequency trigrams (trigram-density lens).
     max_posting_list_entries: usize,
+    /// Planning size of every directory entry (lazy mode), when the index was
+    /// written with one; see [`plan_size`].
+    plan: Option<PlanSizes>,
 }
 
 impl TrigramIndex {
@@ -424,6 +858,7 @@ impl TrigramIndex {
             mmap: None,
             num_trigrams: 0,
             max_posting_list_entries: 0,
+            plan: None,
         }
     }
 
@@ -502,6 +937,7 @@ impl TrigramIndex {
                 std::cmp::Ordering::Greater => hi = mid,
                 std::cmp::Ordering::Equal => {
                     return Some(DirectoryEntry {
+                        index: mid,
                         trigram,
                         data_offset: read_u64(mmap, off + 4),
                         compressed_size: read_u32(mmap, off + 12),
@@ -614,97 +1050,26 @@ impl TrigramIndex {
     }
 
     fn search_impl(&self, pattern: &str, allow_skip: bool) -> Vec<FileLocation> {
-        if pattern.len() < 3 {
-            // Pattern too short for trigrams - caller must fall back to full scan
-            return vec![];
-        }
-
-        let mut trigrams = extract_trigrams(pattern);
-        // A repeated trigram (e.g. "aaaa") would otherwise be intersected with itself
-        trigrams.sort_unstable();
-        trigrams.dedup();
+        let trigrams = pattern_trigrams(pattern);
         if trigrams.is_empty() {
             return vec![];
         }
 
         // Check if we're in lazy-loaded mode or in-memory mode
-        if let Some(ref mmap) = self.mmap {
+        if self.mmap.is_some() {
             // Lazy-loaded mode: look up every directory entry first; any miss
             // means the pattern cannot match.
-            let mut entries: Vec<DirectoryEntry> = Vec::with_capacity(trigrams.len());
-            for trigram in &trigrams {
-                match self.find_entry(*trigram) {
-                    Some(entry) => entries.push(entry),
-                    None => return vec![],
-                }
-            }
-
-            // Smallest compressed list first: it is the only one fully decoded.
-            entries.sort_by_key(|e| e.compressed_size);
-
-            let mut cands = match decompress_posting_list(
-                mmap,
-                entries[0].data_offset,
-                entries[0].compressed_size,
-            ) {
-                Ok(locations) => locations,
-                Err(e) => {
-                    log::warn!(
-                        "Failed to decompress posting list for trigram {}: {}",
-                        entries[0].trigram,
-                        e
-                    );
-                    return vec![];
-                }
-            };
-            cands.dedup_by_key(|l| key(l));
-
-            // Stream the remaining lists against the shrinking candidate set.
-            for entry in &entries[1..] {
-                if cands.is_empty() {
-                    break;
-                }
-                // Lists are ascending, so once one is too big to be worth
-                // decoding, all the remaining ones are too.
-                if allow_skip
-                    && entry.compressed_size as usize
-                        > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE)
-                {
-                    log::debug!(
-                        "Intersection stopped early: {} candidates, next list {} bytes",
-                        cands.len(),
-                        entry.compressed_size
-                    );
-                    break;
-                }
-                let start = entry.data_offset as usize;
-                let end = start + entry.compressed_size as usize;
-                if end > mmap.len() {
-                    log::warn!(
-                        "Posting list out of bounds for trigram {}: offset={}, size={}, mmap_len={}",
-                        entry.trigram,
-                        entry.data_offset,
-                        entry.compressed_size,
-                        mmap.len()
-                    );
-                    return vec![];
-                }
-                let result = PostingCursor::new(&mmap[start..end])
-                    .and_then(|mut cursor| intersect_with_cursor(&cands, &mut cursor));
-                match result {
-                    Ok(next) => cands = next,
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to decompress posting list for trigram {}: {}",
-                            entry.trigram,
-                            e
-                        );
-                        return vec![];
-                    }
-                }
-            }
-
-            cands
+            let lists = trigrams
+                .iter()
+                .map(|&t| {
+                    self.list_part(t).map(|(part, plan)| TrigramList {
+                        trigram: t,
+                        plan,
+                        parts: vec![part],
+                    })
+                })
+                .collect();
+            plan_intersection(lists, allow_skip)
         } else {
             // In-memory mode: use pre-loaded index
             let mut posting_lists: Vec<&[FileLocation]> = Vec::with_capacity(trigrams.len());
@@ -756,114 +1121,29 @@ impl TrigramIndex {
     /// parity with the regex engine. A non-ASCII literal is not supported:
     /// the caller must fall back to a scan.
     pub fn search_candidates_fold(&self, literal: &[u8]) -> Vec<FileLocation> {
-        if literal.len() < 3 || !literal.is_ascii() {
+        let Some(windows) = fold_windows(literal) else {
             return vec![];
-        }
+        };
 
-        // Variant set per window; identical windows are intersected once.
-        let mut windows: Vec<Vec<Trigram>> = literal.windows(3).map(case_variants).collect();
-        windows.sort_unstable();
-        windows.dedup();
-
-        if let Some(ref mmap) = self.mmap {
-            // (weight, present variants) per window; a window with no present
+        if self.mmap.is_some() {
+            // The present variants of each window; a window with no present
             // variant cannot match in any casing.
-            let mut ws: Vec<(usize, Vec<DirectoryEntry>)> = Vec::with_capacity(windows.len());
-            for variants in &windows {
-                let entries: Vec<DirectoryEntry> = variants
-                    .iter()
-                    .filter_map(|t| self.find_entry(*t))
-                    .collect();
-                if entries.is_empty() {
-                    return vec![];
-                }
-                let weight = entries.iter().map(|e| e.compressed_size as usize).sum();
-                ws.push((weight, entries));
-            }
-            ws.sort_by_key(|w| w.0);
-            let t_lookup = std::time::Instant::now();
-
-            // Cheapest window: decode every variant and merge.
-            let mut cands: Vec<FileLocation> = Vec::new();
-            for entry in &ws[0].1 {
-                match decompress_posting_list(mmap, entry.data_offset, entry.compressed_size) {
-                    Ok(list) => cands.extend(list),
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to decompress posting list for trigram {}: {}",
-                            entry.trigram,
-                            e
-                        );
-                        return vec![];
-                    }
-                }
-            }
-            let t_decode = t_lookup.elapsed();
-            let raw = cands.len();
-            cands.sort_unstable();
-            cands.dedup_by_key(|l| key(l));
-            log::debug!(
-                "Fold first window: {} variants, {} bytes, {} raw postings -> {} keys; decode {:?}, sort+dedup {:?}",
-                ws[0].1.len(),
-                ws[0].0,
-                raw,
-                cands.len(),
-                t_decode,
-                t_lookup.elapsed() - t_decode
-            );
-
-            for (weight, entries) in &ws[1..] {
-                if cands.is_empty() {
-                    break;
-                }
-                // Each variant walks the whole candidate set once (one seek per
-                // candidate, about the cost of decoding one byte), on top of
-                // decoding its list. Kubernetes, `(?i)kubernetes`: the second
-                // window cost 20 ms to drop 20k of 134k candidates, which the
-                // verifier would have handled in 0.3 ms.
-                let cost = weight.saturating_add(entries.len().saturating_mul(cands.len()));
-                if cost > cands.len().saturating_mul(SKIP_BYTES_PER_CANDIDATE) {
-                    log::debug!(
-                        "Fold intersection stopped early: {} candidates, next window {} bytes x {} variants",
-                        cands.len(),
-                        weight,
-                        entries.len()
-                    );
-                    break;
-                }
-                let mut keep = vec![false; cands.len()];
-                let mut window_ok = true;
-                for entry in entries {
-                    let start = entry.data_offset as usize;
-                    let end = start + entry.compressed_size as usize;
-                    let result = if end > mmap.len() {
-                        Err(anyhow::anyhow!("posting list out of bounds"))
-                    } else {
-                        PostingCursor::new(&mmap[start..end])
-                            .and_then(|mut cur| mark_with_cursor(&cands, &mut cur, &mut keep))
-                    };
-                    if let Err(e) = result {
-                        // Skipping a window keeps the result a superset.
-                        log::warn!(
-                            "Failed to read posting list for trigram {}: {}; window skipped",
-                            entry.trigram,
-                            e
-                        );
-                        window_ok = false;
-                        break;
-                    }
-                }
-                if !window_ok {
-                    continue;
-                }
-                cands = cands
-                    .iter()
-                    .zip(&keep)
-                    .filter(|(_, k)| **k)
-                    .map(|(c, _)| *c)
-                    .collect();
-            }
-            cands
+            let lists = windows
+                .iter()
+                .map(|variants| {
+                    variants
+                        .iter()
+                        .filter_map(|&t| {
+                            self.list_part(t).map(|(part, plan)| TrigramList {
+                                trigram: t,
+                                plan,
+                                parts: vec![part],
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
+            plan_fold_intersection(lists)
         } else {
             let mut ws: Vec<(usize, Vec<&[FileLocation]>)> = Vec::with_capacity(windows.len());
             for variants in &windows {
@@ -921,37 +1201,27 @@ impl TrigramIndex {
     /// line long enough to hold a ≥3-byte literal. On code corpora every lookup
     /// misses, so this costs a few hundred directory probes and returns nothing.
     pub fn exotic_fold_lines(&self) -> Vec<FileLocation> {
-        const KELVIN: Trigram = 0xE2_84_AA;
-        const LONG_S_LO: Trigram = 0xC5_BF_00;
-        const LONG_S_HI: Trigram = 0xC5_BF_FF;
+        let (long_s_lo, long_s_hi) = EXOTIC_LONG_S_RANGE;
 
         let mut out: Vec<FileLocation> = Vec::new();
-        if let Some(ref mmap) = self.mmap {
-            let mut entries: Vec<DirectoryEntry> = Vec::new();
-            entries.extend(self.find_entry(KELVIN));
-            entries.extend(self.dir_range(LONG_S_LO, LONG_S_HI));
-            for first in 0u32..=0xFF {
-                entries.extend(self.find_entry(first << 16 | 0xC5_BF));
+        if self.mmap.is_some() {
+            let mut lists: Vec<TrigramList> = Vec::new();
+            lists.extend(
+                self.list_parts_in(long_s_lo, long_s_hi)
+                    .into_iter()
+                    .map(|(t, part, plan)| single_list(t, part, plan)),
+            );
+            for t in exotic_singles() {
+                lists.extend(self.list_part(t).map(|(p, plan)| single_list(t, p, plan)));
             }
-            for entry in entries {
-                match decompress_posting_list(mmap, entry.data_offset, entry.compressed_size) {
-                    Ok(list) => out.extend(list),
-                    Err(e) => log::warn!(
-                        "Failed to decompress posting list for trigram {}: {}",
-                        entry.trigram,
-                        e
-                    ),
-                }
-            }
+            out = union_lists(&lists);
         } else {
-            let lo = self.index.partition_point(|(t, _)| *t < LONG_S_LO);
-            let hi = self.index.partition_point(|(t, _)| *t <= LONG_S_HI);
+            let lo = self.index.partition_point(|(t, _)| *t < long_s_lo);
+            let hi = self.index.partition_point(|(t, _)| *t <= long_s_hi);
             for (_, list) in &self.index[lo..hi] {
                 out.extend(list.iter().copied());
             }
-            let mut singles: Vec<Trigram> = (0u32..=0xFF).map(|f| f << 16 | 0xC5_BF).collect();
-            singles.push(KELVIN);
-            for t in singles {
+            for t in exotic_singles() {
                 if let Ok(i) = self.index.binary_search_by_key(&t, |(x, _)| *x) {
                     out.extend(self.index[i].1.iter().copied());
                 }
@@ -986,6 +1256,7 @@ impl TrigramIndex {
                 break;
             }
             out.push(DirectoryEntry {
+                index: i,
                 trigram,
                 data_offset: read_u64(mmap, off + 4),
                 compressed_size: read_u32(mmap, off + 12),
@@ -1061,6 +1332,7 @@ impl TrigramIndex {
             encode_posting_list(locations, &mut compressed)?;
 
             directory.push(DirectoryEntry {
+                index: directory.len(),
                 trigram: *trigram,
                 data_offset: current_offset,
                 compressed_size: compressed.len() as u32,
@@ -1219,7 +1491,77 @@ impl TrigramIndex {
             mmap: Some(mmap), // Keep mmap alive for lazy decompression!
             num_trigrams,
             max_posting_list_entries: 0,
+            plan: None,
         })
+    }
+
+    /// Attach the planning sizes written next to this index (`trigrams.<g>.plan`).
+    /// The early-stop planner then orders and stops by planning size instead of
+    /// on-disk bytes (see [`plan_size`]).
+    pub fn attach_plan(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let plan = PlanSizes::load(path.as_ref())?;
+        if plan.len() != self.num_trigrams {
+            anyhow::bail!(
+                "{} lists {} trigrams, the index {}",
+                path.as_ref().display(),
+                plan.len(),
+                self.num_trigrams
+            );
+        }
+        self.plan = Some(plan);
+        Ok(())
+    }
+
+    /// Whether planning sizes are attached.
+    pub fn has_plan(&self) -> bool {
+        self.plan.is_some()
+    }
+
+    /// One trigram's list as the planner sees it (lazy mode): its bytes and its
+    /// planning size (on-disk bytes when no planning sizes are attached).
+    pub(crate) fn list_part(&self, trigram: Trigram) -> Option<(ListPart<'_>, u64)> {
+        let entry = self.find_entry(trigram)?;
+        self.part_of(&entry)
+    }
+
+    /// Every list with `lo <= trigram <= hi` (lazy mode).
+    pub(crate) fn list_parts_in(
+        &self,
+        lo: Trigram,
+        hi: Trigram,
+    ) -> Vec<(Trigram, ListPart<'_>, u64)> {
+        self.dir_range(lo, hi)
+            .into_iter()
+            .filter_map(|e| self.part_of(&e).map(|(part, plan)| (e.trigram, part, plan)))
+            .collect()
+    }
+
+    fn part_of(&self, entry: &DirectoryEntry) -> Option<(ListPart<'_>, u64)> {
+        let mmap = self.mmap.as_ref()?;
+        let start = entry.data_offset as usize;
+        let end = start + entry.compressed_size as usize;
+        if end > mmap.len() {
+            log::warn!(
+                "Posting list out of bounds for trigram {}: offset={}, size={}, mmap_len={}",
+                entry.trigram,
+                entry.data_offset,
+                entry.compressed_size,
+                mmap.len()
+            );
+            return None;
+        }
+        let plan = match &self.plan {
+            Some(p) => p.get(entry.index) as u64,
+            None => entry.compressed_size as u64,
+        };
+        Some((
+            ListPart {
+                data: &mmap[start..end],
+                id_offset: 0,
+                dead: None,
+            },
+            plan,
+        ))
     }
 }
 

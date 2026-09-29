@@ -1009,7 +1009,7 @@ impl Indexer {
         let mut content_writer = ContentWriter::new();
 
         // Initialize content writer to start streaming writes immediately
-        let (content_name, trigrams_name) = crate::snapshot::base_file_names(generation);
+        let (content_name, trigrams_name, plan_name) = crate::snapshot::base_file_names(generation);
         let content_path = cache_dir.join(&content_name);
         content_writer
             .init(content_path.clone())
@@ -1262,7 +1262,7 @@ impl Indexer {
         let trigrams_path = cache_dir.join(&trigrams_name);
         let write_start = Instant::now();
         trigram_builder
-            .write(&pool, &trigrams_path)
+            .write_with_plan(&pool, &trigrams_path, Some(&cache_dir.join(&plan_name)))
             .context("Failed to write trigram index")?;
         log::info!(
             "phase trigram write: {} trigrams, {} files, {} ms",
@@ -1296,6 +1296,7 @@ impl Indexer {
             crate::snapshot::SegmentFiles {
                 content: content_name.clone(),
                 trigrams: trigrams_name.clone(),
+                plan: Some(plan_name.clone()),
                 files: content_writer.file_count() as u64,
                 content_bytes: std::fs::metadata(&content_path)?.len(),
                 trigrams_bytes: std::fs::metadata(&trigrams_path)?.len(),

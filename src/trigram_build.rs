@@ -31,7 +31,8 @@
 
 use crate::trigram::{
     DIR_ENTRY_SIZE, FileLocation, HEADER_SIZE, MAGIC, PATHS_OFFSET_OFFSET, Trigram, VERSION,
-    decode_posting_list, encode_posting_list, scan_line_trigrams, skip_varint, write_varint,
+    decode_posting_list, encode_posting_list, plan_size, scan_line_trigrams, skip_varint,
+    write_plan_file, write_varint,
 };
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -49,11 +50,11 @@ const SHARD_SPAN: usize = 1 << 16;
 const SHARDS_PER_ROUND: usize = 64;
 /// Magic of a partial file. Partials never outlive the index run that wrote them.
 const PARTIAL_MAGIC: &[u8; 4] = b"RFTP";
-const PARTIAL_VERSION: u32 = 2;
+const PARTIAL_VERSION: u32 = 3;
 const PARTIAL_HEADER: usize = 8;
 /// Fixed part of a partial record: trigram, n_postings, first_file_id,
-/// last_file_id, enc_len.
-const RECORD_HEADER: usize = 20;
+/// last_file_id, enc_len, planning size.
+const RECORD_HEADER: usize = 24;
 /// Writer buffer for the final file and for a partial on disk.
 const WRITE_BUF: usize = 16 * 1024 * 1024;
 
@@ -215,6 +216,7 @@ fn build_shard(
         records.extend_from_slice(&list[0].file_id.to_le_bytes());
         records.extend_from_slice(&list[n - 1].file_id.to_le_bytes());
         records.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        records.extend_from_slice(&plan_size(list).to_le_bytes());
         records.extend_from_slice(encoded);
         seen[t / 64] |= 1u64 << (t % 64);
     }
@@ -253,6 +255,8 @@ struct Record {
     n_postings: u32,
     first_file_id: u32,
     last_file_id: u32,
+    /// Planning size of this batch's part of the list (see `trigram::plan_size`).
+    plan: u32,
     bytes: Vec<u8>,
 }
 
@@ -316,6 +320,7 @@ impl PartialReader {
             n_postings: u(4),
             first_file_id: u(8),
             last_file_id: u(12),
+            plan: u(20),
             bytes,
         });
         Ok(())
@@ -445,6 +450,17 @@ impl TrigramIndexBuilder {
     /// Flush what is pending, merge every partial into `path` (crash-safe:
     /// `<path>.tmp` + fsync + rename), and remove the partials.
     pub fn write(&mut self, pool: &rayon::ThreadPool, path: &Path) -> Result<()> {
+        self.write_with_plan(pool, path, None)
+    }
+
+    /// [`write`](Self::write), plus the planning size of every directory entry
+    /// to `plan_path` (see `trigram::plan_size`).
+    pub fn write_with_plan(
+        &mut self,
+        pool: &rayon::ThreadPool,
+        path: &Path,
+        plan_path: Option<&Path>,
+    ) -> Result<()> {
         // A batch still in memory spills to disk only if others already did.
         let to_disk = self
             .partials
@@ -452,7 +468,10 @@ impl TrigramIndexBuilder {
             .any(|p| matches!(p, PartialSource::File(_)));
         self.flush_batch(pool, to_disk)?;
 
-        let result = self.merge(path);
+        let result = self.merge(path).and_then(|plans| match plan_path {
+            Some(p) => write_plan_file(p, &plans),
+            None => Ok(()),
+        });
         self.cleanup_partials();
         result
     }
@@ -466,7 +485,9 @@ impl TrigramIndexBuilder {
         let _ = std::fs::remove_dir(&self.temp_dir);
     }
 
-    fn merge(&mut self, output_path: &Path) -> Result<()> {
+    /// Merge the partials into `output_path`; returns each directory entry's
+    /// planning size.
+    fn merge(&mut self, output_path: &Path) -> Result<Vec<u32>> {
         let num_trigrams = self.trigram_count() as u64;
         let num_files = self.files.len() as u64;
         let data_start = (HEADER_SIZE + num_trigrams as usize * DIR_ENTRY_SIZE) as u64;
@@ -512,6 +533,7 @@ impl TrigramIndexBuilder {
 
         let cap = self.max_posting_list_entries;
         let mut directory: Vec<(Trigram, u64, u32)> = Vec::with_capacity(num_trigrams as usize);
+        let mut plans: Vec<u32> = Vec::with_capacity(num_trigrams as usize);
         let mut offset = data_start;
         let mut same: Vec<usize> = Vec::new();
         let mut capped: Vec<FileLocation> = Vec::new();
@@ -551,6 +573,7 @@ impl TrigramIndexBuilder {
                 encoded.clear();
                 encode_posting_list(&capped, &mut encoded)?;
                 writer.write_all(&encoded)?;
+                plans.push(plan_size(&capped));
                 encoded.len() as u32
             } else {
                 let mut written = 0usize;
@@ -575,6 +598,11 @@ impl TrigramIndexBuilder {
                     }
                     prev_last = Some(rec.last_file_id);
                 }
+                plans.push(
+                    same.iter()
+                        .map(|&i| readers[i].current.as_ref().unwrap().plan)
+                        .sum(),
+                );
                 written as u32
             };
 
@@ -627,7 +655,7 @@ impl TrigramIndexBuilder {
             num_files,
             output_path.display()
         );
-        Ok(())
+        Ok(plans)
     }
 }
 
@@ -717,6 +745,82 @@ mod tests {
         }
         builder.write(&pool, path).unwrap();
         builder
+    }
+
+    /// Every trigram of `files`, sorted and deduplicated.
+    fn all_trigrams(files: &[(PathBuf, String)]) -> Vec<Trigram> {
+        let mut out: Vec<Trigram> = files
+            .iter()
+            .flat_map(|(_, c)| crate::trigram::extract_trigrams(c))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Build with the builder in several batches, write the planning sizes, and
+    /// load both.
+    fn build_with_plan(files: &[(PathBuf, String)], temp: &Path, batch: usize) -> TrigramIndex {
+        let pool = pool();
+        let mut builder = TrigramIndexBuilder::new(temp.join("parts"));
+        let mut scratch = Vec::new();
+        for (i, (p, content)) in files.iter().enumerate() {
+            builder.add_file(p.clone(), extract_trigram_run(content, &mut scratch));
+            if (i + 1) % batch == 0 {
+                builder.flush_batch(&pool, true).unwrap();
+            }
+        }
+        let path = temp.join("t.bin");
+        let plan = temp.join("t.plan");
+        builder.write_with_plan(&pool, &path, Some(&plan)).unwrap();
+        let mut index = TrigramIndex::load(&path).unwrap();
+        index.attach_plan(&plan).unwrap();
+        index
+    }
+
+    #[test]
+    fn planning_sizes_match_every_list() {
+        // More than 128 files, and a token only files 0 and 200 carry, so a
+        // file-id delta of 128 or more occurs.
+        let mut files = synthetic_files(0xbeef, 300);
+        files[0].1.push_str("\nqqzvw rare\n");
+        files[200].1.push_str("\nqqzvw rare\n");
+        let temp = TempDir::new().unwrap();
+        let index = build_with_plan(&files, temp.path(), 37);
+
+        let mut mem = TrigramIndex::new();
+        for (p, content) in &files {
+            let id = mem.add_file(p.clone());
+            mem.index_file(id, content);
+        }
+        mem.finalize();
+
+        let mut differs = 0;
+        for t in all_trigrams(&files) {
+            let list = mem.get_posting_list(t).expect("trigram present");
+            let (part, plan) = index.list_part(t).expect("trigram present");
+            assert_eq!(
+                plan,
+                crate::trigram::plan_size(list) as u64,
+                "trigram {t:06X}"
+            );
+            assert!(plan <= part.data.len() as u64);
+            if plan != part.data.len() as u64 {
+                differs += 1;
+            }
+        }
+        assert!(differs > 0, "some file-id delta reached 128");
+    }
+
+    #[test]
+    fn planning_size_is_the_on_disk_size_below_128_files() {
+        let files = synthetic_files(0xf00d, 128);
+        let temp = TempDir::new().unwrap();
+        let index = build_with_plan(&files, temp.path(), 50);
+        for t in all_trigrams(&files) {
+            let (part, plan) = index.list_part(t).expect("trigram present");
+            assert_eq!(plan, part.data.len() as u64, "trigram {t:06X}");
+        }
     }
 
     #[test]
