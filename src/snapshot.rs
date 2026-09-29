@@ -740,6 +740,12 @@ impl IndexSnapshot {
         segment.content.get_file_content(local)
     }
 
+    /// Length of a file's text, from the entry table (no content page touched).
+    pub fn file_len(&self, file_id: u32) -> Option<u64> {
+        let (segment, local) = self.route(file_id);
+        segment.content.file_len(local)
+    }
+
     /// Path of a live file (`None` for an id that is out of range or dead).
     pub fn get_file_path(&self, file_id: u32) -> Option<&Path> {
         if !self.is_live(file_id) {

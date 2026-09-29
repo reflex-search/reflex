@@ -374,3 +374,69 @@ fn nothing_changed_publishes_nothing() {
     let after = manifest(root);
     assert_eq!(before.generation, after.generation);
 }
+
+#[test]
+fn a_merge_is_byte_identical_to_a_fresh_build() {
+    let temp = workspace();
+    let root = temp.path();
+    index(root);
+    write(root, "src/m05.rs", "pub fn handler_5() { edited(); }\n");
+    index(root);
+    fs::remove_file(root.join("py/p03.py")).unwrap();
+    index(root);
+    write(
+        root,
+        "web/new.ts",
+        "export const fresh = 1; // shared_token\n",
+    );
+    index_with_limits(root, 0, 0); // every change merges into a new base
+    let merged = manifest(root);
+    assert!(merged.base_only());
+    let cache = root.join(".reflex");
+    let read = |cache: &Path, m: &Manifest| -> Vec<Vec<u8>> {
+        [
+            &m.base.content,
+            &m.base.trigrams,
+            m.base.plan.as_ref().unwrap(),
+        ]
+        .iter()
+        .map(|name| fs::read(cache.join(name)).unwrap())
+        .collect()
+    };
+    let merged_bytes = read(&cache, &merged);
+
+    fs::rename(&cache, root.join(".reflex-merged")).unwrap();
+    index(root);
+    let fresh_bytes = read(&cache, &manifest(root));
+    fs::remove_dir_all(&cache).unwrap();
+    fs::rename(root.join(".reflex-merged"), &cache).unwrap();
+
+    for (k, (m, f)) in merged_bytes.iter().zip(&fresh_bytes).enumerate() {
+        assert!(m == f, "store {k} differs from a fresh build's");
+    }
+    assert_matches_fresh(root, "merge");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_merge_takes_unchanged_files_from_the_stores() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = workspace();
+    let root = temp.path();
+    index(root);
+    // Unreadable, but its size and mtime are as indexed (chmod moves ctime only).
+    let kept = root.join("src/m07.rs");
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&kept).is_ok() {
+        return; // running as root: permissions do not stop the read
+    }
+    write(root, "src/m08.rs", "pub fn handler_8() { edited(); }\n");
+    index_with_limits(root, 0, 0);
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(manifest(root).base_only());
+    let (paths, _, _) = shape(root);
+    assert!(
+        paths.contains("src/m07.rs"),
+        "the merge read m07.rs from the stores"
+    );
+}

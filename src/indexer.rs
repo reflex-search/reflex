@@ -97,6 +97,8 @@ struct Rewrite {
     rel: String,
     /// The path to read, as the walker names it.
     path: PathBuf,
+    /// Size from the walk's stat (the merge-limit check before any read).
+    size: u64,
     walk_seq: i64,
     dirty: bool,
 }
@@ -1342,6 +1344,7 @@ impl Indexer {
                 rewrites.push(Rewrite {
                     rel: rel.clone(),
                     path: found_files[i].clone(),
+                    size: found_metas[i].as_ref().map_or(0, |md| md.len()),
                     walk_seq: seq_of[rel],
                     dirty,
                 });
@@ -1769,6 +1772,7 @@ impl Indexer {
                         rewrites.push(Rewrite {
                             rel: rel.clone(),
                             path: files[i].clone(),
+                            size: sizes[i],
                             walk_seq: seqs[i],
                             dirty,
                         });
@@ -1878,6 +1882,28 @@ impl Indexer {
         let mut pool_ms = 0u128;
         let mut flush_ms = 0u128;
 
+        // A merge: when the published stores match meta.db, a file whose bytes
+        // are unchanged takes its text from them instead of the disk. Same text,
+        // same order, same builder: the new base is byte-identical to a build
+        // that reads every file.
+        let merge_source: Option<(crate::snapshot::IndexSnapshot, HashMap<String, u32>)> =
+            if stores_ok {
+                crate::snapshot::IndexSnapshot::open(&cache_dir)
+                    .ok()
+                    .map(|snapshot| {
+                        let ids = snapshot
+                            .live_ids()
+                            .filter_map(|id| {
+                                Some((snapshot.get_file_path(id)?.to_str()?.to_string(), id))
+                            })
+                            .collect();
+                        (snapshot, ids)
+                    })
+            } else {
+                None
+            };
+        let from_snapshot = std::sync::atomic::AtomicUsize::new(0);
+
         // Spawn a background thread to update progress bar and call callback during parallel processing
         let counter_for_thread = Arc::clone(&progress_counter);
         let status_for_thread = Arc::clone(&progress_status);
@@ -1950,7 +1976,33 @@ impl Indexer {
                 batch_range
                     .into_par_iter()
                     .map_init(Vec::<u64>::new, |trigram_scratch, i| {
-                        let result = self.process_file(&ctx, i, trigram_scratch);
+                        let reused = match &merge_source {
+                            Some((snapshot, ids))
+                                if matches!(
+                                    status[i],
+                                    FileStatus::Unchanged | FileStatus::Touched
+                                ) =>
+                            {
+                                ids.get(&rels[i]).and_then(|&id| {
+                                    self.reuse_file(
+                                        &ctx,
+                                        snapshot,
+                                        id,
+                                        i,
+                                        &metas[i],
+                                        trigram_scratch,
+                                    )
+                                })
+                            }
+                            _ => None,
+                        };
+                        let result = match reused {
+                            Some(r) => {
+                                from_snapshot.fetch_add(1, Ordering::Relaxed);
+                                Some(r)
+                            }
+                            None => self.process_file(&ctx, i, trigram_scratch),
+                        };
                         counter_clone.fetch_add(1, Ordering::Relaxed);
                         result
                     })
@@ -2004,11 +2056,13 @@ impl Indexer {
             flush_ms += flush_start.elapsed().as_millis();
         }
         log::info!(
-            "phase read+extract: {} ms in pool, {} ms building trigram batches, {} ms total",
+            "phase read+extract: {} ms in pool, {} ms building trigram batches, {} ms total; {} files from the published stores",
             pool_ms,
             flush_ms,
-            batch_phase_start.elapsed().as_millis()
+            batch_phase_start.elapsed().as_millis(),
+            from_snapshot.load(Ordering::Relaxed)
         );
+        drop(merge_source);
 
         // Wait for progress thread to finish
         if let Some(thread) = progress_thread {
@@ -2190,9 +2244,51 @@ impl Indexer {
         let delta_start = Instant::now();
         let mut laps = Laps::new();
 
-        // Read the rewritten files.
         let rels: Vec<String> = c.rewrites.iter().map(|r| r.rel.clone()).collect();
         let files: Vec<PathBuf> = c.rewrites.iter().map(|r| r.path.clone()).collect();
+
+        // Store entries that go: every rewritten and every deleted path. Base files
+        // among them are tombstoned; the previous delta keeps the others.
+        let gone: std::collections::HashSet<String> = rels
+            .iter()
+            .cloned()
+            .chain(c.deleted.iter().map(|(p, _)| p.clone()))
+            .collect();
+        let mut new_dead: Vec<u32> = Vec::new();
+        for id in 0..base_len {
+            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str())
+                && gone.contains(p)
+            {
+                new_dead.push(id);
+            }
+        }
+        let survivors: Vec<(String, u32)> = (base_len..snapshot.id_bound())
+            .filter_map(|id| {
+                let p = snapshot.get_file_path(id)?.to_str()?;
+                (!gone.contains(p)).then(|| (p.to_string(), id))
+            })
+            .collect();
+
+        // The merge limits, from stat sizes, before anything is read (a merge reads
+        // the files itself).
+        let (max_files, max_bytes) = self.merge_limits(prev.live_corpus_bytes);
+        let estimate: u64 = c.rewrites.iter().map(|r| r.size).sum::<u64>()
+            + survivors
+                .iter()
+                .map(|(_, id)| snapshot.file_len(*id).unwrap_or(0))
+                .sum::<u64>();
+        if c.rewrites.len() + survivors.len() > max_files || estimate > max_bytes {
+            log::info!(
+                "Delta of {} files / ~{} bytes passes its limits ({} files / {} bytes)",
+                c.rewrites.len() + survivors.len(),
+                estimate,
+                max_files,
+                max_bytes
+            );
+            return Ok(None);
+        }
+
+        // Read the rewritten files.
         let ctx = ProcessCtx {
             root: c.root,
             files: &files,
@@ -2223,28 +2319,6 @@ impl Indexer {
                 }
             }
         }
-
-        // Store entries that go: every rewritten and every deleted path. Base files
-        // among them are tombstoned; the previous delta keeps the others.
-        let gone: std::collections::HashSet<&str> = rels
-            .iter()
-            .map(String::as_str)
-            .chain(deleted.iter().map(|(p, _)| p.as_str()))
-            .collect();
-        let mut new_dead: Vec<u32> = Vec::new();
-        for id in 0..base_len {
-            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str())
-                && gone.contains(p)
-            {
-                new_dead.push(id);
-            }
-        }
-        let survivors: Vec<(String, u32)> = (base_len..snapshot.id_bound())
-            .filter_map(|id| {
-                let p = snapshot.get_file_path(id)?.to_str()?;
-                (!gone.contains(p)).then(|| (p.to_string(), id))
-            })
-            .collect();
 
         // The new delta: read files and survivors, in walk order.
         enum Source {
@@ -2282,7 +2356,6 @@ impl Indexer {
                 Source::Old(id) => snapshot.get_file_content(*id)?.len() as u64,
             };
         }
-        let (max_files, max_bytes) = self.merge_limits(prev.live_corpus_bytes);
         if entries.len() > max_files || delta_bytes > max_bytes {
             log::info!(
                 "Delta of {} files / {} bytes passes its limits ({} files / {} bytes)",
@@ -2608,6 +2681,47 @@ impl Indexer {
         stats.skipped_bytes_too_large = c.skipped.1;
         stats.skipped_binary = c.skipped.2;
         Ok(Some(stats))
+    }
+
+    /// [`Self::process_file`] for a file whose bytes are the ones the published
+    /// stores hold (`id` there): the text comes from the stores, the hash from its
+    /// row, and a touched file's stat from the walk. `None` when the stores cannot
+    /// give it (the caller reads the file).
+    fn reuse_file(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        snapshot: &crate::snapshot::IndexSnapshot,
+        id: u32,
+        i: usize,
+        meta: &Option<std::fs::Metadata>,
+        trigram_scratch: &mut Vec<u64>,
+    ) -> Option<FileProcessingResult> {
+        let row = ctx.stored.get(&ctx.rels[i])?;
+        let content = snapshot.get_file_content(id).ok()?.to_string();
+        let file_path = &ctx.files[i];
+        let (size, mtime_ns) = match meta {
+            Some(md) if !row.stat_matches(md) => {
+                (md.len(), crate::cache::recorded_mtime_ns(md, ctx.run_start))
+            }
+            _ => (row.size, row.mtime_ns),
+        };
+        let language = Language::from_path(file_path);
+        let line_count = content.lines().count();
+        let trigram_run = crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
+        let imports = ctx.full_deps.then(|| {
+            let path_str = file_path.to_string_lossy().to_string();
+            extract_imports(language, &content, &path_str, ctx.root, ctx.tsconfigs)
+        });
+        Some(FileProcessingResult {
+            hash: row.hash.clone(),
+            content,
+            language,
+            line_count,
+            size,
+            mtime_ns,
+            imports,
+            trigram_run,
+        })
     }
 
     /// Read one discovered file: stat, bytes, hash, text, trigram run, and imports
