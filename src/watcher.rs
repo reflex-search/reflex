@@ -42,7 +42,7 @@ impl Default for WatchConfig {
 /// 1. Set up file system watcher using notify crate
 /// 2. Collect file change events into a HashSet (deduplicate)
 /// 3. Wait for debounce period after last change
-/// 4. Trigger a reindex (rebuilds the whole index; unchanged files keep cached symbols)
+/// 4. Trigger a reindex (rebuilds the whole index and, today, the whole symbol cache)
 /// 5. Repeat
 ///
 /// # Debouncing

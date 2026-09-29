@@ -121,8 +121,8 @@ rfx index
 ```
 
 The index lives in `.reflex/` at the project root. A later run with no changed files
-returns quickly; any change rebuilds the index from every file (the symbol cache keeps
-unchanged files' symbols). `rfx index --force` rebuilds even when nothing changed.
+returns quickly; any change rebuilds the index from every file, and the background
+symbol pass parses every file again. `rfx index --force` rebuilds even when nothing changed.
 
 You can also skip this step. When a tool reports `Index not found`, Claude calls the
 `index_project` tool and retries.
