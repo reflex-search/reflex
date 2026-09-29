@@ -13,7 +13,7 @@ development sessions (human and AI). Committed to git.
 | `RUNTIME_SYMBOL_DETECTION.md` | 2025-11 decision to parse symbols at query time; now superseded in part by the background symbol cache. |
 | `PERFORMANCE_RESEARCH.md` | Dated benchmark and latency rounds. Only the 2026-09 sections describe the 2.0.x format. |
 | `PULSE_RENDERER_SPIKE.md` | Pulse M0a renderer spike (2026-09-26). |
-| `REF-222-decision.md` | Historical A/B record (1.5.3, 2026-07). Not current. |
+| `EFFICACY-2.0.3.md` | Efficacy A/B on 2.0.3 (Opus 5.5, Sonnet 5): method, all endpoints, per-task tables, limits. |
 
 ## Rules
 

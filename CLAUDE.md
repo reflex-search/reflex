@@ -309,9 +309,11 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   `REFLEX_LATENCY_BUDGET=1`.
 
 **MCP efficiency:**
-- **No current A/B numbers.** Earlier A/B results against built-in grep/glob were measured
-  on 1.5.3 (2026-07) and were removed; a rerun on 2.0.3 is in progress (`.context/TODO.md`).
-  Do not quote old efficiency figures.
+- **A/B vs built-in Grep/Glob (2.0.3, 2026-09-28, `.context/EFFICACY-2.0.3.md`):** Reflex
+  costs more tokens — 1.66× on find-all-usages (Opus 5.5 and Sonnet 5), 1.26× on
+  comprehension tasks (Opus 5.5) — with equal or better accuracy. The cost is extra
+  round-trips (ToolSearch for deferred schemas, `check_index_status`), not payload size.
+  Do not claim token savings over grep; the case for Reflex is capability.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`

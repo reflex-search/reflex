@@ -249,10 +249,15 @@ search_ast(pattern: "(function_item) @fn", lang: "rust")
 which avoids repeating JSON keys per match. The flat rows still repeat `path` and
 `language` on every row. To revert to the legacy `results[]` shape: `REFLEX_MCP_COLUMNAR=0`.
 
-### Reflex vs built-in grep/glob
+### Reflex vs built-in grep/glob (measured)
 
-There are no current A/B numbers. The earlier results (REF-222 and related) were measured
-on Reflex 1.5.3 in 2026-07 and were withdrawn; a rerun on 2.0.3 is in progress.
+Measured on Reflex 2.0.3, 2026-09-28 (full report: `.context/EFFICACY-2.0.3.md`). Reflex
+costs more tokens than built-in Grep/Glob: 1.66× on 9 find-all-usages tasks (Opus 5.5 and
+Sonnet 5 alike) and 1.26× on 13 comprehension tasks (Opus 5.5). The cost is round-trips:
+the first Reflex call needs a ToolSearch turn to load the deferred schemas, and a
+`check_index_status` call before searching adds another. Every `search_code` /
+`search_regex` response already carries `status` and `can_trust_results`, so skip the
+separate status check unless you need the changed-file lists.
 
 **When to prefer Reflex over built-in grep/glob** (capabilities, not measured savings):
 - Symbol-aware search (`symbols: true`, `kind: "function"`) — unavailable in grep/glob

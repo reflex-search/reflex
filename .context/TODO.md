@@ -12,27 +12,6 @@
 
 ---
 
-## 🧹 Stale-claims cleanup + efficacy rerun (2026-09-28) — IN PROGRESS
-
-Branch `docs/remove-stale-claims`. Plan: `~/.claude/plans/warm-crafting-pretzel.md`.
-Removes pre-1.7 measurements and outdated behaviour descriptions from CLAUDE.md, README,
-docs/ and `.context/`, then reruns the efficacy A/B on 2.0.3 with `claude-sonnet-5`.
-
-| Part | Scope | Status |
-| --- | --- | --- |
-| C | `.context/` rewrite (this file, research files) | completed |
-| B | CLAUDE.md, README.md, docs/ | completed |
-| B4 | Source text: MCP descriptions, cache.rs comments, dead config keys, `--format dot` help | completed |
-| D1 | Efficacy harness fixes (pinned corpus, model flag, isolation) | completed |
-| D2 | Rerun REF-222-style and REF-225-style A/B + columnar payload script | pending |
-| D3 | Publish `.context/EFFICACY-2.0.3.md` + README/CLAUDE.md numbers | pending |
-
-Why: the old A/B numbers (REF-222/192/204/209/225) ran on 1.5.3-dev in 2026-07. The README
-"~31% cheaper" came from REF-192 (n=3), not REF-222, whose own cost ratio was 1.169
-(Reflex cost more). "Within the ±10% parity band" was false (CI upper bound 1.262).
-
----
-
 ## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — IN PROGRESS
 
 Plan: `~/.claude/plans/i-want-to-revamp-purrfect-stonebraker.md` (copy lands in
@@ -184,6 +163,12 @@ Tests:
 
 ## 🗂️ Backlog (not started)
 
+- **Cut MCP round-trips** (from `.context/EFFICACY-2.0.3.md`). Using Reflex costs 1.55–1.7×
+  the tokens of built-in Grep because of extra turns: a ToolSearch call to load the deferred
+  schemas before the first Reflex call, and `check_index_status` calls before searching
+  (its description says "Call this at session start", though search responses already carry
+  freshness). Candidates: drop that instruction; fewer, broader tools so schemas are cheap to
+  load eagerly. Re-measure with `benches/efficacy/run-ref222.sh` (~$6, 35 min on Opus 5.5).
 - `reflexd` background daemon.
 - LSP adapter.
 - Branch-aware search: `--since <ref>` / `--changed` (search only files changed vs a ref).

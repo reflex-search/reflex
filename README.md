@@ -69,10 +69,27 @@ Your AI assistant can now call `search_code`, `find_references`, `get_dependenci
 
 ### Measured efficiency (A/B vs. built-in AI search)
 
-The A/B harness in [`benches/efficacy/`](benches/efficacy/) runs an AI coding agent on the
-same code-search tasks with Reflex (via MCP) and with its built-in Grep/Glob, paired per task.
-Earlier results were measured on Reflex 1.5.3 and no longer describe the current release.
-They were withdrawn; a rerun on 2.0.3 is in progress and its numbers will appear here.
+The A/B harness in [`benches/efficacy/`](benches/efficacy/) runs Claude Code on the same
+code-search tasks with Reflex (via MCP) and with its built-in Grep/Glob, paired per task,
+on pinned checkouts of Reflex, ripgrep and tokio. Measured on Reflex 2.0.3, 2026-09-28,
+8 trials per task and arm. Ratios are Reflex ÷ built-in, so **> 1.0 means Reflex costs more**.
+
+| Tasks | Model | Tokens (95% CI) | Cost | Turns (median) | Accuracy |
+|---|---|---|---|---|---|
+| 9 find-all-usages | Opus 5.5 | **1.66** [1.05, 1.69] | 1.27× | 2 → 3 | equal (both near-perfect) |
+| 9 find-all-usages | Sonnet 5 | **1.65** [1.06, 2.25] | 2.07× | 2 → 4 | Reflex more complete on 6 of 9 tasks |
+| 13 comprehension / cross-module | Opus 5.5 | **1.26** [1.07, 1.30] | 1.10× | 6 → 6 (B more in 55 of 104 pairs, fewer in 27) | equal recall |
+
+**What drives the cost.** It is round-trips, not payload. Claude Code defers MCP tool
+schemas, so the first Reflex call costs an extra ToolSearch turn; Sonnet 5 also added
+`check_index_status` calls. Trials where the agent ignored Reflex cost the same as the
+control (1.04–1.07×); trials that used it cost 1.55–1.68×. Columnar results already save
+about 20% of bytes per call, which the extra turns outweigh.
+
+**Honest reading.** Reflex does not save tokens over built-in search in these agent runs.
+Its value is capability: symbol-aware search, dependency analysis, `find_references` in one
+call, exact counts without loading content, and more complete answers from weaker models on
+large result sets. Full method, per-task tables and limits: `.context/EFFICACY-2.0.3.md`.
 
 ---
 
