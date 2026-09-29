@@ -163,25 +163,55 @@ Tests:
 
 ## 🗂️ Backlog (not started)
 
-- **Goal: token parity or better with built-in Grep on Grep-like searches** (user decision,
-  2026-09-28). Do not route plain searches to Grep; make Reflex cheap enough for them.
-  Steps, each re-measured with `run-ref222.sh`: (A) drop the pre-search `check_index_status`
-  nudge, after every reply carries `can_trust_results`; (B) shrink the tool surface, then
-  A/B `"alwaysLoad": true` (removes the ToolSearch turn; the 17 schemas cost ~17K tokens
-  loaded, measured 2026-09-28); (D) close the 1.03–1.09× gap left at equal turns: strip
-  duplicate reply metadata, try file-grouped columnar rows (REF-219).
-- **Cut MCP round-trips** (from `.context/EFFICACY-2.0.3.md`). Using Reflex costs 1.55–1.7×
-  the tokens of built-in Grep because of extra turns: a ToolSearch call to load the deferred
-  schemas before the first Reflex call, and `check_index_status` calls before searching
-  (its description says "Call this at session start", though search responses already carry
-  freshness). Candidates: drop that instruction; fewer, broader tools so schemas are cheap to
-  load eagerly. Re-measure with `benches/efficacy/run-ref222.sh` (~$6, 35 min on Opus 5.5).
-- `reflexd` background daemon.
-- LSP adapter.
-- Branch-aware search: `--since <ref>` / `--changed` (search only files changed vs a ref).
+### 1. Grep parity (priority)
+
+**Goal: token parity or better with built-in Grep on Grep-like searches** (user decision,
+2026-09-28). Do not route plain searches to Grep; make Reflex cheap enough for them.
+Baseline (`.context/EFFICACY-2.0.3.md`): using Reflex costs 1.55–1.7× Grep's tokens, from
+extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref222.sh`
+(~$6, 35 min on Opus 5.5); pass = token CI includes 1.0 or sits below it.
+
+- **A. Drop the pre-search status check.** First fix the missing `can_trust_results` (Open
+  bugs), then remove "Call this at session start…" from the `check_index_status`
+  description. Sonnet 5 called it in 33/72 find-all trials, one extra turn each.
+- **B. Shrink the tool surface, then load it eagerly.** Merge `count_occurrences` into
+  `mode: "count"` and `get_dependents` into `get_dependencies`; structural tools off by
+  default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B
+  `"alwaysLoad": true` in the MCP config: it removes the ToolSearch turn but loads the
+  schemas every turn (~17K tokens for the 17 tools today, measured 2026-09-28).
+- **D. Close the gap left at equal turns (1.03–1.09×).** Strip duplicate reply metadata
+  (flat `has_more` / `total_count` / `returned_count` beside `pagination`); try
+  file-grouped columnar rows (REF-219) so rows do not repeat `path` / `language`.
+
+### 2. Capabilities (as parameters on existing tools — never new tools)
+
+Every new tool adds schema tokens to every session, which works against section 1. Each
+item below is a parameter or mode on an existing tool; measure its schema cost with B.
+
+- **Enclosing symbol on every match** — a `scope` column (`fn handle_request`,
+  `impl Indexer`) from the symbol cache spans. Aim: remove follow-up `Read` turns in
+  comprehension tasks (REF-225 arm B made 46 `search_regex` calls). Adds bytes per row;
+  measure with the REF-225 design, not only REF-222.
+- **Many patterns in one call** — `patterns: [...]` on `search_code` / `search_regex`,
+  one result block per pattern. Aim: fewer turns in multi-search comprehension work.
+- **Co-occurrence** — files that contain all of A and B and none of C, optionally within
+  N lines, as `search_code` parameters. Posting-list intersection makes it cheap.
+- **Changed files only** — `changed_since: <ref>` (MCP) / `--changed`, `--since <ref>`
+  (CLI), with the file list from `src/git.rs`. For review: "did my change leave callers?"
+- **Callers of callers** — `depth` on `find_references` (1–3), built on the enclosing
+  symbol. Aim: transitive "who calls this" in one call.
+- Deferred until a test shows the need: file outline (a `search_code` mode with
+  `symbols: true` + `file`); test locator (a test-path filter on `find_references`).
+
+### 3. Other
+
+- Automatic reindex when a small change makes the index stale (removes an `index_project`
+  turn in real sessions). Needs the incremental index path (Open follow-ups, policy 1).
 - Advanced dependency path resolution: `package.json` workspaces, Cargo workspace members,
   Python virtualenv paths.
-- Query result caching (LRU). Measure first: `rfx mcp` already keeps the index open.
+- One query across several indexed repositories (a `repo` column).
+- `reflexd` background daemon.
+- LSP adapter.
 
 ---
 
