@@ -70,7 +70,7 @@ pub enum Command {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
 
-        /// Force full rebuild (ignore incremental cache)
+        /// Force a full rebuild even when no file changed
         #[arg(short, long)]
         force: bool,
 
@@ -389,7 +389,7 @@ pub enum Command {
     /// Watch for file changes and auto-reindex
     ///
     /// Continuously monitors the workspace for changes and automatically
-    /// triggers incremental reindexing. Useful for IDE integrations and
+    /// reindexes after the debounce period. Useful for IDE integrations and
     /// keeping the index always fresh during active development.
     ///
     /// The debounce timer resets on every file change, batching rapid edits

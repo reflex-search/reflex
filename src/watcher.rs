@@ -1,7 +1,8 @@
 //! File system watcher for automatic reindexing
 //!
 //! The watcher monitors the workspace for file changes and automatically
-//! triggers incremental reindexing with configurable debouncing.
+//! reindexes with configurable debouncing. A reindex rebuilds the whole index
+//! (there is no per-file update path yet; see `.context/TODO.md`).
 
 use anyhow::{Context, Result};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -41,7 +42,7 @@ impl Default for WatchConfig {
 /// 1. Set up file system watcher using notify crate
 /// 2. Collect file change events into a HashSet (deduplicate)
 /// 3. Wait for debounce period after last change
-/// 4. Trigger incremental reindex (only changed files)
+/// 4. Trigger a reindex (rebuilds the whole index; unchanged files keep cached symbols)
 /// 5. Repeat
 ///
 /// # Debouncing
