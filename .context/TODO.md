@@ -102,9 +102,10 @@ From the 1.7.2 MCP correctness release (2026-09-22):
 1. **Automatic refresh in MCP mode (decided 2026-09-29; replaces "honest staleness over
    auto-refresh" from 1.7.2).** `rfx mcp` keeps its own index fresh: an in-process watcher
    rebuilds after changes, and a query waits a bounded time for a pending rebuild. Not built
-   yet (Backlog §1 step A). The 1.7.2 objection was rebuild cost; measured 2026-09-29, a
-   one-file edit rebuilds the Reflex repo in 0.66 s, Kubernetes in ~8 s (full rebuild), so
-   large trees still need the incremental index path. `REFLEX_MCP_AUTO_INDEX` was never built.
+   yet (Backlog §1 step A). The 1.7.2 objection was rebuild cost, and it still holds for
+   large trees: a 1-file edit reprocesses the whole tree (2026-09-29: Reflex 0.66 s;
+   Kubernetes 27.7 s under load, ~8 s idle), so the incremental update path is part of
+   step A, not optional. `REFLEX_MCP_AUTO_INDEX` was never built.
 2. **Stale always means `can_trust_results: false`**, including a zero-result search.
    Scope (did a changed file appear in the results?) only sharpens the warning text.
 3. **Readers degrade, writers refuse.** Refuse only when a different released version
@@ -130,7 +131,7 @@ From 2.0.0 (2026-09-23):
 
 Indexing and freshness:
 - **Incremental index path.** Any change still rewrites `content.bin`/`trigrams.bin` in
-  full. Prerequisite for auto-refresh (policy 1).
+  full and reprocesses every file. Now scheduled as part of Backlog §1 step A.
 - The read pool is the indexing floor (3.4 s on Kubernetes, tree-sitter parsing every
   file for imports). A line-scan `#include`/`import` extractor needs an equivalence test first.
 - Lexical `..` resolution instead of `canonicalize()` in `c.rs`/`cpp.rs` (resolves more
@@ -177,7 +178,10 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   `can_trust_results: false` and the next query is fresh. Then drop "Call this at session
   start…" from `check_index_status`; `action_required` only when auto-index is off or
   blocked. Removes both the status-check and the `index_project` turns. Prerequisite: fix
-  the missing `can_trust_results` (Open bugs). Large trees need the incremental index.
+  the missing `can_trust_results` (Open bugs). **Includes the incremental update path**
+  (delta segment + tombstones + background compaction; upsert only changed `meta.db` rows):
+  today a 1-file edit on Kubernetes reprocesses all 27,448 files (11.3 s re-extract, 9.7 s
+  `files` rewrite, 3.5 s deps under load, 2026-09-29). Target: searchable in < 100 ms.
 - **B. Shrink the tool surface, then load it eagerly.** Merge `count_occurrences` into
   `mode: "count"` and `get_dependents` into `get_dependencies`; structural tools off by
   default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B
