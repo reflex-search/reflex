@@ -163,6 +163,13 @@ Tests:
 
 ## 🗂️ Backlog (not started)
 
+- **Goal: token parity or better with built-in Grep on Grep-like searches** (user decision,
+  2026-09-28). Do not route plain searches to Grep; make Reflex cheap enough for them.
+  Steps, each re-measured with `run-ref222.sh`: (A) drop the pre-search `check_index_status`
+  nudge, after every reply carries `can_trust_results`; (B) shrink the tool surface, then
+  A/B `"alwaysLoad": true` (removes the ToolSearch turn; the 17 schemas cost ~17K tokens
+  loaded, measured 2026-09-28); (D) close the 1.03–1.09× gap left at equal turns: strip
+  duplicate reply metadata, try file-grouped columnar rows (REF-219).
 - **Cut MCP round-trips** (from `.context/EFFICACY-2.0.3.md`). Using Reflex costs 1.55–1.7×
   the tokens of built-in Grep because of extra turns: a ToolSearch call to load the deferred
   schemas before the first Reflex call, and `check_index_status` calls before searching

@@ -313,7 +313,8 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   costs more tokens — 1.66× on find-all-usages (Opus 5.5 and Sonnet 5), 1.26× on
   comprehension tasks (Opus 5.5) — with equal or better accuracy. The cost is extra
   round-trips (ToolSearch for deferred schemas, `check_index_status`), not payload size.
-  Do not claim token savings over grep; the case for Reflex is capability.
+  Do not claim token savings over grep yet. **Goal:** parity or better on plain Grep-like
+  searches — do not route them to Grep; see the backlog in `.context/TODO.md`.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
