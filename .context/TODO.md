@@ -99,12 +99,12 @@ failed Zola build still exits 0.
 
 From the 1.7.2 MCP correctness release (2026-09-22):
 
-1. **Honest staleness over auto-refresh.** A search on a stale index answers with
-   `can_trust_results: false` and `action_required: "index_project"`; it never reindexes
-   by itself. The 1.7.2 note said auto-refresh would sit behind `REFLEX_MCP_AUTO_INDEX=1`;
-   that variable was never built. The original reason (a full rebuild takes minutes) is
-   weaker since 2.0.0 (Kubernetes indexes in ~8 s), but any change still rewrites
-   `content.bin`/`trigrams.bin` in full. Revisit when an incremental index path exists.
+1. **Automatic refresh in MCP mode (decided 2026-09-29; replaces "honest staleness over
+   auto-refresh" from 1.7.2).** `rfx mcp` keeps its own index fresh: an in-process watcher
+   rebuilds after changes, and a query waits a bounded time for a pending rebuild. Not built
+   yet (Backlog §1 step A). The 1.7.2 objection was rebuild cost; measured 2026-09-29, a
+   one-file edit rebuilds the Reflex repo in 0.66 s, Kubernetes in ~8 s (full rebuild), so
+   large trees still need the incremental index path. `REFLEX_MCP_AUTO_INDEX` was never built.
 2. **Stale always means `can_trust_results: false`**, including a zero-result search.
    Scope (did a changed file appear in the results?) only sharpens the warning text.
 3. **Readers degrade, writers refuse.** Refuse only when a different released version
@@ -171,9 +171,13 @@ Baseline (`.context/EFFICACY-2.0.3.md`): using Reflex costs 1.55–1.7× Grep's 
 extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref222.sh`
 (~$6, 35 min on Opus 5.5); pass = token CI includes 1.0 or sits below it.
 
-- **A. Drop the pre-search status check.** First fix the missing `can_trust_results` (Open
-  bugs), then remove "Call this at session start…" from the `check_index_status`
-  description. Sonnet 5 called it in 33/72 find-all trials, one extra turn each.
+- **A. Keep the index fresh automatically in MCP mode** (user decision 2026-09-29). An
+  in-process watcher in `rfx mcp` (reuse `src/watcher.rs`, ~500 ms debounce) rebuilds under
+  `index.lock`; a stale query waits up to a budget (~1.5 s) for the rebuild, else answers
+  `can_trust_results: false` and the next query is fresh. Then drop "Call this at session
+  start…" from `check_index_status`; `action_required` only when auto-index is off or
+  blocked. Removes both the status-check and the `index_project` turns. Prerequisite: fix
+  the missing `can_trust_results` (Open bugs). Large trees need the incremental index.
 - **B. Shrink the tool surface, then load it eagerly.** Merge `count_occurrences` into
   `mode: "count"` and `get_dependents` into `get_dependencies`; structural tools off by
   default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B
@@ -205,8 +209,6 @@ item below is a parameter or mode on an existing tool; measure its schema cost w
 
 ### 3. Other
 
-- Automatic reindex when a small change makes the index stale (removes an `index_project`
-  turn in real sessions). Needs the incremental index path (Open follow-ups, policy 1).
 - Advanced dependency path resolution: `package.json` workspaces, Cargo workspace members,
   Python virtualenv paths.
 - One query across several indexed repositories (a `repo` column).
