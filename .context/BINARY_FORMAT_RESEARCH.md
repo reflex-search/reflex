@@ -1,14 +1,17 @@
 # Binary Format Reference
 
-**Created:** 2025-10-31 · **Rewritten:** 2026-09-28 (Reflex 2.0.3)
+**Created:** 2025-10-31 · **Rewritten:** 2026-09-28 (Reflex 2.0.3) · **Snapshot files
+added:** 2026-09-29 (branch `feature/incremental-index`, §4)
 
 The on-disk formats in `.reflex/`. Each section names the source file that owns the
 format; when this file and the code disagree, the code wins.
 
 | File | Format | Owner |
 | --- | --- | --- |
-| `trigrams.bin` | custom varint inverted index, **V4** (§3) | `src/trigram.rs`, `src/trigram_build.rs` |
-| `content.bin` | concatenated file contents + fixed-width index, **V2** (§1) | `src/content_store.rs` |
+| `trigrams.<g>.bin` | custom varint inverted index, **V4** (§3) | `src/trigram.rs`, `src/trigram_build.rs` |
+| `content.<g>.bin` | concatenated file contents + fixed-width index, **V2** (§1) | `src/content_store.rs` |
+| `manifest.json`, `*.plan`, `*.tomb`, `*.dtomb`, `delta.<g>.*`, `recent.<g>.*` | the snapshot: which stores make up the index (§4) | `src/snapshot.rs` |
+| `content.bin`, `trigrams.bin` | hard links to the base while it alone is the index | `src/snapshot.rs` |
 | `meta.db` | SQLite: files + fingerprints, branches, statistics, config, dependencies, exports, symbol cache (§2) | `src/cache.rs`, `src/symbol_cache.rs` |
 | `config.toml` | TOML project settings | `src/cache.rs` (template), `src/models.rs` |
 
@@ -133,8 +136,9 @@ deltas 67 %. `rfx index` prints `Index/corpus ratio: …` from
   file delta. Preconditions: partials cover disjoint, increasing file-id ranges (not
   checked); the trigram count is known up front. Output is byte-identical to
   `TrigramIndex::write`. Partials are temporary, not a stored format.
-- Note: `src/trigram_build.rs` is not in `build.rs`'s schema-hash list (only
-  `src/trigram.rs` is).
+- `src/trigram_build.rs` is in `build.rs`'s schema-hash list since 2026-09-29 (it
+  was not before). Its partial records carry the planning size (header 24 bytes,
+  partial version 3).
 
 #### Versioning
 
@@ -146,6 +150,56 @@ back to an in-memory rebuild for the process, and treats any other load error as
 `CacheCorrupted`.
 
 ---
+
+## 4. The snapshot (manifest, planning sizes, delta tiers) — 2026-09-29
+
+Owner: `src/snapshot.rs`. Readers go through `IndexSnapshot`; nothing else opens a store.
+
+#### manifest.json (format 2)
+
+JSON, written tmp + fsync + rename + directory fsync: the single commit point. Fields:
+`format`, `generation` (bumped at every publish; every named file carries it or an
+older one), `base` / `delta` / `recent` (each `SegmentFiles`: `content`, `trigrams`,
+optional `plan`, `files`, `content_bytes`, `trigrams_bytes`, checked at open),
+`tombstones` (sorted global ids of dead base and delta files), `tomb` / `tomb_delta`
+(names of the planning-size files of the dead base / delta postings),
+`live_trigrams`, `live_corpus_bytes` (what a fresh build of the same tree records),
+`publish_id` (random, unique per publish: in-process caches key on it, since a
+generation number repeats after the cache is cleared), `checksum` (blake3 of the
+manifest serialized with an empty checksum).
+
+Ids: base `0..B`, delta `B..B+D`, recent `B+D..B+D+R`. A delta or recent segment is
+a standalone V2/V4 pair with local ids; the snapshot adds the offset.
+
+#### trigrams.<g>.plan / delta.<g>.plan / recent.<g>.plan (RFPL v1)
+
+Header 16 bytes: magic `RFPL`, version u32, entry count u64; then one u32 per
+directory entry, in directory order: the entry's **planning size**, for each file
+block `1 + len(varint(n_lines << 1)) + Σ len(varint(line delta))` (V4 with the file-id
+delta counted as one byte). It is additive per file, so the live size of a trigram is
+`base + delta + recent − tomb − tomb_delta`, exactly what a fresh build has; it equals
+the on-disk size whenever every file-id delta is below 128. The candidate planner
+orders and stops by it; an index without it plans by bytes (2.0.3 behaviour).
+
+#### delta.<g>.tomb / delta.<g>.dtomb (RFTB v1)
+
+Header 16 bytes: magic `RFTB`, version u32, entry count u64; then `(trigram u32,
+planning size u32)` sorted by trigram: the planning size of the postings of the
+tombstoned base files (`.tomb`) or delta files (`.dtomb`). Carried forward and added to
+by each update; `.dtomb` is dropped when the recent segment is folded into a new delta.
+
+#### Fixed names and older binaries
+
+`content.bin` / `trigrams.bin` exist as hard links to the base only while the manifest
+is base-only; before a manifest with a delta is written they are unlinked, so 2.0.3
+stops with `CacheCorrupted` instead of answering from the base alone
+(`tests/incremental_cross_version.rs`). 2.0.3 writes its stores by rename, so it never
+changes a linked base file.
+
+#### Versioning
+
+`MANIFEST_FORMAT` is checked at read: another format is `CacheCorrupted`, and the next
+`rfx index` rebuilds. `build.rs` hashes `src/snapshot.rs` into `CACHE_SCHEMA_HASH`.
 
 ---
 

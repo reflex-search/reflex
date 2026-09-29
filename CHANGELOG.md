@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+### Performance
+
+- **`rfx index` updates the index instead of rebuilding it.** Files whose size and mtime
+  match the index are no longer read; a change is published as a small delta over the
+  existing stores (`.reflex/manifest.json` names them), and only the changed files' rows,
+  dependencies and symbols are rewritten. Past 2000 changed files or 5 % of the indexed
+  text the delta is merged into a new base, reusing the stored text of unchanged files.
+  Kubernetes (27k files): a 1-file edit re-indexes in 0.3 s (was 8.5 s, ~1 GB), a run
+  with nothing changed takes 0.19 s (was 0.9 s), a cold build 7.5 s (was 8.5 s).
+  Search results, `rfx deps` / `rfx analyze` output, freshness fields and `rfx index
+  --force` are unchanged: an updated index answers exactly as a fresh build of the same
+  tree. The background symbol pass now parses only files whose content changed.
+- The first `rfx index` after upgrading rebuilds the index once (the cache format
+  changed). While a delta holds changes, `content.bin` / `trigrams.bin` are absent, so an
+  older rfx stops with "Cache appears to be corrupted" instead of answering from stale
+  stores; its `rfx index` rebuilds as usual.
+- `.reflex/` holds new files: `manifest.json`, generation-numbered stores
+  (`content.<g>.bin`, `trigrams.<g>.bin`, `trigrams.<g>.plan`, `delta.<g>.*`,
+  `recent.<g>.*`), `resolver-configs.json` and `.index-run`. `content.bin` /
+  `trigrams.bin` are hard links to the base while there is no delta.
+
+### Library
+
+- **`Indexer::update_paths(root, paths)`** brings the index up to date for a known set of
+  changed files or directories without walking the tree (a 1-file edit on Kubernetes in
+  about 50 ms). It falls back to `Indexer::index` when an ignore file,
+  `.reflex/config.toml`, a resolver config (`go.mod`, `tsconfig.json`, …) or the branch
+  changed. It is not wired to any command yet.
+
 ## [2.0.3] - 2026-09-28
 
 ### ⚠️ Breaking (Pulse)

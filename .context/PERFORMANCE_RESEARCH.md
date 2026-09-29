@@ -266,3 +266,81 @@ the whole tree cost more than parsing it.
 
 Query path effect (latency harness, budgets on): `symbol_lookup` 7.1 → 2.9 ms median,
 `find_references` 14.2 → 6.2 ms — cache misses parse with the same combined query.
+
+## Incremental index round (2026-09-29, branch `feature/incremental-index`)
+
+Kubernetes scratch clone (`git clone --no-hardlinks`, 27,448 files, 245 MB), 16 cores.
+The machine was never idle (desktop apps keep the 1-minute load at 4–8); every number
+has its load average. Base = 2.0.3 (`fff4f5a`, `/scratch/cache/rfx-pre-incremental`),
+new = `f30bce6`; runs alternate (`benches/incremental/perf.sh`, 2 rounds × 3 runs each,
+22:27–22:33 UTC).
+
+### `rfx index` (A/B, load 5.5–10.8)
+
+| scenario | 2.0.3 | `f30bce6` | gate |
+| --- | --- | --- | --- |
+| cold (6 runs) | 6.76–8.66 s, median 8.46 s | 7.35–7.80 s, median 7.47 s | ≤ +5 %: yes (−12 %) |
+| cold peak RSS | median ~1,089 MB | median ~1,059 MB | not higher: yes |
+| nothing changed | 0.83–0.96 s | 0.19–0.24 s | see below |
+| 1-file edit | 8.23–9.38 s, ~1.06 GB | 0.28–0.32 s, ~71 MB | < 1.5 s: yes |
+
+The fastest single cold run is 2.0.3's (each round's first run after an idle pause);
+by median and mean the new build is faster (one discovery walk feeds the config walk,
+git state and the stored rows in parallel; `RETURNING id`; no per-import lookups).
+
+**Nothing changed**, measured precisely (10 runs, load 3.5–4.6, `date +%s%N`): 186–192 ms
+against a walk of 142–148 ms (the discovery walk alone) — **+30–34 %**; against the whole
+discovery phase the log reports (walk ∥ git ∥ resolver configs, 148–154 ms), +21–30 %.
+The gate (discovery + 20 %) is met only against the looser reading. What remains after
+the walk: the meta.db commit (8 ms: the branch row and "Last updated" must be written,
+and meta.db runs `synchronous=FULL`), classify (4.5 ms), process start and exit (~5 ms),
+the post-walk binary check / manifest / config list (~7 ms), statistics and plan (~6 ms).
+Removed on the way (each measured): the schema transaction in `init()` (30 → 4 ms), the
+branch-hash load (14 ms) and full branch-row sync (12 ms) on the synced branch, two extra
+commits, the statistics joins (22 → 3 ms), the stored-row load now parallel with the walk
+(20 ms), the `df` check parallel, a 100 ms symbol-pass poll.
+
+### Library path `Indexer::update_paths` (`examples/update_paths_timing.rs`)
+
+| step | load | 1-file edit (warm) | add / delete |
+| --- | --- | --- | --- |
+| full lists into the `rfx index` code | 10–20 | 260–500 ms | — |
+| change set (`publish_delta`) | 23 | 132–145 ms | 186 / 171 ms |
+| rows by index lookups, `walk_seq` probes | 9 | 73–103 ms | 170 / 130 ms |
+| resolver cache, `git status` overlapped, one dir fsync fewer (`f30bce6`) | 10 | **51–53 ms** | 90–95 ms |
+
+The first update after an `rfx index` waits ~76 ms for the symbol pass that run spawned
+(the yield); a watcher calling `update_paths` spawns none. What remains is durability:
+the recent segment's fsyncs (~17 ms), the manifest (~6 ms), the meta.db commit (~7 ms).
+"Searchable" adds the query (~70–80 ms, most of it the freshness check's `git status`).
+
+### Merge (1,500 edited Go files, 16.9 MB > the 12.3 MB delta limit), load 8–9
+
+3.42 s against a 7.38 s cold build: 25,948 files taken from the published stores,
+1,500 read. Peak RSS 1,129 MB (+5 % over that run's cold build: the stores' pages are
+mapped while the new base is built).
+
+### Two tiers (`examples/delta_threshold_timing.rs`, 1,000-file delta live)
+
+| | load | 1-file update |
+| --- | --- | --- |
+| one delta, rebuilt whole | 9–13 | 191–207 ms (write 128–134 ms) |
+| recent + delta | 4–5 | 51–85 ms |
+
+**Query cost of a live delta (skip-pointer decision).** Compared with the base before
+the edit, some shapes looked 9–33 % slower — but a fresh base of the *same edited
+tree* is just as slow: the edit changed them, not the delta. Delta vs a fresh base of
+the same tree (15 runs each, load 4.3–5.1): all shapes −0.7 %, single shapes −9 % …
++6 %; the candidate phase, where the tombstone filter runs, +0.01 … +1.2 ms (within its
+own run-to-run spread). No skip pointers.
+
+### `latency_budget` (synthetic 2,000-file corpus; 12 alternating runs each, load 4–8)
+
+All 24 runs green with `REFLEX_LATENCY_BUDGET=1`. Sum of the 18 shape medians:
+63.18 → 61.31 ms (−2.9 %). Faster: `common_word_limit1` (−22 % / −24 %),
+`mcp/common_word_count` (−13 %), `common_ident_limit1` (−5 % / −9 %). Above +5 %:
+`in_process/rare_ident` 0.110 → 0.120 ms, `in_process/ci_regex` 0.195 → 0.215 ms,
+`mcp/rare_ident` 0.165 → 0.185 ms, `mcp/regex_getset` 5.31 → 5.64 ms. Their per-run
+ranges overlap (e.g. `ci_regex` 0.17–0.20 vs 0.18–0.24); `regex_getset` narrows through
+the same literals on both binaries (45,679 → 2,000 candidate lines) and its CLI phase
+timings overlap. Read as noise; not proven either way.

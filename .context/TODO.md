@@ -12,14 +12,16 @@
 
 ---
 
-## ⚡ Incremental index updates (2026-09-29) — IN PROGRESS
+## ⚡ Incremental index updates (2026-09-29) — DONE on the branch, awaiting review
 
-Branch `feature/incremental-index`. Plan: `~/.claude/plans/pasted-content-id-01ce-task-linked-wirth.md`;
-design and facts: `.context/INCREMENTAL_INDEX_RESEARCH.md`. Hard rule: no user-visible change.
+Branch `feature/incremental-index` (not pushed). Design, what changed from the plan and
+why: `.context/INCREMENTAL_INDEX_RESEARCH.md` ("As built"); numbers:
+`.context/PERFORMANCE_RESEARCH.md` ("Incremental index round"). Hard rule held: golden
+battery identical to 2.0.3 on four corpora, fresh and after scripted updates.
 
 Decisions (with the user, 2026-09-29):
 1. The early-stop planner uses an id-free planning size (sidecar), so an updated index
-   answers exactly like a fresh build. Golden diff vs 2.0.3 is shown before that commit.
+   answers exactly like a fresh build (golden diff vs 2.0.3: 0).
 2. While a delta is live, `content.bin` / `trigrams.bin` are absent, so an older binary
    stops (`CacheCorrupted`) instead of serving the base.
 3. A schema-hash change forces one full rebuild (the fast-path check was dead).
@@ -29,15 +31,19 @@ Decisions (with the user, 2026-09-29):
    every edit is reverted, until the next `rfx index`; meanwhile `rfx stats` can miss its
    "Uncommitted changes not indexed" line. Search results and freshness stay exact.
 
-| Step | Status |
-| --- | --- |
-| 0. Golden harness (`benches/incremental/`), pre-change baseline, perf baseline | done (idle perf baseline still to record) |
-| Stage 0: stable metadata, walk order, change detection without reading, per-file deps | done (commits `cc920df`, `6798edd`); golden identical |
-| Stage 1: manifest + `IndexSnapshot` (`9f342d6`), planning size (`29dfb43`, golden diff 0 on 4 corpora) | done |
-| Stage 1: delta + tombstones + publish protocol + threshold merge (`rfx index` path) | done 2026-09-29 (`112a82a`): golden identical fresh and after scripted updates (4 corpora); `tests/incremental_delta.rs` |
-| Stage 1: library path `Indexer::update_paths`, property test (`tests/incremental_equivalence.rs`, 40×30 steps ignored run), crash test (`tests/incremental_crash.rs`) | done 2026-09-29: k8s 1-file edit 73–103 ms at load 9 (idle run pending); decision 5 |
-| Stage 1: concurrency, cross-version tests | pending |
-| Stage 2: delta merge from snapshot content; tiering / skip-pointer measurements | pending |
+Open follow-ups:
+- **Nothing-changed gate not fully met**: 0.19 s against a 0.15 s walk (+30 %; +21–30 %
+  against the whole discovery phase). Left: the meta.db commit (8 ms, `synchronous=FULL`,
+  it writes "Last updated" and the branch row), fixed process costs, classify.
+- **Wire `update_paths` into a caller**: `rfx watch` and MCP auto-reindex (the Grep-parity
+  goal) still call `Indexer::index`. Then decide whether the first update after an
+  `rfx index` should wait for the symbol pass that run spawned (~76 ms today).
+- `latency_budget`: four shapes read +6 … +12 % over 12 runs (`rare_ident`, `ci_regex`,
+  `mcp/regex_getset`; 10–325 µs), ranges overlapping; re-measure on an idle machine.
+- An add or a delete through `update_paths` re-resolves every internal import (~90 ms on
+  Kubernetes); a reverse index of unresolved/suffix-matched imports would make it local.
+- A merge's peak RSS is ~5 % over a cold build (the old stores' pages are mapped while
+  the new base is built).
 
 ---
 

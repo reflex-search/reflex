@@ -103,9 +103,13 @@ filtering. It aims for:
 
 | Path | Contents |
 | --- | --- |
-| `trigrams.bin` | Inverted index: trigram → sorted `(file_id, line_no)` postings. Memory-mapped. |
-| `content.bin` | Every indexed file's contents, addressable by `file_id`. Memory-mapped. |
-| `meta.db` | SQLite: file rows and fingerprints, branches, statistics, config, dependencies, exports, symbol cache. |
+| `manifest.json` | The commit point: generation, the base / delta / recent store files, tombstones, live counts. |
+| `trigrams.<g>.bin`, `trigrams.<g>.plan` | Base inverted index: trigram → sorted `(file_id, line_no)` postings, and each trigram's id-free planning size. Memory-mapped. |
+| `content.<g>.bin` | Every base file's contents, addressable by `file_id`. Memory-mapped. |
+| `delta.<g>.*`, `recent.<g>.*` | The two delta tiers (same formats, local ids), and the tombstoned postings' planning sizes (`.tomb`, `.dtomb`). |
+| `content.bin`, `trigrams.bin` | Hard links to the base while it alone is the index, for older binaries; absent while a delta holds changes. |
+| `resolver-configs.json` | The resolver config files the last walk found. |
+| `meta.db` | SQLite: file rows (stable ids, `walk_seq`) and fingerprints, branches, statistics, config, dependencies, exports, symbol cache. |
 | `config.toml` | Project settings (`[index]`, `[search]`, `[performance]`). |
 | `index.lock` | OS advisory lock held for a whole `rfx index` run. |
 | `indexing.lock`, `indexing.status`, `indexing.cancel` | Ownership, progress and cancel request for the background symbol pass. |
@@ -165,9 +169,13 @@ A stored `SYMBOL_FORMAT_VERSION` that differs from the binary's drops the cache.
 ### Versioning and ownership
 
 - `build.rs` hashes the cache-critical sources (`cache.rs`, `content_store.rs`,
-  `trigram.rs`, `indexer.rs`, `symbol_cache.rs`, `models.rs`, `dependency.rs`) into
-  `CACHE_SCHEMA_HASH`. A cache with a different hash reports stale, and `rfx index`
-  rebuilds it in full (`CacheManager::check_schema_hash`).
+  `trigram.rs`, `trigram_build.rs`, `indexer.rs`, `symbol_cache.rs`, `models.rs`,
+  `dependency.rs`, `snapshot.rs`, `meta_update.rs`) into `CACHE_SCHEMA_HASH`. A cache
+  with a different hash reports stale, and `rfx index` rebuilds it in full
+  (`CacheManager::check_schema_hash`, read before `init()` stamps the new hash).
+- A second hash, `EXTRACTION_HASH` (`src/parsers/`, `line_filter.rs`,
+  `dependency_resolve.rs`), covers what fills the dependency, export and symbol rows: a
+  mismatch re-extracts every file's imports and clears the symbol cache.
 - Readers degrade, writers refuse: a cache stamped by a different released version is
   not rewritten unless forced (`CacheManager::assert_writable`).
 - A `trigrams.bin` of an older version is served from an in-memory rebuild
@@ -208,7 +216,8 @@ and does not index lock or generated files.
 
 ## Indexing Pipeline
 
-`Indexer::index_with_callback` (`src/indexer.rs`):
+`Indexer::index_with_callback` (`src/indexer.rs`). Design and measurements:
+[`.context/INCREMENTAL_INDEX_RESEARCH.md`](../.context/INCREMENTAL_INDEX_RESEARCH.md).
 
 ```
 1. Lock and clean up
@@ -216,37 +225,54 @@ and does not index lock or generated files.
    ├─ remove_stale_tmp: delete *.tmp left by a crashed run
    └─ ask a running symbol pass to yield (indexing.cancel)
 
-2. Discover files
+2. Discover files (in parallel: git state, the resolver-config walk)
    ├─ ignore::WalkBuilder with PathPolicy (gitignore rules, hidden, globs)
-   └─ skip binaries and files over max_file_size
+   └─ skip binaries (NUL sniff, not for a file whose stat matches its row) and
+      files over max_file_size
 
-3. Fast path
-   └─ same file set, every hash matches the stored hash, schema hash matches
-      → refresh fingerprints and return without rewriting anything
+3. Classify by stat: a file whose (size, mtime) match its row is unchanged and not
+   read; the others are hashed → touched (same bytes) or modified
 
-4. Batch loop (plan_batches: ≤ REFLEX_INDEX_BATCH_FILES files, ≤ REFLEX_INDEX_BATCH_BYTES bytes)
+4. Nothing changed → refresh touched fingerprints, dirty flags, branch rows; return
+
+5. A change, stores intact, no full dependency pass needed → publish_delta:
+   read the added/modified files, rebuild the recent segment (or fold it into a new
+   delta), tombstone superseded base/delta files, write the manifest, then one
+   meta.db transaction with only the changed rows → return
+   (past the merge limits: continue with a merge, below)
+
+6. Batch loop — a full build, or a merge that takes unchanged files' text from the
+   published stores (plan_batches: ≤ REFLEX_INDEX_BATCH_FILES files,
+   ≤ REFLEX_INDEX_BATCH_BYTES bytes)
    ├─ in the rayon pool, per file: stat, read, blake3 hash, lossy UTF-8 decode,
    │  Language::from_path, extract_trigram_run, dependency + export extraction
    └─ serially, in discovery order: assign file_id, TrigramIndexBuilder::add_file,
       ContentWriter::add_file; flush_batch builds the batch's partial index
 
-5. meta.db
-   ├─ one transaction for file rows, fingerprints and branch hashes
-   └─ PathResolver (in memory) resolves imports; DependencyWriter writes all
-      dependency and export rows in one transaction
+7. Write stores and publish
+   ├─ TrigramIndexBuilder::write_with_plan → trigrams.<g>.bin + .plan (tmp + fsync + rename)
+   ├─ ContentWriter::finalize_if_needed → content.<g>.bin
+   └─ manifest.json (the commit point), then the hard links content.bin / trigrams.bin
 
-6. Write stores
-   ├─ TrigramIndexBuilder::write → trigrams.bin (tmp + fsync + rename)
-   └─ ContentWriter::finalize_if_needed → content.bin (tmp + fsync + rename)
+8. meta.db, one transaction: upserted rows (ids kept), deletes by set difference,
+   walk_seq, dependencies of changed files, re-resolution after adds/deletes, and the
+   generation the manifest carries
 
-7. Stats, schema hash, then spawn the background symbol pass (src/cli/index.rs)
+9. Stats, schema hash, then spawn the background symbol pass (src/cli/index.rs)
 ```
+
+`Indexer::update_paths(root, paths)` is the library form of steps 3–8 for a caller
+that knows what changed: it walks only the named paths and their ancestors, places
+new files by readdir order, and falls back to `index` for ignore files, the project
+config, resolver configs, a branch change or the merge limit.
 
 Points worth knowing:
 
-- **Change detection is by content hash.** When anything changed, the binary stores
-  are rebuilt from every file; the output does not depend on the previous index. The
-  new / modified / unchanged counts come from comparing hashes with `file_branches`.
+- **Change detection is by stat, then content hash.** Only files whose stat moved are
+  read. Answers never depend on how the index got there: an updated index answers
+  exactly as a fresh build of the same tree (`tests/incremental_equivalence.rs`), and
+  a merge writes byte-identical stores. The new / modified / unchanged counts come
+  from comparing hashes with `file_branches`.
 - **The trigram build is parallel and sharded** (`src/trigram_build.rs`). Extraction
   runs in the read pool and yields a sorted `TrigramRun` per file, with lines already
   deduplicated. Each batch is built per top-byte shard (256 shards) in parallel with no

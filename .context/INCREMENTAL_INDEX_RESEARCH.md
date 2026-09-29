@@ -1,9 +1,73 @@
 # Incremental Index Updates — Research and Design
 
-**Date:** 2026-09-29 · **Reflex:** 2.0.3 · **Status:** proposed, not built
+**Date:** 2026-09-29 · **Reflex:** 2.0.3 · **Status:** built on `feature/incremental-index`
+(see "As built" below; the sections after it are the design as proposed)
 
 When code and this file disagree, the code wins. File:line references are for 2.0.3
 (`fc8da6b` + branch `feature/various-enhancements`).
+
+---
+
+## As built (2026-09-29)
+
+Commits on `feature/incremental-index`: `cc920df`, `6798edd` (Stage 0), `9f342d6`
+(manifest + `IndexSnapshot`), `29dfb43` (planning size), `112a82a` (delta +
+tombstones), `d548268` (`update_paths`), `2a72054` (concurrency / cross-version
+tests), `73eb7ff` (merge from the stores), then the two delta tiers.
+
+What differs from the proposal below, and why:
+
+- **Two delta tiers** (Stage 2 condition met). With one delta, every update rebuilt the
+  whole delta: a 1-file `update_paths` with a 1000-file (11 MB) delta took 191–207 ms
+  on Kubernetes (load 9–13; 128–134 ms of it writing the delta). Now a small
+  **recent** segment is rebuilt by each update and folded into the delta past
+  256 files or 1/16 of the delta byte limit: the same update takes 71 ms (load 15).
+  Tombstones cover base and delta ids; `.dtomb` holds the dead delta postings'
+  planning sizes. The live trigram count is kept from the trigrams an update touches
+  (dead files' runs, the replaced and the new segment), not recounted.
+- **One change-set publish** (`publish_delta`) for `rfx index` and `update_paths`: it
+  writes only the named rows and folds the branch row and the statistics stamps into
+  the meta.db transaction. The first `update_paths` (full lists into the `rfx index`
+  code) took 260–500 ms; the change set brought it to ~135 ms, and loading only the
+  named rows (index lookups; `files(walk_seq)` index for placement) to 73–103 ms at
+  load 9.
+- **Walk placement** by readdir order of the named paths' ancestors
+  (`src/walk_order.rs`) and a binary search over `walk_seq` values, not cached
+  listings of whole directories.
+- **Resolver configs**: every walk saves the config file list
+  (`resolver-configs.json`); `update_paths` re-parses those files (36 on Kubernetes)
+  and checks the digest instead of walking.
+- **Merge from the stores** (Stage 2): unchanged files' text comes from the published
+  stores; the result is byte-identical to a fresh build (test). Kubernetes, 1500 files
+  edited: 3.4 s against a 7.4 s cold build (load 8–9).
+- **`is_dirty`** (decision 5, with the user): `update_paths` runs `git status` on the
+  named paths only; the branch's dirty flag can stay set after a revert until the next
+  `rfx index`.
+- **Skip pointers**: not built. A live 1000-file delta against a fresh base of the
+  same tree: all shapes −0.7 %, single shapes −9 % … +6 %, candidate phase +0.01 … +1.2 ms
+  (comparing against the tree *before* the edit made some shapes look 9–33 % slower;
+  that was the edit, not the delta).
+- **Library path, final** (`f30bce6`): 51–53 ms per 1-file edit at load 10 — the path
+  resolver stays in the process (keyed by the manifest's random `publish_id`), and
+  `git status` of the named paths overlaps the store writes.
+- **Nothing changed**: 0.19 s against a 0.15 s walk (+30 %): the synced branch
+  (`statistics.synced_branch`) skips the branch-hash load and the full branch-row sync,
+  `init()` skips the schema transaction on a cache this binary completed, the stored
+  rows load during the walk, statistics come from the rows. The rest is the meta.db
+  commit (8 ms, `synchronous=FULL`) and fixed process costs.
+
+Tried and dropped:
+
+- A reader retry race test with real publishes: the window between reading the
+  manifest and opening its files is microseconds; 100k+ reader answers never hit it.
+  The retry is covered by a unit test that swaps the manifest read instead.
+- Treating an unreadable rewrite as "keep the old copy": a full run drops an
+  unreadable file, so the delta path drops it too.
+
+Found and fixed on the way: the schema-hash check was dead (read after `init()`
+stamped it); `init()` reset `last_compaction` every run; `rfx stats` ran two
+debug-only full scans. Changed because stable ids need it: symbol rows are keyed by the
+stored bytes' hash (`files.hash`), not a branch row's.
 
 ---
 

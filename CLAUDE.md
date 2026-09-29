@@ -29,19 +29,50 @@ Reflex uses **trigram-based indexing** to enable instant full-text search across
 | **Background Symbol Indexer** | `rfx index-symbols-internal`, spawned by `rfx index`; parses every file with a grammar and fills the symbol cache |
 | **Symbol Cache** | zstd-compressed symbol blobs in `meta.db` (`src/symbol_cache.rs`); symbol queries read it first |
 | **CLI / API Layer** | Single binary for human and programmatic use (CLI and optional HTTP/MCP) |
+| **Incremental updates** | `rfx index` and `Indexer::update_paths` publish a delta over the base instead of rebuilding (`src/snapshot.rs`, `src/indexer.rs`) |
 | **Watcher (optional)** | Incrementally updates index on file changes |
 
 ### Index Cache Structure (`.reflex/`)
     .reflex/
-      meta.db          # SQLite: files + freshness fingerprints, branches, stats, dependencies, exports, symbol cache
-      trigrams.bin     # Inverted index (V4): trigram → [file_id, line_no] posting lists
-      content.bin      # Memory-mapped full file contents (V2) for verification and context
+      meta.db          # SQLite: files (stable ids, walk_seq) + freshness fingerprints, branches, stats, dependencies, exports, symbol cache
+      manifest.json    # The commit point: which store files make up the index (generation, base, delta, recent, tombstones)
+      content.<g>.bin  # Base content store (V2) for verification and context, generation g
+      trigrams.<g>.bin # Base inverted index (V4): trigram → [file_id, line_no] posting lists
+      trigrams.<g>.plan  # Id-free planning size per trigram (the candidate planner's order and stop rule)
+      delta.<g>.*      # Delta tier: files added/modified since the base (content, trigrams, plan), tombstoned sizes (.tomb, .dtomb)
+      recent.<g>.*     # Recent tier: the latest updates, rebuilt by each update, folded into a new delta past its limit
+      content.bin, trigrams.bin  # Hard links to the base, only while the base alone is the index (for older binaries)
+      resolver-configs.json  # Resolver config files the last walk found (`update_paths` parses them without walking)
+      .index-run       # Marker whose mtime is the run's start (race threshold for recorded mtimes)
       config.toml      # Project settings (index, performance)
       index.lock       # Advisory lock held by `rfx index` for the whole run
       indexing.status  # Progress of the background symbol pass (`rfx index status`)
       pulse/           # Pulse docs-site cache (only after `rfx pulse`)
 
-See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats.
+See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats and
+`.context/INCREMENTAL_INDEX_RESEARCH.md` for the update design.
+
+### Incremental updates
+- `rfx index` stats every file and hashes only those whose (size, mtime) moved; unchanged
+  files are not read. Nothing changed → only fingerprints, flags and branch rows are written.
+- A change is published as a **delta**: added/modified files go to a small **recent**
+  segment rebuilt by each update (folded into the **delta** tier past 256 files or 1/16 of
+  the delta limit); superseded or deleted base/delta files are **tombstoned**. Past 2000
+  files or 5 % of the corpus text, the delta is **merged** into a new base, taking
+  unchanged files' text from the published stores (byte-identical to a fresh build).
+- Rows keep their id across runs (`INSERT … ON CONFLICT(path)`), so symbols, other
+  branches' rows and unchanged files' dependencies survive; `files.walk_seq` keeps
+  walk order for every id-ordered output.
+- Publish order: store files, then `manifest.json` (tmp + fsync + rename), then one
+  `meta.db` transaction recording the same generation. Readers open the snapshot the
+  manifest names (`IndexSnapshot`); a manifest ahead of `meta.db` (a crash) forces a
+  full rebuild on the next run.
+- `Indexer::update_paths(root, paths)` is the library entry point for a caller that
+  knows what changed (1-file edit on Kubernetes: 51–53 ms at load 10; `rfx index` after
+  the same edit 0.3 s, nothing changed 0.19 s; see PERFORMANCE_RESEARCH.md). It falls back to
+  `Indexer::index` for ignore files, `.reflex/config.toml`, resolver configs, a branch
+  change or the merge limit. Test knobs are Rust APIs (`set_merge_limits`,
+  `set_recent_limits`, `set_abort_point`), never env vars.
 
 ### User Configuration (`~/.reflex/`)
     ~/.reflex/
@@ -506,10 +537,12 @@ Designed for **codebase structure analysis**:
 Symbol queries combine the trigram index with tree-sitter, and a persistent cache sits
 between them.
 
-1. **`rfx index`**: extracts trigrams (and imports, with tree-sitter) from every file,
-   writes `trigrams.bin` and `content.bin`, then spawns the background symbol pass.
+1. **`rfx index`**: extracts trigrams (and imports, with tree-sitter) from the files
+   that changed, publishes the stores (see Incremental updates), then spawns the
+   background symbol pass.
 2. **Background symbol pass** (`rfx index-symbols-internal`): parses every file that has
-   a grammar, runs one combined tree-sitter query per language per file
+   a grammar and no cached symbols for its current hash (after a 1-file edit, that one
+   file), runs one combined tree-sitter query per language per file
    (`parsers::LanguageQueries`), and stores zstd symbol blobs in `meta.db`
    (`src/symbol_cache.rs`). Files with no grammar (text tiers, Swift) are skipped.
 3. **Query time** (`--symbols`, `--kind`, `find_references`):
@@ -526,8 +559,8 @@ Full-text queries never touch tree-sitter. New symbol kinds go into the language
 ## Design Notes
 - **Trigram Algorithm**: Extracts 3-character substrings; builds inverted index for O(1) lookups
 - **Symbol detection**: symbol cache first, tree-sitter on cache misses among trigram candidates (see above)
-- **Change detection by content**: an index run with no changed `blake3` hash is skipped; any change rebuilds `content.bin` and `trigrams.bin` in full
-- **Memory-mapped I/O**: Zero-copy access to trigrams.bin and content.bin
+- **Change detection by stat, then content**: files whose (size, mtime) match their row are not read; the rest are hashed (`blake3`). A change publishes a delta (see Incremental updates); a schema or extraction-code change forces one full rebuild
+- **Memory-mapped I/O**: Zero-copy access to the stores the manifest names
 - **Regex support**: Extracts guaranteed trigrams from patterns; falls back to full scan if needed
 - **Deterministic**: Same query always returns same results (sorted by file:line)
 - **Respects .gitignore**: Uses the `ignore` crate to skip gitignored files (untracked, non-ignored files are indexed)

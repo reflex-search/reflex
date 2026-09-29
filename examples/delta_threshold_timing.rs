@@ -71,23 +71,36 @@ fn median(mut v: Vec<f64>) -> f64 {
     v[v.len() / 2]
 }
 
-/// Median index time (candidates + verify + group, ms) of each shape.
-fn measure(root: &Path, rounds: usize) -> Vec<f64> {
+/// Median index time (candidates + verify + group, ms) of each shape; with
+/// `verbose`, each phase's median too.
+fn measure(root: &Path, rounds: usize, verbose: bool) -> Vec<f64> {
     let engine = QueryEngine::new(CacheManager::new(root));
     shapes()
         .into_iter()
         .map(|(pattern, filter)| {
-            let runs: Vec<f64> = (0..rounds + 1)
+            let runs: Vec<(f64, f64, f64)> = (0..rounds + 1)
                 .map(|_| {
                     let r = engine
                         .search_with_metadata(pattern, filter.clone())
                         .expect("query");
                     let t = r.timings.expect("timings");
-                    (t.candidates_us + t.verify_us + t.group_us) as f64 / 1000.0
+                    (
+                        t.candidates_us as f64 / 1000.0,
+                        t.verify_us as f64 / 1000.0,
+                        t.group_us as f64 / 1000.0,
+                    )
                 })
                 .skip(1) // warm-up
                 .collect();
-            median(runs)
+            if verbose {
+                println!(
+                    "  {pattern:<28} candidates {:.2}  verify {:.2}  group {:.2}",
+                    median(runs.iter().map(|r| r.0).collect()),
+                    median(runs.iter().map(|r| r.1).collect()),
+                    median(runs.iter().map(|r| r.2).collect())
+                );
+            }
+            median(runs.iter().map(|r| r.0 + r.1 + r.2).collect())
         })
         .collect()
 }
@@ -134,7 +147,8 @@ fn main() {
     let extra = &files[n];
 
     println!("# load at start {}", load());
-    let base = measure(&root, rounds);
+    println!("phases on the base:");
+    let base = measure(&root, rounds, true);
 
     for rel in edited {
         append(&root, rel, "// delta probe\n");
@@ -155,7 +169,27 @@ fn main() {
         m.delta.as_ref().map_or(0, |d| d.files),
         m.tombstones.len()
     );
-    let with_delta = measure(&root, rounds);
+    println!("phases with the delta:");
+    let with_delta = measure(&root, rounds, true);
+
+    // The same edited tree as a fresh base (moved aside and back): separates what
+    // the delta costs from what the edit itself changed.
+    let fresh_same_tree = if std::env::args().any(|a| a == "--fresh-too") {
+        let cache = root.join(".reflex");
+        let aside = root.join(".reflex-delta");
+        std::fs::rename(&cache, &aside).unwrap();
+        Indexer::new(CacheManager::new(&root), IndexConfig::default())
+            .index(&root, false)
+            .expect("fresh index");
+        println!("phases on a fresh base of the edited tree:");
+        let fresh = measure(&root, rounds, true);
+        std::fs::remove_dir_all(&cache).unwrap();
+        std::fs::rename(&aside, &cache).unwrap();
+        reflex::query::invalidate_caches(&root);
+        Some(fresh)
+    } else {
+        None
+    };
 
     // A 1-file update while the delta is live (the delta is rebuilt whole).
     let mut updates = Vec::new();
@@ -194,6 +228,15 @@ fn main() {
             "{label:<30} {b:>8.2} {d:>10.2} {:>+8.1}%",
             (d - b) / b * 100.0
         );
+    }
+    if let Some(fresh) = &fresh_same_tree {
+        println!("shape                    fresh edited tree ms   delta ms   change");
+        for (((pattern, _), f), d) in shapes().iter().zip(fresh).zip(&with_delta) {
+            println!(
+                "{pattern:<30} {f:>8.2} {d:>10.2} {:>+8.1}%",
+                (d - f) / f * 100.0
+            );
+        }
     }
     let sum_b: f64 = base.iter().sum();
     let sum_d: f64 = with_delta.iter().sum();
