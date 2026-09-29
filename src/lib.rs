@@ -41,6 +41,7 @@ pub mod indexer;
 pub mod interactive;
 pub mod line_filter;
 pub mod mcp;
+pub mod meta_update;
 pub mod models;
 pub mod output;
 pub mod parsers;

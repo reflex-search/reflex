@@ -41,7 +41,6 @@ pub type ProgressCallback = Arc<dyn Fn(usize, usize, String) + Send + Sync>;
 
 /// Result of processing a single file (used for parallel processing)
 struct FileProcessingResult {
-    path_str: String,
     hash: String,
     content: String,
     language: Language,
@@ -50,10 +49,318 @@ struct FileProcessingResult {
     /// between the two is caught by the next status check, not hidden by it.
     size: u64,
     mtime_ns: i64,
-    dependencies: Vec<ImportInfo>,
-    exports: Vec<ExportInfo>,
+    /// Imports and re-exports, when they were extracted this run.
+    imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
     /// The file's trigram postings, extracted in the pool (no file id yet).
     trigram_run: TrigramRun,
+}
+
+/// `statistics` key of the resolver config digest the dependency rows were
+/// resolved with (see [`crate::dependency_resolve::ResolverConfigs::digest`]).
+const RESOLVER_DIGEST_KEY: &str = "resolver_config_digest";
+
+/// File in `.reflex/` whose mtime is an index run's start (see `run_marker`).
+const RUN_MARKER: &str = ".index-run";
+
+/// What a run found for one discovered file, compared with its `files` row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileStatus {
+    /// Same size and mtime as stored: not read.
+    Unchanged,
+    /// Different stat, same bytes (a `touch`, or an edit reverted).
+    Touched,
+    /// Different bytes.
+    Modified,
+    /// No row.
+    Added,
+}
+
+/// One file the build read, in walk order.
+struct IndexedFile {
+    /// Position in the discovery lists.
+    index: usize,
+    hash: String,
+    language: Language,
+    line_count: usize,
+    size: u64,
+    mtime_ns: i64,
+    /// Imports and re-exports, when they were extracted this run.
+    imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
+}
+
+/// Inputs of `Indexer::refresh_unchanged`.
+struct RefreshUnchanged<'a> {
+    rels: &'a [String],
+    metas: &'a [Option<std::fs::Metadata>],
+    status: &'a [FileStatus],
+    stored: &'a HashMap<String, crate::meta_update::StoredFile>,
+    existing_hashes: &'a HashMap<String, String>,
+    dirty_paths: &'a std::collections::HashSet<String>,
+    branch: &'a str,
+    commit: Option<&'a str>,
+    /// `Some(dirty)` inside git.
+    git_dirty: Option<bool>,
+    run_start: std::time::SystemTime,
+    /// (too large, bytes too large, binary)
+    skipped: (usize, u64, usize),
+}
+
+/// Inputs of `Indexer::write_meta`.
+struct MetaWrite<'a> {
+    root: &'a Path,
+    rels: &'a [String],
+    indexed: &'a [IndexedFile],
+    stored: &'a HashMap<String, crate::meta_update::StoredFile>,
+    status: &'a [FileStatus],
+    dirty_paths: &'a std::collections::HashSet<String>,
+    branch: &'a str,
+    commit: Option<&'a str>,
+    resolver_configs: &'a crate::dependency_resolve::ResolverConfigs,
+    full_deps: bool,
+}
+
+/// (new, modified, unchanged) of `(path, hash)` pairs against a branch's hashes.
+fn breakdown<'a>(
+    files: impl Iterator<Item = (&'a str, &'a str)>,
+    existing_hashes: &HashMap<String, String>,
+) -> (usize, usize, usize) {
+    let (mut new, mut modified, mut unchanged) = (0, 0, 0);
+    for (path, hash) in files {
+        match existing_hashes.get(path) {
+            None => new += 1,
+            Some(old) if old != hash => modified += 1,
+            _ => unchanged += 1,
+        }
+    }
+    (new, modified, unchanged)
+}
+
+/// Resolve again every stored import (other than External/Stdlib) and every
+/// export of the files not in `skip`, updating the rows whose target changed.
+/// Returns how many rows changed.
+fn reresolve(
+    tx: &rusqlite::Connection,
+    ctx: &crate::dependency_resolve::ResolverContext<'_>,
+    resolver: &crate::dependency::PathResolver,
+    skip: &std::collections::HashSet<i64>,
+) -> Result<usize> {
+    let mut changed: Vec<(i64, Option<i64>)> = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT d.id, d.file_id, f.path, d.imported_path, d.resolved_file_id
+             FROM file_dependencies d JOIN files f ON f.id = d.file_id
+             WHERE d.import_type NOT IN ('external', 'stdlib')",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, file_id, path, imported_path, old) = row?;
+            if skip.contains(&file_id) {
+                continue;
+            }
+            // Resolution reads only the imported path (the stored type is already
+            // the reclassified one, and External/Stdlib rows are skipped above).
+            let import = ImportInfo {
+                imported_path,
+                import_type: crate::models::ImportType::Internal,
+                line_number: 0,
+                imported_symbols: None,
+            };
+            let new = ctx.resolve_import(&path, &import, resolver);
+            if new != old {
+                changed.push((id, new));
+            }
+        }
+    }
+    let mut stmt = tx.prepare("UPDATE file_dependencies SET resolved_file_id = ? WHERE id = ?")?;
+    for (id, new) in &changed {
+        stmt.execute(rusqlite::params![new, id])?;
+    }
+    let mut total = changed.len();
+
+    let mut changed: Vec<(i64, Option<i64>)> = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT e.id, e.file_id, f.path, e.source_path, e.resolved_source_id
+             FROM file_exports e JOIN files f ON f.id = e.file_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, file_id, path, source_path, old) = row?;
+            if skip.contains(&file_id) {
+                continue;
+            }
+            let export = ExportInfo {
+                exported_symbol: None,
+                source_path,
+                line_number: 0,
+            };
+            let new = ctx.resolve_export(&path, &export, resolver);
+            if new != old {
+                changed.push((id, new));
+            }
+        }
+    }
+    let mut stmt = tx.prepare("UPDATE file_exports SET resolved_source_id = ? WHERE id = ?")?;
+    for (id, new) in &changed {
+        stmt.execute(rusqlite::params![new, id])?;
+    }
+    total += changed.len();
+    Ok(total)
+}
+
+/// Imports and re-exports of one file, by language. `path_str` is the path as
+/// walked (for the nearest tsconfig).
+fn extract_imports(
+    language: Language,
+    content: &str,
+    path_str: &str,
+    root: &Path,
+    tsconfigs: &HashMap<PathBuf, crate::parsers::tsconfig::PathAliasMap>,
+) -> (Vec<ImportInfo>, Vec<ExportInfo>) {
+    // Extract dependencies and exports for supported languages
+    let mut parsed_exports: Vec<ExportInfo> = Vec::new();
+    let dependencies = match language {
+        Language::Rust => match RustDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Python => match PythonDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::TypeScript | Language::JavaScript => {
+            // Find nearest tsconfig for path alias resolution. One parse
+            // yields both the imports and the re-exports.
+            let alias_map =
+                crate::dependency_resolve::find_nearest_tsconfig(path_str, root, tsconfigs);
+            match TypeScriptDependencyExtractor::extract_dependencies_and_exports(
+                content, alias_map,
+            ) {
+                Ok((deps, exports)) => {
+                    parsed_exports = exports;
+                    deps
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                    Vec::new()
+                }
+            }
+        }
+        Language::Go => match GoDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Java => match JavaDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::C => match CDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Cpp => match CppDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::CSharp => match CSharpDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::PHP => match PhpDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Ruby => match RubyDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Kotlin => match KotlinDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Zig => match ZigDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        Language::Vue => {
+            // Find nearest tsconfig for path alias resolution. One parse
+            // per script block yields both the imports and the re-exports.
+            let alias_map =
+                crate::dependency_resolve::find_nearest_tsconfig(path_str, root, tsconfigs);
+            match VueDependencyExtractor::extract_dependencies_and_exports(content, alias_map) {
+                Ok((deps, exports)) => {
+                    parsed_exports = exports;
+                    deps
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                    Vec::new()
+                }
+            }
+        }
+        Language::Svelte => match SvelteDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        // Other languages not yet implemented
+        _ => Vec::new(),
+    };
+
+    // Exports (barrel re-export tracking) came out of the same parse as the
+    // dependencies above; only TypeScript/JavaScript/Vue have them.
+    (dependencies, parsed_exports)
 }
 
 /// Manages the indexing process
@@ -263,11 +570,29 @@ impl PathPolicy {
 #[derive(Debug, Default)]
 struct Discovered {
     files: Vec<PathBuf>,
+    /// Each entry of `files` relative to the root, with forward slashes: the path
+    /// the stores and meta.db use.
+    rels: Vec<String>,
     /// On-disk size of each entry of `files` (0 when unknown); drives batching.
     sizes: Vec<u64>,
+    /// The `stat` of each entry of `files`, taken during the walk.
+    metas: Vec<Option<std::fs::Metadata>>,
     skipped_too_large: usize,
     skipped_bytes_too_large: u64,
     skipped_binary: usize,
+}
+
+/// `file_path` relative to `root` with forward slashes (a path that is not under
+/// `root` loses a leading `./`): the path the stores and meta.db use, the same
+/// on every OS.
+fn normalize_rel(root: &Path, file_path: &Path) -> String {
+    match file_path.strip_prefix(root) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        Err(_) => file_path
+            .to_string_lossy()
+            .trim_start_matches("./")
+            .replace('\\', "/"),
+    }
 }
 
 /// A path segment the walker treats as hidden: a dot-name other than `.` / `..`.
@@ -414,9 +739,6 @@ impl Indexer {
     ) -> Result<IndexStats> {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
-        // Files modified at or after this instant record an unknown mtime, so a
-        // write racing the read is caught by hash on the next status check.
-        let run_start = std::time::SystemTime::now();
 
         // Exclusive workspace lock for the whole run. Two indexers streaming
         // into the same content.bin/trigrams.bin is how a reader ends up with a
@@ -440,24 +762,6 @@ impl Indexer {
         // `cache.init()` runs `BEGIN IMMEDIATE`, so a waiting agent sees progress
         // instead of `database is locked: Error code 5`.
         self.yield_to_symbol_pass(&cache_dir)?;
-
-        // Get git state (if in git repo)
-        let git_state = crate::git::get_git_state_optional(root)?;
-        let branch = git_state
-            .as_ref()
-            .map(|s| s.branch.clone())
-            .unwrap_or_else(|| "_default".to_string());
-
-        if let Some(ref state) = git_state {
-            log::info!(
-                "Git state: branch='{}', commit='{}', dirty={}",
-                state.branch,
-                state.commit,
-                state.dirty
-            );
-        } else {
-            log::info!("Not a git repository, using default branch");
-        }
 
         // Configure thread pool for parallel processing.
         // 0 = auto (80% of available cores, up to 32 — the query pool's rule).
@@ -485,14 +789,15 @@ impl Indexer {
         // Read BEFORE `init()`: a cache from other code must be rebuilt in full, and
         // a new cache has nothing to reuse either way.
         let schema_ok = self.cache.check_schema_hash().unwrap_or(false);
+        let extraction_ok = self.cache.check_extraction_hash().unwrap_or(false);
 
         // Ensure cache is initialized
         self.cache.init()?;
 
         // Extraction code (parsers, resolution) changed since this cache was last
-        // written: stored symbols are from other code. A full build re-extracts
-        // dependencies anyway; the symbol cache is cleared here.
-        if !schema_ok || !self.cache.check_extraction_hash().unwrap_or(false) {
+        // written: stored symbols are from other code, and every file's imports
+        // are extracted again below.
+        if !schema_ok || !extraction_ok {
             match self.cache.clear_symbol_cache() {
                 Ok(n) if n > 0 => {
                     log::info!("Cleared {} symbol cache rows written by other code", n)
@@ -502,51 +807,48 @@ impl Indexer {
             }
         }
 
-        // Drop rows for files that no longer exist on disk, before anything reads
-        // them. `batch_update_files_and_branch` prunes too, but only on a path that
-        // actually rebuilds; this covers the skip path, where every surviving hash
-        // matches and nothing else would notice the deletion. One `exists()` per row.
-        //
-        // Note the flag: this prune SHRINKS `existing_hashes` below, which would
-        // otherwise make the incremental check see a matching file count and skip
-        // the rebuild — leaving the deleted file in content.bin as a ghost hit. A
-        // deletion always requires the binary stores to be rewritten.
-        let deleted_file_count = match self.cache.identify_deleted_files() {
-            Ok(gone) if !gone.is_empty() => {
-                log::info!("Removing {} deleted files from meta.db", gone.len());
-                if let Err(e) = self.cache.delete_files_from_db(&gone) {
-                    log::warn!("Failed to prune deleted files: {}", e);
-                }
-                gone.len()
-            }
-            Ok(_) => 0,
-            Err(e) => {
-                log::warn!("Could not identify deleted files: {}", e);
-                0
-            }
-        };
-        let had_deletions = deleted_file_count > 0;
+        // Files modified at or after this run began record an unknown mtime (0), so
+        // a write racing the read is caught by hash on the next check. The threshold
+        // is the mtime of a file written now, on the same (coarse) clock that stamps
+        // the files: a write in the same tick as a read could otherwise carry an
+        // mtime just below a process-clock `run_start` and be trusted forever.
+        let run_start = self.run_marker(&cache_dir);
 
         // Check available disk space after cache is initialized
         self.check_disk_space(root)?;
 
-        // Load existing hashes for incremental indexing (for current branch)
-        let existing_hashes = self.cache.load_hashes_for_branch(&branch)?;
-        log::debug!(
-            "Loaded {} existing file hashes for branch '{}'",
-            existing_hashes.len(),
-            branch
-        );
+        // What meta.db holds: one row per path of the last indexed tree.
+        let meta_path = cache_dir.join(crate::cache::META_DB);
+        let (stored, stored_digest) = {
+            let conn = crate::cache::open_meta_db(&meta_path)?;
+            (
+                crate::meta_update::load_stored_files(&conn)?,
+                crate::meta_update::get_statistic(&conn, RESOLVER_DIGEST_KEY)?,
+            )
+        };
 
-        // Step 1: Walk directory tree and collect files
+        // Step 1: walk the tree. In parallel, ask git for the branch and the dirty
+        // paths, and find the resolver configs (each is its own walk or subprocess).
         let phase_start = Instant::now();
+        let (git_state, resolver_configs, discovered) = std::thread::scope(|scope| {
+            let git = scope.spawn(|| crate::git::get_git_state_optional(root));
+            let configs =
+                scope.spawn(|| crate::dependency_resolve::ResolverConfigs::discover(root));
+            let discovered = self.discover_files(root, &stored);
+            (git.join(), configs.join(), discovered)
+        });
+        let git_state = git_state.map_err(|_| anyhow::anyhow!("git state thread panicked"))??;
+        let resolver_configs =
+            resolver_configs.map_err(|_| anyhow::anyhow!("resolver config walk panicked"))?;
         let Discovered {
             files,
+            rels,
             sizes,
+            metas,
             skipped_too_large,
             skipped_bytes_too_large,
             skipped_binary,
-        } = self.discover_files(root)?;
+        } = discovered?;
         let total_files = files.len();
         log::info!(
             "Discovered {} files to index ({} skipped: too large, {} binary) in {} ms",
@@ -556,186 +858,129 @@ impl Indexer {
             phase_start.elapsed().as_millis()
         );
 
-        // Step 1.4: Find and parse every resolver config (tsconfig.json for path
-        // aliases, go.mod, Maven/Gradle, Python packages, gemspecs, Cargo.toml,
-        // composer.json) in one walk. tsconfig aliases are needed during extraction.
-        let resolver_configs = crate::dependency_resolve::ResolverConfigs::discover(root);
-
-        // Step 1.5: Quick incremental check - are all files unchanged?
-        // If yes, skip expensive rebuild entirely and return cached stats
-        if !existing_hashes.is_empty() && total_files == existing_hashes.len() {
-            // Same number of files - check if any changed by comparing hashes.
-            // A deletion pruned above already means the binary stores are stale.
-            let mut any_changed = had_deletions;
-            // Every path we saw on disk this pass. Needed for the deletion check
-            // below, which the hash loop alone cannot make.
-            let mut current_paths = std::collections::HashSet::<String>::with_capacity(files.len());
-            // (path, size, mtime_ns) of every file proven unchanged, so the stored
-            // fingerprint can follow a `touch` or a reverted edit without a rebuild.
-            let mut stat_rows: Vec<(String, u64, i64)> = Vec::with_capacity(files.len());
-
-            for file_path in &files {
-                // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
-                // Always use forward slashes so the on-disk index is deterministic across OSes
-                // and downstream string lookups (file_pattern filters, dependency resolvers)
-                // work regardless of the host separator.
-                let path_str = file_path.to_string_lossy().to_string();
-                let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
-                    // Convert absolute path to relative
-                    rel_path.to_string_lossy().replace('\\', "/")
-                } else {
-                    // Already relative, just strip ./ prefix
-                    path_str.trim_start_matches("./").replace('\\', "/")
-                };
-
-                current_paths.insert(normalized_path.clone());
-
-                // Check if file exists in cache
-                if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
-                    // Stat before the read, for the same reason as the main pass.
-                    let stat = std::fs::metadata(file_path)
-                        .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
-                        .unwrap_or((0, 0));
-                    // Read and hash file to check if changed. Raw bytes, exactly as
-                    // the main pass and the freshness check hash them.
-                    match std::fs::read(file_path) {
-                        Ok(bytes) => {
-                            let current_hash = self.hash_content(&bytes);
-                            if &current_hash != existing_hash {
-                                any_changed = true;
-                                log::debug!("File changed: {}", path_str);
-                                break; // Early exit - we know we need to rebuild
-                            }
-                            stat_rows.push((normalized_path.clone(), stat.0, stat.1));
-                        }
-                        Err(_) => {
-                            any_changed = true;
-                            break;
-                        }
-                    }
-                } else {
-                    // File not in cache - something changed
-                    any_changed = true;
-                    break;
-                }
-            }
-
-            // The loop above catches an ADDED path (not in existing_hashes) but never
-            // a cached path with no file on disk. Delete one file and add another and
-            // the count is unchanged, every surviving hash matches, and the rebuild is
-            // skipped — leaving the deleted file searchable as a ghost hit. Close it
-            // with a set difference, which costs nothing extra: the paths are already
-            // collected and no file is re-read.
-            if !any_changed
-                && let Some(gone) = existing_hashes
-                    .keys()
-                    .find(|indexed| !current_paths.contains(*indexed))
-            {
-                log::debug!("File deleted since last index: {}", gone);
-                any_changed = true;
-            }
-
-            if !any_changed {
-                let content_path = self.cache.path().join("content.bin");
-                let trigrams_path = self.cache.path().join("trigrams.bin");
-
-                // Check if schema hash matches - if not, we need a full rebuild
-                // even though file contents haven't changed (binary format may differ)
-                if schema_ok && content_path.exists() && trigrams_path.exists() {
-                    // Validate trigrams.bin magic bytes before skipping a rebuild.
-                    // A disk-full mid-write leaves a file that still "exists" but is corrupt;
-                    // checking only existence would cause us to skip a needed rebuild.
-                    // This mirrors the magic-byte check in CacheManager::validate().
-                    let trigrams_ok = {
-                        use std::io::Read;
-                        std::fs::File::open(&trigrams_path)
-                            .and_then(|mut f| {
-                                let mut h = [0u8; 4];
-                                f.read_exact(&mut h).map(|_| h)
-                            })
-                            .map(|h| &h == b"RFTG")
-                            .unwrap_or(false)
-                    };
-                    if !trigrams_ok {
-                        log::warn!(
-                            "trigrams.bin corrupted or too small despite hashes matching - forcing rebuild"
-                        );
-                    } else if let Ok(reader) = ContentReader::open(&content_path) {
-                        if reader.file_count() > 0 {
-                            log::info!("No files changed - skipping index rebuild");
-
-                            // The CONTENT is current, but the recorded commit may not
-                            // be: committing already-indexed files moves HEAD without
-                            // changing a single hash. Skipping the metadata update
-                            // left `commit_sha` behind forever, so freshness reported
-                            // `stale` on a perfectly current index until some
-                            // unrelated edit happened to force a rebuild.
-                            if let Some(ref state) = git_state
-                                && let Err(e) = self.cache.update_branch_metadata(
-                                    &branch,
-                                    Some(state.commit.as_str()),
-                                    existing_hashes.len(),
-                                    state.dirty,
-                                )
-                            {
-                                log::warn!("Failed to refresh branch metadata: {}", e);
-                            }
-
-                            // Same for the per-file fingerprint: the bytes are
-                            // current, but a `touch` or a reverted edit has moved
-                            // the mtime, and git's view of which paths are dirty
-                            // may have changed too.
-                            let dirty_paths = git_state
-                                .as_ref()
-                                .map(|s| s.dirty_paths.clone())
-                                .unwrap_or_default();
-                            if let Err(e) =
-                                self.cache.refresh_fingerprints(&stat_rows, &dirty_paths)
-                            {
-                                log::warn!("Failed to refresh file fingerprints: {}", e);
-                            }
-
-                            let mut stats = self.cache.stats()?;
-                            stats.unchanged_files = total_files;
-                            stats.deleted_files = deleted_file_count;
-                            stats.skipped_too_large = skipped_too_large;
-                            stats.skipped_bytes_too_large = skipped_bytes_too_large;
-                            stats.skipped_binary = skipped_binary;
-                            return Ok(stats);
-                        }
-                        log::warn!(
-                            "content.bin has no files despite hashes matching - forcing rebuild"
-                        );
-                    } else {
-                        log::warn!("content.bin invalid despite hashes matching - forcing rebuild");
-                    }
-                } else if !schema_ok {
-                    log::info!("Schema hash changed - forcing full rebuild");
-                } else {
-                    log::warn!("Binary index files missing - forcing rebuild");
-                }
-            }
-        } else if total_files != existing_hashes.len() {
+        let branch = git_state
+            .as_ref()
+            .map(|s| s.branch.clone())
+            .unwrap_or_else(|| "_default".to_string());
+        if let Some(ref state) = git_state {
             log::info!(
-                "File count changed ({} -> {}) - full reindex required",
-                existing_hashes.len(),
-                total_files
+                "Git state: branch='{}', commit='{}', dirty={}",
+                state.branch,
+                state.commit,
+                state.dirty
             );
+        } else {
+            log::info!("Not a git repository, using default branch");
         }
-
-        // Step 2: Build trigram index + content store
-        let mut new_hashes = HashMap::new();
-        let mut files_indexed = 0;
-        let mut new_file_count = 0usize;
-        let mut modified_file_count = 0usize;
-        let mut unchanged_file_count = 0usize;
-        let mut file_metadata: Vec<crate::cache::FileRow> = Vec::new(); // For batch SQLite update
+        let commit = git_state.as_ref().map(|s| s.commit.clone());
         let dirty_paths: std::collections::HashSet<String> = git_state
             .as_ref()
             .map(|s| s.dirty_paths.clone())
             .unwrap_or_default();
-        let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
-        let mut all_exports: Vec<(String, Vec<ExportInfo>)> = Vec::new(); // For batch export insertion
+
+        // The branch's own hashes: the basis of the "new / modified / unchanged"
+        // breakdown, as before stable ids.
+        let existing_hashes = self.cache.load_hashes_for_branch(&branch)?;
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .context("Failed to create thread pool")?;
+
+        // Step 2: what changed. A file whose (size, mtime) match its row is
+        // unchanged without being read; the others are read and hashed.
+        let classify_start = Instant::now();
+        let to_hash: Vec<usize> = (0..total_files)
+            .filter(|&i| match stored.get(&rels[i]) {
+                Some(row) => !metas[i].as_ref().is_some_and(|md| row.stat_matches(md)),
+                None => false,
+            })
+            .collect();
+        let hashed: Vec<(usize, Option<String>)> = pool.install(|| {
+            to_hash
+                .par_iter()
+                .map(|&i| {
+                    (
+                        i,
+                        std::fs::read(&files[i]).ok().map(|b| self.hash_content(&b)),
+                    )
+                })
+                .collect()
+        });
+        let mut status: Vec<FileStatus> = rels
+            .iter()
+            .map(|rel| {
+                if stored.contains_key(rel) {
+                    FileStatus::Unchanged
+                } else {
+                    FileStatus::Added
+                }
+            })
+            .collect();
+        for (i, hash) in hashed {
+            status[i] = match hash {
+                Some(h) if h == stored[&rels[i]].hash => FileStatus::Touched,
+                _ => FileStatus::Modified,
+            };
+        }
+        let discovered_set: std::collections::HashSet<&str> =
+            rels.iter().map(String::as_str).collect();
+        let gone: Vec<&String> = stored
+            .keys()
+            .filter(|p| !discovered_set.contains(p.as_str()))
+            .collect();
+        // Counted as "deleted" only when the file is gone from disk (a file that is
+        // merely no longer indexable was never counted), as before.
+        let deleted_file_count = gone.iter().filter(|p| !root.join(p).exists()).count();
+        let added = status.iter().filter(|s| **s == FileStatus::Added).count();
+        let modified = status
+            .iter()
+            .filter(|s| **s == FileStatus::Modified)
+            .count();
+        log::info!(
+            "phase classify: {} added, {} modified, {} touched, {} gone; {} files hashed in {} ms",
+            added,
+            modified,
+            status.iter().filter(|s| **s == FileStatus::Touched).count(),
+            gone.len(),
+            to_hash.len(),
+            classify_start.elapsed().as_millis()
+        );
+
+        // Every dependency row is rewritten when the extraction code, the schema or
+        // any resolver config (go.mod, tsconfig.json, ...) changed.
+        let full_deps = !schema_ok
+            || !extraction_ok
+            || stored_digest.as_deref() != Some(resolver_configs.digest.as_str());
+        let content_changed = added > 0 || modified > 0 || !gone.is_empty();
+
+        if !content_changed && !full_deps && schema_ok && self.stores_intact(stored.len()) {
+            log::info!("No files changed - skipping index rebuild");
+            return self.refresh_unchanged(RefreshUnchanged {
+                rels: &rels,
+                metas: &metas,
+                status: &status,
+                stored: &stored,
+                existing_hashes: &existing_hashes,
+                dirty_paths: &dirty_paths,
+                branch: &branch,
+                commit: commit.as_deref(),
+                git_dirty: git_state.as_ref().map(|s| s.dirty),
+                run_start,
+                skipped: (skipped_too_large, skipped_bytes_too_large, skipped_binary),
+            });
+        }
+        if full_deps {
+            log::info!(
+                "Resolver configs, extraction code or schema changed - re-extracting every file's imports"
+            );
+        }
+
+        // Step 3: Build trigram index + content store from every file (the stores
+        // are rewritten in full). Imports are extracted only where they may have
+        // changed.
+        let mut files_indexed = 0;
+        let mut indexed: Vec<IndexedFile> = Vec::with_capacity(total_files);
 
         // Initialize trigram builder and content store. The builder spills each
         // batch to `<cache>/trigram_temp/` only when there is more than one batch;
@@ -803,12 +1048,6 @@ impl Indexer {
             None
         };
 
-        // Build a custom thread pool with limited threads
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build()
-            .context("Failed to create thread pool")?;
-
         // Process files in batches to bound memory: a batch holds at most
         // `max_files` files and about `max_bytes` bytes of text, so the pool's
         // in-flight contents and the trigram build's postings stay bounded on
@@ -827,246 +1066,98 @@ impl Indexer {
 
         for (batch_idx, batch_range) in batches.into_iter().enumerate() {
             let batch_start = batch_range.start;
-            let batch_files = &files[batch_range];
+            let batch_len = batch_range.len();
             log::info!(
                 "Processing batch {}/{} ({} files)",
                 batch_idx + 1,
                 num_batches,
-                batch_files.len()
+                batch_len
             );
             let pool_start = Instant::now();
 
             // Process files in parallel using rayon with custom thread pool.
             // `map_init` gives each worker one reusable trigram sort buffer.
             let counter_clone = Arc::clone(&progress_counter);
+            let tsconfigs = &resolver_configs.tsconfigs;
             let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
-                batch_files
-                    .par_iter()
-                    .map_init(Vec::<u64>::new, |trigram_scratch, file_path| {
-                // Normalize path to be relative to root (handles both ./ prefix and absolute paths).
-                // Always emit forward slashes so the persisted path is deterministic across OSes.
-                let path_str = file_path.to_string_lossy().to_string();
-                let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
-                    // Convert absolute path to relative
-                    rel_path.to_string_lossy().replace('\\', "/")
-                } else {
-                    // Already relative, just strip ./ prefix
-                    path_str.trim_start_matches("./").replace('\\', "/")
-                };
+                batch_range
+                    .into_par_iter()
+                    .map_init(Vec::<u64>::new, |trigram_scratch, i| {
+                        let file_path = &files[i];
+                        let path_str = file_path.to_string_lossy().to_string();
 
-                // Stat BEFORE the read. If the file changes between the two, the
-                // recorded (size, mtime) is older than the bytes, so the next status
-                // check re-hashes it rather than trusting a stat that matches.
-                let (size, mtime_ns) = std::fs::metadata(file_path)
-                    .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
-                    .unwrap_or((0, 0));
+                        // Stat BEFORE the read. If the file changes between the two,
+                        // the recorded (size, mtime) is older than the bytes, so the
+                        // next check re-hashes it rather than trusting a stat that
+                        // matches.
+                        let (size, mtime_ns) = std::fs::metadata(file_path)
+                            .map(|md| (md.len(), crate::cache::recorded_mtime_ns(&md, run_start)))
+                            .unwrap_or((0, 0));
 
-                // Read file content once (used for hashing, trigrams, and parsing).
-                // The hash is of the RAW bytes, so the freshness check can hash a
-                // file on disk and compare. Invalid UTF-8 (a Latin-1 `.po`, an old
-                // doc) is decoded lossily rather than dropped: ripgrep searches
-                // those bytes, and an agent expects the same.
-                let bytes = match std::fs::read(file_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        log::warn!("Failed to read {}: {}", path_str, e);
-                        // Update progress
+                        // Read file content once (used for hashing, trigrams, and
+                        // parsing). The hash is of the RAW bytes, so the freshness
+                        // check can hash a file on disk and compare. Invalid UTF-8
+                        // (a Latin-1 `.po`, an old doc) is decoded lossily rather than
+                        // dropped: ripgrep searches those bytes, and an agent expects
+                        // the same.
+                        let bytes = match std::fs::read(file_path) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                log::warn!("Failed to read {}: {}", path_str, e);
+                                counter_clone.fetch_add(1, Ordering::Relaxed);
+                                return None;
+                            }
+                        };
+                        let hash = self.hash_content(&bytes);
+                        let content = match String::from_utf8(bytes) {
+                            Ok(s) => s,
+                            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                        };
+
+                        // Detect language
+                        let language = Language::from_path(file_path);
+
+                        // Count lines in the file
+                        let line_count = content.lines().count();
+
+                        // Trigram postings, sorted, without a file id (assigned
+                        // serially below).
+                        let trigram_run =
+                            crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
+
+                        // Imports and re-exports: for every file when they are all
+                        // rewritten, else for files whose bytes changed (including a
+                        // file that changed again since it was classified).
+                        let unchanged = stored.get(&rels[i]).is_some_and(|row| row.hash == hash);
+                        let imports = (full_deps || !unchanged).then(|| {
+                            extract_imports(language, &content, &path_str, root, tsconfigs)
+                        });
+
                         counter_clone.fetch_add(1, Ordering::Relaxed);
-                        return None;
-                    }
-                };
-                let hash = self.hash_content(&bytes);
-                let content = match String::from_utf8(bytes) {
-                    Ok(s) => s,
-                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-                };
 
-                // Detect language
-                let language = Language::from_path(file_path);
-
-                // Count lines in the file
-                let line_count = content.lines().count();
-
-                // Trigram postings, sorted, without a file id (assigned serially below).
-                let trigram_run = crate::trigram_build::extract_trigram_run(&content, trigram_scratch);
-
-                // Extract dependencies and exports for supported languages
-                let mut parsed_exports: Vec<ExportInfo> = Vec::new();
-                let dependencies = match language {
-                    Language::Rust => {
-                        match RustDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Python => {
-                        match PythonDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::TypeScript | Language::JavaScript => {
-                        // Find nearest tsconfig for path alias resolution. One parse
-                        // yields both the imports and the re-exports.
-                        let alias_map = crate::dependency_resolve::find_nearest_tsconfig(&path_str, root, &resolver_configs.tsconfigs);
-                        match TypeScriptDependencyExtractor::extract_dependencies_and_exports(&content, alias_map) {
-                            Ok((deps, exports)) => {
-                                parsed_exports = exports;
-                                deps
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Go => {
-                        match GoDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Java => {
-                        match JavaDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::C => {
-                        match CDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Cpp => {
-                        match CppDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::CSharp => {
-                        match CSharpDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::PHP => {
-                        match PhpDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Ruby => {
-                        match RubyDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Kotlin => {
-                        match KotlinDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Zig => {
-                        match ZigDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Vue => {
-                        // Find nearest tsconfig for path alias resolution. One parse
-                        // per script block yields both the imports and the re-exports.
-                        let alias_map = crate::dependency_resolve::find_nearest_tsconfig(&path_str, root, &resolver_configs.tsconfigs);
-                        match VueDependencyExtractor::extract_dependencies_and_exports(&content, alias_map) {
-                            Ok((deps, exports)) => {
-                                parsed_exports = exports;
-                                deps
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Language::Svelte => {
-                        match SvelteDependencyExtractor::extract_dependencies(&content) {
-                            Ok(deps) => deps,
-                            Err(e) => {
-                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                                Vec::new()
-                            }
-                        }
-                    }
-                    // Other languages not yet implemented
-                    _ => Vec::new(),
-                };
-
-                // Exports (barrel re-export tracking) came out of the same parse
-                // as the dependencies above; only TypeScript/JavaScript/Vue have them.
-                let exports = parsed_exports;
-
-                // Update progress atomically
-                counter_clone.fetch_add(1, Ordering::Relaxed);
-
-                Some(FileProcessingResult {
-                    path_str: normalized_path.to_string(),
-                    hash,
-                    content,
-                    language,
-                    line_count,
-                    size,
-                    mtime_ns,
-                    dependencies,
-                    exports,
-                    trigram_run,
-                })
-                })
-                .collect()
+                        Some(FileProcessingResult {
+                            hash,
+                            content,
+                            language,
+                            line_count,
+                            size,
+                            mtime_ns,
+                            imports,
+                            trigram_run,
+                        })
+                    })
+                    .collect()
             });
             pool_ms += pool_start.elapsed().as_millis();
 
             // Process batch results immediately (streaming approach to minimize memory)
             for (offset, result) in results.into_iter().enumerate() {
                 let Some(result) = result else { continue };
-                let walk_seq = (batch_start + offset) as i64 * crate::cache::WALK_SEQ_GAP;
-                // Use the normalized (forward-slash, relative) path everywhere so
-                // the trigram index and content store agree with what the database
-                // and downstream filters expect, regardless of host separator.
-                let normalized_pathbuf = PathBuf::from(&result.path_str);
+                let i = batch_start + offset;
+                // The normalized (forward-slash, relative) path everywhere, so the
+                // trigram index and content store agree with the database and the
+                // downstream filters, regardless of host separator.
+                let normalized_pathbuf = PathBuf::from(&rels[i]);
 
                 // Register the file with the trigram builder (assigns file_id in
                 // discovery order) and hand it the postings extracted in the pool.
@@ -1077,37 +1168,15 @@ impl Indexer {
                 content_writer.add_file(normalized_pathbuf, &result.content);
 
                 files_indexed += 1;
-
-                // Track new / modified / unchanged for the incremental summary
-                match existing_hashes.get(&result.path_str) {
-                    None => new_file_count += 1,
-                    Some(old_hash) if old_hash != &result.hash => modified_file_count += 1,
-                    _ => unchanged_file_count += 1,
-                }
-
-                // Prepare file metadata for batch database update
-                file_metadata.push(crate::cache::FileRow {
-                    path: result.path_str.clone(),
-                    hash: result.hash.clone(),
-                    language: format!("{:?}", result.language),
+                indexed.push(IndexedFile {
+                    index: i,
+                    hash: result.hash,
+                    language: result.language,
                     line_count: result.line_count,
                     size: result.size,
                     mtime_ns: result.mtime_ns,
-                    dirty: dirty_paths.contains(&result.path_str),
-                    walk_seq,
+                    imports: result.imports,
                 });
-
-                // Collect dependencies for batch insertion (if any)
-                if !result.dependencies.is_empty() {
-                    all_dependencies.push((result.path_str.clone(), result.dependencies));
-                }
-
-                // Collect exports for batch insertion (if any)
-                if !result.exports.is_empty() {
-                    all_exports.push((result.path_str.clone(), result.exports));
-                }
-
-                new_hashes.insert(result.path_str, result.hash);
             }
 
             // Build this batch's posting lists (sharded, parallel) into a partial.
@@ -1150,36 +1219,33 @@ impl Indexer {
             pb.set_message("Writing file metadata to database...".to_string());
         }
 
-        let files_tx_start = Instant::now();
-        // Batch write file metadata AND branch hashes in a SINGLE atomic transaction
-        // This ensures that if files are inserted, their hashes are guaranteed to be inserted too
-        if !file_metadata.is_empty() {
-            // Record files for this branch (for branch-aware indexing)
-            *progress_status.lock().unwrap() = "Recording branch files...".to_string();
-            if show_progress {
-                pb.set_message("Recording branch files...".to_string());
-            }
+        // Breakdown against the branch's own hashes (unchanged since stable ids).
+        let (new_file_count, modified_file_count, unchanged_file_count) = breakdown(
+            indexed
+                .iter()
+                .map(|f| (rels[f.index].as_str(), f.hash.as_str())),
+            &existing_hashes,
+        );
 
-            // Use atomic method that combines both operations
-            self.cache
-                .batch_update_files_and_branch(
-                    &file_metadata,
-                    &branch,
-                    git_state.as_ref().map(|s| s.commit.as_str()),
-                )
-                .context("Failed to batch update files and branch hashes")?;
-
-            log::info!(
-                "Wrote metadata and hashes for {} files to database",
-                file_metadata.len()
-            );
-        }
+        let meta_start = Instant::now();
+        self.write_meta(MetaWrite {
+            root,
+            rels: &rels,
+            indexed: &indexed,
+            stored: &stored,
+            status: &status,
+            dirty_paths: &dirty_paths,
+            branch: &branch,
+            commit: commit.as_deref(),
+            resolver_configs: &resolver_configs,
+            full_deps,
+        })?;
 
         // Update branch metadata
         self.cache.update_branch_metadata(
             &branch,
-            git_state.as_ref().map(|s| s.commit.as_str()),
-            file_metadata.len(),
+            commit.as_deref(),
+            indexed.len(),
             git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
         )?;
 
@@ -1188,130 +1254,18 @@ impl Indexer {
         self.cache
             .checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
-        log::debug!("WAL checkpoint completed - database is fully synced");
-
         log::info!(
-            "phase files+branch transaction: {} ms",
-            files_tx_start.elapsed().as_millis()
-        );
-        let deps_start = Instant::now();
-
-        // Steps 2.5 and 2.6 share one connection, one in-memory path resolver and
-        // one transaction. The resolver is built AFTER the files transaction above
-        // committed, because `INSERT OR REPLACE` hands every re-indexed file a new
-        // id and imports may target files that did not change.
-        let mut dep_conn = crate::cache::open_meta_db(self.cache.path().join("meta.db"))
-            .context("Failed to open meta.db for dependency recording")?;
-        let resolver = crate::dependency::PathResolver::from_conn(&dep_conn)
-            .context("Failed to load file paths for dependency resolution")?;
-        let mut dep_writer = crate::dependency::DependencyWriter::begin(&mut dep_conn)?;
-        // Every file was extracted again: replace every row, in walk order. (A file
-        // whose imports all went away has no entry in `all_dependencies`, and with
-        // stable ids nothing else would remove its old rows.)
-        dep_writer.clear_all()?;
-
-        let resolve_ctx = crate::dependency_resolve::ResolverContext::new(root, &resolver_configs);
-
-        // Step 2.5: Insert dependencies (after files are inserted and have IDs)
-        if !all_dependencies.is_empty() {
-            *progress_status.lock().unwrap() = "Extracting dependencies...".to_string();
-            if show_progress {
-                pb.set_message("Extracting dependencies...".to_string());
-            }
-
-            let mut total_deps_inserted = 0;
-
-            // Process each file's dependencies
-            for (file_path, import_infos) in all_dependencies {
-                // Get file ID from database
-                let file_id = match resolver.get_file_id_by_path(&file_path)? {
-                    Some(id) => id,
-                    None => {
-                        log::warn!(
-                            "File not found in database (skipping dependencies): {}",
-                            file_path
-                        );
-                        continue;
-                    }
-                };
-
-                let resolved_deps =
-                    resolve_ctx.resolve_file_imports(file_id, &file_path, import_infos, &resolver);
-
-                // Clear existing dependencies for this file, then insert the new
-                // rows, inside the shared transaction.
-                dep_writer.replace_dependencies(file_id, &resolved_deps)?;
-                total_deps_inserted += resolved_deps.len();
-            }
-
-            log::info!("Extracted {} dependencies", total_deps_inserted);
-        }
-
-        // Step 2.6: Insert exports (after files are inserted and have IDs)
-        if !all_exports.is_empty() {
-            *progress_status.lock().unwrap() = "Extracting exports...".to_string();
-            if show_progress {
-                pb.set_message("Extracting exports...".to_string());
-            }
-
-            let mut total_exports_inserted = 0;
-
-            // Process each file's exports
-            for (file_path, export_infos) in all_exports {
-                // Get file ID from database
-                let file_id = match resolver.get_file_id_by_path(&file_path)? {
-                    Some(id) => id,
-                    None => {
-                        log::warn!(
-                            "File not found in database (skipping exports): {}",
-                            file_path
-                        );
-                        continue;
-                    }
-                };
-
-                // Resolve export source paths and insert
-                for export_info in export_infos {
-                    let resolved_source_id =
-                        resolve_ctx.resolve_export(&file_path, &export_info, &resolver);
-
-                    // Insert export into database
-                    dep_writer.insert_export(
-                        file_id,
-                        export_info.exported_symbol.as_deref(),
-                        &export_info.source_path,
-                        resolved_source_id,
-                        export_info.line_number,
-                    )?;
-
-                    total_exports_inserted += 1;
-                }
-            }
-
-            log::info!("Extracted {} exports", total_exports_inserted);
-        }
-
-        // One commit for every dependency and export row of this run.
-        let (deps_written, exports_written) = dep_writer.commit()?;
-        drop(dep_conn);
-        if deps_written + exports_written > 0 {
-            self.cache
-                .checkpoint_wal()
-                .context("Failed to checkpoint WAL after dependency recording")?;
-        }
-        log::info!(
-            "phase dependencies+exports: {} rows, {} ms",
-            deps_written + exports_written,
-            deps_start.elapsed().as_millis()
+            "phase meta.db (files, branches, dependencies, exports): {} ms",
+            meta_start.elapsed().as_millis()
         );
 
         log::info!("Indexed {} files", files_indexed);
 
-        // Step 3: Write trigram index.
+        // Step 4: Write trigram index.
         // Crash-safe write: `TrigramIndex::write` streams into `trigrams.bin.tmp`,
         // syncs, then renames over `trigrams.bin` (see `atomic_write`). A crash
-        // mid-write leaves the previous index untouched; the fast-path check
-        // above still validates magic bytes as a second line of defence.
+        // mid-write leaves the previous index untouched; the no-change path checks
+        // the stores before trusting them.
         *progress_status.lock().unwrap() = "Writing trigram index...".to_string();
         if show_progress {
             pb.set_message("Writing trigram index...".to_string());
@@ -1328,7 +1282,7 @@ impl Indexer {
             write_start.elapsed().as_millis()
         );
 
-        // Step 4: Finalize content store (already been writing incrementally)
+        // Step 5: Finalize content store (already been writing incrementally)
         *progress_status.lock().unwrap() = "Finalizing content store...".to_string();
         if show_progress {
             pb.set_message("Finalizing content store...".to_string());
@@ -1342,7 +1296,7 @@ impl Indexer {
             content_writer.content_size()
         );
 
-        // Step 5: Update SQLite statistics from database totals (branch-aware)
+        // Step 6: Update SQLite statistics from database totals (branch-aware)
         *progress_status.lock().unwrap() = "Updating statistics...".to_string();
         if show_progress {
             pb.set_message("Updating statistics...".to_string());
@@ -1357,7 +1311,7 @@ impl Indexer {
         pb.finish_with_message("Indexing complete");
 
         // Return stats with incremental breakdown
-        let mut stats = self.cache.stats()?;
+        let mut stats = self.cache.stats_on_branch(Some(branch))?;
         stats.new_files = new_file_count;
         stats.modified_files = modified_file_count;
         stats.deleted_files = deleted_file_count;
@@ -1376,10 +1330,287 @@ impl Indexer {
         Ok(stats)
     }
 
+    /// Write the marker whose mtime is this run's race threshold; returns it (or the
+    /// process clock when the marker cannot be written or read).
+    fn run_marker(&self, cache_dir: &Path) -> std::time::SystemTime {
+        let marker = cache_dir.join(RUN_MARKER);
+        std::fs::write(&marker, b"")
+            .and_then(|_| std::fs::metadata(&marker))
+            .and_then(|md| md.modified())
+            .unwrap_or_else(|_| std::time::SystemTime::now())
+    }
+
+    /// Whether `content.bin` and `trigrams.bin` are complete and hold `expected`
+    /// files (the rows of the last indexed tree).
+    fn stores_intact(&self, expected: usize) -> bool {
+        let content = self.cache.path().join("content.bin");
+        let trigrams = self.cache.path().join("trigrams.bin");
+        let trigram_files = {
+            use std::io::Read;
+            std::fs::File::open(&trigrams).ok().and_then(|mut f| {
+                let mut header = [0u8; 24];
+                f.read_exact(&mut header).ok()?;
+                (&header[..4] == b"RFTG")
+                    .then(|| u64::from_le_bytes(header[16..24].try_into().unwrap()))
+            })
+        };
+        let Some(trigram_files) = trigram_files else {
+            log::warn!("trigrams.bin missing, corrupted or too small - forcing rebuild");
+            return false;
+        };
+        match ContentReader::open(&content) {
+            Ok(reader) if reader.file_count() == expected && trigram_files == expected as u64 => {
+                true
+            }
+            Ok(reader) => {
+                log::warn!(
+                    "Stores hold {} / {} files but meta.db lists {} - forcing rebuild",
+                    reader.file_count(),
+                    trigram_files,
+                    expected
+                );
+                false
+            }
+            Err(e) => {
+                log::warn!("content.bin invalid ({}) - forcing rebuild", e);
+                false
+            }
+        }
+    }
+
+    /// Nothing to write to the stores: bring meta.db up to date (fingerprints of
+    /// touched files, dirty flags, walk positions, this branch's rows, the branch
+    /// metadata and the statistics timestamp) and report.
+    fn refresh_unchanged(&self, r: RefreshUnchanged<'_>) -> Result<IndexStats> {
+        let now = chrono::Utc::now().timestamp();
+        let seqs = crate::meta_update::plan_walk_seq(
+            &r.rels
+                .iter()
+                .map(|rel| r.stored.get(rel).map(|s| s.walk_seq))
+                .collect::<Vec<_>>(),
+        );
+        let mut walk = Vec::new();
+        let mut flips = Vec::new();
+        let mut touched = Vec::new();
+        for (i, rel) in r.rels.iter().enumerate() {
+            let row = &r.stored[rel];
+            let dirty = r.dirty_paths.contains(rel);
+            if seqs[i] != row.walk_seq {
+                walk.push((row.id, seqs[i]));
+            }
+            if r.status[i] == FileStatus::Touched {
+                let (size, mtime) = r.metas[i]
+                    .as_ref()
+                    .map(|md| (md.len(), crate::cache::recorded_mtime_ns(md, r.run_start)))
+                    .unwrap_or((0, 0));
+                touched.push((row.id, size, mtime, dirty));
+            } else if dirty != row.dirty {
+                flips.push((row.id, dirty));
+            }
+        }
+
+        let mut conn = crate::cache::open_meta_db(self.cache.path().join(crate::cache::META_DB))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("Failed to begin meta.db transaction")?;
+        crate::meta_update::set_walk_seqs(&tx, &walk)?;
+        crate::meta_update::refresh_stats(&tx, &touched)?;
+        crate::meta_update::set_dirty_flags(&tx, &flips)?;
+        let branch_id = self
+            .cache
+            .get_or_create_branch_id(&tx, r.branch, r.commit)?;
+        crate::meta_update::sync_branch_rows(&tx, branch_id, now)?;
+        tx.commit()?;
+
+        // The CONTENT is current, but the recorded commit may not be: committing
+        // already-indexed files moves HEAD without changing a single hash.
+        // Skipping the metadata update left `commit_sha` behind forever, so
+        // freshness reported `stale` on a perfectly current index until some
+        // unrelated edit happened to force a rebuild.
+        if let Some(git_dirty) = r.git_dirty
+            && let Err(e) =
+                self.cache
+                    .update_branch_metadata(r.branch, r.commit, r.rels.len(), git_dirty)
+        {
+            log::warn!("Failed to refresh branch metadata: {}", e);
+        }
+        self.cache.update_stats(r.branch)?;
+
+        let (new_files, modified_files, unchanged_files) = breakdown(
+            r.rels
+                .iter()
+                .map(|rel| (rel.as_str(), r.stored[rel].hash.as_str())),
+            r.existing_hashes,
+        );
+        let mut stats = self.cache.stats_on_branch(Some(r.branch.to_string()))?;
+        stats.new_files = new_files;
+        stats.modified_files = modified_files;
+        stats.unchanged_files = unchanged_files;
+        stats.deleted_files = 0;
+        stats.skipped_too_large = r.skipped.0;
+        stats.skipped_bytes_too_large = r.skipped.1;
+        stats.skipped_binary = r.skipped.2;
+        Ok(stats)
+    }
+
+    /// One meta.db transaction for a run that rewrote the stores: the rows of
+    /// files whose bytes, fingerprint, dirty flag or walk position changed, the
+    /// deletions, this branch's rows, and the dependency and export rows (every
+    /// file's when `full_deps`, else the changed files', plus re-resolution of the
+    /// rest when files were added or removed).
+    fn write_meta(&self, w: MetaWrite<'_>) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let seqs = crate::meta_update::plan_walk_seq(
+            &w.indexed
+                .iter()
+                .map(|f| w.stored.get(&w.rels[f.index]).map(|s| s.walk_seq))
+                .collect::<Vec<_>>(),
+        );
+
+        let mut rows: Vec<crate::cache::FileRow> = Vec::new();
+        let mut row_index: Vec<usize> = Vec::new(); // position in `indexed` of each row
+        let mut walk = Vec::new();
+        let mut flips = Vec::new();
+        for (k, f) in w.indexed.iter().enumerate() {
+            let rel = &w.rels[f.index];
+            let dirty = w.dirty_paths.contains(rel);
+            match w.stored.get(rel) {
+                // Bytes and fingerprint as stored: only the walk position and the
+                // dirty flag can move.
+                Some(row) if row.hash == f.hash && w.status[f.index] == FileStatus::Unchanged => {
+                    if seqs[k] != row.walk_seq {
+                        walk.push((row.id, seqs[k]));
+                    }
+                    if dirty != row.dirty {
+                        flips.push((row.id, dirty));
+                    }
+                }
+                _ => {
+                    rows.push(crate::cache::FileRow {
+                        path: rel.clone(),
+                        hash: f.hash.clone(),
+                        language: format!("{:?}", f.language),
+                        line_count: f.line_count,
+                        size: f.size,
+                        mtime_ns: f.mtime_ns,
+                        dirty,
+                        walk_seq: seqs[k],
+                    });
+                    row_index.push(k);
+                }
+            }
+        }
+        let present: std::collections::HashSet<&str> =
+            w.indexed.iter().map(|f| w.rels[f.index].as_str()).collect();
+        let deleted: Vec<i64> = w
+            .stored
+            .iter()
+            .filter(|(p, _)| !present.contains(p.as_str()))
+            .map(|(_, row)| row.id)
+            .collect();
+        let paths_changed = !deleted.is_empty()
+            || w.indexed
+                .iter()
+                .any(|f| !w.stored.contains_key(&w.rels[f.index]));
+
+        let mut conn = crate::cache::open_meta_db(self.cache.path().join(crate::cache::META_DB))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("Failed to begin meta.db transaction")?;
+
+        crate::meta_update::delete_files(&tx, &deleted)?;
+        let new_ids = crate::meta_update::upsert_files(&tx, &rows, now)?;
+        crate::meta_update::set_walk_seqs(&tx, &walk)?;
+        crate::meta_update::set_dirty_flags(&tx, &flips)?;
+        let branch_id = self
+            .cache
+            .get_or_create_branch_id(&tx, w.branch, w.commit)?;
+        crate::meta_update::sync_branch_rows(&tx, branch_id, now)?;
+        log::info!(
+            "meta.db: {} rows written, {} deleted, {} moved, {} dirty flags",
+            rows.len(),
+            deleted.len(),
+            walk.len(),
+            flips.len()
+        );
+
+        // id of every indexed file, by position in `indexed`.
+        let mut ids: Vec<i64> = w
+            .indexed
+            .iter()
+            .map(|f| w.stored.get(&w.rels[f.index]).map(|s| s.id).unwrap_or(0))
+            .collect();
+        for (k, id) in row_index.iter().zip(new_ids) {
+            ids[*k] = id;
+        }
+
+        let resolver = crate::dependency::PathResolver::from_conn(&tx)
+            .context("Failed to load file paths for dependency resolution")?;
+        let ctx = crate::dependency_resolve::ResolverContext::new(w.root, w.resolver_configs);
+        let mut writer = crate::dependency::DependencyWriter::new(&tx);
+        if w.full_deps {
+            writer.clear_all()?;
+        }
+        // In walk order: the row order a full build produces.
+        let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        for (k, f) in w.indexed.iter().enumerate() {
+            let Some((imports, exports)) = &f.imports else {
+                continue;
+            };
+            let rel = &w.rels[f.index];
+            let file_id = ids[k];
+            resolved_here.insert(file_id);
+            let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
+            writer.replace_dependencies(file_id, &deps)?;
+            if !w.full_deps {
+                writer.clear_exports(file_id)?;
+            }
+            for export in exports {
+                let resolved = ctx.resolve_export(rel, export, &resolver);
+                writer.insert_export(
+                    file_id,
+                    export.exported_symbol.as_deref(),
+                    &export.source_path,
+                    resolved,
+                    export.line_number,
+                )?;
+            }
+        }
+        let (deps_written, exports_written) = writer.counts();
+
+        // An added or removed path can change how an unchanged file's imports
+        // resolve (suffix matches, ambiguity, the first of several candidates).
+        let mut reresolved = 0usize;
+        if !w.full_deps && paths_changed {
+            reresolved = reresolve(&tx, &ctx, &resolver, &resolved_here)?;
+        }
+
+        crate::meta_update::set_statistic(
+            &tx,
+            RESOLVER_DIGEST_KEY,
+            &w.resolver_configs.digest,
+            now,
+        )?;
+        tx.commit()?;
+        log::info!(
+            "dependencies: {} rows, {} exports written; {} rows re-resolved",
+            deps_written,
+            exports_written,
+            reresolved
+        );
+        Ok(())
+    }
+
     /// Discover all indexable files in the directory tree.
     ///
-    /// Returns `(files, skipped_too_large_count, skipped_too_large_bytes)`.
-    fn discover_files(&self, root: &Path) -> Result<Discovered> {
+    /// `stored` is meta.db's view of the last indexed tree: a non-code file whose
+    /// stat matches its row was sniffed for NUL bytes when it was indexed and is
+    /// not read again.
+    fn discover_files(
+        &self,
+        root: &Path,
+        stored: &HashMap<String, crate::meta_update::StoredFile>,
+    ) -> Result<Discovered> {
         let mut out = Discovered::default();
 
         let policy = self.path_policy(root);
@@ -1401,7 +1632,8 @@ impl Indexer {
 
             // Check file size separately so we can report skipped counts
             let mut size = 0u64;
-            if let Ok(metadata) = std::fs::metadata(path) {
+            let metadata = std::fs::metadata(path).ok();
+            if let Some(metadata) = &metadata {
                 size = metadata.len();
                 if size > self.config.max_file_size as u64 {
                     log::debug!("Skipping {} (too large: {} bytes)", path.display(), size);
@@ -1411,19 +1643,30 @@ impl Indexer {
                 }
             }
 
+            let rel = normalize_rel(root, path);
+
             // A code extension is trusted to be text. Anything else in the tracked
             // tier (`image.png`, `OWNERS`, `data.bin`) is sniffed: ripgrep's rule, a
             // NUL byte anywhere means binary, and a binary file is never in the
             // index. Only the long tail pays the read (from the page cache, since
-            // the main pass reads it again a moment later).
-            if !lang.is_code() && looks_binary(path) {
+            // the main pass reads it again a moment later), and not a file that is
+            // unchanged since it was indexed.
+            let unchanged = || {
+                stored
+                    .get(&rel)
+                    .zip(metadata.as_ref())
+                    .is_some_and(|(row, md)| row.stat_matches(md))
+            };
+            if !lang.is_code() && !unchanged() && looks_binary(path) {
                 log::debug!("Skipping {} (binary)", path.display());
                 out.skipped_binary += 1;
                 continue;
             }
 
             out.files.push(path.to_path_buf());
+            out.rels.push(rel);
             out.sizes.push(size);
+            out.metas.push(metadata);
         }
 
         Ok(out)
@@ -1836,7 +2079,10 @@ mod tests {
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        let files = indexer.discover_files(temp.path()).unwrap().files;
+        let files = indexer
+            .discover_files(temp.path(), &HashMap::new())
+            .unwrap()
+            .files;
         assert_eq!(files.len(), 0);
     }
 
@@ -1851,7 +2097,10 @@ mod tests {
         let rust_file = temp.path().join("main.rs");
         fs::write(&rust_file, "fn main() {}").unwrap();
 
-        let files = indexer.discover_files(temp.path()).unwrap().files;
+        let files = indexer
+            .discover_files(temp.path(), &HashMap::new())
+            .unwrap()
+            .files;
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("main.rs"));
     }
@@ -1874,7 +2123,9 @@ mod tests {
         fs::write(temp.path().join("mystery.xyz"), "?").unwrap();
         fs::write(temp.path().join("blob.bin"), b"\0\x01\x02").unwrap();
 
-        let found = indexer.discover_files(temp.path()).unwrap();
+        let found = indexer
+            .discover_files(temp.path(), &HashMap::new())
+            .unwrap();
         assert_eq!(found.files.len(), 5, "3 code files, the markdown, the .xyz");
         assert_eq!(found.skipped_binary, 1);
     }
@@ -1896,7 +2147,10 @@ mod tests {
         fs::create_dir(&tests_dir).unwrap();
         fs::write(tests_dir.join("test.rs"), "#[test] fn test() {}").unwrap();
 
-        let files = indexer.discover_files(temp.path()).unwrap().files;
+        let files = indexer
+            .discover_files(temp.path(), &HashMap::new())
+            .unwrap()
+            .files;
         assert_eq!(files.len(), 3);
     }
 
@@ -1927,7 +2181,10 @@ mod tests {
         fs::create_dir(&ignored_dir).unwrap();
         fs::write(ignored_dir.join("excluded.rs"), "fn test() {}").unwrap();
 
-        let files = indexer.discover_files(temp.path()).unwrap().files;
+        let files = indexer
+            .discover_files(temp.path(), &HashMap::new())
+            .unwrap()
+            .files;
 
         // Verify the expected files are found
         assert!(

@@ -130,17 +130,14 @@ impl PathResolver {
     }
 }
 
-/// One transaction for every dependency and export row an index run writes.
+/// Writes dependency and export rows on a connection inside a transaction the
+/// caller holds (the index run commits `files`, dependency and export rows once).
 ///
-/// Statements are prepared once and reused; the transaction is `IMMEDIATE`, so a
-/// competing writer is refused up front (via `busy_timeout`) rather than
-/// mid-loop. Dropping the writer without [`commit`](Self::commit) rolls back.
-///
-/// Until 2.0.0 the indexer opened a fresh connection for each lookup, each
-/// per-file `DELETE` and each per-file insert batch, committing (and fsyncing)
-/// twice per file and once per export row.
+/// Statements are prepared once and reused. Until 2.0.0 the indexer opened a
+/// fresh connection for each lookup, each per-file `DELETE` and each per-file
+/// insert batch, committing (and fsyncing) twice per file and once per export row.
 pub struct DependencyWriter<'c> {
-    tx: rusqlite::Transaction<'c>,
+    tx: &'c Connection,
     deps: usize,
     exports: usize,
 }
@@ -153,16 +150,13 @@ impl<'c> DependencyWriter<'c> {
          (file_id, exported_symbol, source_path, resolved_source_id, line_number) \
          VALUES (?, ?, ?, ?, ?)";
 
-    /// Begin the transaction on `conn`.
-    pub fn begin(conn: &'c mut Connection) -> Result<Self> {
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .context("Failed to begin dependency transaction")?;
-        Ok(Self {
-            tx,
+    /// Write on `conn`, inside a transaction the caller holds.
+    pub fn new(conn: &'c Connection) -> Self {
+        Self {
+            tx: conn,
             deps: 0,
             exports: 0,
-        })
+        }
     }
 
     /// Drop every dependency row of `file_id`, then insert `deps`.
@@ -233,12 +227,9 @@ impl<'c> DependencyWriter<'c> {
         Ok(())
     }
 
-    /// Commit; returns `(dependencies, exports)` written.
-    pub fn commit(self) -> Result<(usize, usize)> {
-        self.tx
-            .commit()
-            .context("Failed to commit dependency transaction")?;
-        Ok((self.deps, self.exports))
+    /// `(dependencies, exports)` written so far.
+    pub fn counts(&self) -> (usize, usize) {
+        (self.deps, self.exports)
     }
 }
 
@@ -1063,13 +1054,6 @@ impl DependencyIndex {
         }
 
         Ok(None)
-    }
-
-    /// Prepared-statement writer for the indexer's dependency phase.
-    ///
-    /// See [`DependencyWriter`].
-    pub fn writer(conn: &mut Connection) -> Result<DependencyWriter<'_>> {
-        DependencyWriter::begin(conn)
     }
 
     /// Get file ID by path with fuzzy matching support

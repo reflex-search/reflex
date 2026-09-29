@@ -429,34 +429,6 @@ impl CacheManager {
             .context("Failed to read file fingerprints")
     }
 
-    /// Refresh `size`/`mtime_ns`/`dirty_at_index` for files whose content is
-    /// unchanged.
-    ///
-    /// The incremental skip path re-reads every file and finds every hash equal, so
-    /// content.bin is left alone — but a `touch`, or an edit that was later reverted,
-    /// has moved the mtime. Without this update every later status check would
-    /// re-hash those files to prove them unchanged.
-    pub fn refresh_fingerprints(
-        &self,
-        rows: &[(String, u64, i64)],
-        dirty: &std::collections::HashSet<String>,
-    ) -> Result<()> {
-        let db_path = self.cache_path.join(META_DB);
-        let mut conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "UPDATE files SET size = ?, mtime_ns = ?, dirty_at_index = ? WHERE path = ?",
-            )?;
-            for (path, size, mtime_ns) in rows {
-                let is_dirty = dirty.contains(path) as i64;
-                stmt.execute(rusqlite::params![*size as i64, mtime_ns, is_dirty, path])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Initialize config.toml with defaults
     fn init_config_toml(&self) -> Result<()> {
         let config_path = self.cache_path.join(CONFIG_TOML);
@@ -1038,126 +1010,6 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(())
     }
 
-    /// Batch update files AND record their hashes for a branch in a SINGLE transaction
-    ///
-    /// This is the recommended method for indexing as it ensures atomicity:
-    /// if files are inserted, their branch hashes are guaranteed to be inserted too.
-    pub fn batch_update_files_and_branch(
-        &self,
-        files: &[FileRow],
-        branch: &str,
-        commit_sha: Option<&str>,
-    ) -> Result<()> {
-        log::info!(
-            "batch_update_files_and_branch: Processing {} files for branch '{}'",
-            files.len(),
-            branch
-        );
-
-        let db_path = self.cache_path.join(META_DB);
-        let mut conn = open_meta_db(&db_path)
-            .context("Failed to open meta.db for batch update and branch recording")?;
-
-        let now = chrono::Utc::now().timestamp();
-
-        // Use a SINGLE transaction for both operations
-        let tx = conn.transaction()?;
-
-        // Step 1: Upsert the files rows, fingerprint included. `ON CONFLICT ... DO
-        // UPDATE` keeps each path's id: `INSERT OR REPLACE` deleted the row and
-        // inserted a new one, and the cascades then wiped the symbol cache, other
-        // branches' rows and exports, and nulled every importer's resolved id.
-        let mut ids = Vec::with_capacity(files.len());
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO files
-                     (path, last_indexed, language, line_count, size, mtime_ns, hash,
-                      dirty_at_index, walk_seq)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(path) DO UPDATE SET
-                     last_indexed = excluded.last_indexed,
-                     language = excluded.language,
-                     line_count = excluded.line_count,
-                     size = excluded.size,
-                     mtime_ns = excluded.mtime_ns,
-                     hash = excluded.hash,
-                     dirty_at_index = excluded.dirty_at_index,
-                     walk_seq = excluded.walk_seq
-                 RETURNING id",
-            )?;
-            for row in files {
-                let id: i64 = stmt.query_row(
-                    rusqlite::params![
-                        row.path,
-                        now,
-                        row.language,
-                        row.line_count as i64,
-                        row.size as i64,
-                        row.mtime_ns,
-                        row.hash,
-                        row.dirty as i64,
-                        row.walk_seq,
-                    ],
-                    |r| r.get(0),
-                )?;
-                ids.push(id);
-            }
-        }
-        log::info!("Upserted {} files into files table", files.len());
-
-        // Step 2: Get or create branch_id (within same transaction)
-        let branch_id = self.get_or_create_branch_id(&tx, branch, commit_sha)?;
-        log::debug!("Got branch_id={} for branch '{}'", branch_id, branch);
-
-        // Step 3: This branch's hash for every file.
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
-                 VALUES (?, ?, ?, ?)",
-            )?;
-            for (row, file_id) in files.iter().zip(&ids) {
-                stmt.execute(rusqlite::params![
-                    file_id,
-                    branch_id,
-                    row.hash.as_str(),
-                    now
-                ])?;
-            }
-        }
-        log::info!("Upserted {} file_branches entries", files.len());
-
-        // Step 4: Drop rows for files this run did not index (deleted, or no longer
-        // indexable). `files` holds exactly the last indexed tree, one row per path;
-        // the cascades remove their branch, dependency, export and symbol rows.
-        //
-        // A temp table rather than a bound IN-list: SQLite caps a statement at 999
-        // parameters, and a workspace has far more files than that.
-        tx.execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT PRIMARY KEY);
-             DELETE FROM current_paths;",
-        )?;
-        {
-            let mut stmt = tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
-            for row in files {
-                stmt.execute([row.path.as_str()])?;
-            }
-        }
-        let pruned = tx.execute(
-            "DELETE FROM files WHERE path NOT IN (SELECT path FROM current_paths)",
-            [],
-        )?;
-        tx.execute_batch("DROP TABLE IF EXISTS current_paths;")?;
-        if pruned > 0 {
-            log::info!("Pruned {} files rows no longer in the tree", pruned);
-        }
-
-        // Commit the entire transaction atomically
-        tx.commit()?;
-        log::info!("Transaction committed successfully (files + file_branches)");
-
-        Ok(())
-    }
-
     /// Update statistics after indexing by calculating totals from database for a specific branch
     ///
     /// Counts only files indexed for the given branch, not all files across all branches.
@@ -1495,8 +1347,6 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             });
         }
 
-        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
-
         // Determine current branch for branch-aware statistics
         let workspace_root = self.workspace_root();
         let current_branch = if crate::git::is_git_repo(&workspace_root) {
@@ -1506,6 +1356,20 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         } else {
             Some("_default".to_string())
         };
+        self.stats_on_branch(current_branch)
+    }
+
+    /// [`stats`](Self::stats) for a branch the caller already knows (`"_default"`
+    /// outside git), without running git again.
+    pub fn stats_on_branch(
+        &self,
+        current_branch: Option<String>,
+    ) -> Result<crate::models::IndexStats> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return self.stats();
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         log::debug!("stats(): current_branch = {:?}", current_branch);
 
@@ -1714,7 +1578,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     /// Get or create a branch ID by name
     ///
     /// Returns the numeric branch ID, creating a new entry if needed.
-    fn get_or_create_branch_id(
+    pub(crate) fn get_or_create_branch_id(
         &self,
         conn: &Connection,
         branch_name: &str,

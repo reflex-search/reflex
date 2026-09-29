@@ -153,6 +153,56 @@ impl ConfigFiles {
         out
     }
 
+    /// A digest of everything the config parsers read: each kind's files in walk
+    /// order with their bytes, the Python parser's sibling files, the root
+    /// `Cargo.toml` gate and the walk error. Equal digests mean equal configs.
+    fn digest(&self, root: &Path) -> String {
+        let mut h = blake3::Hasher::new();
+        let mut file = |tag: &str, path: &Path| {
+            let rel = path.strip_prefix(root).unwrap_or(path);
+            h.update(tag.as_bytes());
+            h.update(rel.to_string_lossy().as_bytes());
+            h.update(b"\0");
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    h.update(blake3::hash(&bytes).as_bytes());
+                }
+                Err(_) => {
+                    h.update(b"<absent>");
+                }
+            }
+        };
+        let kinds: [(&str, &Vec<PathBuf>); 7] = [
+            ("go", &self.go_mods),
+            ("java", &self.java),
+            ("python", &self.python),
+            ("gem", &self.gemspecs),
+            ("cargo", &self.cargo_tomls),
+            ("composer", &self.composer),
+            ("tsconfig", &self.tsconfigs),
+        ];
+        for (tag, paths) in kinds {
+            for path in paths {
+                file(tag, path);
+            }
+        }
+        // `find_python_package_name` reads all three names in each project root.
+        for path in &self.python {
+            if let Some(dir) = path.parent() {
+                for name in ["pyproject.toml", "setup.py", "setup.cfg"] {
+                    file("python-sibling", &dir.join(name));
+                }
+            }
+        }
+        h.update(if root.join("Cargo.toml").exists() {
+            b"cargo-gate:1"
+        } else {
+            b"cargo-gate:0"
+        });
+        h.update(self.walk_error.as_deref().unwrap_or("").as_bytes());
+        h.finalize().to_hex().to_string()
+    }
+
     fn check_walk(&self) -> anyhow::Result<()> {
         match &self.walk_error {
             Some(e) => Err(anyhow::anyhow!("{}", e)),
@@ -171,6 +221,9 @@ pub struct ResolverConfigs {
     pub ruby_projects: Vec<RubyProject>,
     pub rust_crates: Vec<RustCrate>,
     pub php_psr4: Vec<Psr4Mapping>,
+    /// Digest of every input above (see `ConfigFiles::digest`). An index run
+    /// whose digest differs from the stored one re-resolves every file.
+    pub digest: String,
 }
 
 impl ResolverConfigs {
@@ -178,6 +231,7 @@ impl ResolverConfigs {
     /// is logged and left empty, as before.
     pub fn discover(root: &Path) -> Self {
         let files = ConfigFiles::walk(root);
+        let digest = files.digest(root);
 
         let tsconfigs = crate::parsers::tsconfig::parse_tsconfigs_from(&files.tsconfigs)
             .unwrap_or_else(|e| {
@@ -309,6 +363,7 @@ impl ResolverConfigs {
             ruby_projects,
             rust_crates,
             php_psr4,
+            digest,
         }
     }
 }
