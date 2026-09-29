@@ -12,6 +12,28 @@
 
 ---
 
+## ⚡ Incremental index updates (2026-09-29) — IN PROGRESS
+
+Branch `feature/incremental-index`. Plan: `~/.claude/plans/pasted-content-id-01ce-task-linked-wirth.md`;
+design and facts: `.context/INCREMENTAL_INDEX_RESEARCH.md`. Hard rule: no user-visible change.
+
+Decisions (with the user, 2026-09-29):
+1. The early-stop planner uses an id-free planning size (sidecar), so an updated index
+   answers exactly like a fresh build. Golden diff vs 2.0.3 is shown before that commit.
+2. While a delta is live, `content.bin` / `trigrams.bin` are absent, so an older binary
+   stops (`CacheCorrupted`) instead of serving the base.
+3. A schema-hash change forces one full rebuild (the fast-path check was dead).
+4. `files.walk_seq` keeps walk order for every db-id-ordered output.
+
+| Step | Status |
+| --- | --- |
+| 0. Golden harness (`benches/incremental/`), pre-change baseline, perf baseline | done (idle perf baseline still to record) |
+| Stage 0: stable metadata, walk order, change detection without reading, per-file deps | pending |
+| Stage 1: manifest + `IndexSnapshot`, planning size, delta + tombstones, library path | pending |
+| Stage 2: delta merge from snapshot content; tiering / skip-pointer measurements | pending |
+
+---
+
 ## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — IN PROGRESS
 
 Plan: `~/.claude/plans/i-want-to-revamp-purrfect-stonebraker.md` (copy lands in
@@ -151,6 +173,14 @@ Indexing and freshness:
 - `cleanup_stale` tail: instrumented, not yet measured on a large repo.
 - `@generated` content marker (needs language persisted in the index).
 - Bytes-per-line minified guard (deferred; V4 per-line postings bound the cost).
+
+Output determinism (found 2026-09-29 by `benches/incremental/golden.sh`; all in 2.0.3):
+- `rfx stats --json` and every `IndexStats` JSON print `files_by_language` /
+  `lines_by_language` in `HashMap` order.
+- `rfx deps <file> --reverse` (text) lists dependents in random order.
+- `rfx deps --depth N --json` and MCP `get_transitive_deps` list files in random order
+  (`transitive.keys()` of a `HashMap`).
+- The golden harness compares these as sets; making them sorted is a separate change.
 
 Query latency:
 - First symbol query after a re-index fills the symbol cache (Hearth `RealmId --symbols`:
