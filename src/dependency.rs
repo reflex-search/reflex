@@ -194,6 +194,23 @@ impl<'c> DependencyWriter<'c> {
         Ok(())
     }
 
+    /// Drop every dependency and export row (a full build writes them all again).
+    pub fn clear_all(&mut self) -> Result<()> {
+        self.tx.execute_batch(
+            "DELETE FROM file_dependencies;
+             DELETE FROM file_exports;",
+        )?;
+        Ok(())
+    }
+
+    /// Drop every export row of `file_id` (exports have no key to replace them by).
+    pub fn clear_exports(&mut self, file_id: i64) -> Result<()> {
+        self.tx
+            .prepare_cached("DELETE FROM file_exports WHERE file_id = ?")?
+            .execute([file_id])?;
+        Ok(())
+    }
+
     /// Insert one export row (same columns as [`DependencyIndex::insert_export`]).
     pub fn insert_export(
         &mut self,
@@ -449,12 +466,13 @@ impl DependencyIndex {
     pub fn get_dependents(&self, file_id: i64) -> Result<Vec<i64>> {
         let conn = self.open_conn()?;
 
-        // Pure SQL query on resolved_file_id (instant)
+        // Pure SQL query on resolved_file_id (instant). Walk order: a full build
+        // numbers files in walk order, and ids are stable across updates.
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT file_id
-             FROM file_dependencies
-             WHERE resolved_file_id = ?
-             ORDER BY file_id",
+            "SELECT f.id
+             FROM files f
+             WHERE f.id IN (SELECT file_id FROM file_dependencies WHERE resolved_file_id = ?)
+             ORDER BY f.walk_seq",
         )?;
 
         let dependents: Vec<i64> = stmt
@@ -558,11 +576,13 @@ impl DependencyIndex {
 
         // Exclude mod_decl edges: `mod foo;` is parent→child ownership, not a usage dependency.
         // Including them creates false positives when a child module uses `use crate::` (REF-88).
+        // Each file's edges in row order (= extraction order).
         let mut stmt = conn.prepare(
             "SELECT file_id, resolved_file_id
              FROM file_dependencies
              WHERE resolved_file_id IS NOT NULL
-               AND import_type != 'mod_decl'",
+               AND import_type != 'mod_decl'
+             ORDER BY file_id, id",
         )?;
 
         let dependencies: Vec<(i64, i64)> = stmt
@@ -654,6 +674,24 @@ impl DependencyIndex {
         Ok(paths)
     }
 
+    /// `id → 1-based position in walk order` for the given ids: the id a full
+    /// build gives each file (it numbers files 1..N in walk order). Outputs that
+    /// sort or print ids use this, so they do not depend on update history.
+    pub fn walk_ranks(&self, file_ids: &[i64]) -> Result<HashMap<i64, i64>> {
+        let conn = self.open_conn()?;
+        let wanted: HashSet<i64> = file_ids.iter().copied().collect();
+        let mut stmt = conn.prepare("SELECT id FROM files ORDER BY walk_seq")?;
+        let mut ranks = HashMap::with_capacity(wanted.len());
+        let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        for (i, id) in ids.enumerate() {
+            let id = id?;
+            if wanted.contains(&id) {
+                ranks.insert(id, i as i64 + 1);
+            }
+        }
+        Ok(ranks)
+    }
+
     /// Get file path for a single file ID
     fn get_file_path(&self, file_id: i64) -> Result<String> {
         let conn = self.open_conn()?;
@@ -665,11 +703,12 @@ impl DependencyIndex {
         Ok(path)
     }
 
-    /// Get all file IDs in the database
+    /// Get all file IDs in the database, in path order (the order the path index
+    /// has always returned them in; graph traversals start from them in this order)
     fn get_all_file_ids(&self) -> Result<Vec<i64>> {
         let conn = self.open_conn()?;
 
-        let mut stmt = conn.prepare("SELECT id FROM files")?;
+        let mut stmt = conn.prepare("SELECT id FROM files ORDER BY path")?;
         let file_ids = stmt
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -694,13 +733,15 @@ impl DependencyIndex {
     ) -> Result<Vec<(i64, usize)>> {
         let conn = self.open_conn()?;
 
-        // Pure SQL aggregation on resolved_file_id (instant)
+        // Pure SQL aggregation on resolved_file_id (instant). Ties in walk order,
+        // which is the id order a full build produces.
         let mut stmt = conn.prepare(
-            "SELECT resolved_file_id, COUNT(*) as count
-             FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL
-             GROUP BY resolved_file_id
-             ORDER BY count DESC",
+            "SELECT d.resolved_file_id, COUNT(*) as count, MIN(f.walk_seq) AS ws
+             FROM file_dependencies d
+             JOIN files f ON f.id = d.resolved_file_id
+             WHERE d.resolved_file_id IS NOT NULL
+             GROUP BY d.resolved_file_id
+             ORDER BY count DESC, ws",
         )?;
 
         // Get all hotspots and filter by minimum dependent count
@@ -759,7 +800,7 @@ impl DependencyIndex {
 
         // Step 3: Get all files NOT in the used set, excluding known entry points.
         // Entry points are always reachable by definition (they are the roots of the dep graph).
-        let mut stmt = conn.prepare("SELECT id, path FROM files ORDER BY id")?;
+        let mut stmt = conn.prepare("SELECT id, path FROM files ORDER BY walk_seq")?;
         let all_files: Vec<(i64, String)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -852,10 +893,14 @@ impl DependencyIndex {
         // Build undirected dependency graph (A imports B => edge A-B and B-A)
         let mut graph: HashMap<i64, Vec<i64>> = HashMap::new();
 
+        // Rows in (importer walk order, row order): the order a full build inserts
+        // them in. Adjacency order decides each island's member order.
         let mut stmt = conn.prepare(
-            "SELECT file_id, resolved_file_id
-             FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL",
+            "SELECT d.file_id, d.resolved_file_id
+             FROM file_dependencies d
+             JOIN files f ON f.id = d.file_id
+             WHERE d.resolved_file_id IS NOT NULL
+             ORDER BY f.walk_seq, d.id",
         )?;
 
         let dependencies: Vec<(i64, i64)> = stmt

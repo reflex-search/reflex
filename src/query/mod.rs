@@ -2141,21 +2141,13 @@ impl QueryEngine {
             files_to_process.len()
         );
 
-        // Symbol cache lookup, on the handle's shared connection.
-        //
-        // The branch comes from `.git/HEAD` (no subprocess); the hashes come from a
-        // query restricted to the candidate paths (not the whole branch).
-        let root = self.cache.workspace_root();
-        let branch = crate::git::read_head_branch(&root).unwrap_or_else(|| "_default".to_string());
+        // Symbol cache lookup, on the handle's shared connection. The keys are the
+        // candidates' `files.hash` (the stored bytes), from a query restricted to
+        // the candidate paths.
         let mut conn = open.meta_conn()?;
-        let rows =
-            crate::cache::CacheManager::branch_file_rows_on(&conn, &branch, &files_to_process)
-                .context("Failed to load file hashes")?;
-        log::debug!(
-            "Loaded {} file rows for branch '{}' for symbol cache lookups",
-            rows.len(),
-            branch
-        );
+        let rows = crate::cache::CacheManager::file_rows_on(&conn, &files_to_process)
+            .context("Failed to load file hashes")?;
+        log::debug!("Loaded {} file rows for symbol cache lookups", rows.len());
 
         let file_lookup_tuples: Vec<(i64, String, String)> = files_to_process
             .iter()
@@ -2184,7 +2176,7 @@ impl QueryEngine {
             }
         }
 
-        // Everything else — no row on this branch, or no (current-hash) cache entry.
+        // Everything else — no files row, or no (current-hash) cache entry.
         let files_needing_parse: Vec<String> = files_to_process
             .iter()
             .filter(|p| !cached_symbols.contains_key(p.as_str()))

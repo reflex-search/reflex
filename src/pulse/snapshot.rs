@@ -67,8 +67,8 @@ pub fn get_snapshots_dir(cache: &CacheManager) -> PathBuf {
 
 /// Compute a deterministic fingerprint of the current index state.
 ///
-/// Hashes all (path, content_hash) pairs from meta.db's files + file_branches
-/// tables, sorted by path. The streaming blake3 hasher avoids allocating all
+/// Hashes all (path, content_hash) pairs from meta.db's files table (the last
+/// indexed tree), sorted by path. The streaming blake3 hasher avoids allocating all
 /// pairs in memory.
 pub fn compute_index_fingerprint(cache: &CacheManager) -> Result<String> {
     let meta_db_path = cache.path().join("meta.db");
@@ -80,9 +80,8 @@ pub fn compute_index_fingerprint(cache: &CacheManager) -> Result<String> {
         .context("Failed to open meta.db for fingerprint")?;
 
     let mut stmt = conn.prepare(
-        "SELECT f.path, fb.hash
+        "SELECT f.path, f.hash
          FROM files f
-         JOIN file_branches fb ON f.id = fb.file_id
          ORDER BY f.path",
     )?;
 

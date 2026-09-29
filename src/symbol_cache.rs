@@ -665,30 +665,32 @@ impl SymbolCache {
 
     /// [`cleanup_stale`](Self::cleanup_stale) on an open connection.
     pub fn cleanup_stale_on(conn: &rusqlite::Connection) -> Result<usize> {
-        let removed = conn.execute(
-            "DELETE FROM symbols WHERE file_id NOT IN (SELECT id FROM files)",
-            [],
-        )?;
+        let removed = conn.execute(Self::CLEANUP_STALE_SQL, [])?;
         if removed > 0 {
             log::info!("Removed {} stale symbol cache entries", removed);
         }
         Ok(removed)
     }
 
-    /// Remove symbols for files that are no longer in the index
-    ///
-    /// This cleanup operation removes stale symbol cache entries for files
-    /// that have been deleted or are no longer indexed.
-    ///
-    /// Note: With foreign key constraints (CASCADE DELETE), this should rarely
-    /// find anything to clean up, but it's useful for manual verification.
+    /// Rows no current file or branch version needs: a file that is gone, or a
+    /// version (hash) that is neither the stored one (`files.hash`) nor any
+    /// branch's (`file_branches.hash`). Since ids are stable across reindexing,
+    /// an edited file keeps its old-hash row until this runs; other branches'
+    /// versions stay cached for a checkout back.
+    const CLEANUP_STALE_SQL: &'static str = "DELETE FROM symbols
+         WHERE NOT EXISTS (
+                   SELECT 1 FROM files f
+                   WHERE f.id = symbols.file_id AND f.hash = symbols.file_hash)
+           AND NOT EXISTS (
+                   SELECT 1 FROM file_branches fb
+                   WHERE fb.file_id = symbols.file_id AND fb.hash = symbols.file_hash)";
+
+    /// Remove symbols no indexed file or branch version needs any more
+    /// (see [`CLEANUP_STALE_SQL`](Self::CLEANUP_STALE_SQL)).
     pub fn cleanup_stale(&self) -> Result<usize> {
         let conn = crate::cache::open_meta_db(&self.db_path)?;
 
-        let removed = conn.execute(
-            "DELETE FROM symbols WHERE file_id NOT IN (SELECT id FROM files)",
-            [],
-        )?;
+        let removed = conn.execute(Self::CLEANUP_STALE_SQL, [])?;
 
         if removed > 0 {
             log::info!("Removed {} stale symbol cache entries", removed);

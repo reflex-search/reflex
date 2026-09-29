@@ -481,8 +481,26 @@ impl Indexer {
         // means. Checked before `init()`, which is itself a write.
         self.cache.assert_writable(false)?;
 
+        // Whether the cache was last completed by a binary with this cache schema.
+        // Read BEFORE `init()`: a cache from other code must be rebuilt in full, and
+        // a new cache has nothing to reuse either way.
+        let schema_ok = self.cache.check_schema_hash().unwrap_or(false);
+
         // Ensure cache is initialized
         self.cache.init()?;
+
+        // Extraction code (parsers, resolution) changed since this cache was last
+        // written: stored symbols are from other code. A full build re-extracts
+        // dependencies anyway; the symbol cache is cleared here.
+        if !schema_ok || !self.cache.check_extraction_hash().unwrap_or(false) {
+            match self.cache.clear_symbol_cache() {
+                Ok(n) if n > 0 => {
+                    log::info!("Cleared {} symbol cache rows written by other code", n)
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Failed to clear the symbol cache: {}", e),
+            }
+        }
 
         // Drop rows for files that no longer exist on disk, before anything reads
         // them. `batch_update_files_and_branch` prunes too, but only on a path that
@@ -623,8 +641,6 @@ impl Indexer {
 
                 // Check if schema hash matches - if not, we need a full rebuild
                 // even though file contents haven't changed (binary format may differ)
-                let schema_ok = self.cache.check_schema_hash().unwrap_or(false);
-
                 if schema_ok && content_path.exists() && trigrams_path.exists() {
                     // Validate trigrams.bin magic bytes before skipping a rebuild.
                     // A disk-full mid-write leaves a file that still "exists" but is corrupt;
@@ -810,6 +826,7 @@ impl Indexer {
         );
 
         for (batch_idx, batch_range) in batches.into_iter().enumerate() {
+            let batch_start = batch_range.start;
             let batch_files = &files[batch_range];
             log::info!(
                 "Processing batch {}/{} ({} files)",
@@ -1043,7 +1060,9 @@ impl Indexer {
             pool_ms += pool_start.elapsed().as_millis();
 
             // Process batch results immediately (streaming approach to minimize memory)
-            for result in results.into_iter().flatten() {
+            for (offset, result) in results.into_iter().enumerate() {
+                let Some(result) = result else { continue };
+                let walk_seq = (batch_start + offset) as i64 * crate::cache::WALK_SEQ_GAP;
                 // Use the normalized (forward-slash, relative) path everywhere so
                 // the trigram index and content store agree with what the database
                 // and downstream filters expect, regardless of host separator.
@@ -1075,6 +1094,7 @@ impl Indexer {
                     size: result.size,
                     mtime_ns: result.mtime_ns,
                     dirty: dirty_paths.contains(&result.path_str),
+                    walk_seq,
                 });
 
                 // Collect dependencies for batch insertion (if any)
@@ -1185,6 +1205,10 @@ impl Indexer {
         let resolver = crate::dependency::PathResolver::from_conn(&dep_conn)
             .context("Failed to load file paths for dependency resolution")?;
         let mut dep_writer = crate::dependency::DependencyWriter::begin(&mut dep_conn)?;
+        // Every file was extracted again: replace every row, in walk order. (A file
+        // whose imports all went away has no entry in `all_dependencies`, and with
+        // stable ids nothing else would remove its old rows.)
+        dep_writer.clear_all()?;
 
         let resolve_ctx = crate::dependency_resolve::ResolverContext::new(root, &resolver_configs);
 
@@ -1328,6 +1352,7 @@ impl Indexer {
 
         // Update schema hash to mark cache as compatible with current binary
         self.cache.update_schema_hash()?;
+        self.cache.update_extraction_hash()?;
 
         pb.finish_with_message("Indexing complete");
 

@@ -141,10 +141,8 @@ impl ConfigFiles {
                         out.python.push(path.to_path_buf());
                     }
                 }
-                "composer.json" => {
-                    if !path.components().any(|c| c.as_os_str() == "vendor") {
-                        out.composer.push(path.to_path_buf());
-                    }
+                "composer.json" if !path.components().any(|c| c.as_os_str() == "vendor") => {
+                    out.composer.push(path.to_path_buf());
                 }
                 _ => {}
             }
@@ -509,7 +507,7 @@ impl<'a> ResolverContext<'a> {
         if file_path.ends_with(".rs") && !rust_crates.is_empty() {
             let new_type = crate::parsers::rust::reclassify_rust_import(
                 &import_info.imported_path,
-                &rust_crates,
+                rust_crates,
             );
             if matches!(new_type, ImportType::Internal) {
                 import_info.import_type = new_type;
@@ -533,11 +531,11 @@ impl<'a> ResolverContext<'a> {
         let rust_crates = &self.configs.rust_crates;
         let php_psr4_mappings = &self.configs.php_psr4;
 
-        let resolved_file_id = if file_path.ends_with(".php") && !php_psr4_mappings.is_empty() {
+        if file_path.ends_with(".php") && !php_psr4_mappings.is_empty() {
             // Use PSR-4 to resolve namespace to file path
             if let Some(resolved_path) = crate::parsers::php::resolve_php_namespace_to_path(
                 &import_info.imported_path,
-                &php_psr4_mappings,
+                php_psr4_mappings,
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -578,8 +576,8 @@ impl<'a> ResolverContext<'a> {
             // Resolve Python dependencies using package mappings
             if let Some(resolved_path) = crate::parsers::python::resolve_python_import_to_path(
                 &import_info.imported_path,
-                &python_packages,
-                Some(&file_path),
+                python_packages,
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -620,8 +618,8 @@ impl<'a> ResolverContext<'a> {
             // Resolve Go dependencies using module mappings
             if let Some(resolved_path) = crate::parsers::go::resolve_go_import_to_path(
                 &import_info.imported_path,
-                &go_modules,
-                Some(&file_path),
+                go_modules,
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -665,10 +663,10 @@ impl<'a> ResolverContext<'a> {
             || file_path.ends_with(".cjs")
         {
             // Resolve TypeScript/JavaScript dependencies (relative imports and path aliases)
-            let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
+            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
             if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
                 alias_map,
             ) {
                 // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
@@ -738,13 +736,13 @@ impl<'a> ResolverContext<'a> {
             // Falls back to workspace resolution for cross-crate imports
             let resolved_path_opt = crate::parsers::rust::resolve_rust_use_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
                 Some(root.to_str().unwrap_or("")),
             )
             .or_else(|| {
                 crate::parsers::rust::resolve_rust_workspace_path(
                     &import_info.imported_path,
-                    &rust_crates,
+                    rust_crates,
                 )
             });
 
@@ -788,8 +786,8 @@ impl<'a> ResolverContext<'a> {
             // Resolve Java dependencies using project mappings
             if let Some(resolved_path) = crate::parsers::java::resolve_java_import_to_path(
                 &import_info.imported_path,
-                &java_projects,
-                Some(&file_path),
+                java_projects,
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -832,8 +830,8 @@ impl<'a> ResolverContext<'a> {
             // Resolve Kotlin dependencies using project mappings (same build systems as Java)
             if let Some(resolved_path) = crate::parsers::java::resolve_kotlin_import_to_path(
                 &import_info.imported_path,
-                &java_projects,
-                Some(&file_path),
+                java_projects,
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -878,8 +876,8 @@ impl<'a> ResolverContext<'a> {
             // Resolve Ruby dependencies using project mappings
             if let Some(resolved_path) = crate::parsers::ruby::resolve_ruby_require_to_path(
                 &import_info.imported_path,
-                &ruby_projects,
-                Some(&file_path),
+                ruby_projects,
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -920,7 +918,7 @@ impl<'a> ResolverContext<'a> {
             // Resolve C dependencies (relative #include paths)
             if let Some(resolved_path) = crate::parsers::c::resolve_c_include_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -969,7 +967,7 @@ impl<'a> ResolverContext<'a> {
             // Resolve C++ dependencies (relative #include paths)
             if let Some(resolved_path) = crate::parsers::cpp::resolve_cpp_include_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -1010,7 +1008,7 @@ impl<'a> ResolverContext<'a> {
             // Resolve C# dependencies (using namespace-to-path mapping)
             if let Some(resolved_path) = crate::parsers::csharp::resolve_csharp_using_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -1051,7 +1049,7 @@ impl<'a> ResolverContext<'a> {
             // Resolve Zig dependencies (relative @import paths)
             if let Some(resolved_path) = crate::parsers::zig::resolve_zig_import_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
             ) {
                 // Look up file ID in database using exact match
                 match resolver.get_file_id_by_path(&resolved_path) {
@@ -1090,10 +1088,10 @@ impl<'a> ResolverContext<'a> {
             }
         } else if file_path.ends_with(".vue") || file_path.ends_with(".svelte") {
             // Resolve Vue/Svelte dependencies (use TypeScript/JavaScript resolver for imports in <script> blocks)
-            let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
+            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
             if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
                 &import_info.imported_path,
-                Some(&file_path),
+                Some(file_path),
                 alias_map,
             ) {
                 // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
@@ -1155,9 +1153,7 @@ impl<'a> ResolverContext<'a> {
             }
         } else {
             None
-        };
-
-        resolved_file_id
+        }
     }
 
     /// The `files.id` a re-export's source resolves to (TS/JS/Vue only).
@@ -1170,7 +1166,7 @@ impl<'a> ResolverContext<'a> {
         let root = self.root;
         let tsconfigs = &self.configs.tsconfigs;
 
-        let resolved_source_id = if file_path.ends_with(".ts")
+        if file_path.ends_with(".ts")
             || file_path.ends_with(".tsx")
             || file_path.ends_with(".js")
             || file_path.ends_with(".jsx")
@@ -1181,10 +1177,10 @@ impl<'a> ResolverContext<'a> {
             || file_path.ends_with(".vue")
         {
             // Resolve TypeScript/JavaScript/Vue export paths (relative imports and path aliases)
-            let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
+            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
             if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
                 &export_info.source_path,
-                Some(&file_path),
+                Some(file_path),
                 alias_map,
             ) {
                 // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js|path.vue")
@@ -1243,9 +1239,7 @@ impl<'a> ResolverContext<'a> {
             }
         } else {
             None
-        };
-
-        resolved_source_id
+        }
     }
 }
 

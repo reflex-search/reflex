@@ -204,9 +204,9 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
     let mut hotspot_files: Vec<String> = Vec::new();
     if dependency_edges > 0
         && let Ok(mut stmt) = conn.prepare(
-            "SELECT f.path, COUNT(DISTINCT fd.file_id) as dep_count \
+            "SELECT f.path, COUNT(DISTINCT fd.file_id) as dep_count, MIN(f.walk_seq) AS ws \
              FROM file_dependencies fd JOIN files f ON fd.resolved_file_id = f.id \
-             GROUP BY fd.resolved_file_id ORDER BY dep_count DESC LIMIT 8",
+             GROUP BY fd.resolved_file_id ORDER BY dep_count DESC, ws LIMIT 8",
         )
         && let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0))
     {
@@ -218,7 +218,7 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
     // by anchor priority (types before functions before constants, etc.).
     let mut stmt = conn.prepare(
         "SELECT s.symbols_json, f.path, f.line_count \
-         FROM symbols s JOIN files f ON s.file_id = f.id",
+         FROM symbols s JOIN files f ON s.file_id = f.id AND s.file_hash = f.hash",
     )?;
     let rows: Vec<(Vec<u8>, String, usize)> = stmt
         .query_map([], |row| {

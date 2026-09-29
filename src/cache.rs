@@ -155,7 +155,8 @@ impl CacheManager {
                 size INTEGER NOT NULL DEFAULT 0,
                 mtime_ns INTEGER NOT NULL DEFAULT 0,
                 hash TEXT NOT NULL DEFAULT '',
-                dirty_at_index INTEGER NOT NULL DEFAULT 0
+                dirty_at_index INTEGER NOT NULL DEFAULT 0,
+                walk_seq INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -176,10 +177,13 @@ impl CacheManager {
             [],
         )?;
 
-        // Initialize default statistics
+        // Initialize default statistics. `OR IGNORE`: an existing cache keeps its
+        // `total_files` (its `updated_at` is the "Last updated" time) and its
+        // `last_compaction`. Resetting them on every run made the unlocked
+        // background compaction start on every `rfx` command.
         let now = chrono::Utc::now().timestamp();
         conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["total_files", "0", &now.to_string()],
         )?;
         // Who wrote this cache. The old `cache_version = "1"` row was never read by
@@ -201,16 +205,21 @@ impl CacheManager {
         }
 
         // Store cache schema hash for automatic invalidation detection
-        // This hash is computed at build time from cache-critical source files
+        // This hash is computed at build time from cache-critical source files.
+        //
+        // `OR IGNORE`: only a NEW cache is stamped here. An existing cache keeps the
+        // hash of the binary that last completed an index, until
+        // `update_schema_hash` at the end of the next complete run. Stamping it here
+        // meant the indexer's "schema changed → full rebuild" check could never fire.
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["schema_hash", schema_hash, &now.to_string()],
         )?;
 
         // Initialize last_compaction timestamp (0 = never compacted)
         conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["last_compaction", "0", &now.to_string()],
         )?;
 
@@ -335,11 +344,12 @@ impl CacheManager {
     /// The schema hash already forces that index to rebuild every row, so the
     /// columns only need to exist; their defaults are overwritten immediately.
     fn migrate_files_columns(conn: &Connection) -> Result<()> {
-        const WANTED: [(&str, &str); 4] = [
+        const WANTED: [(&str, &str); 5] = [
             ("size", "INTEGER NOT NULL DEFAULT 0"),
             ("mtime_ns", "INTEGER NOT NULL DEFAULT 0"),
             ("hash", "TEXT NOT NULL DEFAULT ''"),
             ("dirty_at_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("walk_seq", "INTEGER NOT NULL DEFAULT 0"),
         ];
         let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('files')")?;
         let present: std::collections::HashSet<String> = stmt
@@ -847,25 +857,19 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(())
     }
 
-    /// Load all file hashes across all branches from SQLite
-    ///
-    /// Used by background indexer to get hashes for all indexed files.
-    /// Returns the most recent hash for each file across all branches.
-    /// `path → (file_id, hash)` for every file on every branch, in one query.
+    /// `path → (file_id, hash)` for every indexed file, in one query.
     ///
     /// What the background symbol pass needs to decide, without touching SQLite
-    /// again, which files are already cached and which ids to write.
+    /// again, which files are already cached and which ids to write. The hash is
+    /// `files.hash`, the hash of the bytes in the stores: a branch row's hash can
+    /// name another version of the file once other branches' rows are kept.
     pub fn load_all_file_rows(&self) -> Result<HashMap<String, (i64, String)>> {
         let db_path = self.cache_path.join(META_DB);
         if !db_path.exists() {
             return Ok(HashMap::new());
         }
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
-        let mut stmt = conn.prepare(
-            "SELECT f.path, f.id, fb.hash
-             FROM file_branches fb
-             JOIN files f ON fb.file_id = f.id",
-        )?;
+        let mut stmt = conn.prepare("SELECT path, id, hash FROM files")?;
         let rows: HashMap<String, (i64, String)> = stmt
             .query_map([], |row| {
                 Ok((
@@ -938,15 +942,16 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(hashes)
     }
 
-    /// `path → (file_id, hash)` on `branch` for the given paths only.
+    /// `path → (file_id, hash)` for the given paths only, `hash` = `files.hash`.
     ///
     /// The symbol path used to load every hash on the branch (a three-way join over
     /// the whole index) and then look up every candidate's file id in a second
     /// query. A `--symbols` query touches tens of files; this asks for exactly
-    /// those, in 900-path chunks, on a connection the caller already holds.
-    pub fn branch_file_rows_on(
+    /// those, in 900-path chunks, on a connection the caller already holds. The
+    /// key is the hash of the stored bytes, so a checkout without a reindex can
+    /// never cache one version's symbols under another version's hash.
+    pub fn file_rows_on(
         conn: &Connection,
-        branch: &str,
         paths: &[String],
     ) -> Result<HashMap<String, (i64, String)>> {
         const BATCH_SIZE: usize = 900;
@@ -954,16 +959,11 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         for chunk in paths.chunks(BATCH_SIZE) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
             let sql = format!(
-                "SELECT f.path, f.id, fb.hash
-                 FROM files f
-                 JOIN file_branches fb ON fb.file_id = f.id
-                 JOIN branches b ON fb.branch_id = b.id
-                 WHERE b.name = ? AND f.path IN ({})",
+                "SELECT path, id, hash FROM files WHERE path IN ({})",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
-            let params = std::iter::once(branch).chain(chunk.iter().map(String::as_str));
-            let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -1063,159 +1063,97 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         // Use a SINGLE transaction for both operations
         let tx = conn.transaction()?;
 
-        // Step 1: Insert/update files table, fingerprint included.
+        // Step 1: Upsert the files rows, fingerprint included. `ON CONFLICT ... DO
+        // UPDATE` keeps each path's id: `INSERT OR REPLACE` deleted the row and
+        // inserted a new one, and the cascades then wiped the symbol cache, other
+        // branches' rows and exports, and nulled every importer's resolved id.
+        let mut ids = Vec::with_capacity(files.len());
         {
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO files
-                     (path, last_indexed, language, line_count, size, mtime_ns, hash, dirty_at_index)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO files
+                     (path, last_indexed, language, line_count, size, mtime_ns, hash,
+                      dirty_at_index, walk_seq)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(path) DO UPDATE SET
+                     last_indexed = excluded.last_indexed,
+                     language = excluded.language,
+                     line_count = excluded.line_count,
+                     size = excluded.size,
+                     mtime_ns = excluded.mtime_ns,
+                     hash = excluded.hash,
+                     dirty_at_index = excluded.dirty_at_index,
+                     walk_seq = excluded.walk_seq
+                 RETURNING id",
             )?;
             for row in files {
-                stmt.execute(rusqlite::params![
-                    row.path,
-                    now,
-                    row.language,
-                    row.line_count as i64,
-                    row.size as i64,
-                    row.mtime_ns,
-                    row.hash,
-                    row.dirty as i64,
-                ])?;
+                let id: i64 = stmt.query_row(
+                    rusqlite::params![
+                        row.path,
+                        now,
+                        row.language,
+                        row.line_count as i64,
+                        row.size as i64,
+                        row.mtime_ns,
+                        row.hash,
+                        row.dirty as i64,
+                        row.walk_seq,
+                    ],
+                    |r| r.get(0),
+                )?;
+                ids.push(id);
             }
         }
-        log::info!("Inserted {} files into files table", files.len());
+        log::info!("Upserted {} files into files table", files.len());
 
         // Step 2: Get or create branch_id (within same transaction)
         let branch_id = self.get_or_create_branch_id(&tx, branch, commit_sha)?;
         log::debug!("Got branch_id={} for branch '{}'", branch_id, branch);
 
-        // Step 3: Insert file_branches entries (within same transaction)
-        let mut inserted = 0;
-        for row in files {
-            // Lookup file_id from path (will find it because we just inserted above)
-            let file_id: i64 = tx
-                .query_row(
-                    "SELECT id FROM files WHERE path = ?",
-                    [row.path.as_str()],
-                    |r| r.get(0),
-                )
-                .context(format!(
-                    "File not found in index after insert: {}",
-                    row.path
-                ))?;
-
-            // Insert into file_branches using INTEGER values (not strings!)
-            tx.execute(
+        // Step 3: This branch's hash for every file.
+        {
+            let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
                  VALUES (?, ?, ?, ?)",
-                rusqlite::params![file_id, branch_id, row.hash.as_str(), now],
             )?;
-            inserted += 1;
+            for (row, file_id) in files.iter().zip(&ids) {
+                stmt.execute(rusqlite::params![
+                    file_id,
+                    branch_id,
+                    row.hash.as_str(),
+                    now
+                ])?;
+            }
         }
-        log::info!("Inserted {} file_branches entries", inserted);
+        log::info!("Upserted {} file_branches entries", files.len());
 
-        // Step 4: Drop rows for files that are no longer on disk.
-        //
-        // Until 1.7.2 this method was INSERT OR REPLACE only, so `meta.db` never
-        // shrank. A deleted file kept its `files` and `file_branches` rows forever,
-        // `stats()` counts `file_branches`, and so `total_files` still reported 1027
-        // after a deletion. Pruning lived only in `compact()`, which is throttled to
-        // once a day AND skipped entirely for the `mcp`, `watch` and `serve` commands
-        // — so an MCP-only session never pruned at all.
+        // Step 4: Drop rows for files this run did not index (deleted, or no longer
+        // indexable). `files` holds exactly the last indexed tree, one row per path;
+        // the cascades remove their branch, dependency, export and symbol rows.
         //
         // A temp table rather than a bound IN-list: SQLite caps a statement at 999
         // parameters, and a workspace has far more files than that.
-        let pruned = {
-            tx.execute_batch(
-                "CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT PRIMARY KEY);
-                 DELETE FROM current_paths;",
-            )?;
-            {
-                let mut stmt =
-                    tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
-                for row in files {
-                    stmt.execute([row.path.as_str()])?;
-                }
+        tx.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT PRIMARY KEY);
+             DELETE FROM current_paths;",
+        )?;
+        {
+            let mut stmt = tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
+            for row in files {
+                stmt.execute([row.path.as_str()])?;
             }
-
-            // Detach this branch from files it no longer contains.
-            let unlinked = tx.execute(
-                "DELETE FROM file_branches
-                 WHERE branch_id = ?
-                   AND file_id NOT IN (SELECT id FROM files WHERE path IN (SELECT path FROM current_paths))",
-                rusqlite::params![branch_id],
-            )?;
-
-            // Then sweep files no branch references any more. Scoped this way so a
-            // file that still exists on another branch is never dropped.
-            let orphaned = tx.execute(
-                "DELETE FROM files WHERE id NOT IN (SELECT file_id FROM file_branches)",
-                [],
-            )?;
-
-            tx.execute_batch("DROP TABLE IF EXISTS current_paths;")?;
-            (unlinked, orphaned)
-        };
-        if pruned.0 > 0 || pruned.1 > 0 {
-            log::info!(
-                "Pruned {} stale file_branches rows and {} orphaned files rows",
-                pruned.0,
-                pruned.1
-            );
+        }
+        let pruned = tx.execute(
+            "DELETE FROM files WHERE path NOT IN (SELECT path FROM current_paths)",
+            [],
+        )?;
+        tx.execute_batch("DROP TABLE IF EXISTS current_paths;")?;
+        if pruned > 0 {
+            log::info!("Pruned {} files rows no longer in the tree", pruned);
         }
 
         // Commit the entire transaction atomically
         tx.commit()?;
         log::info!("Transaction committed successfully (files + file_branches)");
-
-        // DIAGNOSTIC: Verify data was actually persisted after commit
-        // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
-        let verify_conn =
-            open_meta_db(&db_path).context("Failed to open meta.db for verification")?;
-
-        // Count actual files in database
-        let actual_file_count: i64 = verify_conn.query_row(
-            "SELECT COUNT(*) FROM files WHERE path IN (SELECT path FROM files ORDER BY id DESC LIMIT ?)",
-            [files.len()],
-            |row| row.get(0)
-        ).unwrap_or(0);
-
-        // Count actual file_branches entries for this branch
-        let actual_fb_count: i64 = verify_conn
-            .query_row(
-                "SELECT COUNT(*) FROM file_branches fb
-             JOIN branches b ON fb.branch_id = b.id
-             WHERE b.name = ?",
-                [branch],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        log::info!(
-            "Post-commit verification: {} files in files table (expected {}), {} file_branches entries for '{}' (expected {})",
-            actual_file_count,
-            files.len(),
-            actual_fb_count,
-            branch,
-            inserted
-        );
-
-        // DEFENSIVE: Warn if counts don't match expectations
-        if actual_file_count < files.len() as i64 {
-            log::warn!(
-                "MISMATCH: Expected {} files in database, but only found {}! Data may not have persisted.",
-                files.len(),
-                actual_file_count
-            );
-        }
-        if actual_fb_count < inserted as i64 {
-            log::warn!(
-                "MISMATCH: Expected {} file_branches entries for branch '{}', but only found {}! Data may not have persisted.",
-                inserted,
-                branch,
-                actual_fb_count
-            );
-        }
 
         Ok(())
     }
@@ -1275,6 +1213,60 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             )
             .optional()?;
         Ok(stored.as_deref() == Some(current))
+    }
+
+    /// Whether this cache's dependency, export and symbol rows were written by
+    /// this binary's extraction code (see `build.rs`, `EXTRACTION_HASH`).
+    pub fn check_extraction_hash(&self) -> Result<bool> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(false);
+        }
+        let conn = open_meta_db(&db_path)?;
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM statistics WHERE key = 'extraction_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.as_deref() == Some(env!("EXTRACTION_HASH")))
+    }
+
+    /// Stamp the extraction hash; called at the end of a complete index run.
+    pub fn update_extraction_hash(&self) -> Result<()> {
+        let conn = open_meta_db(self.cache_path.join(META_DB))
+            .context("Failed to open meta.db for extraction hash update")?;
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            [
+                "extraction_hash",
+                env!("EXTRACTION_HASH"),
+                &chrono::Utc::now().timestamp().to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete every symbol cache row; returns how many. A cache without the
+    /// symbols table (no symbol pass has run) has nothing to delete.
+    pub fn clear_symbol_cache(&self) -> Result<usize> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(0);
+        }
+        let conn = open_meta_db(&db_path)?;
+        let has_table: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'symbols'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)?;
+        if !has_table {
+            return Ok(0);
+        }
+        Ok(conn.execute("DELETE FROM symbols", [])?)
     }
 
     /// Everything the freshness check reads from `meta.db`, on ONE connection.
@@ -2389,7 +2381,15 @@ pub struct FileRow {
     pub mtime_ns: i64,
     /// `git status` listed this path when it was indexed.
     pub dirty: bool,
+    /// Position in walk order (see [`WALK_SEQ_GAP`]). Every output that used to
+    /// list files by `files.id` sorts by this instead: a full build numbers files
+    /// in walk order, and ids stay stable across updates.
+    pub walk_seq: i64,
 }
+
+/// Spacing of `files.walk_seq` in a full build (`position * WALK_SEQ_GAP`), so a
+/// file added later can take a value between its neighbours without renumbering.
+pub const WALK_SEQ_GAP: i64 = 1 << 20;
 
 /// What freshness compares a file on disk against.
 #[derive(Debug, Clone, PartialEq, Eq)]

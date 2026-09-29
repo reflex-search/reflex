@@ -1073,6 +1073,7 @@ fn format_bytes(bytes: u64) -> String {
 ///
 /// Compaction is skipped for commands that don't need it:
 /// - Clear (will delete the cache anyway)
+/// - Index (rewrites meta.db itself; compaction would wait on its lock)
 /// - Mcp (long-running server process)
 /// - Watch (long-running watcher process)
 /// - Serve (long-running HTTP server)
@@ -1089,6 +1090,12 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
         }
         Command::Serve { .. } => {
             log::debug!("Skipping compaction for Serve command");
+            return;
+        }
+        // An index run rewrites meta.db itself and prunes deleted files; a
+        // compaction racing it would only wait on its lock.
+        Command::Index { .. } => {
+            log::debug!("Skipping compaction for Index command");
             return;
         }
         _ => {}
@@ -1123,6 +1130,20 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
                 .parent()
                 .expect("Cache should have parent directory"),
         );
+
+        // Never alongside an index run: skip when `index.lock` is held, and hold it
+        // for the compaction.
+        let _lock = match crate::atomic_write::IndexLock::try_acquire(cache.path()) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                log::debug!("Skipping background compaction: an index run holds the lock");
+                return;
+            }
+            Err(e) => {
+                log::debug!("Skipping background compaction: {}", e);
+                return;
+            }
+        };
 
         match cache.compact() {
             Ok(report) => {
