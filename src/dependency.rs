@@ -103,6 +103,30 @@ impl PathResolver {
         path.bytes().rev().map(|b| b.to_ascii_lowercase()).collect()
     }
 
+    /// Add `path` with `id` (replacing the id a known path had).
+    pub fn insert(&mut self, id: i64, path: &str) {
+        if let Some(old) = self.exact.insert(path.to_string(), id) {
+            self.remove_suffix(path, old);
+        }
+        let entry = (Self::suffix_key(path), id);
+        let at = self.suffix.partition_point(|e| *e < entry);
+        self.suffix.insert(at, entry);
+    }
+
+    /// Forget `path`.
+    pub fn remove(&mut self, path: &str) {
+        if let Some(id) = self.exact.remove(path) {
+            self.remove_suffix(path, id);
+        }
+    }
+
+    fn remove_suffix(&mut self, path: &str, id: i64) {
+        let entry = (Self::suffix_key(path), id);
+        if let Ok(at) = self.suffix.binary_search(&entry) {
+            self.suffix.remove(at);
+        }
+    }
+
     /// Same contract as [`DependencyIndex::get_file_id_by_path`]: `Ok(Some)` on an
     /// exact or unique-suffix match, `Ok(None)` on no match, `Err` when the suffix
     /// is ambiguous.

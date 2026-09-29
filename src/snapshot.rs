@@ -100,6 +100,10 @@ pub struct Manifest {
     pub tomb_delta: Option<String>,
     /// Distinct trigrams with at least one posting in a live file.
     pub live_trigrams: u64,
+    /// Unique per publish (random): what in-process caches of a publish's state
+    /// key on, since a generation number repeats after the cache is cleared.
+    #[serde(default)]
+    pub publish_id: u64,
     /// Bytes of text of the live files (what `content.bin` of a full build of the
     /// same tree holds).
     pub live_corpus_bytes: u64,
@@ -126,6 +130,7 @@ impl Manifest {
             tomb: None,
             tomb_delta: None,
             live_trigrams,
+            publish_id: 0,
             live_corpus_bytes,
             checksum: String::new(),
         }
@@ -136,6 +141,7 @@ impl Manifest {
     /// was set).
     pub fn sealed(mut self) -> Self {
         self.format = MANIFEST_FORMAT;
+        self.publish_id = new_publish_id();
         self.checksum = self.compute_checksum();
         self
     }
@@ -169,6 +175,24 @@ impl Manifest {
             + self.delta.as_ref().map_or(0, |d| d.files)
             + self.recent.as_ref().map_or(0, |d| d.files)
     }
+}
+
+/// A random nonzero id: the clock, the process id and a counter, mixed by blake3.
+fn new_publish_id() -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut h = blake3::Hasher::new();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    h.update(&nanos.to_le_bytes());
+    h.update(&std::process::id().to_le_bytes());
+    h.update(
+        &COUNTER
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_le_bytes(),
+    );
+    let bytes = h.finalize();
+    u64::from_le_bytes(bytes.as_bytes()[..8].try_into().expect("8 bytes")).max(1)
 }
 
 /// `content.<g>.bin` / `trigrams.<g>.bin` / `trigrams.<g>.plan` of a base built
@@ -305,14 +329,18 @@ pub fn link_fixed_names(cache_dir: &Path, manifest: &Manifest) {
 /// Remove `content.bin` / `trigrams.bin` (before a manifest with a delta is
 /// published, so no older binary reads the base alone once it is incomplete).
 pub fn unlink_fixed_names(cache_dir: &Path) {
+    let mut removed = false;
     for fixed in [FIXED_CONTENT, FIXED_TRIGRAMS] {
         match std::fs::remove_file(cache_dir.join(fixed)) {
-            Ok(()) => {}
+            Ok(()) => removed = true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => log::warn!("Could not remove {}: {}", fixed, e),
         }
     }
-    sync_dir(cache_dir);
+    // Already absent (a delta was live): nothing to make durable.
+    if removed {
+        sync_dir(cache_dir);
+    }
 }
 
 /// Delete generation files that neither `current` nor `previous` names. A reader

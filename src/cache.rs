@@ -120,6 +120,12 @@ impl CacheManager {
         Ok(())
     }
 
+    /// Create `config.toml` if it is missing: what `init` does besides the schema,
+    /// for a cache whose schema this binary already completed a run on.
+    pub(crate) fn ensure_config(&self) -> Result<()> {
+        self.init_config_toml()
+    }
+
     /// Initialize meta.db with SQLite schema
     fn init_meta_db(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
@@ -1028,6 +1034,17 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Self::update_stats_on(&conn, branch)
     }
 
+    /// Record `total_files` (and its `updated_at`, the "Last updated" time) as `n`:
+    /// what [`Self::update_stats_on`] counts, for a caller that knows every file
+    /// has its branch row.
+    pub(crate) fn set_total_files_on(conn: &Connection, n: usize, now: i64) -> Result<()> {
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["total_files", &n.to_string(), &now.to_string()],
+        )?;
+        Ok(())
+    }
+
     /// [`Self::update_stats`] on an open connection (inside the caller's transaction).
     pub(crate) fn update_stats_on(conn: &Connection, branch: &str) -> Result<()> {
         // Count files for specific branch only (branch-aware statistics)
@@ -1617,6 +1634,57 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         });
 
         (index_size_bytes, trigram_index_bytes, corpus_bytes)
+    }
+
+    /// [`Self::stats_on_branch`] for a branch whose `file_branches` rows name every
+    /// file (the index run just synced them): the same numbers from `files` alone,
+    /// one scan instead of three joins.
+    pub(crate) fn stats_synced(&self) -> Result<crate::models::IndexStats> {
+        let conn = open_meta_db(self.cache_path.join(META_DB)).context("Failed to open meta.db")?;
+        let mut files_by_language = std::collections::HashMap::new();
+        let mut lines_by_language = std::collections::HashMap::new();
+        let mut total_files = 0usize;
+        {
+            let mut stmt = conn.prepare(
+                "SELECT language, COUNT(*), SUM(line_count) FROM files GROUP BY language",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, i64>(2)? as usize,
+                ))
+            })?;
+            for row in rows {
+                let (language, files, lines) = row?;
+                total_files += files;
+                files_by_language.insert(language.clone(), files);
+                lines_by_language.insert(language, lines);
+            }
+        }
+        let last_updated: String = conn
+            .query_row(
+                "SELECT updated_at FROM statistics WHERE key = 'total_files'",
+                [],
+                |row| {
+                    let timestamp: i64 = row.get(0)?;
+                    Ok(chrono::DateTime::from_timestamp(timestamp, 0)
+                        .unwrap_or_else(chrono::Utc::now)
+                        .to_rfc3339())
+                },
+            )
+            .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
+        let (index_size_bytes, trigram_index_bytes, corpus_bytes) = self.store_sizes();
+        Ok(crate::models::IndexStats {
+            total_files,
+            index_size_bytes,
+            last_updated,
+            files_by_language,
+            lines_by_language,
+            corpus_bytes,
+            trigram_index_bytes,
+            ..Default::default()
+        })
     }
 
     // ===== Branch-aware indexing methods =====

@@ -21,6 +21,9 @@ pub struct StoredFile {
     pub hash: String,
     pub walk_seq: i64,
     pub dirty: bool,
+    /// For the statistics of a run that changes nothing.
+    pub language: String,
+    pub line_count: usize,
 }
 
 impl StoredFile {
@@ -33,8 +36,10 @@ impl StoredFile {
 
 /// Every `files` row, by path.
 pub fn load_stored_files(conn: &Connection) -> Result<HashMap<String, StoredFile>> {
-    let mut stmt =
-        conn.prepare("SELECT path, id, size, mtime_ns, hash, walk_seq, dirty_at_index FROM files")?;
+    let mut stmt = conn.prepare(
+        "SELECT path, id, size, mtime_ns, hash, walk_seq, dirty_at_index, language, line_count
+             FROM files",
+    )?;
     let rows = stmt.query_map([], stored_file)?;
     rows.collect::<Result<HashMap<_, _>, _>>()
         .context("Failed to read files rows")
@@ -50,6 +55,8 @@ fn stored_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, StoredFile)> 
             hash: r.get(4)?,
             walk_seq: r.get(5)?,
             dirty: r.get::<_, i64>(6)? != 0,
+            language: r.get(7)?,
+            line_count: r.get::<_, i64>(8)? as usize,
         },
     ))
 }
@@ -57,7 +64,8 @@ fn stored_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, StoredFile)> 
 /// The `files` rows at each of `paths` or under it (a directory): what a library
 /// update needs, by index lookups.
 pub fn load_rows_under(conn: &Connection, paths: &[String]) -> Result<HashMap<String, StoredFile>> {
-    const COLUMNS: &str = "path, id, size, mtime_ns, hash, walk_seq, dirty_at_index";
+    const COLUMNS: &str =
+        "path, id, size, mtime_ns, hash, walk_seq, dirty_at_index, language, line_count";
     let mut exact = conn.prepare_cached(&format!("SELECT {COLUMNS} FROM files WHERE path = ?"))?;
     // `p/` < every path under `p` < `p0` ('0' follows '/').
     let mut under = conn.prepare_cached(&format!(
@@ -195,17 +203,30 @@ pub fn delete_files(conn: &Connection, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
+/// `statistics` key: the branch whose `file_branches` rows the last completed run
+/// synced with `files`. Written in the transaction that syncs them; a run on that
+/// branch then needs to touch only the rows it rewrites.
+pub const SYNCED_BRANCH_KEY: &str = "synced_branch";
+
 /// Make `branch_id`'s rows name every file with its current hash: inserts the
-/// missing ones and updates the stale ones, leaving the rest alone.
-pub fn sync_branch_rows(conn: &Connection, branch_id: i64, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+/// missing ones and updates the stale ones, leaving the rest alone. Records
+/// `branch` as the synced branch.
+pub fn sync_branch_rows(
+    conn: &Connection,
+    branch_id: i64,
+    branch: &str,
+    now: i64,
+) -> Result<usize> {
+    let changed = conn.execute(
         "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
          SELECT f.id, ?1, f.hash, ?2 FROM files f
          WHERE NOT EXISTS (
              SELECT 1 FROM file_branches fb
              WHERE fb.file_id = f.id AND fb.branch_id = ?1 AND fb.hash = f.hash)",
         rusqlite::params![branch_id, now],
-    )?)
+    )?;
+    set_statistic(conn, SYNCED_BRANCH_KEY, branch, now)?;
+    Ok(changed)
 }
 
 /// Point `branch_id`'s rows of the given files at their hashes: `(file id, hash)`.
@@ -254,6 +275,10 @@ pub fn set_statistic(conn: &Connection, key: &str, value: &str, now: i64) -> Res
 /// [`WALK_SEQ_GAP`] spacing (what a full build writes).
 pub fn plan_walk_seq(stored: &[Option<i64>]) -> Vec<i64> {
     let n = stored.len();
+    // The usual case: every file has a position and they already increase.
+    if stored.iter().all(Option::is_some) && stored.windows(2).all(|w| w[0] < w[1]) {
+        return stored.iter().map(|v| v.expect("checked")).collect();
+    }
     let renumber = || (0..n).map(|i| i as i64 * WALK_SEQ_GAP).collect::<Vec<_>>();
 
     // Longest strictly increasing subsequence of the stored values (patience).
