@@ -106,7 +106,7 @@ fn the_release_stops_on_a_live_delta() {
     fs::write(root.join("src/b.rs"), "fn beta_new_token() {}\n").unwrap();
     index(NEW, root);
     assert!(
-        root.join(".reflex/delta.2.content.bin").exists(),
+        root.join(".reflex/recent.2.content.bin").exists(),
         "a live delta"
     );
 

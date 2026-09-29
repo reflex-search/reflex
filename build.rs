@@ -18,6 +18,8 @@
 //! - src/models.rs: Core data structures (Span, SymbolKind, SearchResult)
 //! - src/dependency.rs: Dependency extraction and storage
 //! - src/trigram_build.rs: The trigrams.bin writer used by `rfx index`
+//! - src/snapshot.rs: manifest.json, planning-size and tombstone files, delta tiers
+//! - src/meta_update.rs: how an index run writes `files` rows (ids, walk order)
 //!
 //! Changes to these files may break compatibility with existing cache files.
 
@@ -35,6 +37,8 @@ const CACHE_CRITICAL_FILES: &[&str] = &[
     "src/symbol_cache.rs",
     "src/models.rs",
     "src/dependency.rs",
+    "src/snapshot.rs",
+    "src/meta_update.rs",
 ];
 
 /// Code that decides what goes into the dependency, export and symbol rows. A

@@ -362,10 +362,21 @@ fn mutate(root: &Path, rng: &mut Rng, step: usize) -> Option<Vec<PathBuf>> {
     None
 }
 
-fn indexer(root: &Path, merge: Option<(usize, u64)>) -> Indexer {
+/// Limits of a run: the merge limit, and the recent segment's limit before it
+/// folds into the delta (`None`: the defaults under an unlimited merge).
+#[derive(Clone, Copy)]
+struct Limits {
+    merge: Option<(usize, u64)>,
+    recent: Option<(usize, u64)>,
+}
+
+fn indexer(root: &Path, limits: Limits) -> Indexer {
     let mut indexer = Indexer::new(CacheManager::new(root), IndexConfig::default());
-    let (files, bytes) = merge.unwrap_or((usize::MAX, u64::MAX));
+    let (files, bytes) = limits.merge.unwrap_or((usize::MAX, u64::MAX));
     indexer.set_merge_limits(files, bytes);
+    if let Some((files, bytes)) = limits.recent {
+        indexer.set_recent_limits(files, bytes);
+    }
     indexer
 }
 
@@ -599,7 +610,15 @@ fn assert_matches_fresh(root: &Path, context: &str) {
     let updated = (battery(root), structure(root), shape(root));
     let aside = root.join(".reflex-updated");
     fs::rename(root.join(".reflex"), &aside).unwrap();
-    indexer(root, None).index(root, false).expect("fresh index");
+    indexer(
+        root,
+        Limits {
+            merge: None,
+            recent: None,
+        },
+    )
+    .index(root, false)
+    .expect("fresh index");
     let fresh = (battery(root), structure(root), shape(root));
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     fs::rename(&aside, root.join(".reflex")).unwrap();
@@ -636,9 +655,13 @@ fn run_seed(seed: u64, steps: usize) -> (usize, usize) {
     let root = temp.path();
     seed_tree(root);
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5);
-    // Most seeds keep the delta; some merge often.
-    let merge = (seed % 4 == 3).then_some((2usize, u64::MAX));
-    indexer(root, merge).index(root, false).unwrap();
+    // Most seeds keep the delta; some merge often, some fold the recent segment
+    // into the delta often.
+    let limits = Limits {
+        merge: (seed % 4 == 3).then_some((2usize, u64::MAX)),
+        recent: (seed % 4 == 1).then_some((2usize, u64::MAX)),
+    };
+    indexer(root, limits).index(root, false).unwrap();
     let mut log: Vec<String> = Vec::new();
     let (mut direct, mut full) = (0, 0);
     for step in 0..steps {
@@ -652,7 +675,7 @@ fn run_seed(seed: u64, steps: usize) -> (usize, usize) {
             if use_update { "update_paths" } else { "index" },
             named
         ));
-        let ix = indexer(root, merge);
+        let ix = indexer(root, limits);
         if use_update {
             match ix.try_update_paths(root, &named).expect("update_paths") {
                 Some(_) => direct += 1,

@@ -7,7 +7,11 @@
 //!   last full build, file ids `0..N-1`;
 //! - optionally a **delta**: the same pair for files added or modified since, with
 //!   their own ids `0..k-1`, seen through the snapshot as `N..N+k-1`;
-//! - **tombstones**: base ids that are deleted or superseded by the delta.
+//! - optionally a **recent** segment on top of the delta, ids after the delta's: the
+//!   files of the latest updates. An update rebuilds only this small segment; when
+//!   it passes its limits it is folded into a new delta (two tiers, so an update
+//!   near the merge limit does not rebuild the whole delta);
+//! - **tombstones**: base and delta ids that are deleted or superseded.
 //!
 //! Every file a manifest names is generation-suffixed and never modified once
 //! written: a new run writes new files, then renames a new manifest into place. A
@@ -43,7 +47,7 @@ pub const FIXED_CONTENT: &str = "content.bin";
 pub const FIXED_TRIGRAMS: &str = "trigrams.bin";
 
 /// Manifest format this binary writes and reads.
-const MANIFEST_FORMAT: u32 = 1;
+const MANIFEST_FORMAT: u32 = 2;
 
 /// One pair of stores (content + trigrams) named by a manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,13 +85,19 @@ pub struct Manifest {
     /// Files added or modified since the base was built.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<SegmentFiles>,
-    /// Base ids that are deleted or superseded by the delta, ascending.
+    /// Files of the latest updates, above the delta (ids after the delta's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent: Option<SegmentFiles>,
+    /// Base and delta ids that are deleted or superseded, ascending.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tombstones: Vec<u32>,
     /// `(trigram, planning size)` of the tombstoned base files' postings: what the
-    /// base's planning sizes over-count (see [`TombPlan`]). Present with tombstones.
+    /// base's planning sizes over-count (see [`TombPlan`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tomb: Option<String>,
+    /// The same for the tombstoned delta files' postings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tomb_delta: Option<String>,
     /// Distinct trigrams with at least one posting in a live file.
     pub live_trigrams: u64,
     /// Bytes of text of the live files (what `content.bin` of a full build of the
@@ -106,41 +116,28 @@ impl Manifest {
         live_trigrams: u64,
         live_corpus_bytes: u64,
     ) -> Self {
-        Self::new(
-            generation,
-            base,
-            None,
-            Vec::new(),
-            None,
-            live_trigrams,
-            live_corpus_bytes,
-        )
-    }
-
-    /// A manifest for a base with a delta and tombstones (`tombstones` sorted;
-    /// `tomb` names their planning sizes).
-    pub fn new(
-        generation: u64,
-        base: SegmentFiles,
-        delta: Option<SegmentFiles>,
-        tombstones: Vec<u32>,
-        tomb: Option<String>,
-        live_trigrams: u64,
-        live_corpus_bytes: u64,
-    ) -> Self {
-        let mut m = Self {
+        Self {
             format: MANIFEST_FORMAT,
             generation,
             base,
-            delta,
-            tombstones,
-            tomb,
+            delta: None,
+            recent: None,
+            tombstones: Vec::new(),
+            tomb: None,
+            tomb_delta: None,
             live_trigrams,
             live_corpus_bytes,
             checksum: String::new(),
-        };
-        m.checksum = m.compute_checksum();
-        m
+        }
+        .sealed()
+    }
+
+    /// This manifest with the current format and its checksum (after any field
+    /// was set).
+    pub fn sealed(mut self) -> Self {
+        self.format = MANIFEST_FORMAT;
+        self.checksum = self.compute_checksum();
+        self
     }
 
     fn compute_checksum(&self) -> String {
@@ -153,21 +150,24 @@ impl Manifest {
     /// Every file name this manifest refers to.
     pub fn files(&self) -> Vec<&str> {
         let mut out = self.base.names();
-        if let Some(delta) = &self.delta {
-            out.extend(delta.names());
+        for segment in [&self.delta, &self.recent].into_iter().flatten() {
+            out.extend(segment.names());
         }
         out.extend(self.tomb.as_deref());
+        out.extend(self.tomb_delta.as_deref());
         out
     }
 
     /// Whether the base alone is the snapshot (no delta, nothing tombstoned).
     pub fn base_only(&self) -> bool {
-        self.delta.is_none() && self.tombstones.is_empty()
+        self.delta.is_none() && self.recent.is_none() && self.tombstones.is_empty()
     }
 
     /// Files of the snapshot: what a full build of the same tree holds.
     pub fn live_files(&self) -> u64 {
-        self.base.files - self.tombstones.len() as u64 + self.delta.as_ref().map_or(0, |d| d.files)
+        self.base.files - self.tombstones.len() as u64
+            + self.delta.as_ref().map_or(0, |d| d.files)
+            + self.recent.as_ref().map_or(0, |d| d.files)
     }
 }
 
@@ -192,6 +192,17 @@ pub fn delta_file_names(generation: u64) -> (String, String, String, String) {
     )
 }
 
+/// The files of a recent segment built at generation `g` (content, trigrams,
+/// planning sizes), and of the delta's tombstoned planning sizes.
+pub fn recent_file_names(generation: u64) -> (String, String, String, String) {
+    (
+        format!("recent.{generation}.content.bin"),
+        format!("recent.{generation}.trigrams.bin"),
+        format!("recent.{generation}.plan"),
+        format!("delta.{generation}.dtomb"),
+    )
+}
+
 /// Whether `name` is a generation file this module writes (so cleanup may delete
 /// it when no manifest names it).
 pub fn is_generation_file(name: &str) -> bool {
@@ -200,8 +211,9 @@ pub fn is_generation_file(name: &str) -> bool {
     match parts.as_slice() {
         ["content" | "trigrams", g, "bin"] => digits(g),
         ["trigrams", g, "plan"] => digits(g),
-        ["delta", g, "content" | "trigrams", "bin"] => digits(g),
-        ["delta", g, "plan" | "tomb"] => digits(g),
+        ["delta" | "recent", g, "content" | "trigrams", "bin"] => digits(g),
+        ["delta" | "recent", g, "plan"] => digits(g),
+        ["delta", g, "tomb" | "dtomb"] => digits(g),
         _ => false,
     }
 }
@@ -436,12 +448,16 @@ pub struct Segment {
 pub struct IndexSnapshot {
     base: Segment,
     delta: Option<Segment>,
-    /// Tombstoned base ids, one bit each.
+    recent: Option<Segment>,
+    /// Tombstoned base and delta ids, one bit each.
     dead: Vec<u64>,
     dead_count: usize,
     tomb: Option<TombPlan>,
+    tomb_delta: Option<TombPlan>,
     /// Files in the base: the delta's ids start here.
     base_len: u32,
+    /// Files in the delta: the recent segment's ids start at `base_len + delta_len`.
+    delta_len: u32,
     /// The manifest this snapshot was opened from; `None` for a legacy cache.
     manifest: Option<Manifest>,
 }
@@ -586,25 +602,30 @@ impl IndexSnapshot {
             Some(d) => Some(open_segment(cache_dir, d)?),
             None => None,
         };
-        let tomb = match &manifest.tomb {
-            Some(name) => {
-                let tomb_path = cache_dir.join(name);
-                if !tomb_path.exists() {
-                    return Err(missing("trigrams.bin", name));
-                }
-                Some(
-                    TombPlan::load(&tomb_path)
-                        .map_err(|e| ReflexError::CacheCorrupted(format!("trigrams.bin: {e:#}")))?,
-                )
-            }
+        let delta_len = delta.as_ref().map_or(0, |d| d.content.file_count() as u32);
+        let recent = match &manifest.recent {
+            Some(d) => Some(open_segment(cache_dir, d)?),
             None => None,
         };
-        let mut dead = vec![0u64; (base_len as usize).div_ceil(64)];
+        let load_tomb = |name: &Option<String>| -> Result<Option<TombPlan>> {
+            let Some(name) = name else { return Ok(None) };
+            let tomb_path = cache_dir.join(name);
+            if !tomb_path.exists() {
+                return Err(missing("trigrams.bin", name));
+            }
+            Ok(Some(TombPlan::load(&tomb_path).map_err(|e| {
+                ReflexError::CacheCorrupted(format!("trigrams.bin: {e:#}"))
+            })?))
+        };
+        let tomb = load_tomb(&manifest.tomb)?;
+        let tomb_delta = load_tomb(&manifest.tomb_delta)?;
+        let dead_bound = base_len + delta_len;
+        let mut dead = vec![0u64; (dead_bound as usize).div_ceil(64)];
         for &id in &manifest.tombstones {
-            if id >= base_len {
+            if id >= dead_bound {
                 return Err(ReflexError::CacheCorrupted(format!(
-                    "content.bin: tombstone {} is past the base's {} files",
-                    id, base_len
+                    "content.bin: tombstone {} is past the base and delta's {} files",
+                    id, dead_bound
                 ))
                 .into());
             }
@@ -613,10 +634,13 @@ impl IndexSnapshot {
         Ok(Self {
             base,
             delta,
+            recent,
             dead,
             dead_count: manifest.tombstones.len(),
             tomb,
+            tomb_delta,
             base_len,
+            delta_len,
             manifest: Some(manifest),
         })
     }
@@ -649,10 +673,13 @@ impl IndexSnapshot {
         Ok(Self {
             base: Segment { content, trigrams },
             delta: None,
+            recent: None,
             dead: Vec::new(),
             dead_count: 0,
             tomb: None,
+            tomb_delta: None,
             base_len,
+            delta_len: 0,
             manifest: None,
         })
     }
@@ -677,40 +704,55 @@ impl IndexSnapshot {
         self.delta.as_ref()
     }
 
+    /// The recent segment, if any.
+    pub fn recent(&self) -> Option<&Segment> {
+        self.recent.as_ref()
+    }
+
     /// Files in the base (the delta's first id).
     pub fn base_len(&self) -> u32 {
         self.base_len
     }
 
-    /// The tombstoned planning sizes (empty without a delta).
+    /// Files in the delta (the recent segment's first id is `base_len + delta_len`).
+    pub fn delta_len(&self) -> u32 {
+        self.delta_len
+    }
+
+    fn recent_len(&self) -> u32 {
+        self.recent
+            .as_ref()
+            .map_or(0, |d| d.content.file_count() as u32)
+    }
+
+    /// The tombstoned base postings' planning sizes.
     pub fn tomb(&self) -> Option<&TombPlan> {
         self.tomb.as_ref()
     }
 
-    /// Whether base id `id` is tombstoned.
+    /// The tombstoned delta postings' planning sizes.
+    pub fn tomb_delta(&self) -> Option<&TombPlan> {
+        self.tomb_delta.as_ref()
+    }
+
+    /// Whether id `id` (base or delta) is tombstoned.
     #[inline]
     pub fn is_dead(&self, id: u32) -> bool {
-        id < self.base_len
+        id < self.base_len + self.delta_len
             && self
                 .dead
                 .get((id / 64) as usize)
                 .is_some_and(|w| w & (1u64 << (id % 64)) != 0)
     }
 
-    fn delta_len(&self) -> u32 {
-        self.delta
-            .as_ref()
-            .map_or(0, |d| d.content.file_count() as u32)
-    }
-
     /// Upper bound of file ids (`0..id_bound()`); some ids below it may be dead.
     pub fn id_bound(&self) -> u32 {
-        self.base_len + self.delta_len()
+        self.base_len + self.delta_len + self.recent_len()
     }
 
     /// Number of live files (what a fresh build of the same tree holds).
     pub fn live_file_count(&self) -> usize {
-        self.base_len as usize - self.dead_count + self.delta_len() as usize
+        self.id_bound() as usize - self.dead_count
     }
 
     /// Whether `id` names a live file.
@@ -720,16 +762,18 @@ impl IndexSnapshot {
 
     /// Every live file id, ascending.
     pub fn live_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..self.base_len)
-            .filter(|&id| !self.is_dead(id))
-            .chain(self.base_len..self.id_bound())
+        (0..self.id_bound()).filter(|&id| !self.is_dead(id))
     }
 
     /// The segment holding `id`, and the id within it.
     #[inline]
     fn route(&self, id: u32) -> (&Segment, u32) {
-        match &self.delta {
-            Some(delta) if id >= self.base_len => (delta, id - self.base_len),
+        if id < self.base_len {
+            return (&self.base, id);
+        }
+        match (&self.delta, &self.recent) {
+            (Some(delta), _) if id < self.base_len + self.delta_len => (delta, id - self.base_len),
+            (_, Some(recent)) => (recent, id - self.base_len - self.delta_len),
             _ => (&self.base, id),
         }
     }
@@ -781,30 +825,43 @@ impl IndexSnapshot {
 
     /// Whether candidate lookups can go straight to the base index.
     fn base_alone(&self) -> bool {
-        self.delta.is_none() && self.dead_count == 0
+        self.delta.is_none() && self.recent.is_none() && self.dead_count == 0
     }
 
-    /// `trigram`'s posting list over the base (tombstones left out) and the delta,
-    /// with the planning size a full build of the same tree has.
+    /// Planning size of `trigram`'s live postings (0: none).
+    pub fn live_plan(&self, trigram: Trigram) -> u64 {
+        self.list(trigram).map_or(0, |l| l.plan)
+    }
+
+    /// `trigram`'s posting list over the base and the delta (tombstones left out)
+    /// and the recent segment, with the planning size a full build of the same
+    /// tree has.
     fn list(&self, trigram: Trigram) -> Option<TrigramList<'_>> {
-        let mut parts: Vec<ListPart<'_>> = Vec::with_capacity(2);
+        let mut parts: Vec<ListPart<'_>> = Vec::with_capacity(3);
         let mut plan: i64 = 0;
+        let dead: Option<&[u64]> = (self.dead_count > 0).then_some(self.dead.as_slice());
         if let Some((mut part, base_plan)) = self.base.trigrams.list_part(trigram) {
-            if self.dead_count > 0 {
-                part.dead = Some(&self.dead);
-            }
+            part.dead = dead;
             parts.push(part);
             plan += base_plan as i64;
         }
-        if let Some(tomb) = &self.tomb {
+        for tomb in [&self.tomb, &self.tomb_delta].into_iter().flatten() {
             plan -= tomb.get(trigram) as i64;
         }
         if let Some(delta) = &self.delta
             && let Some((mut part, delta_plan)) = delta.trigrams.list_part(trigram)
         {
             part.id_offset = self.base_len;
+            part.dead = dead;
             parts.push(part);
             plan += delta_plan as i64;
+        }
+        if let Some(recent) = &self.recent
+            && let Some((mut part, recent_plan)) = recent.trigrams.list_part(trigram)
+        {
+            part.id_offset = self.base_len + self.delta_len;
+            parts.push(part);
+            plan += recent_plan as i64;
         }
         // Every live file block adds at least 2 to the planning size, so 0 means
         // every file holding the trigram is tombstoned: a fresh build has no list.
@@ -861,9 +918,9 @@ impl IndexSnapshot {
             .into_iter()
             .map(|(t, _, _)| t)
             .collect();
-        if let Some(delta) = &self.delta {
+        for segment in [&self.delta, &self.recent].into_iter().flatten() {
             trigrams.extend(
-                delta
+                segment
                     .trigrams
                     .list_parts_in(lo, hi)
                     .into_iter()
@@ -921,12 +978,13 @@ pub fn store_summary(cache_dir: &Path) -> StoreSummary {
             let mut trigram_files = vec![cache_dir.join(&m.base.trigrams)];
             let mut other_files: Vec<PathBuf> =
                 m.base.plan.iter().map(|p| cache_dir.join(p)).collect();
-            if let Some(d) = &m.delta {
+            for d in [&m.delta, &m.recent].into_iter().flatten() {
                 content_files.push(cache_dir.join(&d.content));
                 trigram_files.push(cache_dir.join(&d.trigrams));
                 other_files.extend(d.plan.iter().map(|p| cache_dir.join(p)));
             }
             other_files.extend(m.tomb.iter().map(|t| cache_dir.join(t)));
+            other_files.extend(m.tomb_delta.iter().map(|t| cache_dir.join(t)));
             StoreSummary {
                 content_files,
                 trigram_files,
@@ -958,6 +1016,11 @@ mod tests {
         assert!(is_generation_file("delta.4.trigrams.bin"));
         assert!(is_generation_file("delta.4.plan"));
         assert!(is_generation_file("delta.4.tomb"));
+        assert!(is_generation_file("delta.4.dtomb"));
+        assert!(is_generation_file("recent.4.content.bin"));
+        assert!(is_generation_file("recent.4.trigrams.bin"));
+        assert!(is_generation_file("recent.4.plan"));
+        assert!(!is_generation_file("recent.4.tomb"));
         assert!(!is_generation_file("content.3.plan"));
         assert!(!is_generation_file("content.bin"));
         assert!(!is_generation_file("trigrams.bin"));
@@ -1055,12 +1118,7 @@ mod tests {
     }
 
     fn index_unlimited(root: &Path) {
-        let mut indexer = crate::Indexer::new(
-            crate::CacheManager::new(root),
-            crate::models::IndexConfig::default(),
-        );
-        indexer.set_merge_limits(usize::MAX, u64::MAX);
-        indexer.index(root, false).unwrap();
+        index_with(root, None);
     }
 
     fn write(root: &Path, rel: &str, body: &str) {
@@ -1083,44 +1141,25 @@ mod tests {
         out
     }
 
-    /// Base + delta − tombstones: every trigram has the planning size and the
-    /// candidate lines a fresh build of the same tree has, and a trigram whose files
-    /// are all tombstoned has no list at all.
-    #[test]
-    fn a_delta_snapshot_plans_and_answers_as_a_fresh_build() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let root = temp.path();
-        // 200 files, so file-id gaps pass 128 (where planning size and on-disk
-        // size part ways).
-        for i in 0..200 {
-            let rare = if i % 50 == 0 { "rare_marker_qx\n" } else { "" };
-            write(
-                root,
-                &format!("src/f{i:03}.rs"),
-                &format!("pub fn common_{i}() {{ shared(); }}\n{rare}// line {i}\n"),
-            );
+    fn index_with(root: &Path, recent: Option<(usize, u64)>) {
+        let mut indexer = crate::Indexer::new(
+            crate::CacheManager::new(root),
+            crate::models::IndexConfig::default(),
+        );
+        indexer.set_merge_limits(usize::MAX, u64::MAX);
+        if let Some((files, bytes)) = recent {
+            indexer.set_recent_limits(files, bytes);
         }
-        write(root, "only/gone.rs", "fn vanishing_zqj() {}\n");
-        index_unlimited(root);
+        indexer.index(root, false).unwrap();
+    }
 
-        write(root, "src/f000.rs", "pub fn common_0() { edited(); }\n");
-        write(
-            root,
-            "src/f150.rs",
-            "pub fn common_150() {}\nrare_marker_qx\n",
-        );
-        write(
-            root,
-            "src/new_file.rs",
-            "fn brand_new_token() { shared(); }\n",
-        );
-        std::fs::remove_file(root.join("src/f100.rs")).unwrap();
-        std::fs::remove_file(root.join("only/gone.rs")).unwrap();
-        index_unlimited(root);
-
+    /// Every trigram of the published snapshot has the planning size and presence a
+    /// fresh build of the same tree has (so a trigram whose files are all
+    /// tombstoned has no list), and so do the live counts and some candidate sets.
+    fn assert_plans_as_fresh(root: &Path) {
         let cache = root.join(".reflex");
         let updated = IndexSnapshot::open(&cache).unwrap();
-        assert!(updated.delta().is_some() && !updated.base_alone());
+        assert!(!updated.base_alone());
         let aside = root.join(".reflex-updated");
         std::fs::rename(&cache, &aside).unwrap();
         index_unlimited(root);
@@ -1128,7 +1167,9 @@ mod tests {
         assert!(fresh.base_alone());
 
         let mut all: Vec<Trigram> = updated.base().trigrams.trigrams().collect();
-        all.extend(updated.delta().unwrap().trigrams.trigrams());
+        for segment in [updated.delta(), updated.recent()].into_iter().flatten() {
+            all.extend(segment.trigrams.trigrams());
+        }
         all.extend(fresh.base().trigrams.trigrams());
         all.sort_unstable();
         all.dedup();
@@ -1142,6 +1183,10 @@ mod tests {
         assert_eq!(live, fresh.trigram_count());
         assert_eq!(updated.trigram_count(), fresh.trigram_count());
         assert_eq!(updated.live_file_count(), fresh.live_file_count());
+        assert_eq!(
+            updated.manifest().unwrap().live_corpus_bytes,
+            fresh.manifest().unwrap().live_corpus_bytes
+        );
 
         for pattern in [
             "shared",
@@ -1158,12 +1203,116 @@ mod tests {
                 "{pattern}"
             );
         }
-        assert!(candidates(&updated, "vanishing_zqj").is_empty());
-        assert_eq!(
-            updated.search_candidates_fold(b"RARE_MARKER").len(),
-            fresh.search_candidates_fold(b"RARE_MARKER").len()
-        );
+        let fold_paths = |s: &IndexSnapshot| {
+            let mut v: Vec<(PathBuf, u32)> = s
+                .search_candidates_fold(b"RARE_MARKER")
+                .into_iter()
+                .map(|l| (s.get_file_path(l.file_id).unwrap().to_path_buf(), l.line_no))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(fold_paths(&updated), fold_paths(&fresh));
         drop(updated);
-        std::fs::remove_dir_all(&aside).unwrap();
+        drop(fresh);
+        std::fs::remove_dir_all(&cache).unwrap();
+        std::fs::rename(&aside, &cache).unwrap();
+    }
+
+    /// 200 files, so file-id gaps pass 128 (where planning size and on-disk size
+    /// part ways).
+    fn seed_tree(root: &Path) {
+        for i in 0..200 {
+            let rare = if i % 50 == 0 { "rare_marker_qx\n" } else { "" };
+            write(
+                root,
+                &format!("src/f{i:03}.rs"),
+                &format!("pub fn common_{i}() {{ shared(); }}\n{rare}// line {i}\n"),
+            );
+        }
+        write(root, "only/gone.rs", "fn vanishing_zqj() {}\n");
+    }
+
+    #[test]
+    fn a_delta_snapshot_plans_and_answers_as_a_fresh_build() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        seed_tree(root);
+        index_unlimited(root);
+
+        write(root, "src/f000.rs", "pub fn common_0() { edited(); }\n");
+        write(
+            root,
+            "src/f150.rs",
+            "pub fn common_150() {}\nrare_marker_qx\n",
+        );
+        write(
+            root,
+            "src/new_file.rs",
+            "fn brand_new_token() { shared(); }\n",
+        );
+        std::fs::remove_file(root.join("src/f100.rs")).unwrap();
+        std::fs::remove_file(root.join("only/gone.rs")).unwrap();
+        index_unlimited(root);
+        let updated = IndexSnapshot::open(&root.join(".reflex")).unwrap();
+        assert!(candidates(&updated, "vanishing_zqj").is_empty());
+        drop(updated);
+        assert_plans_as_fresh(root);
+    }
+
+    /// The two tiers: the recent segment folds into a new delta past its limit;
+    /// delta files are tombstoned while a recent segment is live; a second fold
+    /// drops the delta's tombstones.
+    #[test]
+    fn a_two_tier_snapshot_plans_and_answers_as_a_fresh_build() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        seed_tree(root);
+        index_unlimited(root);
+        let recent = Some((2, u64::MAX));
+        let manifest = |root: &Path| read_manifest(&root.join(".reflex")).unwrap().unwrap();
+
+        write(root, "src/f000.rs", "pub fn common_0() { edited(); }\n");
+        write(root, "src/f001.rs", "pub fn common_1() { edited(); }\n");
+        index_with(root, recent);
+        let m = manifest(root);
+        assert!(m.delta.is_none() && m.recent.as_ref().map(|r| r.files) == Some(2));
+        assert_plans_as_fresh(root);
+
+        write(root, "src/f002.rs", "pub fn common_2() { edited(); }\n");
+        index_with(root, recent);
+        let m = manifest(root);
+        assert!(
+            m.recent.is_none() && m.delta.as_ref().map(|d| d.files) == Some(3),
+            "{m:?}"
+        );
+        assert_plans_as_fresh(root);
+
+        // f001 now lives in the delta: its new version tombstones a delta id.
+        write(
+            root,
+            "src/f001.rs",
+            "pub fn common_1() {}\nrare_marker_qx\n",
+        );
+        std::fs::remove_file(root.join("only/gone.rs")).unwrap();
+        index_with(root, recent);
+        let m = manifest(root);
+        assert!(
+            m.delta.is_some() && m.recent.is_some() && m.tomb_delta.is_some(),
+            "{m:?}"
+        );
+        assert_plans_as_fresh(root);
+
+        write(root, "src/f150.rs", "pub fn common_150() {}\n");
+        write(
+            root,
+            "src/new_file.rs",
+            "fn brand_new_token() { shared(); }\n",
+        );
+        index_with(root, recent);
+        let m = manifest(root);
+        assert!(m.recent.is_none() && m.tomb_delta.is_none(), "{m:?}");
+        assert_eq!(m.delta.as_ref().map(|d| d.files), Some(5));
+        assert_plans_as_fresh(root);
     }
 }

@@ -240,7 +240,9 @@ fn an_edit_publishes_a_delta_and_hides_the_fixed_names() {
         m.base.content, base.base.content,
         "the base is not rewritten"
     );
-    assert_eq!(m.delta.as_ref().map(|d| d.files), Some(1));
+    // A small change goes to the recent segment; the delta tier stays empty.
+    assert!(m.delta.is_none());
+    assert_eq!(m.recent.as_ref().map(|d| d.files), Some(1));
     assert_eq!(m.tombstones.len(), 1);
     // A binary that reads only the fixed names would serve the base without the
     // delta: they must be gone while the delta is live.
@@ -294,7 +296,7 @@ fn every_kind_of_change_matches_a_fresh_build() {
     write(root, "src/m10.rs", &original);
     index(root);
     assert_matches_fresh(root, "revert");
-    assert!(manifest(root).delta.is_some());
+    assert!(!manifest(root).base_only());
 }
 
 #[test]
@@ -304,7 +306,7 @@ fn the_merge_limit_folds_the_delta_into_a_new_base() {
     index(root);
     write(root, "src/m01.rs", "pub fn handler_1() {}\n");
     index(root);
-    assert!(manifest(root).delta.is_some());
+    assert!(!manifest(root).base_only());
 
     // One file allowed; two changed: merge into a new base.
     write(root, "src/m02.rs", "pub fn handler_2() {}\n");

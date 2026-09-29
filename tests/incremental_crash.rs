@@ -76,14 +76,24 @@ fn change(root: &Path) {
     );
 }
 
-fn indexer(root: &Path, merge: bool) -> Indexer {
+/// `mode`: "full" merges every change into a new base (a full build); "fold"
+/// folds every update's recent segment into a new delta; otherwise updates keep
+/// the recent segment.
+fn indexer_for(root: &Path, mode: &str) -> Indexer {
     let mut ix = Indexer::new(CacheManager::new(root), IndexConfig::default());
-    if merge {
-        ix.set_merge_limits(0, 0); // every change merges: a full build
+    if mode == "full" {
+        ix.set_merge_limits(0, 0);
     } else {
         ix.set_merge_limits(usize::MAX, u64::MAX);
     }
+    if mode == "fold" {
+        ix.set_recent_limits(0, 0);
+    }
     ix
+}
+
+fn indexer(root: &Path, merge: bool) -> Indexer {
+    indexer_for(root, if merge { "full" } else { "index" })
 }
 
 /// The child: set the abort point and run the update; the process dies there.
@@ -97,7 +107,7 @@ fn crash_child() {
         return; // not a child run
     };
     let root = PathBuf::from(root);
-    let mut ix = indexer(&root, mode == "full");
+    let mut ix = indexer_for(&root, &mode);
     ix.set_abort_point(&point);
     match mode.as_str() {
         "update" => {
@@ -226,7 +236,7 @@ fn crash_at(mode: &str, point: &str, reverted: bool, old: &Answers, new: &Answer
 fn a_crash_at_any_write_point_leaves_the_old_or_the_new_snapshot() {
     let (old, new) = expected();
     for reverted in [false, true] {
-        for mode in ["index", "update"] {
+        for mode in ["index", "update", "fold"] {
             for point in ["delta-files", "unlinked", "manifest", "meta"] {
                 crash_at(mode, point, reverted, &old, &new);
             }

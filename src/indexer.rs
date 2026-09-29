@@ -460,9 +460,18 @@ pub struct Indexer {
     /// `(max_files, max_bytes)` of the delta before it is merged into a new base;
     /// `None` = [`DELTA_MAX_FILES`] and [`DELTA_MAX_CORPUS_PERCENT`] of the corpus.
     merge_limits: Option<(usize, u64)>,
+    /// `(max_files, max_bytes)` of the recent segment before it is folded into the
+    /// delta; `None` = [`RECENT_MAX_FILES`] and the merge byte limit over
+    /// [`RECENT_BYTES_DIVISOR`].
+    recent_limits: Option<(usize, u64)>,
     /// Crash tests: the write point at which the process aborts.
     abort_at: Option<String>,
 }
+
+/// Files the recent segment may hold before an update folds it into the delta.
+pub const RECENT_MAX_FILES: usize = 256;
+/// The recent segment's text limit: the delta's (merge) limit divided by this.
+pub const RECENT_BYTES_DIVISOR: u64 = 16;
 
 /// Exit code of a process stopped by `Indexer::set_abort_point`.
 #[doc(hidden)]
@@ -1003,6 +1012,7 @@ impl Indexer {
             config,
             batch_limits: None,
             merge_limits: None,
+            recent_limits: None,
             abort_at: None,
         }
     }
@@ -1036,6 +1046,20 @@ impl Indexer {
             // No destructor, no later write: what a killed process leaves.
             std::process::exit(ABORT_EXIT_CODE);
         }
+    }
+
+    /// Override the recent segment's limits (files, text bytes) before it is
+    /// folded into the delta. For tests.
+    #[doc(hidden)]
+    pub fn set_recent_limits(&mut self, max_files: usize, max_bytes: u64) {
+        self.recent_limits = Some((max_files, max_bytes));
+    }
+
+    fn recent_limits(&self, max_files: usize, max_bytes: u64) -> (usize, u64) {
+        self.recent_limits.unwrap_or((
+            RECENT_MAX_FILES.min(max_files),
+            max_bytes / RECENT_BYTES_DIVISOR,
+        ))
     }
 
     fn merge_limits(&self, live_corpus_bytes: u64) -> (usize, u64) {
@@ -2246,47 +2270,66 @@ impl Indexer {
 
         let rels: Vec<String> = c.rewrites.iter().map(|r| r.rel.clone()).collect();
         let files: Vec<PathBuf> = c.rewrites.iter().map(|r| r.path.clone()).collect();
+        let delta_len = snapshot.delta_len();
+        // Ids below this are base and delta files, tombstoned in place; the recent
+        // segment above them is rebuilt.
+        let stable_end = base_len + delta_len;
 
-        // Store entries that go: every rewritten and every deleted path. Base files
-        // among them are tombstoned; the previous delta keeps the others.
+        // Store entries that go: every rewritten and every deleted path.
         let gone: std::collections::HashSet<String> = rels
             .iter()
             .cloned()
             .chain(c.deleted.iter().map(|(p, _)| p.clone()))
             .collect();
-        let mut new_dead: Vec<u32> = Vec::new();
-        for id in 0..base_len {
-            if let Some(p) = snapshot.get_file_path(id).and_then(|p| p.to_str())
-                && gone.contains(p)
-            {
-                new_dead.push(id);
+        let path_of = |id: u32| -> Option<&str> { snapshot.get_file_path(id)?.to_str() };
+        let (mut new_dead_base, mut new_dead_delta) = (Vec::new(), Vec::new());
+        for id in 0..stable_end {
+            if path_of(id).is_some_and(|p| gone.contains(p)) {
+                if id < base_len {
+                    new_dead_base.push(id);
+                } else {
+                    new_dead_delta.push(id);
+                }
             }
         }
-        let survivors: Vec<(String, u32)> = (base_len..snapshot.id_bound())
-            .filter_map(|id| {
-                let p = snapshot.get_file_path(id)?.to_str()?;
-                (!gone.contains(p)).then(|| (p.to_string(), id))
-            })
-            .collect();
+        let kept_in = |range: std::ops::Range<u32>| -> Vec<(String, u32)> {
+            range
+                .filter_map(|id| {
+                    let p = path_of(id)?;
+                    (!gone.contains(p)).then(|| (p.to_string(), id))
+                })
+                .collect()
+        };
+        let delta_kept = kept_in(base_len..stable_end);
+        let recent_kept = kept_in(stable_end..snapshot.id_bound());
 
-        // The merge limits, from stat sizes, before anything is read (a merge reads
-        // the files itself).
-        let (max_files, max_bytes) = self.merge_limits(prev.live_corpus_bytes);
-        let estimate: u64 = c.rewrites.iter().map(|r| r.size).sum::<u64>()
-            + survivors
-                .iter()
+        // The limits, from stat sizes and entry-table lengths, before anything is
+        // read (a merge reads the files itself).
+        let len_of = |kept: &[(String, u32)]| -> u64 {
+            kept.iter()
                 .map(|(_, id)| snapshot.file_len(*id).unwrap_or(0))
-                .sum::<u64>();
-        if c.rewrites.len() + survivors.len() > max_files || estimate > max_bytes {
+                .sum()
+        };
+        let rewrite_bytes: u64 = c.rewrites.iter().map(|r| r.size).sum();
+        let (delta_kept_bytes, recent_kept_bytes) = (len_of(&delta_kept), len_of(&recent_kept));
+        let (max_files, max_bytes) = self.merge_limits(prev.live_corpus_bytes);
+        let all_files = c.rewrites.len() + delta_kept.len() + recent_kept.len();
+        let all_bytes = rewrite_bytes + delta_kept_bytes + recent_kept_bytes;
+        if all_files > max_files || all_bytes > max_bytes {
             log::info!(
                 "Delta of {} files / ~{} bytes passes its limits ({} files / {} bytes)",
-                c.rewrites.len() + survivors.len(),
-                estimate,
+                all_files,
+                all_bytes,
                 max_files,
                 max_bytes
             );
             return Ok(None);
         }
+        // The recent segment is rebuilt by every update; past its own limits it is
+        // folded, with the delta's live files, into a new delta.
+        let (recent_max_files, recent_max_bytes) = self.recent_limits(max_files, max_bytes);
+        let fold = c.rewrites.len() + recent_kept.len() > recent_max_files
+            || rewrite_bytes + recent_kept_bytes > recent_max_bytes;
 
         // Read the rewritten files.
         let ctx = ProcessCtx {
@@ -2320,18 +2363,23 @@ impl Indexer {
             }
         }
 
-        // The new delta: read files and survivors, in walk order.
+        // The new segment: the read files and the kept ones, in walk order.
         enum Source {
             Fresh(usize),
             Old(u32),
         }
-        let survivor_seqs: HashMap<String, i64> = if survivors.is_empty() {
+        let kept: Vec<(String, u32)> = if fold {
+            delta_kept.into_iter().chain(recent_kept).collect()
+        } else {
+            recent_kept
+        };
+        let kept_seqs: HashMap<String, i64> = if kept.is_empty() {
             HashMap::new()
         } else {
             let conn = crate::cache::open_meta_db(cache_dir.join(crate::cache::META_DB))?;
             let mut stmt = conn.prepare("SELECT walk_seq FROM files WHERE path = ?")?;
             let mut out = HashMap::new();
-            for (p, _) in &survivors {
+            for (p, _) in &kept {
                 if let Some(seq) = stmt.query_row([p], |r| r.get::<_, i64>(0)).optional()? {
                     out.insert(p.clone(), seq);
                 }
@@ -2344,60 +2392,108 @@ impl Indexer {
                 entries.push((c.rewrites[k].walk_seq, rels[k].clone(), Source::Fresh(k)));
             }
         }
-        for (p, id) in survivors {
-            let seq = survivor_seqs.get(&p).copied().unwrap_or(i64::MAX);
+        for (p, id) in kept {
+            let seq = kept_seqs.get(&p).copied().unwrap_or(i64::MAX);
             entries.push((seq, p, Source::Old(id)));
         }
         entries.sort_by_key(|(seq, _, _)| *seq);
-        let mut delta_bytes = 0u64;
+        let mut segment_bytes = 0u64;
         for (_, _, src) in &entries {
-            delta_bytes += match src {
+            segment_bytes += match src {
                 Source::Fresh(k) => read[*k].as_ref().map_or(0, |f| f.content.len() as u64),
-                Source::Old(id) => snapshot.get_file_content(*id)?.len() as u64,
+                Source::Old(id) => snapshot.file_len(*id).unwrap_or(0),
             };
         }
-        if entries.len() > max_files || delta_bytes > max_bytes {
+        let (stable_files, stable_bytes) = if fold {
+            (0, 0)
+        } else {
+            (
+                snapshot.delta_len() as usize
+                    - new_dead_delta.len()
+                    - (0..delta_len)
+                        .filter(|&k| snapshot.is_dead(base_len + k))
+                        .count(),
+                delta_kept_bytes,
+            )
+        };
+        if entries.len() + stable_files > max_files || segment_bytes + stable_bytes > max_bytes {
             log::info!(
-                "Delta of {} files / {} bytes passes its limits ({} files / {} bytes)",
-                entries.len(),
-                delta_bytes,
-                max_files,
-                max_bytes
+                "Delta of {} files / {} bytes passes its limits after reading",
+                entries.len() + stable_files,
+                segment_bytes + stable_bytes
             );
             return Ok(None);
         }
 
-        let mut tombstones: Vec<u32> = prev.tombstones.clone();
-        tombstones.extend(&new_dead);
+        // Tombstones, and the planning sizes of the postings they remove.
+        let mut tombstones: Vec<u32> = if fold {
+            // A new delta: only base ids stay tombstoned.
+            prev.tombstones
+                .iter()
+                .copied()
+                .filter(|&id| id < base_len)
+                .chain(new_dead_base.iter().copied())
+                .collect()
+        } else {
+            prev.tombstones
+                .iter()
+                .copied()
+                .chain(new_dead_base.iter().copied())
+                .chain(new_dead_delta.iter().copied())
+                .collect()
+        };
         tombstones.sort_unstable();
         tombstones.dedup();
-
-        // Their planning sizes, added to the previous tombstones'.
-        let mut tomb: std::collections::BTreeMap<crate::trigram::Trigram, u64> = snapshot
-            .tomb()
-            .map(|t| t.entries().map(|(t, n)| (t, n as u64)).collect())
-            .unwrap_or_default();
-        let dead_sizes: Vec<Vec<(crate::trigram::Trigram, u32)>> = c.pool.install(|| {
-            new_dead
-                .par_iter()
-                .map_init(Vec::<u64>::new, |scratch, &id| {
-                    let content = snapshot.get_file_content(id).unwrap_or("");
-                    let run = crate::trigram_build::extract_trigram_run(content, scratch);
-                    crate::trigram_build::run_plan_sizes(&run)
-                })
-                .collect()
-        });
-        for sizes in dead_sizes {
+        let sizes_of = |ids: &[u32]| -> Vec<Vec<(crate::trigram::Trigram, u32)>> {
+            c.pool.install(|| {
+                ids.par_iter()
+                    .map_init(Vec::<u64>::new, |scratch, &id| {
+                        let content = snapshot.get_file_content(id).unwrap_or("");
+                        let run = crate::trigram_build::extract_trigram_run(content, scratch);
+                        crate::trigram_build::run_plan_sizes(&run)
+                    })
+                    .collect()
+            })
+        };
+        let carried = |plan: Option<&crate::snapshot::TombPlan>| {
+            plan.map(|t| t.entries().map(|(t, n)| (t, n as u64)).collect())
+                .unwrap_or_default()
+        };
+        type TombMap = std::collections::BTreeMap<crate::trigram::Trigram, u64>;
+        let mut touched_trigrams: Vec<crate::trigram::Trigram> = Vec::new();
+        let mut tomb: TombMap = carried(snapshot.tomb());
+        for sizes in sizes_of(&new_dead_base) {
             for (t, n) in sizes {
                 *tomb.entry(t).or_default() += n as u64;
+                touched_trigrams.push(t);
+            }
+        }
+        let mut tomb_delta: TombMap = if fold {
+            TombMap::new()
+        } else {
+            carried(snapshot.tomb_delta())
+        };
+        for sizes in sizes_of(&new_dead_delta) {
+            for (t, n) in sizes {
+                if !fold {
+                    *tomb_delta.entry(t).or_default() += n as u64;
+                }
+                touched_trigrams.push(t);
             }
         }
         laps.lap("tombstones");
 
-        // Write the delta stores (generation files: nothing names them yet).
+        // Write the new segment (generation files: nothing names them yet).
         let (delta_content, delta_trigrams, delta_plan, tomb_name) =
             crate::snapshot::delta_file_names(c.generation);
-        let delta = if entries.is_empty() {
+        let (recent_content, recent_trigrams, recent_plan, tomb_delta_name) =
+            crate::snapshot::recent_file_names(c.generation);
+        let (seg_content, seg_trigrams, seg_plan) = if fold {
+            (delta_content, delta_trigrams, delta_plan)
+        } else {
+            (recent_content, recent_trigrams, recent_plan)
+        };
+        let segment = if entries.is_empty() {
             None
         } else {
             let runs: Vec<Option<TrigramRun>> = c.pool.install(|| {
@@ -2414,7 +2510,7 @@ impl Indexer {
             });
             let mut builder = TrigramIndexBuilder::new(cache_dir.join("trigram_temp"));
             let mut writer = ContentWriter::new();
-            let content_path = cache_dir.join(&delta_content);
+            let content_path = cache_dir.join(&seg_content);
             writer
                 .init(content_path.clone())
                 .context("Failed to initialize the delta content store")?;
@@ -2428,86 +2524,125 @@ impl Indexer {
                         writer.add_file(path, &f.content);
                     }
                     Source::Old(id) => {
-                        builder.add_file(path.clone(), run.expect("old delta run"));
+                        builder.add_file(path.clone(), run.expect("kept file run"));
                         writer.add_file(path, snapshot.get_file_content(*id)?);
                     }
                 }
             }
-            let trigrams_path = cache_dir.join(&delta_trigrams);
+            let trigrams_path = cache_dir.join(&seg_trigrams);
             builder
-                .write_with_plan(c.pool, &trigrams_path, Some(&cache_dir.join(&delta_plan)))
+                .write_with_plan(c.pool, &trigrams_path, Some(&cache_dir.join(&seg_plan)))
                 .context("Failed to write the delta trigram index")?;
             writer
                 .finalize_if_needed()
                 .context("Failed to finalize the delta content store")?;
             Some(SegmentFiles {
-                content: delta_content.clone(),
-                trigrams: delta_trigrams.clone(),
-                plan: Some(delta_plan.clone()),
+                content: seg_content.clone(),
+                trigrams: seg_trigrams.clone(),
+                plan: Some(seg_plan.clone()),
                 files: writer.file_count() as u64,
                 content_bytes: std::fs::metadata(&content_path)?.len(),
                 trigrams_bytes: std::fs::metadata(&trigrams_path)?.len(),
             })
         };
-        let tomb_entries: Vec<(crate::trigram::Trigram, u32)> = tomb
-            .iter()
-            .map(|(&t, &n)| (t, n.min(u32::MAX as u64) as u32))
-            .collect();
-        let tomb_file = if tombstones.is_empty() {
-            None
+        let write_tomb = |map: &TombMap, name: String| -> Result<String> {
+            let entries: Vec<(crate::trigram::Trigram, u32)> = map
+                .iter()
+                .map(|(&t, &n)| (t, n.min(u32::MAX as u64) as u32))
+                .collect();
+            crate::snapshot::write_tomb_file(&cache_dir.join(&name), &entries)?;
+            Ok(name)
+        };
+        let tomb_file = if tombstones.iter().any(|&id| id < base_len) {
+            Some(write_tomb(&tomb, tomb_name)?)
         } else {
-            crate::snapshot::write_tomb_file(&cache_dir.join(&tomb_name), &tomb_entries)?;
-            Some(tomb_name)
+            None
+        };
+        let tomb_delta_file = if tombstones.iter().any(|&id| id >= base_len) {
+            Some(write_tomb(&tomb_delta, tomb_delta_name)?)
+        } else {
+            None
+        };
+        let (delta_files, recent_files) = if fold {
+            (segment, None)
+        } else {
+            (prev.delta.clone(), segment)
         };
         laps.lap("write");
 
-        // What a full build of this tree would record: its trigrams and its text.
-        let base_plan = |t: crate::trigram::Trigram| -> u64 {
-            snapshot
-                .base()
-                .trigrams
-                .list_part(t)
-                .map_or(0, |(_, plan)| plan)
-        };
-        let dead_in_base: std::collections::HashSet<crate::trigram::Trigram> = tomb
-            .iter()
-            .filter(|(t, n)| base_plan(**t) <= **n)
-            .map(|(t, _)| *t)
-            .collect();
-        let mut revived = 0u64;
-        if delta.is_some() {
-            let index = crate::trigram::TrigramIndex::load(cache_dir.join(&delta_trigrams))?;
-            for t in index.trigrams() {
-                let base_live = base_plan(t) > 0 && !dead_in_base.contains(&t);
-                if !base_live {
-                    revived += 1;
+        // The live trigram count, kept up to date from the trigrams this update
+        // touches: those of tombstoned files, of the replaced and the new segment.
+        let segment_index =
+            |files: &Option<SegmentFiles>| -> Result<Option<crate::trigram::TrigramIndex>> {
+                let Some(f) = files else { return Ok(None) };
+                let mut index = crate::trigram::TrigramIndex::load(cache_dir.join(&f.trigrams))?;
+                if let Some(plan) = &f.plan {
+                    index.attach_plan(cache_dir.join(plan))?;
                 }
-            }
+                Ok(Some(index))
+            };
+        let new_segment = segment_index(if fold { &delta_files } else { &recent_files })?;
+        if let Some(recent) = snapshot.recent() {
+            touched_trigrams.extend(recent.trigrams.trigrams());
         }
-        let live_trigrams =
-            snapshot.base().trigrams.trigram_count() as u64 - dead_in_base.len() as u64 + revived;
+        if fold && let Some(delta) = snapshot.delta() {
+            touched_trigrams.extend(delta.trigrams.trigrams());
+        }
+        if let Some(index) = &new_segment {
+            touched_trigrams.extend(index.trigrams());
+        }
+        touched_trigrams.sort_unstable();
+        touched_trigrams.dedup();
+        let plan_in = |index: Option<&crate::trigram::TrigramIndex>, t| -> i64 {
+            index
+                .and_then(|i| i.list_part(t))
+                .map_or(0, |(_, plan)| plan as i64)
+        };
+        let old_delta = snapshot.delta().map(|d| &d.trigrams);
+        let (new_delta, new_recent) = if fold {
+            (new_segment.as_ref(), None)
+        } else {
+            (old_delta, new_segment.as_ref())
+        };
+        let mut live_trigrams = prev.live_trigrams as i64;
+        for &t in &touched_trigrams {
+            let was = snapshot.live_plan(t) > 0;
+            let now = plan_in(Some(&snapshot.base().trigrams), t)
+                + plan_in(new_delta, t)
+                + plan_in(new_recent, t)
+                - tomb.get(&t).copied().unwrap_or(0) as i64
+                - tomb_delta.get(&t).copied().unwrap_or(0) as i64
+                > 0;
+            live_trigrams += now as i64 - was as i64;
+        }
         let dead_set: std::collections::HashSet<u32> = tombstones.iter().copied().collect();
         // Lengths come from the entry table: reading the content would page in (and
         // UTF-8 check) the whole base on every update.
-        let mut live_corpus = delta_bytes;
-        for id in 0..base_len {
+        let mut live_corpus = segment_bytes;
+        let stable_bound = if fold { base_len } else { stable_end };
+        for id in 0..stable_bound {
             if !dead_set.contains(&id) {
-                live_corpus += snapshot.base().content.file_len(id).unwrap_or(0);
+                live_corpus += snapshot.file_len(id).unwrap_or(0);
             }
         }
         laps.lap("live");
 
         // Publish: fixed names first (an older binary must not read the base alone
         // once it is incomplete), then the manifest, then meta.db.
-        let manifest = Manifest::new(
-            c.generation,
-            prev.base.clone(),
-            delta,
+        let manifest = Manifest {
+            format: 0,
+            generation: c.generation,
+            base: prev.base.clone(),
+            delta: delta_files,
+            recent: recent_files,
             tombstones,
-            tomb_file,
-            live_trigrams,
-            live_corpus,
-        );
+            tomb: tomb_file,
+            tomb_delta: tomb_delta_file,
+            live_trigrams: live_trigrams.max(0) as u64,
+            live_corpus_bytes: live_corpus,
+            checksum: String::new(),
+        }
+        .sealed();
         self.abort_point("delta-files");
         if !manifest.base_only() {
             crate::snapshot::unlink_fixed_names(&cache_dir);
@@ -2517,9 +2652,15 @@ impl Indexer {
         crate::snapshot::link_fixed_names(&cache_dir, &manifest);
         self.abort_point("manifest");
         log::info!(
-            "phase delta: {} files ({} read), {} tombstones, {} ms",
+            "phase delta: {} delta + {} recent files ({} read{}), {} tombstones, {} ms",
             manifest.delta.as_ref().map_or(0, |d| d.files),
+            manifest.recent.as_ref().map_or(0, |d| d.files),
             read.iter().filter(|r| r.is_some()).count(),
+            if fold {
+                ", folded into a new delta"
+            } else {
+                ""
+            },
             manifest.tombstones.len(),
             delta_start.elapsed().as_millis()
         );
