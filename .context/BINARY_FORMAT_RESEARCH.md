@@ -127,10 +127,14 @@ deltas 67 %. `rfx index` prints `Index/corpus ratio: …` from
 
 - `TrigramIndex::write` (in-memory): encodes every list first, so directory offsets
   and `paths_offset` are known before the header is written; single pass.
-- `merge_partial_indices_to_file` (batch-flush k-way merge): writes a placeholder
-  32-byte header, streams data, then rewrites the file with the directory inserted;
-  `paths_offset = 32 + 16·n + data_len` is known before the rewrite. Partial-index
-  files use fixed 8-byte postings (`file_id u32, line_no u32`).
+- `TrigramIndexBuilder` (`src/trigram_build.rs`, used by `rfx index`): builds each batch
+  per trigram shard into V4-encoded partials whose records carry `first_file_id` /
+  `last_file_id`, then merges them by byte copy, rewriting only each record's first
+  file delta. Preconditions: partials cover disjoint, increasing file-id ranges (not
+  checked); the trigram count is known up front. Output is byte-identical to
+  `TrigramIndex::write`. Partials are temporary, not a stored format.
+- Note: `src/trigram_build.rs` is not in `build.rs`'s schema-hash list (only
+  `src/trigram.rs` is).
 
 #### Versioning
 

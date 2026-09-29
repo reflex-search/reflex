@@ -72,8 +72,18 @@ failed Zola build still exits 0.
   A silently wrong answer. Affects every language filter using the `//` rule, and is far
   worse on minified JS, where one early URL hides every later match on that line.
   Found 2026-09-22; still present in 2.0.3.
-- **`max_posting_list_entries` (500k, `src/models.rs:590`) silently drops files past the
-  cap.** Found in the 2026-09-22 latency round.
+- **Every `rfx index` wipes the symbol cache** (verified 2026-09-29: 282 rows → 0 after a
+  one-file edit). `INSERT OR REPLACE INTO files` (`src/cache.rs` ~L1068) gives every file a
+  new id; the cascade deletes `symbols`, `file_branches` for other branches, and exports,
+  and sets importers' `resolved_file_id` to NULL. Fix with `ON CONFLICT(path) DO UPDATE`
+  (see `.context/INCREMENTAL_INDEX_RESEARCH.md`, stage 0).
+- **MCP `index_project` never spawns the symbol pass** (`rebuild_index`, `src/mcp.rs`
+  ~L1287); only `rfx index` does (`src/cli/index.rs`). Symbol queries then parse on demand.
+- **Readers can open a mismatched pair between the two renames** (`trigrams.bin`, then
+  `content.bin`): a count mismatch gives `CacheCorrupted`, which MCP answers with a forced
+  rebuild. A manifest publish point fixes it (incremental design, stage 1).
+- **`src/watcher.rs` ignores `.gitignore` and reports only the first path of a rename.**
+- **`src/trigram_build.rs` is missing from `build.rs`'s schema-hash list.**
 - **`rfx serve` defects** (found 2026-09-28 while rewriting `docs/API.md`; listed there
   under "Known limitations"):
   1. `glob` / `exclude` are unusable: declared as lists, the query-string parser cannot
@@ -179,7 +189,8 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   start…" from `check_index_status`; `action_required` only when auto-index is off or
   blocked. Removes both the status-check and the `index_project` turns. Prerequisite: fix
   the missing `can_trust_results` (Open bugs). **Includes the incremental update path**
-  (delta segment + tombstones + background compaction; upsert only changed `meta.db` rows):
+  (`.context/INCREMENTAL_INDEX_RESEARCH.md`: stage 0 stable metadata, stage 1 delta
+  segment + tombstones + manifest + background compaction):
   today a 1-file edit on Kubernetes reprocesses all 27,448 files (11.3 s re-extract, 9.7 s
   `files` rewrite, 3.5 s deps under load, 2026-09-29). Target: searchable in < 100 ms.
 - **B. Shrink the tool surface, then load it eagerly.** Merge `count_occurrences` into

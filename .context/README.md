@@ -13,6 +13,7 @@ development sessions (human and AI). Committed to git.
 | `RUNTIME_SYMBOL_DETECTION.md` | 2025-11 decision to parse symbols at query time; now superseded in part by the background symbol cache. |
 | `PERFORMANCE_RESEARCH.md` | Dated benchmark and latency rounds. Only the 2026-09 sections describe the 2.0.x format. |
 | `PULSE_RENDERER_SPIKE.md` | Pulse M0a renderer spike (2026-09-26). |
+| `INCREMENTAL_INDEX_RESEARCH.md` | How the index is rebuilt today (facts, file:line) and the staged design for incremental updates. |
 | `EFFICACY-2.0.3.md` | Efficacy A/B on 2.0.3 (Opus 5.5, Sonnet 5): method, all endpoints, per-task tables, limits. |
 
 ## Rules
