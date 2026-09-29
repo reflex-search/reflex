@@ -33,6 +33,7 @@ pub mod cli;
 pub mod content_store;
 pub mod context;
 pub mod dependency;
+pub mod dependency_resolve;
 pub mod errors;
 pub mod formatter;
 pub mod git;

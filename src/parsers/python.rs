@@ -1021,7 +1021,14 @@ pub fn find_all_python_configs(index_root: &std::path::Path) -> Result<Vec<std::
 /// Parse all Python packages in a monorepo and track their project roots
 pub fn parse_all_python_packages(index_root: &std::path::Path) -> Result<Vec<PythonPackage>> {
     let config_files = find_all_python_configs(index_root)?;
+    parse_python_packages_from(index_root, &config_files)
+}
 
+/// [`parse_all_python_packages`] for config files already found (in walk order).
+pub fn parse_python_packages_from(
+    index_root: &std::path::Path,
+    config_files: &[std::path::PathBuf],
+) -> Result<Vec<PythonPackage>> {
     if config_files.is_empty() {
         log::debug!("No Python config files found in {:?}", index_root);
         return Ok(Vec::new());
@@ -1030,7 +1037,7 @@ pub fn parse_all_python_packages(index_root: &std::path::Path) -> Result<Vec<Pyt
     let mut packages = Vec::new();
     let config_count = config_files.len();
 
-    for config_path in &config_files {
+    for config_path in config_files {
         let project_root = config_path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Config file has no parent directory"))?;
