@@ -42,13 +42,21 @@ rfx --version
 
 ## Step 2: Register Reflex with Claude Code
 
-Use `claude mcp add`. Pick a scope:
+Use `claude mcp add-json`. Pick a scope:
 
 ```bash
-claude mcp add --scope user reflex -- rfx mcp      # every project on this machine
-claude mcp add --scope project reflex -- rfx mcp   # this project only; writes .mcp.json
-claude mcp add reflex -- rfx mcp                   # this project, for you only (scope "local", the default)
+# every project on this machine
+claude mcp add-json --scope user reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
+# this project only; writes .mcp.json
+claude mcp add-json --scope project reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
+# this project, for you only (scope "local", the default)
+claude mcp add-json reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
 ```
+
+`"alwaysLoad": true` tells Claude Code to load Reflex's tool schemas when the session
+starts. Without it, Claude Code defers them: before its first Reflex call, the agent spends
+one turn on a ToolSearch to load them. `claude mcp add` has no flag for this key; the plain
+`claude mcp add --scope user reflex -- rfx mcp` registers the server without it.
 
 `--scope project` writes a `.mcp.json` file at the project root. Commit it to share the
 server with your team. Claude Code asks each person to approve a `.mcp.json` server
@@ -60,7 +68,8 @@ before it connects. The file looks like this:
     "reflex": {
       "type": "stdio",
       "command": "rfx",
-      "args": ["mcp"]
+      "args": ["mcp"],
+      "alwaysLoad": true
     }
   }
 }

@@ -103,7 +103,7 @@ FIND_ALL_USAGES_CATEGORIES = frozenset({
 EFFICIENCY_METRICS = ["total_tokens", "output_tokens", "assistant_turns",
                       "total_tool_calls", "wall_ms", "total_cost_usd"]
 
-TREATMENT_ARMS = ["B", "C", "Bprime"]  # each compared against control "A"
+TREATMENT_ARMS = ["B", "Beager", "C", "Bprime"]  # each compared against control "A"
 
 
 # --------------------------------------------------------------------------- #

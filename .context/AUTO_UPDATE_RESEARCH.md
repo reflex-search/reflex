@@ -261,3 +261,30 @@ binary with the new MCP text (`cebddb9`). Raw trials: `benches/efficacy/results/
   Grep/Glob if a Reflex tool fails" 4/12; "if a Reflex tool fails, retry it once; only
   fall back to Grep/Glob after the retry also fails" 8/12 → kept (`cebddb9`).
 - Accuracy: precision and recall 1.000 in both arms; 72/72 successes each.
+
+## Eager schemas: `alwaysLoad` (2026-09-30)
+
+Claude Code defers MCP tool schemas behind ToolSearch by default. A server cannot opt out;
+the client can, per server (`"alwaysLoad": true` in the MCP config; `claude mcp add-json`
+keeps it, `claude mcp add` has no flag) or globally (`ENABLE_TOOL_SEARCH=false`, or `auto`
+= eager when the schemas fit in 10 % of the context). Harness arm `Beager` = arm B with
+`alwaysLoad` (`benches/efficacy/runner.py`). Three arms run at the same time, 9 find-all
+tasks × 8 trials, one runner process per task (wall time only roughly comparable). Raw
+trials: `results-eager-sonnet5/`, `results-eager-opus/` (gitignored).
+
+| vs Grep (median of per-task medians) | Sonnet 5: deferred | Sonnet 5: eager | Opus 5.5: deferred | Opus 5.5: eager |
+| --- | --- | --- | --- | --- |
+| total_tokens | 1.632 [1.603, 1.671] | **1.526** [1.484, 1.541] | 1.679 [1.618, 1.694] | **1.824** [1.712, 2.726] |
+| total_cost_usd | 1.769 | **1.202** | 1.323 | **0.976** [0.799, 1.329] |
+| assistant_turns | 1.5 | **1.0** | 1.5 | **1.0** |
+| wall_ms | 1.13 | 0.79 | 1.18 | 0.83 |
+| trials that used Reflex | 71/72 | 72/72 | 67/72 | 72/72 |
+| median tokens (Grep arm) | 101.5k (66.2k) | 94.3k (66.2k) | 68.1k (40.5k) | 78.2k (40.5k) |
+
+- Eager loading removes the ToolSearch turn (0 ToolSearch calls; 2 turns, as Grep) and
+  cuts cost (cache reads are cheap), but every turn carries every schema: `tools/list` is
+  44 KB (~11K tokens; five search tools are ~70 %). On Opus's short trials that outweighs
+  the saved turn in `total_tokens` (1.68 → 1.82) while cost reaches parity (0.98).
+- The whole remaining token gap is schema weight (Sonnet eager − Grep ≈ 28k over 2 turns).
+  Next lever: shrink the tool surface and descriptions (backlog §1 B), then re-measure.
+- Accuracy 1.000 / 1.000 in every arm; 72/72 successes.

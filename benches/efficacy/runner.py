@@ -120,6 +120,15 @@ ARMS = {
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
         "append_system_prompt": None,
     },
+    "Beager": {
+        "description": "Arm B with the Reflex server marked alwaysLoad: its schemas load at session start (no ToolSearch turn)",
+        "mcp_command": "TARGET_RELEASE_RFX",
+        "mcp_always_load": True,
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
+        "append_system_prompt": None,
+    },
     "C": {
         "description": "Reflex-forced: Reflex MCP enabled; Grep/Glob disallowed; Read/Bash allowed",
         "mcp_command": "TARGET_RELEASE_RFX",
@@ -274,8 +283,12 @@ def make_mcp_config(
     tmp_dir: Path,
     arm_name: str,
     mcp_env: dict[str, str] | None = None,
+    always_load: bool = False,
 ) -> Path:
     """Write a temporary MCP config JSON and return its path.
+
+    ``always_load`` sets the server's ``alwaysLoad`` (Claude Code loads its tool
+    schemas at session start instead of deferring them behind ToolSearch).
 
     ``mcp_env`` (when set) is injected as the Reflex MCP server's ``env`` block so
     per-arm environment toggles reach the ``rfx mcp`` subprocess. REF-204 uses
@@ -292,6 +305,8 @@ def make_mcp_config(
         }
         if mcp_env:
             server["env"] = dict(mcp_env)
+        if always_load:
+            server["alwaysLoad"] = True
         config = {"mcpServers": {"reflex": server}}
     config_path.write_text(json.dumps(config))
     return config_path
@@ -707,7 +722,11 @@ def main() -> None:
             arm_cfg = ARMS[arm_name]
             rfx_bin = rfx_binary if arm_cfg["mcp_command"] == "TARGET_RELEASE_RFX" else None
             mcp_cfg_path = make_mcp_config(
-                rfx_bin, tmp, arm_name, mcp_env=arm_cfg.get("mcp_env")
+                rfx_bin,
+                tmp,
+                arm_name,
+                mcp_env=arm_cfg.get("mcp_env"),
+                always_load=arm_cfg.get("mcp_always_load", False),
             )
 
             print(f"=== ARM {arm_name}: {arm_cfg['description']} ===")

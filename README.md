@@ -43,9 +43,15 @@ rfx query "TODO" --json --limit 20
 With Claude Code:
 
 ```bash
-claude mcp add --scope user reflex -- rfx mcp      # every project
-claude mcp add --scope project reflex -- rfx mcp   # this project only (writes .mcp.json)
+# every project
+claude mcp add-json --scope user reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
+# this project only (writes .mcp.json)
+claude mcp add-json --scope project reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
 ```
+
+`"alwaysLoad": true` makes Claude Code load Reflex's tool schemas at session start, so the
+agent can call Reflex at once instead of first spending a turn on ToolSearch. The plain
+`claude mcp add --scope user reflex -- rfx mcp` also works, without it.
 
 For other MCP clients, register a stdio server with command `rfx` and args `["mcp"]`.
 

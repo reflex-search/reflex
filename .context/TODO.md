@@ -22,7 +22,9 @@ golden 0 diffs, `latency_budget` +1.6 %, MCP edit-then-search 138–161 ms (as b
 agents to `check_index_status` / `index_project`; every JSON-object answer carries
 `can_trust_results`. Efficacy re-run (Opus 5.5): 1.675×, unchanged — Opus never made the
 status calls. Sonnet 5: 1.603× (was 1.646×); status calls 33 → 0, arm-B median turns
-4 → 3, tokens 148k → 101k. The ToolSearch turn remains on both (backlog §1 B).
+4 → 3, tokens 148k → 101k. `alwaysLoad` (now in the docs' example configs) removes the
+ToolSearch turn: cost 1.20× (Sonnet) / 0.98× (Opus) Grep, tokens 1.53× / 1.82× — the
+44 KB `tools/list` rides on every turn. Next: shrink it (backlog §1 B).
 
 Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
 of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
@@ -249,7 +251,10 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
 - **A. Keep the index fresh automatically.** Planned: `.context/AUTO_UPDATE_RESEARCH.md`
   (section "Auto-update" at the top). Removes both the status-check and the
   `index_project` turns once the fidelity test passes.
-- **B. Shrink the tool surface, then load it eagerly.** Merge `count_occurrences` into
+- **B. Shrink the tool surface, then load it eagerly.** Eager loading is measured
+  (2026-09-30, `AUTO_UPDATE_RESEARCH.md` "Eager schemas"): turns = Grep, cost ≤ 1.2×, tokens
+  1.5–1.8× from the 44 KB schemas (search_code 7.6 KB, find_references 5.2 KB,
+  search_regex 4.9 KB, list_locations 4.8 KB, count_occurrences 4.6 KB). Merge `count_occurrences` into
   `mode: "count"` and `get_dependents` into `get_dependencies`; structural tools off by
   default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B
   `"alwaysLoad": true` in the MCP config: it removes the ToolSearch turn but loads the

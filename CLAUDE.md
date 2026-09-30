@@ -380,7 +380,11 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 - **Re-run after auto-update (2026-09-30):** Opus 5.5 1.675× (unchanged: it never called
   `check_index_status`, 0 in 200 trials); Sonnet 5 1.603× (was 1.646×): its 33 status
   calls fell to 0, arm-B median 4 → 3 turns and 148k → 101k tokens. What is left, on both
-  models, is the ToolSearch turn for the deferred schemas (backlog §1 B). The instructions' last paragraph
+  models, is the ToolSearch turn for the deferred schemas (backlog §1 B).
+- **`alwaysLoad` (eager schemas, 2026-09-30):** removes the ToolSearch turn (turns = Grep's)
+  and cuts cost: Sonnet 1.77× → 1.20×, Opus 1.32× → 0.98× Grep. Tokens: Sonnet 1.63× →
+  1.53×, Opus 1.68× → 1.82× (every turn carries the 44 KB `tools/list`). The docs'
+  example configs set it. Schema size is now the whole gap. The instructions' last paragraph
   decides adoption (the schemas are deferred): keep a Reflex-first fallback rule there —
   dropping it took adoption from 37/72 to 2/72 (`.context/AUTO_UPDATE_RESEARCH.md`).
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
