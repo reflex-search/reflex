@@ -967,7 +967,7 @@ pub struct QueryResponse {
 /// Report from cache compaction operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionReport {
-    /// Number of files removed
+    /// Always 0 since auto-update: index runs remove deleted files (kept for JSON compatibility)
     pub files_removed: usize,
     /// Space saved in bytes
     pub space_saved_bytes: u64,

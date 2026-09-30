@@ -3945,6 +3945,12 @@ mod status_cache {
         /// `fresh` (as before), but an automatic update must not act on it.
         #[allow(dead_code)] // read by the automatic update's plan
         pub unreadable: bool,
+        /// A rule file (`.reflex/config.toml`, an ignore file) differs from the one
+        /// the last index run saw: WHICH files are indexed may have changed, so
+        /// only a full run brings the index up to date. The paths are also listed
+        /// in `changes` as modified.
+        #[allow(dead_code)] // read by the automatic update's plan
+        pub rules_changed: bool,
     }
 
     impl Snapshot {
@@ -3954,6 +3960,7 @@ mod status_cache {
                 details: None,
                 changes: WorktreeChanges::default(),
                 unreadable: true,
+                rules_changed: false,
             }
         }
     }
@@ -4093,6 +4100,7 @@ mod status_cache {
                 details: None,
                 changes: WorktreeChanges::default(),
                 unreadable: false,
+                rules_changed: false,
             });
         }
 
@@ -4132,12 +4140,28 @@ mod status_cache {
             Probe::Walk
         };
 
+        let rule_record: Option<std::collections::BTreeMap<String, String>> = reads
+            .rule_files
+            .as_deref()
+            .and_then(|r| serde_json::from_str(r).ok());
+        let mut rules_changed: Vec<String> = Vec::new();
+
         let mut changes = match probe {
             Probe::Git(candidates) => {
                 let keys: Vec<&str> = candidates.iter().map(String::as_str).collect();
                 let fingerprints = cache.fingerprints_for(&keys)?;
                 let mut out = WorktreeChanges::default();
+                let mut added = Vec::new();
                 for path in &candidates {
+                    if let Some(record) = &rule_record
+                        && crate::indexer::is_rule_file(path)
+                        && !crate::indexer::FIXED_RULE_FILES.contains(&path.as_str())
+                        && record.get(path).map(String::as_str)
+                            != Some(crate::indexer::rule_file_hash(root, path).as_str())
+                    {
+                        rules_changed.push(path.clone());
+                        continue;
+                    }
                     classify_one(
                         root,
                         &config,
@@ -4145,7 +4169,17 @@ mod status_cache {
                         path,
                         fingerprints.get(path),
                         &mut out,
+                        &mut added,
                     );
+                }
+                // A new file counts only when the walk would reach it: git also
+                // lists a tracked file that `.gitignore` now ignores, and no index
+                // run will ever hold it.
+                if !added.is_empty() {
+                    let walked = Indexer::walked_among(root, &config, &policy, &added);
+                    for path in added.iter().filter(|p| walked.contains(*p)) {
+                        out.push_added(path);
+                    }
                 }
                 details.checked_by = Some("git".to_string());
                 out
@@ -4156,6 +4190,17 @@ mod status_cache {
                 walk_changes(root, &config, &policy, &fingerprints)
             }
         };
+        if let Some(record) = &rule_record {
+            for rel in crate::indexer::FIXED_RULE_FILES {
+                let now = crate::indexer::rule_file_hash(root, rel);
+                if record.get(rel).map(String::as_str).unwrap_or("") != now {
+                    rules_changed.push(rel.to_string());
+                }
+            }
+        }
+        for rel in &rules_changed {
+            changes.push_modified(rel);
+        }
         changes.sort();
 
         Ok(Snapshot {
@@ -4163,6 +4208,7 @@ mod status_cache {
             details: Some(details),
             changes,
             unreadable: false,
+            rules_changed: !rules_changed.is_empty(),
         })
     }
 
@@ -4230,6 +4276,7 @@ mod status_cache {
         path: &str,
         fp: Option<&FileFingerprint>,
         out: &mut WorktreeChanges,
+        added: &mut Vec<String>,
     ) {
         if !indexable_with(path, policy) {
             return;
@@ -4262,7 +4309,7 @@ mod status_cache {
                 if !Language::from_path(Path::new(path)).is_code() && looks_binary(&full) {
                     return;
                 }
-                out.push_added(path);
+                added.push(path.to_string());
             }
             (Ok(md), Some(fp)) => {
                 if !content_matches(&full, &md, fp) {

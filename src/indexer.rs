@@ -490,6 +490,9 @@ pub struct Indexer {
     recent_limits: Option<(usize, u64)>,
     /// Crash tests: the write point at which the process aborts.
     abort_at: Option<String>,
+    /// The rule-file record the current `index` run saw, when it differs from
+    /// the stored one: written after the run succeeds.
+    rules_pending: std::sync::Mutex<Option<String>>,
 }
 
 /// The path resolver of this process's last delta publish: `(meta.db, publish id,
@@ -1011,12 +1014,54 @@ fn classify_named(root: &Path, abs_root: &Path, path: &Path) -> Named {
             Named::Skip
         };
     }
-    if matches!(name.as_str(), ".gitignore" | ".ignore" | ".rgignore")
-        || crate::dependency_resolve::is_resolver_config_name(name)
-    {
+    if is_ignore_file_name(name) || crate::dependency_resolve::is_resolver_config_name(name) {
         return Named::Full;
     }
     Named::Path(parts.join("/"))
+}
+
+/// `statistics` key: the rule files an index run saw, as a JSON map from path
+/// (relative to the root) to the blake3 of its bytes (`""` when absent). The rule
+/// files decide WHICH files are indexed, so a change to one makes the index stale
+/// although no indexed file changed. Older binaries ignore the key.
+pub(crate) const RULE_FILES_KEY: &str = "rule_files";
+
+/// Rule files compared on every freshness check: Reflex's config and the root's
+/// ignore files. Nested ignore files are compared when git lists them.
+pub(crate) const FIXED_RULE_FILES: [&str; 4] =
+    [".reflex/config.toml", ".gitignore", ".ignore", ".rgignore"];
+
+/// Whether `name` is an ignore file the walker reads in every directory.
+pub(crate) fn is_ignore_file_name(name: &str) -> bool {
+    matches!(name, ".gitignore" | ".ignore" | ".rgignore")
+}
+
+/// Whether the path `rel` (relative, `/`-separated) is a rule file.
+pub(crate) fn is_rule_file(rel: &str) -> bool {
+    rel == FIXED_RULE_FILES[0] || is_ignore_file_name(rel.rsplit('/').next().unwrap_or(rel))
+}
+
+/// The blake3 of the rule file at `rel`, or `""` when it cannot be read.
+pub(crate) fn rule_file_hash(root: &Path, rel: &str) -> String {
+    match std::fs::read(root.join(rel)) {
+        Ok(bytes) => blake3::hash(&bytes).to_hex().to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+/// The rule-file record of an index run over `root`: the fixed files, and every
+/// ignore file in `dirty` (the paths `git status` listed).
+fn rule_files_record<'a>(root: &Path, dirty: impl IntoIterator<Item = &'a String>) -> String {
+    let mut record: std::collections::BTreeMap<String, String> = FIXED_RULE_FILES
+        .iter()
+        .map(|rel| (rel.to_string(), rule_file_hash(root, rel)))
+        .collect();
+    for rel in dirty {
+        if is_rule_file(rel) {
+            record.insert(rel.clone(), rule_file_hash(root, rel));
+        }
+    }
+    serde_json::to_string(&record).unwrap_or_default()
 }
 
 /// Whether a directory holds a file named like a resolver config at any depth (no
@@ -1053,6 +1098,7 @@ impl Indexer {
             merge_limits: None,
             recent_limits: None,
             abort_at: None,
+            rules_pending: std::sync::Mutex::new(None),
         }
     }
 
@@ -1584,6 +1630,34 @@ impl Indexer {
         progress_callback: Option<ProgressCallback>,
     ) -> Result<IndexStats> {
         let root = root.as_ref();
+        let stats = self.index_run(root, show_progress, progress_callback)?;
+        // The rule files this run indexed under, once its index is published. A
+        // crash before this write leaves the old record: the next check reports
+        // the rules as changed and the next run writes it.
+        let pending = self
+            .rules_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(record) = pending {
+            let conn = crate::cache::open_meta_db(self.cache.path().join(crate::cache::META_DB))?;
+            crate::meta_update::set_statistic(
+                &conn,
+                RULE_FILES_KEY,
+                &record,
+                chrono::Utc::now().timestamp(),
+            )?;
+            crate::query::invalidate_caches(root);
+        }
+        Ok(stats)
+    }
+
+    fn index_run(
+        &self,
+        root: &Path,
+        show_progress: bool,
+        progress_callback: Option<ProgressCallback>,
+    ) -> Result<IndexStats> {
         log::info!("Indexing directory: {:?}", root);
         let mut laps = Laps::new();
 
@@ -1706,6 +1780,7 @@ impl Indexer {
                         &conn,
                         crate::meta_update::SYNCED_BRANCH_KEY,
                     )?,
+                    crate::meta_update::get_statistic(&conn, RULE_FILES_KEY)?,
                 ))
             });
             let t = Instant::now();
@@ -1728,7 +1803,7 @@ impl Indexer {
                 walked.and_then(|w| disk.map(|()| w)),
             )
         });
-        let (stored, stored_digest, meta_generation, synced_branch) =
+        let (stored, stored_digest, meta_generation, synced_branch, stored_rules) =
             meta_read.map_err(|_| anyhow::anyhow!("meta.db read thread panicked"))??;
         // A non-code file is text only when it holds no NUL byte; one whose stat
         // matches its row was checked when it was indexed.
@@ -1785,6 +1860,9 @@ impl Indexer {
             .as_ref()
             .map(|s| s.dirty_paths.clone())
             .unwrap_or_default();
+        let rules = rule_files_record(root, &dirty_paths);
+        *self.rules_pending.lock().unwrap_or_else(|e| e.into_inner()) =
+            (stored_rules.as_deref() != Some(rules.as_str())).then_some(rules);
 
         // The branch's own hashes: the basis of the "new / modified / unchanged"
         // breakdown, as before stable ids.
@@ -3539,23 +3617,7 @@ impl Indexer {
         let mut out = Walked::default();
 
         let policy = self.path_policy(root);
-        let mut builder = Self::walk_builder(root, &self.config, &policy);
-        if let Some(targets) = targets {
-            // Replaces the walker's own entry filter, so repeat it.
-            let hidden = policy.hidden();
-            let root_buf = root.to_path_buf();
-            builder.filter_entry(move |e| {
-                if hidden {
-                    let name = e.file_name();
-                    if name == ".git" || name == crate::cache::CACHE_DIR {
-                        return false;
-                    }
-                }
-                let rel = normalize_rel(&root_buf, e.path());
-                targets.admits(&rel)
-            });
-        }
-        let walker = builder.build();
+        let walker = Self::targeted_walk_builder(root, &self.config, &policy, targets).build();
 
         for entry in walker {
             let entry = entry?;
@@ -3654,6 +3716,53 @@ impl Indexer {
     /// The directory walker every tree pass shares: the indexer, and the freshness
     /// check outside git (which has no `git status` to name candidates and must
     /// walk). One builder so the two can never disagree about what is in the tree.
+    /// [`Indexer::walk_builder`], entering only `targets` and their ancestors when
+    /// given.
+    fn targeted_walk_builder(
+        root: &Path,
+        config: &IndexConfig,
+        policy: &PathPolicy,
+        targets: Option<Arc<Targets>>,
+    ) -> WalkBuilder {
+        let mut builder = Self::walk_builder(root, config, policy);
+        if let Some(targets) = targets {
+            // Replaces the walker's own entry filter, so repeat it.
+            let hidden = policy.hidden();
+            let root_buf = root.to_path_buf();
+            builder.filter_entry(move |e| {
+                if hidden {
+                    let name = e.file_name();
+                    if name == ".git" || name == crate::cache::CACHE_DIR {
+                        return false;
+                    }
+                }
+                let rel = normalize_rel(&root_buf, e.path());
+                targets.admits(&rel)
+            });
+        }
+        builder
+    }
+
+    /// Which of the files `rels` (relative, `/`-separated) the walk reaches: the
+    /// ignore files and the include/exclude patterns applied exactly as an index
+    /// run applies them. Walks only the ancestors of `rels`.
+    pub(crate) fn walked_among(
+        root: &Path,
+        config: &IndexConfig,
+        policy: &PathPolicy,
+        rels: &[String],
+    ) -> std::collections::HashSet<String> {
+        let targets = Arc::new(Targets::new(rels));
+        let walker =
+            Self::targeted_walk_builder(root, config, policy, Some(Arc::clone(&targets))).build();
+        walker
+            .flatten()
+            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+            .map(|e| normalize_rel(root, e.path()))
+            .filter(|rel| targets.exact.contains(rel))
+            .collect()
+    }
+
     pub fn walk_builder(root: &Path, config: &IndexConfig, policy: &PathPolicy) -> WalkBuilder {
         // WalkBuilder from ignore crate automatically respects:
         // - .gitignore (when in a git repo)

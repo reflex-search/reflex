@@ -1226,6 +1226,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 branch_indexed: false,
                 branch_info: None,
                 dirty_at_index: Vec::new(),
+                rule_files: None,
             });
         }
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
@@ -1238,9 +1239,13 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 branch_indexed: false,
                 branch_info: None,
                 dirty_at_index: Vec::new(),
+                rule_files: None,
             });
         }
 
+        let rule_files = crate::meta_update::get_statistic(&conn, crate::indexer::RULE_FILES_KEY)
+            .ok()
+            .flatten();
         let Some(branch) = branch else {
             return Ok(StatusReads {
                 schema_ok,
@@ -1248,6 +1253,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 branch_indexed: false,
                 branch_info: None,
                 dirty_at_index: Vec::new(),
+                rule_files,
             });
         };
 
@@ -1268,6 +1274,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             branch_indexed,
             branch_info,
             dirty_at_index: Self::dirty_at_index_on(&conn).unwrap_or_default(),
+            rule_files,
         })
     }
 
@@ -2236,125 +2243,35 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         // Get initial cache size
         let size_before = self.calculate_cache_size()?;
 
-        // Step 1: Identify deleted files (in DB but not on filesystem)
-        let deleted_files = self.identify_deleted_files()?;
-        log::info!(
-            "Found {} deleted files to remove from cache",
-            deleted_files.len()
-        );
-
-        if deleted_files.is_empty() {
-            log::info!("No deleted files to compact - cache is clean");
-            // Update timestamp anyway to prevent running compaction too frequently
-            self.update_compaction_timestamp()?;
-
-            return Ok(crate::models::CompactionReport {
-                files_removed: 0,
-                space_saved_bytes: 0,
-                duration_ms: start_time.elapsed().as_millis() as u64,
-            });
+        // Deleted files are NOT removed here. An index run removes a file's row
+        // and tombstones it in the stores in one publish; removing only the row
+        // left the stores returning the file while the freshness check (which
+        // compares rows with the disk) could no longer see the deletion.
+        let free_pages: i64 = {
+            let conn = open_meta_db(self.cache_path.join(META_DB))?;
+            conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))
+                .unwrap_or(0)
+        };
+        if free_pages > 0 {
+            self.vacuum_database()?;
+            log::info!("Completed VACUUM operation ({} free pages)", free_pages);
         }
 
-        // Step 2: Delete from database (CASCADE handles file_branches, file_dependencies, file_exports)
-        self.delete_files_from_db(&deleted_files)?;
-        log::info!("Deleted {} files from database", deleted_files.len());
-
-        // Step 3: Run VACUUM to reclaim disk space
-        self.vacuum_database()?;
-        log::info!("Completed VACUUM operation");
-
-        // Get final cache size
         let size_after = self.calculate_cache_size()?;
         let space_saved = size_before.saturating_sub(size_after);
-
-        // Step 4: Update last_compaction timestamp
         self.update_compaction_timestamp()?;
-
         let duration_ms = start_time.elapsed().as_millis() as u64;
-
         log::info!(
-            "Cache compaction completed: {} files removed, {} bytes saved ({:.2} MB), took {}ms",
-            deleted_files.len(),
+            "Cache compaction completed: {} bytes saved, took {}ms",
             space_saved,
-            space_saved as f64 / 1_048_576.0,
             duration_ms
         );
 
         Ok(crate::models::CompactionReport {
-            files_removed: deleted_files.len(),
+            files_removed: 0,
             space_saved_bytes: space_saved,
             duration_ms,
         })
-    }
-
-    /// Identify files in database that no longer exist on filesystem
-    ///
-    /// Returns a Vec of file IDs for files that should be removed from the cache.
-    pub(crate) fn identify_deleted_files(&self) -> Result<Vec<i64>> {
-        let db_path = self.cache_path.join(META_DB);
-        let conn = open_meta_db(&db_path)
-            .context("Failed to open meta.db for deleted file identification")?;
-
-        let workspace_root = self.workspace_root();
-
-        // Query all files from database (id, path)
-        let mut stmt = conn.prepare("SELECT id, path FROM files")?;
-        let files = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        log::debug!("Checking {} files for deletion status", files.len());
-
-        // Check which files no longer exist on disk
-        let mut deleted_file_ids = Vec::new();
-        for (file_id, file_path) in files {
-            let full_path = workspace_root.join(&file_path);
-            if !full_path.exists() {
-                log::trace!("File no longer exists: {} (id={})", file_path, file_id);
-                deleted_file_ids.push(file_id);
-            }
-        }
-
-        Ok(deleted_file_ids)
-    }
-
-    /// Delete files from database by file ID
-    ///
-    /// Uses a transaction for atomicity. CASCADE delete handles:
-    /// - file_branches entries
-    /// - file_dependencies entries
-    /// - file_exports entries
-    pub(crate) fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
-        if file_ids.is_empty() {
-            return Ok(());
-        }
-
-        let db_path = self.cache_path.join(META_DB);
-        let mut conn =
-            open_meta_db(&db_path).context("Failed to open meta.db for file deletion")?;
-
-        let tx = conn.transaction()?;
-
-        // Delete files in batches to avoid SQLite parameter limit (999 max)
-        const BATCH_SIZE: usize = 900;
-
-        for chunk in file_ids.chunks(BATCH_SIZE) {
-            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-
-            let delete_query = format!("DELETE FROM files WHERE id IN ({})", placeholders);
-
-            let params: Vec<i64> = chunk.to_vec();
-            tx.execute(&delete_query, rusqlite::params_from_iter(params))?;
-        }
-
-        tx.commit()?;
-        log::debug!(
-            "Deleted {} files from database (CASCADE handled related tables)",
-            file_ids.len()
-        );
-        Ok(())
     }
 
     /// Run VACUUM on SQLite database to reclaim disk space
@@ -2414,6 +2331,9 @@ pub struct StatusReads {
     /// Paths `git status` listed when the index was written. They must be
     /// re-checked by content even when git now reports them clean.
     pub dirty_at_index: Vec<String>,
+    /// The rule-file record of the last index run (`indexer::RULE_FILES_KEY`),
+    /// when the schema matches.
+    pub rule_files: Option<String>,
 }
 
 /// One `files` row as the indexer writes it.
