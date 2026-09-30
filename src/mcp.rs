@@ -230,7 +230,7 @@ Use find_references for a definition plus every call site without string/comment
 
 Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated.
 
-The index updates itself before every call (and is built on first use): never call index_project or check_index_status after edits. can_trust_results: false means the update could not run; warnings say why."#;
+The index updates itself before every call; never call index_project or check_index_status after edits. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
 /// Handle initialize request
 fn handle_initialize(_params: Option<Value>) -> Result<Value> {
