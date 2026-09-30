@@ -202,10 +202,11 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 
 ### Freshness contract
 
-List-mode `search_code` / `search_regex` responses and `check_index_status` carry `status` and
-`can_trust_results`. **Known gap (2.0.3):** `find_references`, `list_locations`,
-`count_occurrences` and every `mode: "count"` response carry `status` only, or nothing —
-no `can_trust_results`, even when stale (see `.context/TODO.md`, Open bugs). Freshness is judged by
+Every JSON-object MCP answer (search, count mode, `list_locations`, `count_occurrences`,
+`find_references`, the structural tools) and `check_index_status` carry `status` and
+`can_trust_results`. Array answers (`get_dependencies`, `get_dependents`, `search_ast`) and
+the path-keyed `get_transitive_deps` do not. The index is updated before every call (see
+Auto-update), so agents are told NOT to call `check_index_status` / `index_project`. Freshness is judged by
 **file content, not by commit**: every indexed file has a recorded fingerprint (size,
 mtime, blake3 hash), and the index is stale only when a file on disk differs from it —
 edited, added or deleted, committed or not.
@@ -239,7 +240,7 @@ edited, added or deleted, committed or not.
 **Core search:**
 | Tool | Purpose |
 |------|---------|
-| `check_index_status` | Check if index is fresh before searching |
+| `check_index_status` | Report freshness without updating (rarely needed: every tool updates first) |
 | `search_code` | Full-text search with previews (default limit: 200) |
 | `search_regex` | Regex pattern search (use for `->`, `::`, alternation, etc.) |
 | `list_locations` | Path+line only — cheapest, no content loaded |
@@ -251,7 +252,7 @@ edited, added or deleted, committed or not.
 **Index management:**
 | Tool | Purpose |
 |------|---------|
-| `index_project` | Build or update the search index |
+| `index_project` | Force an index run (rarely needed: every tool updates first) |
 
 **Dependency analysis:**
 | Tool | Purpose |

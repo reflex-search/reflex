@@ -294,3 +294,75 @@ fn query_engines_are_built_by_the_known_front_ends_only() {
         "QueryEngine::new outside the front ends: {offenders:?}"
     );
 }
+
+/// Every object-shaped answer carries `can_trust_results`: agents no longer call
+/// `check_index_status`, so the answer itself must say whether it can be trusted.
+#[test]
+fn mcp_object_answers_carry_can_trust_results() {
+    let temp = repo();
+    let root = temp.path();
+    mcp(
+        root,
+        "search_code",
+        json!({ "pattern": "front_a_token" }),
+        true,
+    );
+    let calls = [
+        (
+            "search_code",
+            json!({ "pattern": "front_a_token", "mode": "count" }),
+        ),
+        (
+            "search_regex",
+            json!({ "pattern": "front_\\w+", "mode": "count" }),
+        ),
+        ("list_locations", json!({ "pattern": "front_a_token" })),
+        ("count_occurrences", json!({ "pattern": "front_a_token" })),
+        ("find_references", json!({ "pattern": "front_a_token" })),
+        ("find_hotspots", json!({})),
+        ("find_circular", json!({})),
+        ("find_unused", json!({})),
+        ("find_islands", json!({})),
+        ("analyze_summary", json!({})),
+    ];
+    for (tool, args) in &calls {
+        let v = mcp(root, tool, args.clone(), true);
+        assert_eq!(v["can_trust_results"], true, "{tool}: {v}");
+    }
+    // A stale index and no update: every answer says so.
+    write(
+        root,
+        "src/a.rs",
+        "pub fn front_a_token() { let _changed = 1; }\n",
+    );
+    reflex::query::invalidate_caches(root);
+    for (tool, args) in &calls {
+        let v = mcp(root, tool, args.clone(), false);
+        assert_eq!(v["can_trust_results"], false, "{tool}: {v}");
+        assert_eq!(v["status"], "stale", "{tool}: {v}");
+    }
+}
+
+/// The server no longer sends agents to the status probe or a manual reindex.
+#[test]
+fn mcp_text_does_not_ask_for_manual_reindexing() {
+    let temp = repo();
+    let root = temp.path();
+    let mut out: Vec<u8> = Vec::new();
+    let reqs = [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    ];
+    let input: String = reqs.iter().map(|r| format!("{r}\n")).collect();
+    run_mcp_server_io_with(root, Cursor::new(input.into_bytes()), &mut out, true, None).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    for stale_advice in [
+        "Call `index_project` and retry",
+        "call `index_project`, then retry",
+        "Call this at session start",
+        "call index_project, then retry",
+    ] {
+        assert!(!text.contains(stale_advice), "still says: {stale_advice}");
+    }
+    assert!(text.contains("updated automatically before every call"));
+}

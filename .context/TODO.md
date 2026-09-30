@@ -16,11 +16,11 @@
 
 Every command that reads the index brings it up to date first; no watcher, no manual
 `rfx index`. Plan, code survey, steps and gates: `.context/AUTO_UPDATE_RESEARCH.md`.
-Builds on the incremental index branch below. Steps 1–8 and docs done; fidelity 15/15,
+Builds on the incremental index branch below. Steps 1–9 and docs done; fidelity 15/15,
 golden 0 diffs, `latency_budget` +1.6 %, MCP edit-then-search 138–161 ms (as built:
-`AUTO_UPDATE_RESEARCH.md`). Left: step 9, **waiting for the user** — remove the MCP
-`check_index_status` / `index_project` text, fix the missing `can_trust_results`
-fields, re-run the efficacy A/B.
+`AUTO_UPDATE_RESEARCH.md`). Step 9 (user, 2026-09-30): the MCP text no longer sends
+agents to `check_index_status` / `index_project`; every JSON-object answer carries
+`can_trust_results`. Left: the efficacy A/B (`benches/efficacy/run-ref222.sh`).
 
 Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
 of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
@@ -110,13 +110,11 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
-- **Stale index, but no `can_trust_results: false`** (found 2026-09-28). `find_references`,
-  `list_locations` and `count_occurrences` return `status` only (`src/mcp.rs` ~L1688,
-  ~L1774, ~L3027); `mode: "count"` returns only `{count, pattern}`; `check_index_status`
-  with no index returns only `{status, action_required}`; `rfx query --count --json`
-  returns `{count, timing_ms}`. This breaks current policy 2 exactly where it matters:
-  a zero from `find_references` on a stale index reads as "no callers". Every tool
-  description's FRESHNESS paragraph promises the field. CLAUDE.md now states the gap.
+- **Stale index, but no `can_trust_results: false`** — MCP fixed on `feature/auto-update`
+  (every JSON-object answer carries it). Left: `check_index_status` with no index returns
+  only `{status, action_required}`; `rfx query --count --json` returns `{count,
+  timing_ms}`; array answers (`get_dependencies`, `get_dependents`, `search_ast`) and
+  `get_transitive_deps` (a path-keyed map) have no place for it.
 - **`find_references` silently drops call sites on any line containing a URL.**
   `src/line_filter.rs:83` does `line.find("//")` and treats anything after it as a
   comment. `https://` contains `//`, so:
@@ -130,11 +128,6 @@ failed Zola build still exits 0.
   A silently wrong answer. Affects every language filter using the `//` rule, and is far
   worse on minified JS, where one early URL hides every later match on that line.
   Found 2026-09-22; still present in 2.0.3.
-- **Every `rfx index` wipes the symbol cache** (verified 2026-09-29: 282 rows → 0 after a
-  one-file edit). `INSERT OR REPLACE INTO files` (`src/cache.rs` ~L1068) gives every file a
-  new id; the cascade deletes `symbols`, `file_branches` for other branches, and exports,
-  and sets importers' `resolved_file_id` to NULL. Fix with `ON CONFLICT(path) DO UPDATE`
-  (see `.context/INCREMENTAL_INDEX_RESEARCH.md`, stage 0).
 - **MCP `index_project` never spawns the symbol pass** (`rebuild_index`, `src/mcp.rs`
   ~L1287); only `rfx index` does (`src/cli/index.rs`). Symbol queries then parse on demand.
 - **Readers can open a mismatched pair between the two renames** (`trigrams.bin`, then
@@ -149,8 +142,6 @@ failed Zola build still exits 0.
   2. Unknown query parameters are ignored silently, so `include_locks`,
      `include_generated`, `exclude_text` do nothing over HTTP (the lock-file zero `hint`
      still tells callers to pass `include_locks:true`).
-  3. `POST /index` ignores `.reflex/config.toml` (built-in defaults); MCP `index_project`
-     (`rebuild_index` in `src/mcp.rs`) does the same. `rfx index` loads the file.
   4. `POST /index` knows only 11 language names; `csharp`, `ruby`, `kotlin`, `zig` are
      dropped silently (and an all-unknown list indexes everything).
   5. Invalid regex and too-broad queries return 500 `IoError` instead of 400; the

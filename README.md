@@ -124,8 +124,8 @@ When connected via MCP, your AI assistant gets these tools:
 | `search_regex` | Regex pattern matching across the codebase |
 | `search_ast` | Structure-aware search via Tree-sitter AST queries |
 | `find_references` | Symbol definition + all usage sites in a single call; the primary code-navigation tool for AI agents |
-| `index_project` | Trigger or refresh the search index |
-| `check_index_status` | Check whether the index is fresh, stale, or missing; call before any search session or after git operations |
+| `index_project` | Force an index run (rarely needed: every tool updates the index first) |
+| `check_index_status` | Report whether the index matches the files on disk, without updating it |
 | `get_dependencies` | All imports for a specific file |
 | `get_dependents` | All files that import a given file (reverse lookup) |
 | `get_transitive_deps` | Transitive dependency graph up to a configurable depth |
@@ -136,12 +136,12 @@ When connected via MCP, your AI assistant gets these tools:
 | `analyze_summary` | High-level dependency counts and metrics |
 | `gather_context` | Codebase structure and project-type summary |
 
-**Index not found error?** If an MCP tool returns `"Index not found. Call the index_project tool, then retry."`, call `index_project`, then retry the failed tool.
+**No `rfx index` needed after edits.** Every command and MCP tool updates a stale index before it answers (only the changed files) and builds a missing one; pass `--no-update` (`rfx mcp --no-update`) to answer from the index as it is.
 
 Three behaviours agents rely on:
 
 - **Whole identifiers by default.** `verify_csrf` does not match `verify_csrf_form_field`; pass `contains: true` for substring matching (`grep -F`) or `ignore_case: true` for `rg -i`. A zero result names the substring count in a `hint`.
-- **Freshness on search responses.** `status` and `can_trust_results` compare the working tree (size, mtime, content hash) with what the index holds; a stale index always yields `can_trust_results: false`, and `action_required` names `index_project`.
+- **Freshness on search responses.** `status` and `can_trust_results` compare the working tree (size, mtime, content hash) with what the index holds; the index is updated before each call, so `can_trust_results: false` appears only when that update could not run (`warnings` says why).
 - **Lock and generated files stay out of the way.** They are indexed but excluded from results unless you pass `include_locks` / `include_generated`; a zero result caused only by them says so.
 
 See [`docs/mcp-tool-cheatsheet.md`](docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.

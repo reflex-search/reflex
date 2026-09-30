@@ -21,6 +21,12 @@
   `rfx index` does; the servers do not (two servers of different versions would rebuild
   it in turns).
 - `--timing` / `REFLEX_MCP_TIMING=1`: `timings.update_us` when an update ran.
+- **MCP: agents are no longer told to call `check_index_status` or `index_project`.** The
+  server instructions and every tool description now say the index is updated before
+  each call; `index_project` is for a forced rebuild. Every JSON-object answer carries
+  `status` and `can_trust_results`: `list_locations`, `count_occurrences`,
+  `find_references`, `mode: "count"` and the structural tools lacked
+  `can_trust_results` (array answers and `get_transitive_deps` still have none).
 - `rfx index` remembers `--languages`; later automatic updates index the same languages.
   A plain `rfx index` clears it.
 

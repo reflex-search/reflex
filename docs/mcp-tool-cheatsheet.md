@@ -97,16 +97,13 @@
 
 | Goal | Tool | Why |
 |------|------|-----|
-| Index seems stale / missing files | `index_project` | Incremental by default; use `force: true` for full rebuild |
-| Search returns "Index not found" error | `index_project` immediately | Required before any other tool will work |
+Nothing, normally. Every tool updates the index before it answers (only the changed files),
+and builds it when there is none; after an edit, a checkout or a rebase, just search.
 
-```
-# Always: if any tool returns "Index not found", call this first:
-index_project()
-
-# After large git operations (checkout, merge, rebase):
-index_project()
-```
+| Goal | Tool | Why |
+|------|------|-----|
+| A response has `can_trust_results: false` | read its `warnings` | The automatic update could not run (read-only `.reflex/`, a cache another rfx version owns) |
+| The index appears corrupted | `index_project` with `force: true` | Full rebuild |
 
 ---
 
@@ -214,7 +211,7 @@ Behaviour:
 
 **Corrupted or missing index:** on `CacheCorrupted` the server rebuilds once (force) and retries
 the call automatically. If that cannot work (lock held, read-only cache), the error names the
-`index_project` tool rather than the CLI. `IndexNotFound` errors also point at `index_project`.
+`index_project` tool rather than the CLI. A missing index is built by the first tool call.
 
 ---
 
@@ -255,9 +252,9 @@ Measured on Reflex 2.0.3, 2026-09-28 (full report: `.context/EFFICACY-2.0.3.md`)
 costs more tokens than built-in Grep/Glob: 1.66× on 9 find-all-usages tasks (Opus 5.5 and
 Sonnet 5 alike) and 1.26× on 13 comprehension tasks (Opus 5.5). The cost is round-trips:
 the first Reflex call needs a ToolSearch turn to load the deferred schemas, and a
-`check_index_status` call before searching adds another. Every `search_code` /
-`search_regex` response already carries `status` and `can_trust_results`, so skip the
-separate status check unless you need the changed-file lists.
+`check_index_status` call before searching adds another. Since auto-update (unreleased)
+every tool updates the index before it answers and the descriptions no longer ask for the
+status check; the A/B has not been re-run yet.
 
 **When to prefer Reflex over built-in grep/glob** (capabilities, not measured savings):
 - Symbol-aware search (`symbols: true`, `kind: "function"`) — unavailable in grep/glob
