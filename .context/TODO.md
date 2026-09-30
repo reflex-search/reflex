@@ -42,8 +42,12 @@ Open follow-ups:
   `mcp/regex_getset`; 10–325 µs), ranges overlapping; re-measure on an idle machine.
 - An add or a delete through `update_paths` re-resolves every internal import (~90 ms on
   Kubernetes); a reverse index of unresolved/suffix-matched imports would make it local.
-- A merge's peak RSS is ~5 % over a cold build (the old stores' pages are mapped while
-  the new base is built).
+- `symbol_cache::ensure_schema` treats a failed `pragma_table_info` read as an old
+  schema (`unwrap_or(0)`): a query racing the background symbol pass right after
+  `rfx index` can warn "Symbol cache schema outdated", drop the symbol cache and
+  rebuild it. Unchanged since 2.0.3; seen once in 7 golden captures (2026-09-29).
+- A one-shot `rfx query` peaks 1–2.5 % above 2.0.3 (larger binary, planning-size
+  pages), 3–8 % with a large delta live; the long-running `rfx mcp` is level.
 
 ---
 

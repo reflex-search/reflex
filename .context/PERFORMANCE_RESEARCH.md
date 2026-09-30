@@ -344,3 +344,22 @@ All 24 runs green with `REFLEX_LATENCY_BUDGET=1`. Sum of the 18 shape medians:
 ranges overlap (e.g. `ci_regex` 0.17–0.20 vs 0.18–0.24); `regex_getset` narrows through
 the same literals on both binaries (45,679 → 2,000 candidate lines) and its CLI phase
 timings overlap. Read as noise; not proven either way.
+
+### Memory (peak RSS, `311b279` against 2.0.3, alternating runs, load 4–23)
+
+| scenario | 2.0.3 | this branch |
+| --- | --- | --- |
+| cold `rfx index` (8 runs each) | median 1,059 MiB (1,023–1,075) | median 1,030 MiB (984–1,060) |
+| `rfx index`, 1-file edit | ~1,034 MiB (a full rebuild) | ~69 MiB |
+| `rfx index`, nothing changed | 37.3–37.8 MB | 34.5–34.8 MB |
+| change past the merge limit (1,500 files, 3 runs) | 1,031–1,105 MiB (full rebuild) | 936–965 MiB (merge) |
+| `rfx mcp` after 3 × `search_code` (absent / `Informer`) | 31.4 / 145.0 MB | 31.4 / 144.3 MB |
+| `rfx query`, one shot (3 shapes) | 117–191 MB | +1.0 … +2.5 % (base only), +2.8 … +8.1 % with a 1,000-file delta live |
+| process running `update_paths` (150 rounds) | — | levels off at 61–67 MiB |
+
+Found and fixed on the way (both would have failed "peak RSS no higher"): the
+no-change run opened the whole snapshot to check it (an 8 MB transient; now a
+header check) and kept a full `Metadata` plus an absolute path per walked file
+(now 24 bytes and the relative path); the merge left the old base's pages
+resident (now `MADV_DONTNEED` after each batch). A one-shot query's +2 MB is fixed
+cost: a larger binary (~1 MB resident) and the planning-size file's pages.
