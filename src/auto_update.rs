@@ -36,6 +36,9 @@ pub struct UpdateOptions {
     /// `rfx index` does; servers do not, because two servers of different versions
     /// would rebuild the same cache in turns forever.
     pub self_heal_version: bool,
+    /// Say on stderr when a build or a full run starts (they take seconds on a
+    /// large tree). A path update is silent. Stdout is never written.
+    pub progress: bool,
 }
 
 impl UpdateOptions {
@@ -44,6 +47,7 @@ impl UpdateOptions {
         Self {
             spawn_symbol_pass: true,
             self_heal_version: true,
+            progress: true,
         }
     }
 
@@ -52,6 +56,7 @@ impl UpdateOptions {
         Self {
             spawn_symbol_pass: true,
             self_heal_version: false,
+            progress: false,
         }
     }
 
@@ -60,6 +65,7 @@ impl UpdateOptions {
         Self {
             spawn_symbol_pass: false,
             self_heal_version: false,
+            progress: false,
         }
     }
 }
@@ -84,19 +90,6 @@ impl Updated {
     /// Whether the index files changed on disk.
     pub fn wrote(&self) -> bool {
         matches!(self, Self::Paths(_) | Self::Index { .. } | Self::Built)
-    }
-
-    /// A one-line progress note for a person at a terminal, for the runs that
-    /// take long enough to notice (a build or a full run).
-    pub fn progress_note(&self) -> Option<String> {
-        match self {
-            Self::Built => Some("Built the index (no index was found).".to_string()),
-            Self::Index { changed } => Some(format!(
-                "Updated the index ({changed} changed path{}).",
-                if *changed == 1 { "" } else { "s" }
-            )),
-            _ => None,
-        }
     }
 }
 
@@ -199,6 +192,9 @@ pub fn update_if_stale(cache: &CacheManager, opts: &UpdateOptions) -> Result<Upd
             .map(|_| Updated::Paths(paths.len()))
         }),
         UpdatePlan::Full(_) => config(cache).and_then(|config| {
+            if opts.progress {
+                eprintln!("Updating the index …");
+            }
             with_symbol_pass_retry(cache, || {
                 Indexer::new(CacheManager::new(&root), config.clone()).index(&root, false)
             })
@@ -242,6 +238,9 @@ fn config(cache: &CacheManager) -> Result<IndexConfig> {
 
 fn build(cache: &CacheManager, root: &Path, opts: &UpdateOptions) -> Result<()> {
     let config = config(cache)?;
+    if opts.progress {
+        eprintln!("Building the index for {} …", root.display());
+    }
     with_symbol_pass_retry(cache, || {
         Indexer::new(CacheManager::new(root), config.clone()).index(root, false)
     })?;

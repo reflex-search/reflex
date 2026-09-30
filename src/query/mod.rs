@@ -610,6 +610,9 @@ pub struct QueryEngine {
     /// same files. Dropped by [`QueryEngine::reset_open`] after this engine updates
     /// the index, so the next phase reads the published snapshot.
     open: std::sync::Mutex<Option<Arc<OpenIndex>>>,
+    /// Update a stale index before answering ([`QueryEngine::with_update`]).
+    /// `None`: answer from the index as it is (the library default).
+    update: Option<crate::auto_update::UpdateOptions>,
 }
 
 impl QueryEngine {
@@ -618,6 +621,48 @@ impl QueryEngine {
         Self {
             cache,
             open: std::sync::Mutex::new(None),
+            update: None,
+        }
+    }
+
+    /// An engine that brings a stale index up to date before it answers, and
+    /// builds a missing one ([`crate::auto_update`]). Every `rfx` command uses one
+    /// unless `--no-update` is given; [`QueryEngine::new`] answers from the index
+    /// as it is.
+    pub fn with_update(mut self, opts: crate::auto_update::UpdateOptions) -> Self {
+        self.update = Some(opts);
+        self
+    }
+
+    /// Run the automatic update (when this engine has one) with this engine's
+    /// maps dropped first. `Ok(None)` when it has none.
+    fn run_update(&self) -> Result<Option<crate::auto_update::Updated>> {
+        let Some(opts) = self.update else {
+            return Ok(None);
+        };
+        self.reset_open();
+        let updated = crate::auto_update::update_if_stale(&self.cache, &opts)?;
+        if let crate::auto_update::Updated::Skipped(reason) = &updated {
+            log::warn!("Index not updated: {reason}");
+        }
+        Ok(Some(updated))
+    }
+
+    /// Before a search that has no freshness verdict of its own: update the index
+    /// (or, without an update, warn the old way).
+    fn update_first(&self, filter: &QueryFilter) -> Result<()> {
+        match self.run_update()? {
+            Some(crate::auto_update::Updated::Skipped(reason)) if !filter.suppress_output => {
+                output::warn(&format!("⚠️  Index not updated: {reason}"));
+                Ok(())
+            }
+            Some(_) => Ok(()),
+            None => {
+                if !self.cache.exists() {
+                    return Err(crate::errors::ReflexError::IndexNotFound.into());
+                }
+                self.check_index_freshness(filter)
+            }
         }
     }
 
@@ -639,7 +684,6 @@ impl QueryEngine {
     /// manifest names now. Called before this engine updates the index: the old
     /// maps must not outlive the update (on Windows a mapped file cannot be
     /// replaced), and the retry must not read them.
-    #[allow(dead_code)] // wired in by the automatic update
     fn reset_open(&self) {
         *self.open.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -866,6 +910,51 @@ impl QueryEngine {
         pattern: &str,
         filter: QueryFilter,
     ) -> Result<QueryResponse> {
+        if self.update.is_none() {
+            return self.search_with_metadata_once(pattern, filter);
+        }
+        let started = std::time::Instant::now();
+        let mut update_time = std::time::Duration::ZERO;
+        let mut notes = Vec::new();
+        let mut update = |notes: &mut Vec<String>| -> Result<bool> {
+            let t = std::time::Instant::now();
+            let updated = self.run_update()?;
+            update_time += t.elapsed();
+            Ok(match updated {
+                Some(crate::auto_update::Updated::Skipped(reason)) => {
+                    notes.push(format!("Index not updated: {reason}"));
+                    false
+                }
+                Some(u) => u.wrote(),
+                None => false,
+            })
+        };
+        if !self.cache.exists() {
+            update(&mut notes)?;
+        }
+        // The search and the check run together; a fresh index pays nothing more.
+        // A stale one is updated and searched again, twice at most (a file can
+        // change while an update runs).
+        let mut response = self.search_with_metadata_once(pattern, filter.clone())?;
+        for _ in 0..2 {
+            if response.status != IndexStatus::Stale || !update(&mut notes)? {
+                break;
+            }
+            response = self.search_with_metadata_once(pattern, filter.clone())?;
+        }
+        response.warnings.extend(notes);
+        if let Some(t) = response.timings.as_mut() {
+            t.update_us = update_time.as_micros() as u64;
+            t.total_us = started.elapsed().as_micros() as u64;
+        }
+        Ok(response)
+    }
+
+    fn search_with_metadata_once(
+        &self,
+        pattern: &str,
+        filter: QueryFilter,
+    ) -> Result<QueryResponse> {
         log::info!(
             "Executing query with metadata: pattern='{}', filter={:?}",
             pattern,
@@ -975,6 +1064,7 @@ impl QueryEngine {
             status_compute_us: status_compute.as_micros() as u64,
             group_us: (total_elapsed - status_done).as_micros() as u64,
             total_us: total_elapsed.as_micros() as u64,
+            update_us: 0,
         };
         log::debug!("Query timings for '{}': {:?}", pattern, timings);
 
@@ -1038,16 +1128,11 @@ impl QueryEngine {
             filter
         );
 
-        // Ensure cache exists
-        if !self.cache.exists() {
-            return Err(crate::errors::ReflexError::IndexNotFound.into());
-        }
+        // Update a stale index first (or, without an update, warn the old way).
+        self.update_first(&filter)?;
 
         // Open (or reuse) the index; corruption surfaces as a typed error.
         self.open_index()?;
-
-        // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness(&filter)?;
 
         // Same bracket rewrite as `search_with_metadata`; this surface has nowhere to
         // report it, but it must not return a different answer.
@@ -1662,13 +1747,8 @@ impl QueryEngine {
              Example: rfx query \"(function_definition) @fn\" --ast --lang python"
         ))?;
 
-        // Ensure cache exists
-        if !self.cache.exists() {
-            return Err(crate::errors::ReflexError::IndexNotFound.into());
-        }
-
-        // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness(&filter)?;
+        // Update a stale index first (or, without an update, warn the old way).
+        self.update_first(&filter)?;
 
         // The shared content store
         let open = self.open_index()?;
@@ -1887,13 +1967,8 @@ impl QueryEngine {
             filter
         );
 
-        // Ensure cache exists
-        if !self.cache.exists() {
-            return Err(crate::errors::ReflexError::IndexNotFound.into());
-        }
-
-        // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness(&filter)?;
+        // Update a stale index first (or, without an update, warn the old way).
+        self.update_first(&filter)?;
 
         // Start timeout timer if configured
         use std::time::{Duration, Instant};

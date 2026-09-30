@@ -280,9 +280,9 @@ pub(super) fn handle_list_files(
 }
 
 /// Handle the `mcp` subcommand
-pub(super) fn handle_mcp() -> Result<()> {
+pub(super) fn handle_mcp(no_update: bool) -> Result<()> {
     log::info!("Starting MCP server");
-    crate::mcp::run_mcp_server()
+    crate::mcp::run_mcp_server(no_update)
 }
 
 /// Handle the `context` command

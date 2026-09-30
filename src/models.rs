@@ -693,6 +693,10 @@ pub struct QueryTimings {
     pub group_us: u64,
     /// Whole query as seen by the engine.
     pub total_us: u64,
+    /// Automatic updates of a stale index before the answer (0: none ran).
+    /// `total_us` includes them.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub update_us: u64,
 }
 
 /// Statistics about the index

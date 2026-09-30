@@ -6,7 +6,7 @@ use anyhow::Result;
 use serde_json::json;
 
 /// Handle the `serve` subcommand
-pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
+pub(super) fn handle_serve(port: u16, host: String, no_update: bool) -> Result<()> {
     log::info!("Starting HTTP server on {}:{}", host, port);
 
     println!("Starting Reflex HTTP server...");
@@ -22,11 +22,17 @@ pub(super) fn handle_serve(port: u16, host: String) -> Result<()> {
 
     // Start the server using tokio runtime
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async { run_server(port, host).await })
+    let update = (!no_update).then(crate::auto_update::UpdateOptions::server);
+    runtime.block_on(async { run_server(port, host, update).await })
 }
 
-/// Run the HTTP server
-async fn run_server(port: u16, host: String) -> Result<()> {
+/// Run the HTTP server. `update`: bring a stale index up to date before each
+/// request that reads it (`None`: `--no-update`).
+async fn run_server(
+    port: u16,
+    host: String,
+    update: Option<crate::auto_update::UpdateOptions>,
+) -> Result<()> {
     use axum::{
         Router,
         extract::{Query as AxumQuery, State},
@@ -41,6 +47,16 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     #[derive(Clone)]
     struct AppState {
         cache_path: String,
+        update: Option<crate::auto_update::UpdateOptions>,
+    }
+
+    /// Run blocking index work off the async threads.
+    async fn blocking<T: Send + 'static>(
+        f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        tokio::task::spawn_blocking(f)
+            .await
+            .map_err(|e| anyhow::anyhow!("request task failed: {e}"))?
     }
 
     // Query parameters for GET /query
@@ -115,7 +131,10 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         }
 
         let cache = CacheManager::new(&state.cache_path);
-        let engine = QueryEngine::new(cache);
+        let engine = match state.update {
+            Some(opts) => QueryEngine::new(cache).with_update(opts),
+            None => QueryEngine::new(cache),
+        };
 
         // Parse language filter
         let language = if let Some(lang_str) = params.lang.as_deref() {
@@ -191,7 +210,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             ..Default::default()
         };
 
-        match engine.search_with_metadata(&params.q, filter) {
+        let pattern = params.q.clone();
+        match blocking(move || engine.search_with_metadata(&pattern, filter)).await {
             Ok(response) => Ok(Json(response)),
             Err(e) => {
                 log::error!("Query error: {}", e);
@@ -210,9 +230,23 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     ) -> Result<Json<crate::models::IndexStats>, (StatusCode, Json<serde_json::Value>)> {
         log::info!("Stats request");
 
-        let cache = CacheManager::new(&state.cache_path);
-
-        if !cache.exists() {
+        let cache_path = state.cache_path.clone();
+        let update = state.update;
+        let stats = blocking(move || {
+            let cache = CacheManager::new(&cache_path);
+            if let Some(opts) = update
+                && let crate::auto_update::Updated::Skipped(reason) =
+                    crate::auto_update::update_if_stale(&cache, &opts)?
+            {
+                log::warn!("Index not updated: {reason}");
+            }
+            if !cache.exists() {
+                return Ok(None);
+            }
+            cache.stats().map(Some)
+        })
+        .await;
+        if let Ok(None) = stats {
             return Err((
                 StatusCode::NOT_FOUND,
                 Json(
@@ -221,7 +255,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             ));
         }
 
-        match cache.stats() {
+        match stats.map(|s| s.expect("checked above")) {
             Ok(stats) => Ok(Json(stats)),
             Err(e) => {
                 log::error!("Stats error: {}", e);
@@ -325,7 +359,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         let indexer = Indexer::new(cache, config);
         let path = std::path::PathBuf::from(&state.cache_path);
 
-        match indexer.index(&path, false) {
+        match blocking(move || indexer.index(&path, false)).await {
             Ok(stats) => Ok(Json(stats)),
             Err(e) => {
                 log::error!("Index error: {}", e);
@@ -377,6 +411,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     // Create shared state
     let state = Arc::new(AppState {
         cache_path: ".".to_string(),
+        update,
     });
 
     // Configure CORS

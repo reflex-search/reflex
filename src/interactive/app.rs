@@ -24,6 +24,8 @@ use super::ui;
 
 /// Main application state for interactive mode
 pub struct InteractiveApp {
+    /// `--no-update`: search the index as it is.
+    no_update: bool,
     /// Query input field
     input: InputField,
     /// Search results
@@ -159,7 +161,7 @@ pub enum IndexStatusState {
 
 impl InteractiveApp {
     /// Create a new interactive application
-    pub fn new() -> Result<Self> {
+    pub fn new(no_update: bool) -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let cache = CacheManager::new(&cwd);
         let cache2 = CacheManager::new(&cwd); // Create second instance for engine
@@ -211,6 +213,7 @@ impl InteractiveApp {
         };
 
         Ok(Self {
+            no_update,
             input: InputField::new(),
             results: ResultList::new(500),
             history,
@@ -1149,7 +1152,15 @@ impl InteractiveApp {
         let (tx, rx) = mpsc::channel();
         let pattern_owned = pattern.to_string();
         let cache = CacheManager::new(&self.cwd);
-        let engine = QueryEngine::new(cache);
+        let engine = if self.no_update {
+            QueryEngine::new(cache)
+        } else {
+            // No stderr notes: they would draw over the terminal UI.
+            QueryEngine::new(cache).with_update(crate::auto_update::UpdateOptions {
+                progress: false,
+                ..crate::auto_update::UpdateOptions::cli()
+            })
+        };
 
         std::thread::spawn(move || {
             let result = engine.search_with_metadata(&pattern_owned, filter);

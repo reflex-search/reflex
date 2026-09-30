@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
+use crate::auto_update::{UpdateOptions, Updated, update_if_stale};
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 use crate::indexer::Indexer;
@@ -1578,7 +1579,33 @@ fn to_columnar(mut value: Value) -> Value {
     value
 }
 
-fn handle_call_tool(params: Option<Value>, root: &Path) -> Result<Value> {
+/// Tools whose query engine updates the index itself, alongside the search.
+const ENGINE_UPDATED_TOOLS: [&str; 6] = [
+    "search_code",
+    "search_regex",
+    "list_locations",
+    "count_occurrences",
+    "find_references",
+    "search_ast",
+];
+
+/// Tools that never update first: the explicit run, and the explicit probe (an
+/// agent asking whether the index is current gets the answer, not a repair).
+const NO_UPDATE_TOOLS: [&str; 2] = ["index_project", "check_index_status"];
+
+/// The query engine a tool searches with: with this server's update, if any.
+fn engine_in(cache: CacheManager, update: Option<UpdateOptions>) -> QueryEngine {
+    match update {
+        Some(opts) => QueryEngine::new(cache).with_update(opts),
+        None => QueryEngine::new(cache),
+    }
+}
+
+fn handle_call_tool(
+    params: Option<Value>,
+    root: &Path,
+    update: Option<UpdateOptions>,
+) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow::anyhow!("Missing params for tools/call"))?;
 
     let name = params["name"]
@@ -1588,7 +1615,19 @@ fn handle_call_tool(params: Option<Value>, root: &Path) -> Result<Value> {
     let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
     let (arguments, warnings) = normalize_arguments(name, spec, params["arguments"].clone())?;
 
-    let data = with_corruption_recovery(name, root, || dispatch_tool(name, &arguments, root))?;
+    // Tools that read the index without the engine bring it up to date here.
+    let mut warnings = warnings;
+    if let Some(opts) = update
+        && !ENGINE_UPDATED_TOOLS.contains(&name)
+        && !NO_UPDATE_TOOLS.contains(&name)
+        && let Updated::Skipped(reason) = update_if_stale(&CacheManager::new(root), &opts)
+            .map_err(|e| anyhow::anyhow!("{}", mcp_facing_message(&e)))?
+    {
+        warnings.push(format!("Index not updated: {reason}"));
+    }
+
+    let data =
+        with_corruption_recovery(name, root, || dispatch_tool(name, &arguments, root, update))?;
 
     Ok(finish_tool_result(data, warnings))
 }
@@ -1596,7 +1635,12 @@ fn handle_call_tool(params: Option<Value>, root: &Path) -> Result<Value> {
 /// Run one tool. Every arm returns the tool's *data* (a JSON object, or a
 /// plain `Value::String` for prose tools such as `gather_context`);
 /// `handle_call_tool` wraps it into the MCP `content` envelope.
-fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
+fn dispatch_tool(
+    name: &str,
+    arguments: &Value,
+    root: &Path,
+    update: Option<UpdateOptions>,
+) -> Result<Value> {
     match name {
         "list_locations" => {
             // Location discovery tool (minimal token usage)
@@ -1664,7 +1708,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             // Extract locations (path + line) for each match
@@ -1757,7 +1801,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             // Count unique files
@@ -1881,7 +1925,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     ..Default::default()
                 };
                 let cache = CacheManager::new(root);
-                let engine = QueryEngine::new(cache);
+                let engine = engine_in(cache, update);
                 let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
                 let mut result =
                     json!({"count": exact_total_or_count(&response), "pattern": pattern});
@@ -1916,7 +1960,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let mut response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             if paths_only {
@@ -2067,7 +2111,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     ..Default::default()
                 };
                 let cache = CacheManager::new(root);
-                let engine = QueryEngine::new(cache);
+                let engine = engine_in(cache, update);
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
                 let mut result =
                     json!({"count": exact_total_or_count(&response), "pattern": pattern});
@@ -2102,7 +2146,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
             if paths_only {
@@ -2251,7 +2295,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
 
             // Use the new search_ast_all_files method (no trigram filtering)
             let mut results = engine.search_ast_all_files(&ast_pattern, filter)?;
@@ -2746,7 +2790,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 return Ok(result);
             }
 
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             // This is the explicit probe. An agent that asks whether the index is
             // current must never be answered from the freshness memo.
             let report = engine.fresh_index_report()?;
@@ -2862,7 +2906,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     ..Default::default()
                 };
                 let cache = CacheManager::new(root);
-                let engine = QueryEngine::new(cache);
+                let engine = engine_in(cache, update);
                 let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
 
                 // `include_strings` must mean the same thing in count mode as in list
@@ -2919,7 +2963,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let def_response = engine.search_with_metadata(&pattern, def_filter)?;
 
             // Extract first definition as a compact object (reuse MatchResult's Serialize impl)
@@ -3049,13 +3093,14 @@ fn process_request(
     request: JsonRpcRequest,
     enable_structural: bool,
     root: &Path,
+    update: Option<UpdateOptions>,
 ) -> JsonRpcResponse {
     log::debug!("MCP request: method={}", request.method);
 
     let result = match request.method.as_str() {
         "initialize" => handle_initialize(request.params),
         "tools/list" => handle_list_tools(request.params, enable_structural),
-        "tools/call" => handle_call_tool(request.params, root),
+        "tools/call" => handle_call_tool(request.params, root, update),
         _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
     };
 
@@ -3116,10 +3161,19 @@ fn handle_notification(method: &str, _params: Option<Value>) {
 }
 
 /// Run the MCP server on stdio.
-pub fn run_mcp_server() -> Result<()> {
+/// `rfx mcp`: every tool that reads the index updates a stale one first, unless
+/// `no_update`.
+pub fn run_mcp_server(no_update: bool) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    run_mcp_server_io(stdin.lock(), stdout.lock())
+    let mcp_config = load_mcp_config();
+    run_mcp_server_io_impl(
+        stdin.lock(),
+        stdout.lock(),
+        mcp_config.enable_structural_tools,
+        Path::new("."),
+        (!no_update).then(UpdateOptions::server),
+    )
 }
 
 /// Run the MCP server reading JSON-RPC messages from `reader` and writing
@@ -3131,6 +3185,7 @@ pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, writer: W) -> Result<(
         writer,
         mcp_config.enable_structural_tools,
         Path::new("."),
+        None,
     )
 }
 
@@ -3144,7 +3199,19 @@ pub fn run_mcp_server_io_in<R: BufRead, W: Write>(
     writer: W,
     enable_structural: bool,
 ) -> Result<()> {
-    run_mcp_server_io_impl(reader, writer, enable_structural, root)
+    run_mcp_server_io_impl(reader, writer, enable_structural, root, None)
+}
+
+/// Like [`run_mcp_server_io_in`], with the automatic update `rfx mcp` runs
+/// (`update`; use [`UpdateOptions::library`] in tests: no process is started).
+pub fn run_mcp_server_io_with<R: BufRead, W: Write>(
+    root: &Path,
+    reader: R,
+    writer: W,
+    enable_structural: bool,
+    update: Option<UpdateOptions>,
+) -> Result<()> {
+    run_mcp_server_io_impl(reader, writer, enable_structural, root, update)
 }
 
 /// Inner server loop. Accepts `enable_structural` so tests can drive the flag
@@ -3155,6 +3222,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     mut writer: W,
     enable_structural: bool,
     root: &Path,
+    update: Option<UpdateOptions>,
 ) -> Result<()> {
     log::info!("Starting Reflex MCP server on stdio");
 
@@ -3208,7 +3276,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
         }
 
         // Process request and write response
-        let response = process_request(request, enable_structural, root);
+        let response = process_request(request, enable_structural, root, update);
         let response_json = serde_json::to_string(&response)?;
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
@@ -3232,7 +3300,8 @@ mod tests {
     fn call_server_with_structural(input: &str, enable_structural: bool) -> String {
         let reader = Cursor::new(input.as_bytes());
         let mut output = Vec::new();
-        run_mcp_server_io_impl(reader, &mut output, enable_structural, Path::new(".")).unwrap();
+        run_mcp_server_io_impl(reader, &mut output, enable_structural, Path::new("."), None)
+            .unwrap();
         String::from_utf8(output).unwrap()
     }
 

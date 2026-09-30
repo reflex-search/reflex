@@ -217,6 +217,7 @@ fn another_versions_cache_is_left_alone_by_a_server() {
     let cli = UpdateOptions {
         spawn_symbol_pass: false,
         self_heal_version: true,
+        progress: false,
     };
     assert_eq!(
         update_if_stale(&CacheManager::new(root), &cli).unwrap(),
@@ -343,4 +344,77 @@ fn every_answer_equals_a_fresh_build() {
     println!("{}", report.join("\n"));
     println!("{equal}/{} answers equal a fresh build", steps.len());
     assert_eq!(equal, steps.len(), "\n{}", report.join("\n"));
+}
+
+fn engine(root: &Path) -> QueryEngine {
+    reflex::query::invalidate_caches(root);
+    QueryEngine::new(CacheManager::new(root)).with_update(opts())
+}
+
+fn quiet() -> QueryFilter {
+    QueryFilter {
+        suppress_output: true,
+        collect_timings: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_search_after_an_edit_answers_from_the_updated_index() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    write(root, "src/m4.rs", "pub fn token_new() {}\n");
+
+    let r = engine(root)
+        .search_with_metadata("token_new", quiet())
+        .unwrap();
+    assert_eq!(r.status, IndexStatus::Fresh);
+    assert!(r.can_trust_results);
+    assert_eq!(r.results.len(), 1);
+    assert!(r.timings.unwrap().update_us > 0);
+
+    // Without an update the same edit is reported, not repaired.
+    write(root, "src/m4.rs", "pub fn token_newer() {}\n");
+    reflex::query::invalidate_caches(root);
+    let plain = QueryEngine::new(CacheManager::new(root))
+        .search_with_metadata("token_newer", quiet())
+        .unwrap();
+    assert_eq!(plain.status, IndexStatus::Stale);
+    assert!(plain.results.is_empty());
+}
+
+#[test]
+fn a_search_with_no_index_builds_it() {
+    let temp = repo();
+    let root = temp.path();
+    let r = engine(root)
+        .search_with_metadata("token_m3", quiet())
+        .unwrap();
+    assert_eq!(r.status, IndexStatus::Fresh);
+    assert_eq!(r.results.len(), 1);
+
+    let other = repo();
+    let err = QueryEngine::new(CacheManager::new(other.path()))
+        .search_with_metadata("token_m3", quiet())
+        .unwrap_err();
+    assert!(err.to_string().contains("Index not found"), "{err}");
+}
+
+#[test]
+fn a_symbol_search_after_an_edit_finds_the_new_definition() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    write(root, "src/m4.rs", "pub fn token_symbol_new() {}\n");
+    let results = engine(root)
+        .search(
+            "token_symbol_new",
+            QueryFilter {
+                symbols_mode: true,
+                ..quiet()
+            },
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1, "{results:?}");
 }
