@@ -21,8 +21,8 @@ golden 0 diffs, `latency_budget` +1.6 %, MCP edit-then-search 138–161 ms (as b
 `AUTO_UPDATE_RESEARCH.md`). Step 9 (user, 2026-09-30): the MCP text no longer sends
 agents to `check_index_status` / `index_project`; every JSON-object answer carries
 `can_trust_results`. Efficacy re-run (Opus 5.5): 1.675×, unchanged — Opus never made the
-status calls; the ToolSearch turn remains (backlog §1 B). Left: the Sonnet 5 A/B, where
-2.0.3 made `check_index_status` calls in 33/72 trials (~$6.70; waiting for the user).
+status calls. Sonnet 5: 1.603× (was 1.646×); status calls 33 → 0, arm-B median turns
+4 → 3, tokens 148k → 101k. The ToolSearch turn remains on both (backlog §1 B).
 
 Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
 of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).

@@ -377,9 +377,10 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   round-trips (ToolSearch for deferred schemas, `check_index_status`), not payload size.
   Do not claim token savings over grep yet. **Goal:** parity or better on plain Grep-like
   searches — do not route them to Grep; see the backlog in `.context/TODO.md`.
-- **Re-run after auto-update (2026-09-30, Opus 5.5):** 1.675× — unchanged. Opus never called
-  `check_index_status` (0 in 200 trials, 2.0.3 too); its extra turn is the ToolSearch.
-  Sonnet 5 did (33/72 trials) and is not re-measured yet. The instructions' last paragraph
+- **Re-run after auto-update (2026-09-30):** Opus 5.5 1.675× (unchanged: it never called
+  `check_index_status`, 0 in 200 trials); Sonnet 5 1.603× (was 1.646×): its 33 status
+  calls fell to 0, arm-B median 4 → 3 turns and 148k → 101k tokens. What is left, on both
+  models, is the ToolSearch turn for the deferred schemas (backlog §1 B). The instructions' last paragraph
   decides adoption (the schemas are deferred): keep a Reflex-first fallback rule there —
   dropping it took adoption from 37/72 to 2/72 (`.context/AUTO_UPDATE_RESEARCH.md`).
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was

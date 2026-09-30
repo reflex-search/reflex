@@ -238,9 +238,21 @@ binary with the new MCP text (`cebddb9`). Raw trials: `benches/efficacy/results/
 
 - **Why no change on Opus:** Opus 5.5 never called the probe on these tasks, in 2.0.3 either
   (0 calls in 200 trials). The remaining extra turn is the ToolSearch that loads the
-  deferred schemas (backlog §1 B). Sonnet 5 on 2.0.3 called `check_index_status` in 33/72
-  trials — that is where step 9 should show; **not re-measured** (about $6.70; waiting for
-  the user).
+  deferred schemas (backlog §1 B).
+- **Sonnet 5 (2026-09-30, same design, 9 runner processes in parallel — wall time is not
+  comparable; raw trials in `results-autoupdate-sonnet5/`):**
+
+  | | 2.0.3 | auto-update |
+  | --- | --- | --- |
+  | total_tokens B/A (primary) | 1.646 [1.063, 2.249] | **1.603 [1.267, 1.673]** |
+  | `check_index_status` / `index_project` calls | 33 / 1 | **0 / 0** |
+  | arm-B trials that used Reflex | 69/74 | 72/72 |
+  | arm B median turns / tokens (find-all) | 4 / 148k | **3 / 101k (−32 %)** |
+  | arm A median turns / tokens (find-all) | 2 / 72k | 2 / 66k |
+  | total_cost_usd B/A | 2.072 | 1.754 |
+
+  The status-check turn is gone; the one turn left over Grep is the ToolSearch (3 vs 2
+  turns ≈ the 1.5–1.6× that remains). Precision and recall 1.000 in both arms.
 - **Adoption is sensitive to the instructions' last paragraph.** Claude Code defers the
   tool schemas, so the agent decides between Grep and a ToolSearch from the instructions
   alone. Replacing "Only fall back to Grep/Glob after index_project has been called and the
