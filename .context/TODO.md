@@ -16,10 +16,11 @@
 
 Every command that reads the index brings it up to date first; no watcher, no manual
 `rfx index`. Plan, code survey, steps and gates: `.context/AUTO_UPDATE_RESEARCH.md`.
-Builds on the incremental index branch below. Steps 1–7 done (library, check fixes,
-engine, CLI, MCP, serve, watch); fidelity test 15/15. Left: perf gates and golden
-(step 8), **stop and ask** before removing the MCP `check_index_status` /
-`index_project` text (step 9), docs.
+Builds on the incremental index branch below. Steps 1–8 and docs done; fidelity 15/15,
+golden 0 diffs, `latency_budget` +1.6 %, MCP edit-then-search 138–161 ms (as built:
+`AUTO_UPDATE_RESEARCH.md`). Left: step 9, **waiting for the user** — remove the MCP
+`check_index_status` / `index_project` text, fix the missing `can_trust_results`
+fields, re-run the efficacy A/B.
 
 Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
 of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
