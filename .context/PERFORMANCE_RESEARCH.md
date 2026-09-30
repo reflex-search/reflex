@@ -363,3 +363,17 @@ header check) and kept a full `Metadata` plus an absolute path per walked file
 (now 24 bytes and the relative path); the merge left the old base's pages
 resident (now `MADV_DONTNEED` after each batch). A one-shot query's +2 MB is fixed
 cost: a larger binary (~1 MB resident) and the planning-size file's pages.
+
+## Auto-update round (2026-09-30, branch `feature/auto-update`)
+
+Every command updates a stale index before it answers. Numbers, A/B against `c2e0de2`
+(the incremental index), Kubernetes scratch clone, 16 cores, load 16–24: see
+`.context/AUTO_UPDATE_RESEARCH.md` ("As built"). Scripts:
+`benches/incremental/auto_update.sh <rfx> <label>` and `mcp_edit_latency.py` (prints the
+engine's `update_us` / `status_compute_us` per call).
+
+- An edit-then-search costs the check (~60–90 ms, `git status`) + `update_paths` (50–70 ms,
+  mostly the recent-tier publish and its fsyncs) + the search. A second check after the
+  update cost ~100 ms more until `df8cb1e` settled the verdict from the updated paths.
+- `latency_budget`: +1.6 % on the sum of medians, green 4/4 (fresh index: no update runs;
+  the engine's handle moved from `OnceLock` to a `Mutex`).

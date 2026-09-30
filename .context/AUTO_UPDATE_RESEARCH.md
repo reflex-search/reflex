@@ -1,7 +1,8 @@
 # Auto-update: every command answers from a fresh index
 
-**Status:** plan, 2026-09-29 (on top of `feature/incremental-index`, Reflex 2.0.3 + the
-incremental index). Not started. Decisions: `.context/TODO.md` ("Auto-update").
+**Status:** built on `feature/auto-update` (2026-09-30), steps 1–8 and docs; step 9
+(MCP text) waits for the user. See "As built" at the end. Decisions: `.context/TODO.md`
+("Auto-update").
 
 ## Goal
 
@@ -169,3 +170,55 @@ The approved plan (2026-09-29). Steps and gates are at the end.
 - Peak RSS of a query that updates ≤ an `update_paths` process (~70 MiB on Kubernetes).
 - Fidelity harness: 100 % target, 95 % floor.
 - Stop and ask on any other output change, a format change or a regression.
+
+## As built (2026-09-30)
+
+Commits on `feature/auto-update` (from `c2e0de2`): `9499b99` plan, `0a2c198` one config
+and one symbol-pass launcher, `1bbbc69` check fixes (rule files, tracked-but-ignored,
+compaction), `cca3e0d` `update_if_stale` + fidelity test + the switch-back fix, `c7b42d6`
+wiring (engine, CLI, MCP, serve, watch), `324590f` docs, `df8cb1e` settle after a path
+update, `4b73e65` golden harness fix.
+
+What changed from the plan:
+- **Settle instead of a second check.** The first build ran the full check again after
+  every update (a second `git status`: ~100 ms on Kubernetes). A path update now
+  compares only the updated paths with the index and, when they match, memoises "fresh"
+  dated at the original check (`query::settle_update`) — the terms the 1 s memo already
+  has. MCP edit-then-search 200–340 ms → 138–161 ms.
+- **The switch-back bug** (TODO follow-up from the incremental work) had to be fixed: the
+  fidelity sequence failed on "switch back" (the check compared with the current
+  branch's row, not the last run's commit).
+- **No clippy rule**: `disallowed-methods` would flag every test's `QueryEngine::new`.
+  A test (`query_engines_are_built_by_the_known_front_ends_only`) fails instead on a
+  `QueryEngine::new` in `src/` outside the known front ends.
+- `rfx serve` `/index` and `rfx watch`: the watcher keeps fail-fast locking (it runs
+  again on the next event); automatic updates, `index_project` and `POST /index` wait.
+- UpdatePlan::Full carries the listed paths, so the loop guard does not block every
+  later full run after one failure.
+
+Measured (Kubernetes scratch clone, 16 cores, load 16–24; A/B against `c2e0de2`):
+
+| scenario | c2e0de2 | auto-update |
+| --- | --- | --- |
+| `rfx query` (new process), nothing changed | 0.11–0.55 s | 0.08–0.11 s |
+| `rfx query` after a 1-file edit | 0.09–0.14 s, **stale, 0 hits** | 0.16–0.18 s, fresh, found |
+| MCP `search_code` after an edit (warm session) | 71–121 ms, **stale, 0 hits** | 138–161 ms, fresh, found (update 53–68 ms) |
+| `rfx deps <file>` / `analyze --hotspots`, nothing changed | < 10 ms | 80–160 ms (the check) |
+| peak RSS: query / MCP session | 68–85 / 79–93 MiB | 41–70 / 49–75 MiB |
+
+`latency_budget` (2 runs each, alternating): green 4/4 with `REFLEX_LATENCY_BUDGET=1`; sum
+of medians 85.9 → 87.3 ms (+1.6 %); MCP shapes −4 … +7 %.
+
+Fidelity (`tests/auto_update.rs`): 15/15 steps answer as a fresh build.
+
+Golden (`benches/incremental/golden.sh`): fresh capture = 2.0.3 reference; after scripted
+updates 0/76 outputs differ on all four corpora (1 failing output per side, `q_two_char`,
+as in the reference). The harness never indexed the edited trees before `4b73e65`, so the
+2026-09-29 "identical after updates" claim was vacuous; the rerun covers c2e0de2 too.
+
+Known limits:
+- The 1 s verdict memo: in `rfx mcp` / `rfx serve`, an edit within 1 s of the previous
+  check can be missed by the next call.
+- Commands that did not check before (`deps`, `analyze`, `stats`, …) pay the check
+  (~60–100 ms on Kubernetes; a stat of every file without git).
+- Nested ignore files outside git are not compared (walk mode checks the root's only).
