@@ -47,6 +47,9 @@
     must add `mcp__reflex__analyze`.
   - The matching, coverage and freshness rules moved from every tool description into
     the server instructions (said once per session).
+- **`list_locations` takes `preview: true`**: each location also carries its matching line,
+  trimmed and cut to 120 characters. Agents that needed to see the lines used to run the
+  search again with grep.
 
 ### Fixed
 

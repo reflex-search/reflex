@@ -12,6 +12,7 @@
 | Goal | Tool | Why |
 |------|------|-----|
 | Known exact name, just need locations | `list_locations` | Cheapest — `{locations: [{path, line}], total_locations}`, no content |
+| Locations plus the matching line | `list_locations` with `preview: true` | Adds `preview` (the line, trimmed, 120 chars) to each location |
 | Need locations **and** code previews | `search_code` | Full results with line numbers + context |
 | Regex: alternation, wildcards, anchors, `->`, `::` | `search_regex` | Real regular expressions |
 | How many times does X appear? | `search_code` with `mode: "count"` | `{count, files, pattern}` — no content loaded |

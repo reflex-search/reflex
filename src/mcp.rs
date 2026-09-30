@@ -36,6 +36,9 @@ const DEFAULT_MCP_PREVIEW_LENGTH: usize = 180;
 /// use `mode="count"`.
 const DEFAULT_MCP_RESULT_LIMIT: usize = 200;
 
+/// Characters of the matching line `list_locations` returns with `preview: true`.
+const LOCATION_PREVIEW_CHARS: usize = 120;
+
 /// Returns true if every occurrence of `pattern` in `preview` falls inside a
 /// string literal or comment for the given `lang`. Conservative: returns false
 /// (keep the match) when the language has no filter or the pattern is not found.
@@ -226,13 +229,13 @@ find_references {"pattern": "start_webauthn_registration"}
 
 Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: natural-language queries match nothing; search for identifiers or code fragments.
 
-Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint (e.g. the substring count) and excluded_reason.
+Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint saying why.
 
 Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated. glob and exclude follow gitignore rules: "src/**/*.rs" is anchored at the root, "*.rs" matches at any depth.
 
 The index updates itself before every call and is built on first use: never call index_project or check_index_status after edits. can_trust_results: false means the update could not run; warnings say why.
 
-To list where something occurs, use list_locations: path and line only, the cheapest answer. Use search_code when you need the matching lines, find_references for a definition plus every call site without string/comment noise, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
+To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. Use search_code for context or symbols, find_references for a definition plus every call site without string/comment noise, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
 /// Handle initialize request
 fn handle_initialize(_params: Option<Value>) -> Result<Value> {
@@ -316,9 +319,10 @@ fn tool_list(enable_structural: bool) -> Vec<Value> {
         }),
         json!({
             "name": "list_locations",
-            "description": "Where does X occur? Every match as {path, line}: the cheapest search, no previews, no limit. Same matching as search_code.",
+            "description": "Where does X occur? Every match as {path, line}: the cheapest search, no limit. preview:true adds each matching line (trimmed, 120 chars). Same matching as search_code.",
             "inputSchema": search_params(json!({
                 "contains": contains,
+                "preview": {"type": "boolean", "description": "Add each matching line (120 chars)"},
                 "dependencies": {"type": "boolean", "description": "Attach each file's imports"}
             }))
         }),
@@ -610,6 +614,8 @@ const BOOL_ARG_KEYS: &[&str] = &[
     "force",
     "dependencies",
     "include_strings",
+    "preview",
+    "reverse",
     "structure",
     "file_types",
     "project_type",
@@ -1381,6 +1387,7 @@ fn dispatch_tool(
                 .unwrap_or_default();
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
+            let with_preview = arguments["preview"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
 
@@ -1424,10 +1431,23 @@ fn dispatch_tool(
                 .iter()
                 .flat_map(|file_group| {
                     file_group.matches.iter().map(move |m| {
-                        json!({
+                        let mut loc = json!({
                             "path": file_group.path.clone(),
                             "line": m.span.start_line
-                        })
+                        });
+                        // The matching line, trimmed and cut short: enough to tell a
+                        // definition from a call without a second search (agents that
+                        // could not see the line re-ran the search with grep).
+                        if with_preview {
+                            let line = m.preview.lines().next().unwrap_or("").trim();
+                            let mut short: String =
+                                line.chars().take(LOCATION_PREVIEW_CHARS).collect();
+                            if line.chars().count() > LOCATION_PREVIEW_CHARS {
+                                short.push('…');
+                            }
+                            loc["preview"] = json!(short);
+                        }
+                        loc
                     })
                 })
                 .collect();

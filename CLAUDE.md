@@ -244,7 +244,7 @@ the shared matching / coverage / freshness rules live in `MCP_INSTRUCTIONS`, sai
 |------|---------|
 | `search_code` | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
 | `search_regex` | Regex search (use for `->`, `::`, alternation, etc.) |
-| `list_locations` | Path+line only — cheapest, no content loaded |
+| `list_locations` | Path+line only — cheapest; `preview: true` adds the matching line (120 chars) |
 | `find_references` | Definition + all usages in one atomic call (default limit: 200) |
 | `search_ast` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
 | `get_dependencies` | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |

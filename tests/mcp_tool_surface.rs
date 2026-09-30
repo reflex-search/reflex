@@ -213,3 +213,34 @@ fn count_mode_reports_files() {
     assert_eq!(v["count"], 3, "{v}");
     assert_eq!(v["files"], 3, "{v}");
 }
+
+#[test]
+fn list_locations_adds_the_line_on_request() {
+    let temp = indexed();
+    let plain = call(
+        temp.path(),
+        "list_locations",
+        json!({"pattern": "surface_token"}),
+    );
+    assert!(plain["locations"][0].get("preview").is_none(), "{plain}");
+
+    let v = call(
+        temp.path(),
+        "list_locations",
+        json!({"pattern": "surface_token", "preview": true}),
+    );
+    let locs = v["locations"].as_array().unwrap();
+    assert_eq!(locs.len(), 3, "{v}");
+    let def = locs
+        .iter()
+        .find(|l| l["path"] == "src/lib.rs")
+        .expect("the definition");
+    assert_eq!(def["preview"], "pub fn surface_token() {}", "{v}");
+    // A string "true" is coerced like every other flag.
+    let coerced = call(
+        temp.path(),
+        "list_locations",
+        json!({"pattern": "surface_token", "preview": "true"}),
+    );
+    assert!(coerced["locations"][0]["preview"].is_string(), "{coerced}");
+}
