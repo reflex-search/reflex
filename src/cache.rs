@@ -1258,14 +1258,24 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         };
 
         let branch_indexed = Self::branch_exists_on(&conn, branch);
-        // The `files` table (and content.bin) is global, so an index written on
-        // another branch is still the baseline here; its row says which commit and
-        // when. Freshness is judged by file content, so a branch switch that leaves
-        // every file's bytes unchanged is not staleness.
-        let branch_info = if branch_indexed {
-            Self::get_branch_info_on(&conn, branch).ok()
-        } else {
-            Self::latest_branch_info_on(&conn).ok()
+        // The `files` table (and content.bin) is global: the baseline is the tree
+        // the LAST run indexed, whichever branch that was. Its row says which
+        // commit and when. The current branch's own row is not the baseline:
+        // after `checkout main` from an indexed side branch, main's row still
+        // names main's commit, and comparing against it reported `fresh` while the
+        // index held the side branch's files (2.0.3). Freshness is judged by file
+        // content, so a branch switch that leaves every byte unchanged is fresh.
+        let synced =
+            crate::meta_update::get_statistic(&conn, crate::meta_update::SYNCED_BRANCH_KEY)
+                .ok()
+                .flatten();
+        let branch_info = match synced
+            .as_deref()
+            .and_then(|b| Self::get_branch_info_on(&conn, b).ok())
+        {
+            Some(info) => Some(info),
+            None if branch_indexed => Self::get_branch_info_on(&conn, branch).ok(),
+            None => Self::latest_branch_info_on(&conn).ok(),
         };
 
         Ok(StatusReads {

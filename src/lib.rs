@@ -27,6 +27,7 @@
 
 pub mod ast_query;
 pub mod atomic_write;
+pub mod auto_update;
 pub mod background_indexer;
 pub mod cache;
 pub mod cli;

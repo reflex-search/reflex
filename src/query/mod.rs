@@ -34,6 +34,29 @@ pub fn invalidate_caches(workspace_root: &std::path::Path) {
     status_cache::invalidate(workspace_root);
 }
 
+/// What an automatic update must do, from the freshness check
+/// ([`crate::auto_update`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdatePlan {
+    /// Every indexed file matches the tree.
+    Fresh,
+    /// Only these paths (relative to the root) changed: added, modified or deleted.
+    Paths(Vec<std::path::PathBuf>),
+    /// A full run: many changes, a rule-file edit, or a cache format change. The
+    /// paths the check listed (capped at 100 per kind; none for a format change).
+    Full(Vec<std::path::PathBuf>),
+    /// Written by another released version; the reason names it.
+    Foreign(String),
+    /// Nothing could be compared; the reason says why.
+    Unknown(String),
+}
+
+/// The update plan for the workspace `cache` belongs to (memoised with the
+/// freshness verdict for the same window).
+pub fn update_plan(cache: &CacheManager) -> Result<UpdatePlan> {
+    status_cache::update_plan(cache)
+}
+
 /// What `search_internal` hands back: the page plus the bookkeeping the public
 /// wrappers turn into pagination, hints and timings.
 struct Internal {
@@ -3943,13 +3966,13 @@ mod status_cache {
         pub changes: WorktreeChanges,
         /// meta.db could not be read, so nothing was compared. Readers are told
         /// `fresh` (as before), but an automatic update must not act on it.
-        #[allow(dead_code)] // read by the automatic update's plan
         pub unreadable: bool,
+        /// The cache was written by another released version (`decided` says so).
+        pub foreign: bool,
         /// A rule file (`.reflex/config.toml`, an ignore file) differs from the one
         /// the last index run saw: WHICH files are indexed may have changed, so
         /// only a full run brings the index up to date. The paths are also listed
         /// in `changes` as modified.
-        #[allow(dead_code)] // read by the automatic update's plan
         pub rules_changed: bool,
     }
 
@@ -3960,6 +3983,7 @@ mod status_cache {
                 details: None,
                 changes: WorktreeChanges::default(),
                 unreadable: true,
+                foreign: false,
                 rules_changed: false,
             }
         }
@@ -4073,6 +4097,10 @@ mod status_cache {
         // reads still work; they are simply not to be trusted, and the message names
         // who owns the cache so the user can pick a side.
         if !reads.schema_ok {
+            let foreign = reads
+                .owner
+                .as_ref()
+                .is_some_and(|(v, _)| v != env!("CARGO_PKG_VERSION"));
             let reason = match reads.owner {
                 Some((v, sha)) if v != env!("CARGO_PKG_VERSION") => {
                     let sha = sha
@@ -4100,6 +4128,7 @@ mod status_cache {
                 details: None,
                 changes: WorktreeChanges::default(),
                 unreadable: false,
+                foreign,
                 rules_changed: false,
             });
         }
@@ -4208,6 +4237,7 @@ mod status_cache {
             details: Some(details),
             changes,
             unreadable: false,
+            foreign: false,
             rules_changed: !rules_changed.is_empty(),
         })
     }
@@ -4396,6 +4426,49 @@ mod status_cache {
             }
         }
         out
+    }
+
+    /// What an automatic update must do to make the index match the tree.
+    pub fn update_plan(cache: &CacheManager) -> Result<super::UpdatePlan> {
+        use super::UpdatePlan;
+        let snap = snapshot(cache)?;
+        if snap.unreadable {
+            return Ok(UpdatePlan::Unknown(
+                "the index metadata (meta.db) could not be read".to_string(),
+            ));
+        }
+        if let Some((status, _, warning)) = &snap.decided {
+            if *status == IndexStatus::Fresh {
+                return Ok(UpdatePlan::Fresh);
+            }
+            let reason = warning
+                .as_ref()
+                .map(|w| w.reason.clone())
+                .unwrap_or_default();
+            return Ok(if snap.foreign {
+                UpdatePlan::Foreign(reason)
+            } else {
+                UpdatePlan::Full(Vec::new())
+            });
+        }
+        let c = &snap.changes;
+        if c.is_empty() {
+            return Ok(UpdatePlan::Fresh);
+        }
+        let mut paths: Vec<PathBuf> = c
+            .modified
+            .iter()
+            .chain(&c.added)
+            .chain(&c.deleted)
+            .map(PathBuf::from)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        Ok(if snap.rules_changed || c.truncated {
+            UpdatePlan::Full(paths)
+        } else {
+            UpdatePlan::Paths(paths)
+        })
     }
 
     /// Drop any memo for `root`, so the next read is fresh.
