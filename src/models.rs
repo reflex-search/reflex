@@ -518,6 +518,11 @@ impl SearchResult {
 }
 
 /// Configuration for indexing behavior
+/// [`IndexConfig::lock_wait_secs`]: wait for `index.lock` until it is free. The
+/// lock is advisory and released when its holder exits, so a crash cannot leave
+/// a waiter blocked.
+pub const LOCK_WAIT_FOREVER: u64 = u64::MAX;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Languages to include (empty = all supported)
@@ -542,8 +547,10 @@ pub struct IndexConfig {
     /// High-frequency trigrams are truncated at this threshold to bound query latency.
     pub max_posting_list_entries: usize,
     /// How long `Indexer::index` waits for `.reflex/index.lock` when another
-    /// indexer holds it (seconds). 0 = fail immediately with `IndexLocked`.
-    /// The `rfx index` CLI waits; MCP, watcher and HTTP callers fail fast.
+    /// indexer holds it (seconds). 0 = fail immediately with `IndexLocked`;
+    /// [`LOCK_WAIT_FOREVER`] = wait until it is free. The `rfx index` CLI waits
+    /// 30 s; automatic updates wait forever (a query never answers from a stale
+    /// index because another run was busy).
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub lock_wait_secs: u64,
     /// Index documentation, config and template files alongside code.

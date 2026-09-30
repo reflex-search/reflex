@@ -24,6 +24,9 @@ pub const TOKENS_BIN: &str = "tokens.bin";
 #[deprecated(note = "hashes.json is no longer written; hashes live in meta.db")]
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
+/// `statistics` key: the `--languages` of the last `rfx index` run that passed one
+/// (JSON list). Older binaries ignore it.
+pub const LANGUAGES_OVERRIDE_KEY: &str = "languages_override";
 
 /// Open a SQLite database with Reflex's standard pragmas.
 ///
@@ -656,6 +659,59 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             .parent()
             .expect(".reflex directory should have a parent")
             .to_path_buf()
+    }
+
+    /// The config every index run in this workspace uses: `.reflex/config.toml`,
+    /// with `languages` replaced by `languages` when it is not empty, else by the
+    /// `--languages` of the last `rfx index` run that passed one.
+    ///
+    /// `rfx index`, automatic updates, `index_project`, `POST /index`, `rfx watch`
+    /// and interactive mode all start here, so they index the same file set the
+    /// freshness check expects.
+    pub fn effective_index_config(
+        &self,
+        languages: &[crate::models::Language],
+    ) -> Result<crate::models::IndexConfig> {
+        let mut config = self.load_index_config()?;
+        if !languages.is_empty() {
+            config.languages = languages.to_vec();
+        } else if let Some(saved) = self.languages_override() {
+            config.languages = saved;
+        }
+        Ok(config)
+    }
+
+    /// The `--languages` of the last `rfx index` run that passed one, if any.
+    fn languages_override(&self) -> Option<Vec<crate::models::Language>> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return None;
+        }
+        let conn = open_meta_db(&db_path).ok()?;
+        let raw = crate::meta_update::get_statistic(&conn, LANGUAGES_OVERRIDE_KEY)
+            .ok()
+            .flatten()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Record the `--languages` of an `rfx index` run (empty: none was passed),
+    /// so later automatic updates index the same languages.
+    pub fn set_languages_override(&self, languages: &[crate::models::Language]) -> Result<()> {
+        let conn = open_meta_db(self.cache_path.join(META_DB))?;
+        if languages.is_empty() {
+            conn.execute(
+                "DELETE FROM statistics WHERE key = ?",
+                [LANGUAGES_OVERRIDE_KEY],
+            )?;
+        } else {
+            crate::meta_update::set_statistic(
+                &conn,
+                LANGUAGES_OVERRIDE_KEY,
+                &serde_json::to_string(languages)?,
+                chrono::Utc::now().timestamp(),
+            )?;
+        }
+        Ok(())
     }
 
     /// Load IndexConfig from `.reflex/config.toml` if it exists.
@@ -3052,5 +3108,43 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("files") && err.contains("missing"));
+    }
+
+    #[test]
+    fn effective_config_uses_the_saved_languages_until_a_run_clears_them() {
+        use crate::models::Language;
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        cache.init().unwrap();
+        assert!(
+            cache
+                .effective_index_config(&[])
+                .unwrap()
+                .languages
+                .is_empty()
+        );
+
+        cache.set_languages_override(&[Language::Rust]).unwrap();
+        assert_eq!(
+            cache.effective_index_config(&[]).unwrap().languages,
+            vec![Language::Rust]
+        );
+        // An explicit list wins over the saved one.
+        assert_eq!(
+            cache
+                .effective_index_config(&[Language::Go])
+                .unwrap()
+                .languages,
+            vec![Language::Go]
+        );
+
+        cache.set_languages_override(&[]).unwrap();
+        assert!(
+            cache
+                .effective_index_config(&[])
+                .unwrap()
+                .languages
+                .is_empty()
+        );
     }
 }

@@ -13,7 +13,7 @@ use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 use crate::indexer::Indexer;
 use crate::line_filter;
-use crate::models::{IndexConfig, IndexStatus, Language, SymbolKind};
+use crate::models::{IndexStatus, Language, SymbolKind};
 use crate::query::{QueryEngine, QueryFilter};
 use crate::semantic::config::load_mcp_config;
 
@@ -1291,14 +1291,13 @@ fn rebuild_index(
     languages: Vec<Language>,
 ) -> Result<crate::models::IndexStats> {
     let cache = CacheManager::new(root);
+    // Read before a forced clear: the saved `--languages` lives in meta.db.
+    let mut config = cache.effective_index_config(&languages)?;
+    config.lock_wait_secs = crate::models::LOCK_WAIT_FOREVER;
     if force {
         log::info!("Force rebuild requested, clearing existing cache");
         cache.clear()?;
     }
-    let config = IndexConfig {
-        languages,
-        ..Default::default()
-    };
     let indexer = Indexer::new(cache, config);
     indexer.index(root, false)
 }

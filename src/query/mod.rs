@@ -21,8 +21,8 @@ use crate::models::{
 };
 use crate::output;
 use crate::parsers::ParserFactory;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 
 use open_index::OpenIndex;
 
@@ -583,9 +583,10 @@ fn verify_files_streaming(
 /// Manages query execution against the index
 pub struct QueryEngine {
     cache: CacheManager,
-    /// The open index for this engine's lifetime, resolved on first use so every
-    /// phase of one query reads the same files.
-    open: OnceLock<Arc<OpenIndex>>,
+    /// The open index, resolved on first use so every phase of one query reads the
+    /// same files. Dropped by [`QueryEngine::reset_open`] after this engine updates
+    /// the index, so the next phase reads the published snapshot.
+    open: std::sync::Mutex<Option<Arc<OpenIndex>>>,
 }
 
 impl QueryEngine {
@@ -593,7 +594,7 @@ impl QueryEngine {
     pub fn new(cache: CacheManager) -> Self {
         Self {
             cache,
-            open: OnceLock::new(),
+            open: std::sync::Mutex::new(None),
         }
     }
 
@@ -602,12 +603,22 @@ impl QueryEngine {
     /// Typed `CacheCorrupted` on a short or garbled store, so the MCP layer can
     /// rebuild once and retry.
     fn open_index(&self) -> Result<Arc<OpenIndex>> {
-        if let Some(open) = self.open.get() {
+        let mut slot = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(open) = slot.as_ref() {
             return Ok(Arc::clone(open));
         }
         let open = open_index::get_or_open(&self.cache)?;
-        let _ = self.open.set(Arc::clone(&open));
+        *slot = Some(Arc::clone(&open));
         Ok(open)
+    }
+
+    /// Forget this engine's open index, so the next read opens the snapshot the
+    /// manifest names now. Called before this engine updates the index: the old
+    /// maps must not outlive the update (on Windows a mapped file cannot be
+    /// replaced), and the retry must not read them.
+    #[allow(dead_code)] // wired in by the automatic update
+    fn reset_open(&self) {
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Load dependencies for search results if requested (legacy - per result)
@@ -3930,14 +3941,19 @@ mod status_cache {
         pub details: Option<IndexWarningDetails>,
         /// Files whose content differs from what the index holds.
         pub changes: WorktreeChanges,
+        /// meta.db could not be read, so nothing was compared. Readers are told
+        /// `fresh` (as before), but an automatic update must not act on it.
+        #[allow(dead_code)] // read by the automatic update's plan
+        pub unreadable: bool,
     }
 
     impl Snapshot {
-        fn fresh() -> Self {
+        fn unreadable() -> Self {
             Self {
                 decided: Some((IndexStatus::Fresh, true, None)),
                 details: None,
                 changes: WorktreeChanges::default(),
+                unreadable: true,
             }
         }
     }
@@ -3957,6 +3973,10 @@ mod status_cache {
             Duration::from_millis(ms)
         })
     }
+
+    /// Bumped by every [`invalidate`]. A snapshot computed while it moved may
+    /// describe the tree before an index write, so it is returned but not memoised.
+    static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn store() -> &'static Mutex<HashMap<PathBuf, Entry>> {
         static STORE: OnceLock<Mutex<HashMap<PathBuf, Entry>>> = OnceLock::new();
@@ -3987,10 +4007,12 @@ mod status_cache {
             return Ok(Arc::clone(&entry.snapshot));
         }
 
+        let epoch = EPOCH.load(std::sync::atomic::Ordering::Acquire);
         let snapshot = Arc::new(compute(cache, &root)?);
 
         if !ttl.is_zero()
             && let Ok(mut map) = store().lock()
+            && EPOCH.load(std::sync::atomic::Ordering::Acquire) == epoch
         {
             map.insert(
                 key,
@@ -4035,7 +4057,7 @@ mod status_cache {
             Ok(r) => r,
             Err(e) => {
                 log::debug!("Could not read index status from meta.db: {}", e);
-                return Ok(Snapshot::fresh());
+                return Ok(Snapshot::unreadable());
             }
         };
 
@@ -4070,6 +4092,7 @@ mod status_cache {
                 decided: Some((IndexStatus::Stale, false, Some(warning))),
                 details: None,
                 changes: WorktreeChanges::default(),
+                unreadable: false,
             });
         }
 
@@ -4139,6 +4162,7 @@ mod status_cache {
             decided: None,
             details: Some(details),
             changes,
+            unreadable: false,
         })
     }
 
@@ -4335,6 +4359,7 @@ mod status_cache {
     pub fn invalidate(root: &Path) {
         let key = key(root);
         if let Ok(mut map) = store().lock() {
+            EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             map.remove(&key);
         }
     }

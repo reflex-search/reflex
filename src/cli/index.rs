@@ -109,23 +109,24 @@ pub(super) fn handle_index_build(
         }
     }
 
-    // Load base config from .reflex/config.toml (or defaults if file absent)
+    // CLI --languages overrides the config-file value when explicitly provided (REF-98: error on unknown)
+    let lang_filters: Vec<Language> = languages
+        .iter()
+        .map(|s| {
+            Language::from_name(s).ok_or_else(|| anyhow::anyhow!(
+                "Unknown language: '{}'\n\nSupported languages:\n  {}\n\nExample: rfx index --languages rust,python",
+                s, Language::supported_names_help()
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    // .reflex/config.toml (or defaults if absent), with the --languages override.
+    // An explicit `rfx index` without --languages indexes every language, as always.
     let mut config = cache
         .load_index_config()
         .context("Failed to load .reflex/config.toml")?;
-
-    // CLI --languages overrides the config-file value when explicitly provided (REF-98: error on unknown)
-    if !languages.is_empty() {
-        let lang_filters: Vec<Language> = languages
-            .iter()
-            .map(|s| {
-                Language::from_name(s).ok_or_else(|| anyhow::anyhow!(
-                    "Unknown language: '{}'\n\nSupported languages:\n  {}\n\nExample: rfx index --languages rust,python",
-                    s, Language::supported_names_help()
-                ))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        config.languages = lang_filters;
+    if !lang_filters.is_empty() {
+        config.languages = lang_filters.clone();
     }
 
     // A human ran this; wait a little for a concurrent indexer instead of
@@ -156,11 +157,16 @@ pub(super) fn handle_index_build(
             log::warn!("Cache version mismatch; rebuilding: {e}");
             let cache = CacheManager::new(path);
             cache.clear()?;
-            let config = cache.load_index_config().unwrap_or_default();
+            let mut config = cache.load_index_config().unwrap_or_default();
+            if !lang_filters.is_empty() {
+                config.languages = lang_filters.clone();
+            }
             Indexer::new(cache, config).index(path, show_progress)?
         }
         other => other?,
     };
+    // Automatic updates index the languages this run indexed.
+    CacheManager::new(path).set_languages_override(&lang_filters)?;
 
     // In quiet mode, suppress all output
     if !quiet {
@@ -275,40 +281,8 @@ pub(super) fn handle_index_build(
             println!("  Check status with: rfx index status");
         }
 
-        // Spawn detached background process for symbol indexing
         // Pass the workspace root, not the .reflex directory
-        let current_exe =
-            std::env::current_exe().context("Failed to get current executable path")?;
-
-        #[cfg(unix)]
-        {
-            std::process::Command::new(&current_exe)
-                .arg("index-symbols-internal")
-                .arg(path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn background indexing process")?;
-        }
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-            std::process::Command::new(&current_exe)
-                .arg("index-symbols-internal")
-                .arg(path)
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .context("Failed to spawn background indexing process")?;
-        }
-
-        log::debug!("Spawned background symbol indexing process");
+        crate::background_indexer::BackgroundIndexer::spawn_detached(path)?;
     } else if !quiet {
         println!("\n⚠️  Background symbol indexing already in progress");
         println!("  Check status with: rfx index status");

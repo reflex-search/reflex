@@ -376,6 +376,35 @@ impl BackgroundIndexer {
         Self::lock_holder(cache_dir).is_some()
     }
 
+    /// Start the symbol pass for `workspace_root` as a detached
+    /// `<this executable> index-symbols-internal <root>` process with null stdio.
+    ///
+    /// Only the `rfx` binary may call this: in a test harness or an embedding
+    /// program, the current executable is not `rfx`. The caller checks
+    /// [`BackgroundIndexer::is_running`] first.
+    pub fn spawn_detached(workspace_root: &Path) -> Result<()> {
+        let current_exe =
+            std::env::current_exe().context("Failed to get current executable path")?;
+        let mut command = std::process::Command::new(&current_exe);
+        command
+            .arg("index-symbols-internal")
+            .arg(workspace_root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        command
+            .spawn()
+            .context("Failed to spawn background indexing process")?;
+        log::debug!("Spawned background symbol indexing process");
+        Ok(())
+    }
+
     /// Ask a running symbol pass to stop at its next batch.
     ///
     /// Cooperative, not a kill: the pass finishes the batch it is on, writes its

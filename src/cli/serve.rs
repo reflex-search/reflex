@@ -1,6 +1,6 @@
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
-use crate::models::{IndexConfig, Language};
+use crate::models::Language;
 use crate::query::{QueryEngine, QueryFilter};
 use anyhow::Result;
 use serde_json::json;
@@ -310,10 +310,17 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             })
             .collect();
 
-        let config = IndexConfig {
-            languages: lang_filters,
-            ..Default::default()
+        let mut config = match cache.effective_index_config(&lang_filters) {
+            Ok(config) => config,
+            Err(e) => {
+                let (status, kind, msg) = classify_error(&e);
+                return Err((
+                    status,
+                    Json(json!({ "error": { "kind": kind, "message": msg } })),
+                ));
+            }
         };
+        config.lock_wait_secs = crate::models::LOCK_WAIT_FOREVER;
 
         let indexer = Indexer::new(cache, config);
         let path = std::path::PathBuf::from(&state.cache_path);
