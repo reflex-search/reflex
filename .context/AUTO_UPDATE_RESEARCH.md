@@ -1,0 +1,365 @@
+# Auto-update: every command answers from a fresh index
+
+**Status:** built on `feature/auto-update` (2026-09-30), steps 1–8 and docs; step 9
+(MCP text) waits for the user. See "As built" at the end. Decisions: `.context/TODO.md`
+("Auto-update").
+
+## Goal
+
+A user or agent never runs `rfx index` or calls `index_project` to see an edit. Every
+command that reads the index first brings it up to date, then answers. This removes the
+`check_index_status` and `index_project` round trips that made Reflex MCP cost 1.26–1.66×
+Grep's tokens (`.context/EFFICACY-2.0.3.md`).
+
+## Decisions (user, 2026-09-29)
+
+1. **No watcher.** The update runs inside the command, after the freshness check says
+   `stale`. A fresh index pays nothing extra.
+2. **Default on, everywhere**: `rfx query`, `deps`, `analyze`, `ask`, `context`, `stats`,
+   `list-files`, `snapshot`, `pulse`, interactive mode, `rfx serve`, `rfx mcp`. One opt-out
+   flag, `--no-update`, accepted by every command.
+3. **Always wait.** A command never returns stale results because the update is slow.
+   Claude Code waits ~28 h for an MCP tool call by default (`MCP_TOOL_TIMEOUT`, per-server
+   `timeout`; progress notifications do not reset it — code.claude.com/docs/en/mcp.md).
+4. **No index → build it**, in any directory. Running in `~` or a subdirectory is the
+   same question as running `rfx index` there; no special guard.
+5. **MCP text** ("call `check_index_status` / `index_project`") is removed only after the
+   agent-style test (below) shows 95–100 % of answers equal a fresh build.
+6. **Another version's index.** CLI commands rebuild it, as `rfx index` does. `rfx mcp`
+   and `rfx serve` do not write it; they answer with a warning naming the owner. A server
+   that cannot read the index at all rebuilds once (today's `with_corruption_recovery`).
+   No loop: a newer version reads an older version's index, so only the older side fails
+   to read; after its one rebuild the newer side reads and does not write.
+
+## Facts from the code survey (2026-09-29)
+
+Freshness check (`src/query/mod.rs`):
+- `status_cache::snapshot(cache)` (~3977) is the check: git candidates (or a walk), each
+  confirmed by fingerprint. Memoised 1 s per root; `invalidate(root)` clears it and every
+  index run calls it. The result holds `WorktreeChanges` (`src/git.rs:163`): lists capped
+  at 100 per category (`truncated`), true totals in `*_count`, paths relative to the root.
+- `search_with_metadata` (~830) runs the check on a scoped thread while it searches.
+- `search`, `search_ast_all_files`, `search_ast_with_text_filter` (and `find_symbol`,
+  `search_ast`, `list_by_kind` through `search`) run an older heuristic,
+  `check_index_freshness` (~3034): branch exists, commit moved, 10 sampled mtimes; it only
+  prints warnings. `rfx query --ast --json` hard-codes `status: fresh` (`cli/query.rs`
+  ~660).
+- `compute` returns **Fresh** when `cache.status_reads` fails (~4036).
+
+Who indexes today, and with what config:
+- `rfx index` (`cli/index.rs:93`) loads `.reflex/config.toml`, waits 30 s for the lock,
+  self-heals a version mismatch, prints a summary and spawns `index-symbols-internal`.
+- MCP `index_project` (`mcp.rs` ~1288), `POST /index` (`cli/serve.rs` ~239), `rfx watch`
+  and interactive mode use `IndexConfig::default()`: they **ignore config.toml**, while the
+  freshness check reads it (`query/mod.rs` ~4076). An update built on the default config
+  would index a different file set than the check expects.
+- `Indexer::update_paths` has no production caller. `rfx watch` collects changed paths
+  but calls the full `index`.
+
+Lock (`src/atomic_write.rs`): `index.lock`; `IndexConfig::lock_wait_secs` (default 0 =
+fail at once with `IndexLocked`). `index` and `try_update_paths` both take it, then ask the
+symbol pass to yield (up to 10 s, else `SymbolIndexingInProgress`). `update_paths` falls
+back to `index`, which takes the lock again.
+
+Front ends:
+- MCP: root `.`, one request at a time; each handler makes its own `QueryEngine`. Open
+  indexes are shared per process (`open_index::get_or_open`, reopened when the store files
+  change). `with_corruption_recovery` rebuilds once on `CacheCorrupted`.
+- `rfx serve`: root `.`, async handlers; `POST /index` runs on the async thread.
+- MCP tools with no freshness fields: `search_ast`, the dependency and structural tools,
+  `gather_context`; `find_references`, `list_locations`, `count_occurrences` carry
+  `status` only; `mode: "count"` carries nothing (TODO Open bugs).
+- clap: `Cli` (`cli/mod.rs:31`) has only `verbose`; a `#[arg(long, global = true)]` field
+  there makes `--no-update` valid before or after any subcommand.
+
+## Review findings (2026-09-29, before coding)
+
+A design review against the code found these; the design below includes each fix.
+
+1. `QueryEngine` pins its open index in a `OnceLock` (`query/mod.rs` ~588): a retry on
+   the same engine would read the pre-update snapshot. → resettable handle.
+2. The check's lists are capped at 100 and `Snapshot` is private. → an uncapped path list
+   inside the snapshot and a crate-level `update_plan`.
+3. `status_cache::snapshot` computes outside its lock and inserts afterwards: a check that
+   started before an update can re-insert a stale verdict. → an invalidation epoch.
+4. `compute` says Fresh when meta.db cannot be read. → `Unknown`, no update.
+5. `.gitignore` / `.ignore` / `.rgignore` and `.reflex/config.toml` edits never make the
+   index stale (`classify_one` drops paths that are not indexable; `.reflex/` is usually
+   ignored by git). → such candidates plan a full run; config.toml fingerprint stored.
+6. Background compaction deletes meta.db rows of missing files but leaves them in the
+   stores: the check then cannot see the deletion and search still returns the file. →
+   compaction stops deleting rows.
+7. No code inside the indexer or the symbol pass runs `QueryEngine`; `update_paths`
+   releases the lock before falling back to `index`. No self-deadlock.
+8. `lock_wait_secs = u64::MAX` is safe (`acquire_with_timeout` compares elapsed ≥ limit).
+9. An update cancels the symbol pass; nothing restarts it after a path update, so repeated
+   edit-then-query could starve it. → restart a `Cancelled` pass.
+10. `CacheManager::load_index_config` (`cache.rs:666`) is already in the library; the
+    `--languages` override is never persisted. → persist it.
+11. `cli/index.rs:140` keeps the version-mismatch self-heal out of MCP on purpose (the
+    1.6/1.7 rebuild stampede). → decision 6.
+12. `rfx serve` calls blocking code on async handlers (search, stats, index). →
+    `spawn_blocking`.
+13. About 15 tests assert `stale` or "Run `rfx index`" in-process. → the library default
+    stays off (`QueryEngine::with_update` opts in); every command turns it on through one
+    helper, enforced by a clippy `disallowed-methods` rule.
+14. The open bug "a tracked file `.gitignore` starts to ignore is reported as added by
+    every check" would make every query update again. → fixed first, plus a loop guard.
+
+## Design
+
+The approved plan (2026-09-29). Steps and gates are at the end.
+
+### Library entry point: `src/auto_update.rs`
+
+`update_if_stale(cache, opts) -> Updated { Nothing, Paths(n), Index, Built, Skipped(reason) }`
+
+1. No index → `Indexer::index` → `Built`.
+2. `update_plan` from the check: `Fresh` → `Nothing`; `Paths(list)` →
+   `update_paths(list)`; `Full` (truncated or missing lists, ignore file, config) →
+   `index`; `Unknown` → no write, `Skipped`.
+3. Config: `load_index_config` plus the persisted `--languages`; lock wait forever.
+4. Version mismatch: CLI clears and rebuilds; servers skip with the owner warning.
+5. Symbol pass: retry while it makes progress; restart it after a run that cancelled it
+   or after a full run (`BackgroundIndexer::spawn_detached`, binary callers only).
+6. One update per root per process; `index.lock` across processes.
+7. Loop guard: a path set an update could not make fresh is not updated again.
+8. Any failure → answer from the current index, `stale`, reason in `warnings`.
+
+### Query engine
+
+- `QueryEngine::with_update(opts)`; `new` unchanged. Front ends use one helper.
+- `search_with_metadata`: search and check in parallel; stale → update → search and check
+  again; at most two updates per call.
+- The other entry points update first. The old `check_index_freshness` heuristic goes;
+  `--ast --json` reports the real status.
+
+### Front ends
+
+- CLI: global `--no-update`; every index-reading command updates first; "No index found"
+  errors become builds; `rfx index status` stays read-only; one stderr line for a full
+  run or build; stdout unchanged.
+- MCP: `rfx mcp --no-update`; the update runs once in `handle_call_tool` (not for
+  `index_project` / `check_index_status`); `update_ms` in `timings`.
+- `rfx serve --no-update`; handlers in `spawn_blocking`.
+- `index_project`, `POST /index`, `rfx watch`, interactive mode and `rfx ask` use the same
+  config as `rfx index`; `rfx watch` passes its collected paths to `update_paths`.
+
+## Steps (one commit each)
+
+1. Prep, no output change: resettable engine handle, memo epoch, `Unknown`,
+   `spawn_detached`, shared config everywhere, lock wait forever, persisted `--languages`.
+2. Check fixes: ignore files and config plan a full run; tracked-but-ignored bug;
+   compaction keeps rows.
+3. `auto_update.rs` + `update_plan` + the fidelity harness (`tests/auto_update_fidelity.rs`).
+4. Query engine update-and-retry.
+5. CLI flag and per-command update.
+6. MCP and `rfx serve`; fidelity harness through `rfx mcp` and the CLI.
+7. `rfx watch` → `update_paths`.
+8. Perf gates and golden battery.
+9. **Stop and ask:** remove the MCP text that sends agents to `check_index_status` /
+   `index_project`; fix the missing `can_trust_results` fields.
+10. Docs.
+
+## Gates
+
+- Golden battery identical to 2.0.3 on four corpora with a fresh index.
+- `latency_budget` green with `REFLEX_LATENCY_BUDGET=1`, sum within +5 %.
+- Kubernetes, 1-file edit: `rfx query` in a new process < 0.5 s; MCP `search_code` < 150 ms.
+- Commands that newly check: added time ≤ the check (~60 ms).
+- Peak RSS of a query that updates ≤ an `update_paths` process (~70 MiB on Kubernetes).
+- Fidelity harness: 100 % target, 95 % floor.
+- Stop and ask on any other output change, a format change or a regression.
+
+## As built (2026-09-30)
+
+Commits on `feature/auto-update` (from `c2e0de2`): `9499b99` plan, `0a2c198` one config
+and one symbol-pass launcher, `1bbbc69` check fixes (rule files, tracked-but-ignored,
+compaction), `cca3e0d` `update_if_stale` + fidelity test + the switch-back fix, `c7b42d6`
+wiring (engine, CLI, MCP, serve, watch), `324590f` docs, `df8cb1e` settle after a path
+update, `4b73e65` golden harness fix.
+
+What changed from the plan:
+- **Settle instead of a second check.** The first build ran the full check again after
+  every update (a second `git status`: ~100 ms on Kubernetes). A path update now
+  compares only the updated paths with the index and, when they match, memoises "fresh"
+  dated at the original check (`query::settle_update`) — the terms the 1 s memo already
+  has. MCP edit-then-search 200–340 ms → 138–161 ms.
+- **The switch-back bug** (TODO follow-up from the incremental work) had to be fixed: the
+  fidelity sequence failed on "switch back" (the check compared with the current
+  branch's row, not the last run's commit).
+- **No clippy rule**: `disallowed-methods` would flag every test's `QueryEngine::new`.
+  A test (`query_engines_are_built_by_the_known_front_ends_only`) fails instead on a
+  `QueryEngine::new` in `src/` outside the known front ends.
+- `rfx serve` `/index` and `rfx watch`: the watcher keeps fail-fast locking (it runs
+  again on the next event); automatic updates, `index_project` and `POST /index` wait.
+- UpdatePlan::Full carries the listed paths, so the loop guard does not block every
+  later full run after one failure.
+
+Measured (Kubernetes scratch clone, 16 cores, load 16–24; A/B against `c2e0de2`):
+
+| scenario | c2e0de2 | auto-update |
+| --- | --- | --- |
+| `rfx query` (new process), nothing changed | 0.11–0.55 s | 0.08–0.11 s |
+| `rfx query` after a 1-file edit | 0.09–0.14 s, **stale, 0 hits** | 0.16–0.18 s, fresh, found |
+| MCP `search_code` after an edit (warm session) | 71–121 ms, **stale, 0 hits** | 138–161 ms, fresh, found (update 53–68 ms) |
+| `rfx deps <file>` / `analyze --hotspots`, nothing changed | < 10 ms | 80–160 ms (the check) |
+| peak RSS: query / MCP session | 68–85 / 79–93 MiB | 41–70 / 49–75 MiB |
+
+`latency_budget` (2 runs each, alternating): green 4/4 with `REFLEX_LATENCY_BUDGET=1`; sum
+of medians 85.9 → 87.3 ms (+1.6 %); MCP shapes −4 … +7 %.
+
+Fidelity (`tests/auto_update.rs`): 15/15 steps answer as a fresh build.
+
+Golden (`benches/incremental/golden.sh`): fresh capture = 2.0.3 reference; after scripted
+updates 0/76 outputs differ on all four corpora (1 failing output per side, `q_two_char`,
+as in the reference). The harness never indexed the edited trees before `4b73e65`, so the
+2026-09-29 "identical after updates" claim was vacuous; the rerun covers c2e0de2 too.
+
+Known limits:
+- The 1 s verdict memo: in `rfx mcp` / `rfx serve`, an edit within 1 s of the previous
+  check can be missed by the next call.
+- Commands that did not check before (`deps`, `analyze`, `stats`, …) pay the check
+  (~60–100 ms on Kubernetes; a stat of every file without git).
+- Nested ignore files outside git are not compared (walk mode checks the root's only).
+
+## Efficacy A/B after step 9 (2026-09-30)
+
+REF-222 design (9 find-all tasks × 8 trials × 2 arms), Opus 5.5, Claude Code 2.1.284,
+binary with the new MCP text (`cebddb9`). Raw trials: `benches/efficacy/results/`
+(gitignored); the 2.0.3 run was moved to `results-2.0.3-opus/`.
+
+| | 2.0.3 (2026-09-28) | auto-update (2026-09-30) |
+| --- | --- | --- |
+| total_tokens B/A (primary) | 1.663 [1.045, 1.685] | **1.675 [1.037, 1.688]** — unchanged, reflex_worse |
+| arm-B trials that used Reflex | 37/72 | 43/72 |
+| `check_index_status` / `index_project` calls | 0 / 0 (Opus never made them) | 0 / 0 |
+| used-Reflex call sequence | ToolSearch > search_code (3 turns) | same |
+
+- **Why no change on Opus:** Opus 5.5 never called the probe on these tasks, in 2.0.3 either
+  (0 calls in 200 trials). The remaining extra turn is the ToolSearch that loads the
+  deferred schemas (backlog §1 B).
+- **Sonnet 5 (2026-09-30, same design, 9 runner processes in parallel — wall time is not
+  comparable; raw trials in `results-autoupdate-sonnet5/`):**
+
+  | | 2.0.3 | auto-update |
+  | --- | --- | --- |
+  | total_tokens B/A (primary) | 1.646 [1.063, 2.249] | **1.603 [1.267, 1.673]** |
+  | `check_index_status` / `index_project` calls | 33 / 1 | **0 / 0** |
+  | arm-B trials that used Reflex | 69/74 | 72/72 |
+  | arm B median turns / tokens (find-all) | 4 / 148k | **3 / 101k (−32 %)** |
+  | arm A median turns / tokens (find-all) | 2 / 72k | 2 / 66k |
+  | total_cost_usd B/A | 2.072 | 1.754 |
+
+  The status-check turn is gone; the one turn left over Grep is the ToolSearch (3 vs 2
+  turns ≈ the 1.5–1.6× that remains). Precision and recall 1.000 in both arms.
+- **Adoption is sensitive to the instructions' last paragraph.** Claude Code defers the
+  tool schemas, so the agent decides between Grep and a ToolSearch from the instructions
+  alone. Replacing "Only fall back to Grep/Glob after index_project has been called and the
+  tool still fails" (9e30ff5) collapsed adoption to 2/72 (the first A/B, discarded). Pilots
+  (3 tasks × 4 trials, trials that called Reflex): old text 8/12; "only fall back to
+  Grep/Glob if a Reflex tool fails" 4/12; "if a Reflex tool fails, retry it once; only
+  fall back to Grep/Glob after the retry also fails" 8/12 → kept (`cebddb9`).
+- Accuracy: precision and recall 1.000 in both arms; 72/72 successes each.
+
+## Eager schemas: `alwaysLoad` (2026-09-30)
+
+Claude Code defers MCP tool schemas behind ToolSearch by default. A server cannot opt out;
+the client can, per server (`"alwaysLoad": true` in the MCP config; `claude mcp add-json`
+keeps it, `claude mcp add` has no flag) or globally (`ENABLE_TOOL_SEARCH=false`, or `auto`
+= eager when the schemas fit in 10 % of the context). Harness arm `Beager` = arm B with
+`alwaysLoad` (`benches/efficacy/runner.py`). Three arms run at the same time, 9 find-all
+tasks × 8 trials, one runner process per task (wall time only roughly comparable). Raw
+trials: `results-eager-sonnet5/`, `results-eager-opus/` (gitignored).
+
+| vs Grep (median of per-task medians) | Sonnet 5: deferred | Sonnet 5: eager | Opus 5.5: deferred | Opus 5.5: eager |
+| --- | --- | --- | --- | --- |
+| total_tokens | 1.632 [1.603, 1.671] | **1.526** [1.484, 1.541] | 1.679 [1.618, 1.694] | **1.824** [1.712, 2.726] |
+| total_cost_usd | 1.769 | **1.202** | 1.323 | **0.976** [0.799, 1.329] |
+| assistant_turns | 1.5 | **1.0** | 1.5 | **1.0** |
+| wall_ms | 1.13 | 0.79 | 1.18 | 0.83 |
+| trials that used Reflex | 71/72 | 72/72 | 67/72 | 72/72 |
+| median tokens (Grep arm) | 101.5k (66.2k) | 94.3k (66.2k) | 68.1k (40.5k) | 78.2k (40.5k) |
+
+- Eager loading removes the ToolSearch turn (0 ToolSearch calls; 2 turns, as Grep) and
+  cuts cost (cache reads are cheap), but every turn carries every schema: `tools/list` is
+  44 KB (~11K tokens; five search tools are ~70 %). On Opus's short trials that outweighs
+  the saved turn in `total_tokens` (1.68 → 1.82) while cost reaches parity (0.98).
+- The whole remaining token gap is schema weight (Sonnet eager − Grep ≈ 28k over 2 turns).
+  Next lever: shrink the tool surface and descriptions (backlog §1 B), then re-measure.
+- Accuracy 1.000 / 1.000 in every arm; 72/72 successes.
+
+## Long sessions (2026-09-30, `benches/efficacy/session_bench.py`)
+
+The REF-222 tasks are one search each (2–3 turns): they measure the fixed cost of
+bringing Reflex into a session. `session_bench.py` runs many questions in ONE Claude Code
+session (`claude --print --input-format stream-json`, one message at a time — a message
+queued while the agent works is merged into the running turn), each trial on its own
+fresh copy of the corpus (a new git repository; Reflex arms index it beforehand, outside
+the token count). Scripts: `tasks/sessions.json` (generated from the pinned corpora:
+lookups, definitions, file counts, renames with lookups before and after). Every answer
+is graded against ripgrep on the trial's final tree (pre-rename lookups on the start
+tree). Cache-weighted tokens = input + output + 0.1 × cache reads + 1.25 × cache writes.
+
+12-question sessions (investigate + edit per corpus, 5 trials, 30 sessions per arm):
+
+| vs Grep | Sonnet 5 deferred | Sonnet 5 eager | Opus 5.5 deferred | Opus 5.5 eager |
+| --- | --- | --- | --- | --- |
+| cost | 1.07× | 1.36× | 1.03× | 1.18× |
+| cache-weighted tokens | 1.06× | 1.45× | 1.05× | 1.52× |
+| raw tokens | 1.05× | 1.55× | 1.06× | 1.75× |
+| Reflex calls / session (median) | 0 | 12 | 0 | 9 |
+| accuracy (all arms) | 1.000 | 1.000 | 1.000 | 1.000 |
+
+50-question sessions (Sonnet 5; tokio ×2, ripgrep ×2, reflex ×1 per arm; Grep vs eager):
+
+| | Grep | Reflex eager |
+| --- | --- | --- |
+| turns / tool calls (median) | 119 / 69 | 105 / 55 |
+| cost / cache-weighted / raw vs Grep | 1.00 | **1.10× / 1.14× / 1.17×** |
+| accuracy | 0.992 | 1.000 |
+| tokio sessions (cost) | $2.29, $2.87 | $1.97, $1.93 (Grep needed 87–102 calls, Reflex 54–55) |
+
+Findings:
+- **Per query, Reflex costs what Grep costs.** In the 12-question Sonnet sessions the eager
+  arm made the same calls and turns as Grep, and `list_locations` answers were the size of
+  Grep's (median 584 vs 560 chars).
+- **The gap is the schema prefix**: ~16K tokens per turn with all 17 schemas loaded (the
+  first exchange re-reads 85K vs Grep's 53K). 16K × 27 turns ≈ 430K raw ≈ 43K weighted —
+  the whole measured gap. It shrinks with session length as a share of the context:
+  cost vs Grep 1.5–1.8× (2-turn tasks) → 1.18–1.36× (12 questions) → 1.10× (50 questions).
+- **Deferred loading ≈ Grep because agents mostly do not use Reflex in long sessions**
+  (Sonnet: 22/30 sessions Grep only; median Reflex calls 0). Eager loading is what makes
+  agents use it (every question answered through Reflex).
+- Next lever: fewer/smaller schemas (backlog §1 B) — at ~4K tokens the 50-question gap
+  would fall to about 1.03×.
+
+## Slim tool surface (2026-09-30, `703d421`, `2b2cadc`)
+
+17 tools → 10 (`tools/list` 44 KB → 10.6 KB; merged names callable, unlisted), shared
+rules moved into the instructions, then one sentence steering "where does X occur" to
+`list_locations` (`2b2cadc`: without it agents answered with `search_code` /
+`find_references` and tool output per 50-question session rose 43K → 76K chars).
+`session_bench.py`, Grep arm run in the same wave; cost / cache-weighted tokens vs Grep:
+
+| | 44 KB schemas | 10.6 KB | 10.6 KB + steering |
+| --- | --- | --- | --- |
+| Sonnet 5, 12 questions, eager | 1.36× / 1.45× | 1.19× / 1.23× | **1.05× / 1.07×** |
+| Sonnet 5, 12 questions, deferred | 1.07× / 1.06× (Reflex barely used) | 1.22× / 1.20× | 1.11× / 1.13× |
+| Sonnet 5, 50 questions, eager | 1.10× / 1.14× (n=5) | 1.14× / 1.14× (n=20) | **1.11× / 1.12×** (n=10) |
+| Opus 5.5, 12 questions, eager | 1.18× / 1.52× (Reflex 9/session) | — | 1.15× / 1.25× (Reflex **1**/session) |
+| Opus 5.5, 50 questions, eager | — | — | **0.89× / 0.97×** (Reflex 46/session) |
+
+Accuracy 1.000 (0.998–1.000) in every arm.
+
+- The per-turn prefix is no longer the gap: the eager Reflex arm re-reads 17.2K tokens per
+  turn vs the Grep arm's 26.4K (Sonnet, 50 questions).
+- What is left in Sonnet's long sessions is editing style: renames through Read + Edit
+  (6.2K chars of Read) instead of `sed` through Bash (Grep arm), so more cache writes
+  (78K vs 56K).
+- **Opus and `list_locations`:** in 12-question sessions Opus called `list_locations`
+  once, then ran `grep -rnw` through Bash to see the matching lines ("defined here, calls in
+  tests") and kept using grep. Steering to the preview-less tool costs Opus adoption in
+  short sessions; in 50-question sessions Opus stayed on Reflex and was cheaper than Grep.
+  Open question for the user: give `list_locations` a short preview option, or steer to
+  `search_code` with a small `preview_length`.

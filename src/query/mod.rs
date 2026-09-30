@@ -21,8 +21,8 @@ use crate::models::{
 };
 use crate::output;
 use crate::parsers::ParserFactory;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 
 use open_index::OpenIndex;
 
@@ -32,6 +32,52 @@ use open_index::OpenIndex;
 pub fn invalidate_caches(workspace_root: &std::path::Path) {
     open_index::invalidate(&workspace_root.join(crate::cache::CACHE_DIR));
     status_cache::invalidate(workspace_root);
+}
+
+/// What an automatic update must do, from the freshness check
+/// ([`crate::auto_update`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdatePlan {
+    /// Every indexed file matches the tree.
+    Fresh,
+    /// Only these paths (relative to the root) changed: added, modified or deleted.
+    Paths(Vec<std::path::PathBuf>),
+    /// A full run: many changes, a rule-file edit, or a cache format change. The
+    /// paths the check listed (capped at 100 per kind; none for a format change).
+    Full(Vec<std::path::PathBuf>),
+    /// Written by another released version; the reason names it.
+    Foreign(String),
+    /// Nothing could be compared; the reason says why.
+    Unknown(String),
+}
+
+/// The update plan for the workspace `cache` belongs to (memoised with the
+/// freshness verdict for the same window).
+pub fn update_plan(cache: &CacheManager) -> Result<UpdatePlan> {
+    Ok(status_cache::update_plan(cache)?.0)
+}
+
+/// An update plan with the freshness check it came from ([`plan_update`]).
+pub struct PlannedUpdate {
+    pub plan: UpdatePlan,
+    snapshot: Arc<status_cache::Snapshot>,
+}
+
+/// [`update_plan`], keeping the check for [`settle_update`].
+pub fn plan_update(cache: &CacheManager) -> Result<PlannedUpdate> {
+    let (plan, snapshot) = status_cache::update_plan(cache)?;
+    Ok(PlannedUpdate { plan, snapshot })
+}
+
+/// After `planned`'s paths were updated: confirm only those paths against the
+/// index and, when all match, make "fresh" the memoised verdict for the rest of
+/// the original check's window. Saves the second tree comparison (a `git status`
+/// on a large repository) right after an update. False when it could not.
+pub fn settle_update(cache: &CacheManager, planned: &PlannedUpdate) -> bool {
+    match &planned.plan {
+        UpdatePlan::Paths(paths) => status_cache::settle(cache, &planned.snapshot, paths),
+        _ => false,
+    }
 }
 
 /// What `search_internal` hands back: the page plus the bookkeeping the public
@@ -307,7 +353,7 @@ fn verify_files_streaming(
 ) -> VerifyOutcome {
     use rayon::prelude::*;
 
-    let content = &open.content;
+    let content = &open.snapshot;
 
     // Resolve path + language once per file, drop files the filters reject, and
     // sort by the path string the results will carry.
@@ -583,9 +629,13 @@ fn verify_files_streaming(
 /// Manages query execution against the index
 pub struct QueryEngine {
     cache: CacheManager,
-    /// The open index for this engine's lifetime, resolved on first use so every
-    /// phase of one query reads the same files.
-    open: OnceLock<Arc<OpenIndex>>,
+    /// The open index, resolved on first use so every phase of one query reads the
+    /// same files. Dropped by [`QueryEngine::reset_open`] after this engine updates
+    /// the index, so the next phase reads the published snapshot.
+    open: std::sync::Mutex<Option<Arc<OpenIndex>>>,
+    /// Update a stale index before answering ([`QueryEngine::with_update`]).
+    /// `None`: answer from the index as it is (the library default).
+    update: Option<crate::auto_update::UpdateOptions>,
 }
 
 impl QueryEngine {
@@ -593,7 +643,49 @@ impl QueryEngine {
     pub fn new(cache: CacheManager) -> Self {
         Self {
             cache,
-            open: OnceLock::new(),
+            open: std::sync::Mutex::new(None),
+            update: None,
+        }
+    }
+
+    /// An engine that brings a stale index up to date before it answers, and
+    /// builds a missing one ([`crate::auto_update`]). Every `rfx` command uses one
+    /// unless `--no-update` is given; [`QueryEngine::new`] answers from the index
+    /// as it is.
+    pub fn with_update(mut self, opts: crate::auto_update::UpdateOptions) -> Self {
+        self.update = Some(opts);
+        self
+    }
+
+    /// Run the automatic update (when this engine has one) with this engine's
+    /// maps dropped first. `Ok(None)` when it has none.
+    fn run_update(&self) -> Result<Option<crate::auto_update::Updated>> {
+        let Some(opts) = self.update else {
+            return Ok(None);
+        };
+        self.reset_open();
+        let updated = crate::auto_update::update_if_stale(&self.cache, &opts)?;
+        if let crate::auto_update::Updated::Skipped(reason) = &updated {
+            log::warn!("Index not updated: {reason}");
+        }
+        Ok(Some(updated))
+    }
+
+    /// Before a search that has no freshness verdict of its own: update the index
+    /// (or, without an update, warn the old way).
+    fn update_first(&self, filter: &QueryFilter) -> Result<()> {
+        match self.run_update()? {
+            Some(crate::auto_update::Updated::Skipped(reason)) if !filter.suppress_output => {
+                output::warn(&format!("⚠️  Index not updated: {reason}"));
+                Ok(())
+            }
+            Some(_) => Ok(()),
+            None => {
+                if !self.cache.exists() {
+                    return Err(crate::errors::ReflexError::IndexNotFound.into());
+                }
+                self.check_index_freshness(filter)
+            }
         }
     }
 
@@ -602,12 +694,21 @@ impl QueryEngine {
     /// Typed `CacheCorrupted` on a short or garbled store, so the MCP layer can
     /// rebuild once and retry.
     fn open_index(&self) -> Result<Arc<OpenIndex>> {
-        if let Some(open) = self.open.get() {
+        let mut slot = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(open) = slot.as_ref() {
             return Ok(Arc::clone(open));
         }
         let open = open_index::get_or_open(&self.cache)?;
-        let _ = self.open.set(Arc::clone(&open));
+        *slot = Some(Arc::clone(&open));
         Ok(open)
+    }
+
+    /// Forget this engine's open index, so the next read opens the snapshot the
+    /// manifest names now. Called before this engine updates the index: the old
+    /// maps must not outlive the update (on Windows a mapped file cannot be
+    /// replaced), and the retry must not read them.
+    fn reset_open(&self) {
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Load dependencies for search results if requested (legacy - per result)
@@ -704,7 +805,7 @@ impl QueryEngine {
 
         // The shared index handle, for extracting context lines
         let open_opt = self.open_index().ok();
-        let content_reader_opt = open_opt.as_deref().map(|o| &o.content);
+        let content_reader_opt = open_opt.as_deref().map(|o| &o.snapshot);
 
         // Convert to FileGroupedResult and load dependencies
         let mut file_results: Vec<FileGroupedResult> = grouped
@@ -832,6 +933,51 @@ impl QueryEngine {
         pattern: &str,
         filter: QueryFilter,
     ) -> Result<QueryResponse> {
+        if self.update.is_none() {
+            return self.search_with_metadata_once(pattern, filter);
+        }
+        let started = std::time::Instant::now();
+        let mut update_time = std::time::Duration::ZERO;
+        let mut notes = Vec::new();
+        let mut update = |notes: &mut Vec<String>| -> Result<bool> {
+            let t = std::time::Instant::now();
+            let updated = self.run_update()?;
+            update_time += t.elapsed();
+            Ok(match updated {
+                Some(crate::auto_update::Updated::Skipped(reason)) => {
+                    notes.push(format!("Index not updated: {reason}"));
+                    false
+                }
+                Some(u) => u.wrote(),
+                None => false,
+            })
+        };
+        if !self.cache.exists() {
+            update(&mut notes)?;
+        }
+        // The search and the check run together; a fresh index pays nothing more.
+        // A stale one is updated and searched again, twice at most (a file can
+        // change while an update runs).
+        let mut response = self.search_with_metadata_once(pattern, filter.clone())?;
+        for _ in 0..2 {
+            if response.status != IndexStatus::Stale || !update(&mut notes)? {
+                break;
+            }
+            response = self.search_with_metadata_once(pattern, filter.clone())?;
+        }
+        response.warnings.extend(notes);
+        if let Some(t) = response.timings.as_mut() {
+            t.update_us = update_time.as_micros() as u64;
+            t.total_us = started.elapsed().as_micros() as u64;
+        }
+        Ok(response)
+    }
+
+    fn search_with_metadata_once(
+        &self,
+        pattern: &str,
+        filter: QueryFilter,
+    ) -> Result<QueryResponse> {
         log::info!(
             "Executing query with metadata: pattern='{}', filter={:?}",
             pattern,
@@ -941,6 +1087,7 @@ impl QueryEngine {
             status_compute_us: status_compute.as_micros() as u64,
             group_us: (total_elapsed - status_done).as_micros() as u64,
             total_us: total_elapsed.as_micros() as u64,
+            update_us: 0,
         };
         log::debug!("Query timings for '{}': {:?}", pattern, timings);
 
@@ -1004,16 +1151,11 @@ impl QueryEngine {
             filter
         );
 
-        // Ensure cache exists
-        if !self.cache.exists() {
-            return Err(crate::errors::ReflexError::IndexNotFound.into());
-        }
+        // Update a stale index first (or, without an update, warn the old way).
+        self.update_first(&filter)?;
 
         // Open (or reuse) the index; corruption surfaces as a typed error.
         self.open_index()?;
-
-        // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness(&filter)?;
 
         // Same bracket rewrite as `search_with_metadata`; this surface has nowhere to
         // report it, but it must not return a different answer.
@@ -1476,7 +1618,7 @@ impl QueryEngine {
         if filter.expand {
             // Fetch full symbol bodies from the shared content store
             if let Ok(open) = self.open_index() {
-                let content_reader = &open.content;
+                let content_reader = &open.snapshot;
                 for result in &mut results {
                     // Only expand if the result has a meaningful span (not just a single line)
                     if result.span.start_line < result.span.end_line {
@@ -1628,17 +1770,12 @@ impl QueryEngine {
              Example: rfx query \"(function_definition) @fn\" --ast --lang python"
         ))?;
 
-        // Ensure cache exists
-        if !self.cache.exists() {
-            return Err(crate::errors::ReflexError::IndexNotFound.into());
-        }
-
-        // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness(&filter)?;
+        // Update a stale index first (or, without an update, warn the old way).
+        self.update_first(&filter)?;
 
         // The shared content store
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Build glob matchers ONCE before file iteration (performance optimization)
         let include_matcher = result::build_glob_set(&filter.glob_patterns, "glob");
@@ -1648,8 +1785,8 @@ impl QueryEngine {
         // Get all files matching the language and glob filters
         let mut candidates: Vec<SearchResult> = Vec::new();
 
-        for file_id in 0..content_reader.file_count() {
-            let file_path = match content_reader.get_file_path(file_id as u32) {
+        for file_id in content_reader.live_ids() {
+            let file_path = match content_reader.get_file_path(file_id) {
                 Some(p) => p,
                 None => continue,
             };
@@ -1759,7 +1896,7 @@ impl QueryEngine {
         if filter.expand
             && let Ok(open) = self.open_index()
         {
-            let content_reader = &open.content;
+            let content_reader = &open.snapshot;
             {
                 for result in &mut results {
                     if result.span.start_line < result.span.end_line
@@ -1853,13 +1990,8 @@ impl QueryEngine {
             filter
         );
 
-        // Ensure cache exists
-        if !self.cache.exists() {
-            return Err(crate::errors::ReflexError::IndexNotFound.into());
-        }
-
-        // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness(&filter)?;
+        // Update a stale index first (or, without an update, warn the old way).
+        self.update_first(&filter)?;
 
         // Start timeout timer if configured
         use std::time::{Duration, Instant};
@@ -1927,7 +2059,7 @@ impl QueryEngine {
         if filter.expand
             && let Ok(open) = self.open_index()
         {
-            let content_reader = &open.content;
+            let content_reader = &open.snapshot;
             {
                 for result in &mut results {
                     if result.span.start_line < result.span.end_line
@@ -2030,7 +2162,7 @@ impl QueryEngine {
 
         // The shared index handle (content store + file-id map + meta.db connection)
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Group candidates by file, filtering out unsupported languages
         let mut files_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -2141,21 +2273,13 @@ impl QueryEngine {
             files_to_process.len()
         );
 
-        // Symbol cache lookup, on the handle's shared connection.
-        //
-        // The branch comes from `.git/HEAD` (no subprocess); the hashes come from a
-        // query restricted to the candidate paths (not the whole branch).
-        let root = self.cache.workspace_root();
-        let branch = crate::git::read_head_branch(&root).unwrap_or_else(|| "_default".to_string());
+        // Symbol cache lookup, on the handle's shared connection. The keys are the
+        // candidates' `files.hash` (the stored bytes), from a query restricted to
+        // the candidate paths.
         let mut conn = open.meta_conn()?;
-        let rows =
-            crate::cache::CacheManager::branch_file_rows_on(&conn, &branch, &files_to_process)
-                .context("Failed to load file hashes")?;
-        log::debug!(
-            "Loaded {} file rows for branch '{}' for symbol cache lookups",
-            rows.len(),
-            branch
-        );
+        let rows = crate::cache::CacheManager::file_rows_on(&conn, &files_to_process)
+            .context("Failed to load file hashes")?;
+        log::debug!("Loaded {} file rows for symbol cache lookups", rows.len());
 
         let file_lookup_tuples: Vec<(i64, String, String)> = files_to_process
             .iter()
@@ -2184,7 +2308,7 @@ impl QueryEngine {
             }
         }
 
-        // Everything else — no row on this branch, or no (current-hash) cache entry.
+        // Everything else — no files row, or no (current-hash) cache entry.
         let files_needing_parse: Vec<String> = files_to_process
             .iter()
             .filter(|p| !cached_symbols.contains_key(p.as_str()))
@@ -2242,8 +2366,17 @@ impl QueryEngine {
             }
             parsed_symbols.extend(symbols);
         }
-        // Best-effort: a failed cache write must never fail the query.
-        if let Err(e) = crate::symbol_cache::SymbolCache::batch_set_by_id_on(&mut conn, &to_cache) {
+        // Best-effort: a failed cache write must never fail the query. Written only
+        // while meta.db's rows go with the snapshot the content came from: between
+        // the two publishes of an index run the key could name another version.
+        if !open.meta_matches_snapshot(&conn) {
+            log::debug!(
+                "Index is mid-publish; not caching {} parses",
+                to_cache.len()
+            );
+        } else if let Err(e) =
+            crate::symbol_cache::SymbolCache::batch_set_by_id_on(&mut conn, &to_cache)
+        {
             log::debug!(
                 "Failed to cache symbols for {} files: {}",
                 to_cache.len(),
@@ -2387,7 +2520,7 @@ impl QueryEngine {
 
         // The shared index handle (content store + file-id map)
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Collect unique file paths from candidates and load their contents
         use std::collections::HashMap;
@@ -2462,7 +2595,7 @@ impl QueryEngine {
 
         // The shared content store
         let open = self.open_index()?;
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
 
         // Build glob matchers if specified (for filtering)
         let include_matcher = result::build_glob_set(&filter.glob_patterns, "glob");
@@ -2472,8 +2605,8 @@ impl QueryEngine {
         // Scan all files and filter by language + glob patterns
         let mut candidates: Vec<SearchResult> = Vec::new();
 
-        for file_id in 0..content_reader.file_count() {
-            let file_path = match content_reader.get_file_path(file_id as u32) {
+        for file_id in content_reader.live_ids() {
+            let file_path = match content_reader.get_file_path(file_id) {
                 Some(p) => p,
                 None => continue,
             };
@@ -2553,7 +2686,7 @@ impl QueryEngine {
         budget: Option<usize>,
     ) -> Result<(Vec<SearchResult>, CandidateStats)> {
         let open = self.open_index()?;
-        let trigram_index = &open.trigrams;
+        let trigram_index = &open.snapshot;
 
         // Patterns shorter than 3 chars have no trigrams, so the trigram index always
         // returns empty.  Fall back to a linear scan of the content store so that
@@ -2634,13 +2767,13 @@ impl QueryEngine {
     ) -> Result<Vec<SearchResult>> {
         use rayon::prelude::*;
 
-        let content_reader = &open.content;
+        let content_reader = &open.snapshot;
         let pattern_owned = pattern.to_string();
-        let file_count = content_reader.file_count();
         let matcher = LineMatcher::new(pattern, filter)?;
 
         let results: Vec<SearchResult> = open.pool().install(|| {
-            (0..file_count as u32)
+            content_reader
+                .live_ids()
                 .collect::<Vec<_>>()
                 .par_iter()
                 .flat_map(|&file_id| {
@@ -2699,7 +2832,7 @@ impl QueryEngine {
             "Linear scan (short pattern '{}') found {} results across {} files",
             pattern,
             results.len(),
-            file_count
+            content_reader.live_file_count()
         );
         Ok(results)
     }
@@ -2785,7 +2918,8 @@ impl QueryEngine {
                 }
                 warnings.push(text);
             }
-            (0..open.content.file_count() as u32)
+            open.snapshot
+                .live_ids()
                 .map(|id| (id, LineSet::All))
                 .collect()
         } else {
@@ -2813,10 +2947,10 @@ impl QueryEngine {
                     {
                         need_exotic = true;
                     }
-                    open.trigrams
+                    open.snapshot
                         .search_candidates_fold(literal.text.as_bytes())
                 } else {
-                    open.trigrams.search_candidates(&literal.text)
+                    open.snapshot.search_candidates(&literal.text)
                 };
                 log::debug!(
                     "Literal '{}' (ci={}) found on {} candidate lines",
@@ -2828,7 +2962,7 @@ impl QueryEngine {
                 sources += 1;
             }
             if need_exotic {
-                locations.extend(open.trigrams.exotic_fold_lines());
+                locations.extend(open.snapshot.exotic_fold_lines());
                 sources += 1;
             }
             if sources > 1 {
@@ -3928,14 +4062,31 @@ mod status_cache {
         pub details: Option<IndexWarningDetails>,
         /// Files whose content differs from what the index holds.
         pub changes: WorktreeChanges,
+        /// meta.db could not be read, so nothing was compared. Readers are told
+        /// `fresh` (as before), but an automatic update must not act on it.
+        pub unreadable: bool,
+        /// The cache was written by another released version (`decided` says so).
+        pub foreign: bool,
+        /// A rule file (`.reflex/config.toml`, an ignore file) differs from the one
+        /// the last index run saw: WHICH files are indexed may have changed, so
+        /// only a full run brings the index up to date. The paths are also listed
+        /// in `changes` as modified.
+        pub rules_changed: bool,
+        /// When the tree was compared. A verdict settled after an update keeps
+        /// the time of the check it came from, so it expires on that schedule.
+        pub checked_at: Instant,
     }
 
     impl Snapshot {
-        fn fresh() -> Self {
+        fn unreadable() -> Self {
             Self {
                 decided: Some((IndexStatus::Fresh, true, None)),
                 details: None,
                 changes: WorktreeChanges::default(),
+                unreadable: true,
+                foreign: false,
+                rules_changed: false,
+                checked_at: Instant::now(),
             }
         }
     }
@@ -3955,6 +4106,10 @@ mod status_cache {
             Duration::from_millis(ms)
         })
     }
+
+    /// Bumped by every [`invalidate`]. A snapshot computed while it moved may
+    /// describe the tree before an index write, so it is returned but not memoised.
+    static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn store() -> &'static Mutex<HashMap<PathBuf, Entry>> {
         static STORE: OnceLock<Mutex<HashMap<PathBuf, Entry>>> = OnceLock::new();
@@ -3985,15 +4140,17 @@ mod status_cache {
             return Ok(Arc::clone(&entry.snapshot));
         }
 
+        let epoch = EPOCH.load(std::sync::atomic::Ordering::Acquire);
         let snapshot = Arc::new(compute(cache, &root)?);
 
         if !ttl.is_zero()
             && let Ok(mut map) = store().lock()
+            && EPOCH.load(std::sync::atomic::Ordering::Acquire) == epoch
         {
             map.insert(
                 key,
                 Entry {
-                    computed_at: Instant::now(),
+                    computed_at: snapshot.checked_at,
                     snapshot: Arc::clone(&snapshot),
                 },
             );
@@ -4033,7 +4190,7 @@ mod status_cache {
             Ok(r) => r,
             Err(e) => {
                 log::debug!("Could not read index status from meta.db: {}", e);
-                return Ok(Snapshot::fresh());
+                return Ok(Snapshot::unreadable());
             }
         };
 
@@ -4042,6 +4199,10 @@ mod status_cache {
         // reads still work; they are simply not to be trusted, and the message names
         // who owns the cache so the user can pick a side.
         if !reads.schema_ok {
+            let foreign = reads
+                .owner
+                .as_ref()
+                .is_some_and(|(v, _)| v != env!("CARGO_PKG_VERSION"));
             let reason = match reads.owner {
                 Some((v, sha)) if v != env!("CARGO_PKG_VERSION") => {
                     let sha = sha
@@ -4068,6 +4229,10 @@ mod status_cache {
                 decided: Some((IndexStatus::Stale, false, Some(warning))),
                 details: None,
                 changes: WorktreeChanges::default(),
+                unreadable: false,
+                foreign,
+                rules_changed: false,
+                checked_at: Instant::now(),
             });
         }
 
@@ -4107,12 +4272,28 @@ mod status_cache {
             Probe::Walk
         };
 
+        let rule_record: Option<std::collections::BTreeMap<String, String>> = reads
+            .rule_files
+            .as_deref()
+            .and_then(|r| serde_json::from_str(r).ok());
+        let mut rules_changed: Vec<String> = Vec::new();
+
         let mut changes = match probe {
             Probe::Git(candidates) => {
                 let keys: Vec<&str> = candidates.iter().map(String::as_str).collect();
                 let fingerprints = cache.fingerprints_for(&keys)?;
                 let mut out = WorktreeChanges::default();
+                let mut added = Vec::new();
                 for path in &candidates {
+                    if let Some(record) = &rule_record
+                        && crate::indexer::is_rule_file(path)
+                        && !crate::indexer::FIXED_RULE_FILES.contains(&path.as_str())
+                        && record.get(path).map(String::as_str)
+                            != Some(crate::indexer::rule_file_hash(root, path).as_str())
+                    {
+                        rules_changed.push(path.clone());
+                        continue;
+                    }
                     classify_one(
                         root,
                         &config,
@@ -4120,7 +4301,17 @@ mod status_cache {
                         path,
                         fingerprints.get(path),
                         &mut out,
+                        &mut added,
                     );
+                }
+                // A new file counts only when the walk would reach it: git also
+                // lists a tracked file that `.gitignore` now ignores, and no index
+                // run will ever hold it.
+                if !added.is_empty() {
+                    let walked = Indexer::walked_among(root, &config, &policy, &added);
+                    for path in added.iter().filter(|p| walked.contains(*p)) {
+                        out.push_added(path);
+                    }
                 }
                 details.checked_by = Some("git".to_string());
                 out
@@ -4131,12 +4322,27 @@ mod status_cache {
                 walk_changes(root, &config, &policy, &fingerprints)
             }
         };
+        if let Some(record) = &rule_record {
+            for rel in crate::indexer::FIXED_RULE_FILES {
+                let now = crate::indexer::rule_file_hash(root, rel);
+                if record.get(rel).map(String::as_str).unwrap_or("") != now {
+                    rules_changed.push(rel.to_string());
+                }
+            }
+        }
+        for rel in &rules_changed {
+            changes.push_modified(rel);
+        }
         changes.sort();
 
         Ok(Snapshot {
             decided: None,
             details: Some(details),
             changes,
+            unreadable: false,
+            foreign: false,
+            rules_changed: !rules_changed.is_empty(),
+            checked_at: Instant::now(),
         })
     }
 
@@ -4204,6 +4410,7 @@ mod status_cache {
         path: &str,
         fp: Option<&FileFingerprint>,
         out: &mut WorktreeChanges,
+        added: &mut Vec<String>,
     ) {
         if !indexable_with(path, policy) {
             return;
@@ -4236,7 +4443,7 @@ mod status_cache {
                 if !Language::from_path(Path::new(path)).is_code() && looks_binary(&full) {
                     return;
                 }
-                out.push_added(path);
+                added.push(path.to_string());
             }
             (Ok(md), Some(fp)) => {
                 if !content_matches(&full, &md, fp) {
@@ -4325,6 +4532,122 @@ mod status_cache {
         out
     }
 
+    /// What an automatic update must do to make the index match the tree.
+    pub fn update_plan(cache: &CacheManager) -> Result<(super::UpdatePlan, Arc<Snapshot>)> {
+        let snap = snapshot(cache)?;
+        Ok((plan_of(&snap), snap))
+    }
+
+    fn plan_of(snap: &Snapshot) -> super::UpdatePlan {
+        use super::UpdatePlan;
+        if snap.unreadable {
+            return UpdatePlan::Unknown(
+                "the index metadata (meta.db) could not be read".to_string(),
+            );
+        }
+        if let Some((status, _, warning)) = &snap.decided {
+            if *status == IndexStatus::Fresh {
+                return UpdatePlan::Fresh;
+            }
+            let reason = warning
+                .as_ref()
+                .map(|w| w.reason.clone())
+                .unwrap_or_default();
+            return if snap.foreign {
+                UpdatePlan::Foreign(reason)
+            } else {
+                UpdatePlan::Full(Vec::new())
+            };
+        }
+        let c = &snap.changes;
+        if c.is_empty() {
+            return UpdatePlan::Fresh;
+        }
+        let mut paths: Vec<PathBuf> = c
+            .modified
+            .iter()
+            .chain(&c.added)
+            .chain(&c.deleted)
+            .map(PathBuf::from)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        if snap.rules_changed || c.truncated {
+            UpdatePlan::Full(paths)
+        } else {
+            UpdatePlan::Paths(paths)
+        }
+    }
+
+    /// After an update of `paths` (every change `prior` listed): when each now
+    /// matches the index, remember "fresh" as the verdict, dated when `prior` was
+    /// checked, and return true. The tree is not compared again, exactly as a
+    /// memoised verdict is trusted for its window; a change made since `prior`
+    /// shows once that window ends. False (nothing remembered) when a path still
+    /// differs, the window has passed, or memoising is off.
+    pub fn settle(cache: &CacheManager, prior: &Snapshot, paths: &[PathBuf]) -> bool {
+        let ttl = ttl();
+        if ttl.is_zero()
+            || prior.checked_at.elapsed() >= ttl
+            || prior.decided.is_some()
+            || prior.rules_changed
+            || prior.changes.truncated
+        {
+            return false;
+        }
+        let root = cache.workspace_root();
+        let Ok(config) = cache.load_index_config() else {
+            return false;
+        };
+        let policy = PathPolicy::from_config(&root, &config);
+        let rels: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let keys: Vec<&str> = rels.iter().map(String::as_str).collect();
+        let Ok(fingerprints) = cache.fingerprints_for(&keys) else {
+            return false;
+        };
+        let mut still = WorktreeChanges::default();
+        let mut added = Vec::new();
+        for rel in &rels {
+            classify_one(
+                &root,
+                &config,
+                &policy,
+                rel,
+                fingerprints.get(rel),
+                &mut still,
+                &mut added,
+            );
+        }
+        if !still.is_empty() || !added.is_empty() {
+            return false;
+        }
+        let settled = Arc::new(Snapshot {
+            decided: None,
+            details: prior.details.clone(),
+            changes: WorktreeChanges::default(),
+            unreadable: false,
+            foreign: false,
+            rules_changed: false,
+            checked_at: prior.checked_at,
+        });
+        match store().lock() {
+            Ok(mut map) => {
+                map.insert(
+                    key(&root),
+                    Entry {
+                        computed_at: prior.checked_at,
+                        snapshot: settled,
+                    },
+                );
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Drop any memo for `root`, so the next read is fresh.
     ///
     /// Used by `check_index_status`, the explicit probe: an agent that asks whether
@@ -4333,6 +4656,7 @@ mod status_cache {
     pub fn invalidate(root: &Path) {
         let key = key(root);
         if let Ok(mut map) = store().lock() {
+            EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             map.remove(&key);
         }
     }

@@ -27,9 +27,14 @@ pub(super) fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
          $ rfx clear && rfx index # Clear and rebuild from scratch"
     })?;
 
-    // Read trigram count from trigrams.bin header (magic + version + num_trigrams + num_files = 24 bytes)
-    let trigram_count = {
-        let trigrams_path = cache.path().join("trigrams.bin");
+    // Trigram count: the manifest's count of the live files' trigrams, or (a cache
+    // without a manifest) the trigrams.bin header (magic + version + num_trigrams +
+    // num_files = 24 bytes)
+    let summary = crate::snapshot::store_summary(cache.path());
+    let trigram_count = if let Some(live) = summary.live_trigrams {
+        live
+    } else {
+        let trigrams_path = summary.trigram_files[0].clone();
         if trigrams_path.exists() {
             use std::io::Read;
             std::fs::File::open(&trigrams_path)
@@ -275,9 +280,9 @@ pub(super) fn handle_list_files(
 }
 
 /// Handle the `mcp` subcommand
-pub(super) fn handle_mcp() -> Result<()> {
+pub(super) fn handle_mcp(no_update: bool) -> Result<()> {
     log::info!("Starting MCP server");
-    crate::mcp::run_mcp_server()
+    crate::mcp::run_mcp_server(no_update)
 }
 
 /// Handle the `context` command

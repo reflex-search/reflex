@@ -17,6 +17,9 @@
 //! - src/symbol_cache.rs: Symbol storage format
 //! - src/models.rs: Core data structures (Span, SymbolKind, SearchResult)
 //! - src/dependency.rs: Dependency extraction and storage
+//! - src/trigram_build.rs: The trigrams.bin writer used by `rfx index`
+//! - src/snapshot.rs: manifest.json, planning-size and tombstone files, delta tiers
+//! - src/meta_update.rs: how an index run writes `files` rows (ids, walk order)
 //!
 //! Changes to these files may break compatibility with existing cache files.
 
@@ -29,11 +32,21 @@ const CACHE_CRITICAL_FILES: &[&str] = &[
     "src/cache.rs",
     "src/content_store.rs",
     "src/trigram.rs",
+    "src/trigram_build.rs",
     "src/indexer.rs",
     "src/symbol_cache.rs",
     "src/models.rs",
     "src/dependency.rs",
+    "src/snapshot.rs",
+    "src/meta_update.rs",
 ];
+
+/// Code that decides what goes into the dependency, export and symbol rows. A
+/// change here does not touch the stores, but every stored row may be stale:
+/// `rfx index` then re-extracts every file's imports and clears the symbol cache.
+/// Before stable file ids, every rebuild did that anyway.
+const EXTRACTION_FILES: &[&str] = &["src/line_filter.rs", "src/dependency_resolve.rs"];
+const EXTRACTION_DIRS: &[&str] = &["src/parsers"];
 
 fn main() {
     // Compute schema hash from all cache-critical files
@@ -45,6 +58,18 @@ fn main() {
     // Tell cargo to rerun this build script if any cache-critical file changes
     for file in CACHE_CRITICAL_FILES {
         println!("cargo:rerun-if-changed={}", file);
+    }
+
+    let extraction_files = extraction_files();
+    println!(
+        "cargo:rustc-env=EXTRACTION_HASH={}",
+        hash_files(&extraction_files)
+    );
+    for file in &extraction_files {
+        println!("cargo:rerun-if-changed={}", file);
+    }
+    for dir in EXTRACTION_DIRS {
+        println!("cargo:rerun-if-changed={}", dir);
     }
 
     // REF-212: emit the short git SHA so the running binary can report its build
@@ -176,15 +201,37 @@ fn embed_pulse_template() {
     fs::write(out, table).expect("write pulse_template.rs");
 }
 
+/// Every `.rs` file of [`EXTRACTION_FILES`] and under [`EXTRACTION_DIRS`], sorted.
+fn extraction_files() -> BTreeSet<String> {
+    let mut files: BTreeSet<String> = EXTRACTION_FILES.iter().map(|s| s.to_string()).collect();
+    let mut dirs: Vec<std::path::PathBuf> = EXTRACTION_DIRS.iter().map(Into::into).collect();
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {}", dir.display(), e))
+        {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.insert(path.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    files
+}
+
 /// Compute a deterministic hash of all cache-critical source files
 fn compute_schema_hash() -> String {
-    let mut hasher = blake3::Hasher::new();
-
     // Use BTreeSet to ensure deterministic ordering (sorted by file path)
     let files: BTreeSet<String> = CACHE_CRITICAL_FILES.iter().map(|s| s.to_string()).collect();
+    hash_files(&files)
+}
+
+/// blake3 over (path, content) of each file in sorted order, first 16 hex chars.
+fn hash_files(files: &BTreeSet<String>) -> String {
+    let mut hasher = blake3::Hasher::new();
 
     // Hash each file's content in sorted order
-    for file_path in &files {
+    for file_path in files {
         let path = Path::new(file_path);
 
         if !path.exists() {

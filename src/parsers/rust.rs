@@ -1789,21 +1789,30 @@ pub fn parse_all_rust_crates(root: &std::path::Path) -> anyhow::Result<Vec<RustC
         return Ok(Vec::new());
     }
 
-    let mut crates = Vec::new();
     let walker = ignore::WalkBuilder::new(root).git_ignore(true).build();
-
+    let mut manifests = Vec::new();
     for entry in walker {
         let entry = entry?;
         if entry.file_name() == "Cargo.toml" {
-            let content = std::fs::read_to_string(entry.path())?;
-            if let Some(name) = extract_crate_name(&content)
-                && let Some(crate_root) = entry.path().parent()
-            {
-                crates.push(RustCrate {
-                    name,
-                    root_path: crate_root.to_path_buf(),
-                });
-            }
+            manifests.push(entry.path().to_path_buf());
+        }
+    }
+    parse_rust_crates_from(&manifests)
+}
+
+/// [`parse_all_rust_crates`] for `Cargo.toml` entries already found (in walk order).
+/// The caller applies the root `Cargo.toml` gate.
+pub fn parse_rust_crates_from(manifests: &[std::path::PathBuf]) -> anyhow::Result<Vec<RustCrate>> {
+    let mut crates = Vec::new();
+    for path in manifests {
+        let content = std::fs::read_to_string(path)?;
+        if let Some(name) = extract_crate_name(&content)
+            && let Some(crate_root) = path.parent()
+        {
+            crates.push(RustCrate {
+                name,
+                root_path: crate_root.to_path_buf(),
+            });
         }
     }
     Ok(crates)

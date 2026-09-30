@@ -96,7 +96,7 @@ pub async fn run_agentic_loop(
 
             // Trigger reindexing
             let workspace_root = cache.workspace_root();
-            let index_config = crate::IndexConfig::default();
+            let index_config = cache.effective_index_config(&[])?;
             let indexer = crate::indexer::Indexer::new(cache.clone(), index_config);
 
             log::info!("Auto-reindexing cache at {:?}", workspace_root);

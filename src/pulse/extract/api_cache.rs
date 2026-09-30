@@ -7,7 +7,6 @@
 
 use super::{Corpus, FileRole};
 use crate::cache::CacheManager;
-use crate::content_store::ContentReader;
 use crate::parsers::api::{self, ApiFile, EXTRACTOR_VERSION};
 use crate::symbol_cache::{decode_json_blob, encode_json_blob};
 use anyhow::{Context, Result};
@@ -97,8 +96,9 @@ pub fn load(cache: &CacheManager, corpus: &Corpus) -> Result<ApiIndex> {
 
     if !misses.is_empty() {
         let reader =
-            ContentReader::open(cache.path().join("content.bin")).context("opening content.bin")?;
-        let ids: HashMap<&str, u32> = (0..reader.file_count() as u32)
+            crate::snapshot::IndexSnapshot::open(cache.path()).context("opening content.bin")?;
+        let ids: HashMap<&str, u32> = reader
+            .live_ids()
             .filter_map(|id| {
                 let p = reader.get_file_path(id)?.to_str()?;
                 Some((p.strip_prefix("./").unwrap_or(p), id))

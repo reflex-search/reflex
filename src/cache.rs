@@ -24,6 +24,9 @@ pub const TOKENS_BIN: &str = "tokens.bin";
 #[deprecated(note = "hashes.json is no longer written; hashes live in meta.db")]
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
+/// `statistics` key: the `--languages` of the last `rfx index` run that passed one
+/// (JSON list). Older binaries ignore it.
+pub const LANGUAGES_OVERRIDE_KEY: &str = "languages_override";
 
 /// Open a SQLite database with Reflex's standard pragmas.
 ///
@@ -120,6 +123,12 @@ impl CacheManager {
         Ok(())
     }
 
+    /// Create `config.toml` if it is missing: what `init` does besides the schema,
+    /// for a cache whose schema this binary already completed a run on.
+    pub(crate) fn ensure_config(&self) -> Result<()> {
+        self.init_config_toml()
+    }
+
     /// Initialize meta.db with SQLite schema
     fn init_meta_db(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
@@ -155,7 +164,8 @@ impl CacheManager {
                 size INTEGER NOT NULL DEFAULT 0,
                 mtime_ns INTEGER NOT NULL DEFAULT 0,
                 hash TEXT NOT NULL DEFAULT '',
-                dirty_at_index INTEGER NOT NULL DEFAULT 0
+                dirty_at_index INTEGER NOT NULL DEFAULT 0,
+                walk_seq INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -163,6 +173,11 @@ impl CacheManager {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
+            [],
+        )?;
+        // Walk-order probes of a library update (`Indexer::update_paths`).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_walk_seq ON files(walk_seq)",
             [],
         )?;
 
@@ -176,10 +191,13 @@ impl CacheManager {
             [],
         )?;
 
-        // Initialize default statistics
+        // Initialize default statistics. `OR IGNORE`: an existing cache keeps its
+        // `total_files` (its `updated_at` is the "Last updated" time) and its
+        // `last_compaction`. Resetting them on every run made the unlocked
+        // background compaction start on every `rfx` command.
         let now = chrono::Utc::now().timestamp();
         conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["total_files", "0", &now.to_string()],
         )?;
         // Who wrote this cache. The old `cache_version = "1"` row was never read by
@@ -201,16 +219,21 @@ impl CacheManager {
         }
 
         // Store cache schema hash for automatic invalidation detection
-        // This hash is computed at build time from cache-critical source files
+        // This hash is computed at build time from cache-critical source files.
+        //
+        // `OR IGNORE`: only a NEW cache is stamped here. An existing cache keeps the
+        // hash of the binary that last completed an index, until
+        // `update_schema_hash` at the end of the next complete run. Stamping it here
+        // meant the indexer's "schema changed → full rebuild" check could never fire.
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["schema_hash", schema_hash, &now.to_string()],
         )?;
 
         // Initialize last_compaction timestamp (0 = never compacted)
         conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["last_compaction", "0", &now.to_string()],
         )?;
 
@@ -335,11 +358,12 @@ impl CacheManager {
     /// The schema hash already forces that index to rebuild every row, so the
     /// columns only need to exist; their defaults are overwritten immediately.
     fn migrate_files_columns(conn: &Connection) -> Result<()> {
-        const WANTED: [(&str, &str); 4] = [
+        const WANTED: [(&str, &str); 5] = [
             ("size", "INTEGER NOT NULL DEFAULT 0"),
             ("mtime_ns", "INTEGER NOT NULL DEFAULT 0"),
             ("hash", "TEXT NOT NULL DEFAULT ''"),
             ("dirty_at_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("walk_seq", "INTEGER NOT NULL DEFAULT 0"),
         ];
         let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('files')")?;
         let present: std::collections::HashSet<String> = stmt
@@ -417,34 +441,6 @@ impl CacheManager {
         })?;
         rows.collect::<Result<HashMap<_, _>, _>>()
             .context("Failed to read file fingerprints")
-    }
-
-    /// Refresh `size`/`mtime_ns`/`dirty_at_index` for files whose content is
-    /// unchanged.
-    ///
-    /// The incremental skip path re-reads every file and finds every hash equal, so
-    /// content.bin is left alone — but a `touch`, or an edit that was later reverted,
-    /// has moved the mtime. Without this update every later status check would
-    /// re-hash those files to prove them unchanged.
-    pub fn refresh_fingerprints(
-        &self,
-        rows: &[(String, u64, i64)],
-        dirty: &std::collections::HashSet<String>,
-    ) -> Result<()> {
-        let db_path = self.cache_path.join(META_DB);
-        let mut conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "UPDATE files SET size = ?, mtime_ns = ?, dirty_at_index = ? WHERE path = ?",
-            )?;
-            for (path, size, mtime_ns) in rows {
-                let is_dirty = dirty.contains(path) as i64;
-                stmt.execute(rusqlite::params![*size as i64, mtime_ns, is_dirty, path])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     /// Initialize config.toml with defaults
@@ -567,8 +563,12 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             );
         }
 
+        // The stores the manifest names (or the fixed names of a cache without
+        // one); messages use the logical names.
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+
         // Check trigrams.bin if it exists
-        let trigrams_path = self.cache_path.join("trigrams.bin");
+        let trigrams_path = summary.trigram_files[0].clone();
         if trigrams_path.exists() {
             use std::io::Read;
 
@@ -599,7 +599,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         }
 
         // Check content.bin if it exists
-        let content_path = self.cache_path.join("content.bin");
+        let content_path = summary.content_files[0].clone();
         if content_path.exists() {
             use std::io::Read;
 
@@ -659,6 +659,59 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             .parent()
             .expect(".reflex directory should have a parent")
             .to_path_buf()
+    }
+
+    /// The config every index run in this workspace uses: `.reflex/config.toml`,
+    /// with `languages` replaced by `languages` when it is not empty, else by the
+    /// `--languages` of the last `rfx index` run that passed one.
+    ///
+    /// `rfx index`, automatic updates, `index_project`, `POST /index`, `rfx watch`
+    /// and interactive mode all start here, so they index the same file set the
+    /// freshness check expects.
+    pub fn effective_index_config(
+        &self,
+        languages: &[crate::models::Language],
+    ) -> Result<crate::models::IndexConfig> {
+        let mut config = self.load_index_config()?;
+        if !languages.is_empty() {
+            config.languages = languages.to_vec();
+        } else if let Some(saved) = self.languages_override() {
+            config.languages = saved;
+        }
+        Ok(config)
+    }
+
+    /// The `--languages` of the last `rfx index` run that passed one, if any.
+    fn languages_override(&self) -> Option<Vec<crate::models::Language>> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return None;
+        }
+        let conn = open_meta_db(&db_path).ok()?;
+        let raw = crate::meta_update::get_statistic(&conn, LANGUAGES_OVERRIDE_KEY)
+            .ok()
+            .flatten()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Record the `--languages` of an `rfx index` run (empty: none was passed),
+    /// so later automatic updates index the same languages.
+    pub fn set_languages_override(&self, languages: &[crate::models::Language]) -> Result<()> {
+        let conn = open_meta_db(self.cache_path.join(META_DB))?;
+        if languages.is_empty() {
+            conn.execute(
+                "DELETE FROM statistics WHERE key = ?",
+                [LANGUAGES_OVERRIDE_KEY],
+            )?;
+        } else {
+            crate::meta_update::set_statistic(
+                &conn,
+                LANGUAGES_OVERRIDE_KEY,
+                &serde_json::to_string(languages)?,
+                chrono::Utc::now().timestamp(),
+            )?;
+        }
+        Ok(())
     }
 
     /// Load IndexConfig from `.reflex/config.toml` if it exists.
@@ -847,25 +900,19 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(())
     }
 
-    /// Load all file hashes across all branches from SQLite
-    ///
-    /// Used by background indexer to get hashes for all indexed files.
-    /// Returns the most recent hash for each file across all branches.
-    /// `path → (file_id, hash)` for every file on every branch, in one query.
+    /// `path → (file_id, hash)` for every indexed file, in one query.
     ///
     /// What the background symbol pass needs to decide, without touching SQLite
-    /// again, which files are already cached and which ids to write.
+    /// again, which files are already cached and which ids to write. The hash is
+    /// `files.hash`, the hash of the bytes in the stores: a branch row's hash can
+    /// name another version of the file once other branches' rows are kept.
     pub fn load_all_file_rows(&self) -> Result<HashMap<String, (i64, String)>> {
         let db_path = self.cache_path.join(META_DB);
         if !db_path.exists() {
             return Ok(HashMap::new());
         }
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
-        let mut stmt = conn.prepare(
-            "SELECT f.path, f.id, fb.hash
-             FROM file_branches fb
-             JOIN files f ON fb.file_id = f.id",
-        )?;
+        let mut stmt = conn.prepare("SELECT path, id, hash FROM files")?;
         let rows: HashMap<String, (i64, String)> = stmt
             .query_map([], |row| {
                 Ok((
@@ -938,15 +985,16 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(hashes)
     }
 
-    /// `path → (file_id, hash)` on `branch` for the given paths only.
+    /// `path → (file_id, hash)` for the given paths only, `hash` = `files.hash`.
     ///
     /// The symbol path used to load every hash on the branch (a three-way join over
     /// the whole index) and then look up every candidate's file id in a second
     /// query. A `--symbols` query touches tens of files; this asks for exactly
-    /// those, in 900-path chunks, on a connection the caller already holds.
-    pub fn branch_file_rows_on(
+    /// those, in 900-path chunks, on a connection the caller already holds. The
+    /// key is the hash of the stored bytes, so a checkout without a reindex can
+    /// never cache one version's symbols under another version's hash.
+    pub fn file_rows_on(
         conn: &Connection,
-        branch: &str,
         paths: &[String],
     ) -> Result<HashMap<String, (i64, String)>> {
         const BATCH_SIZE: usize = 900;
@@ -954,16 +1002,11 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         for chunk in paths.chunks(BATCH_SIZE) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
             let sql = format!(
-                "SELECT f.path, f.id, fb.hash
-                 FROM files f
-                 JOIN file_branches fb ON fb.file_id = f.id
-                 JOIN branches b ON fb.branch_id = b.id
-                 WHERE b.name = ? AND f.path IN ({})",
+                "SELECT path, id, hash FROM files WHERE path IN ({})",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
-            let params = std::iter::once(branch).chain(chunk.iter().map(String::as_str));
-            let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -1038,195 +1081,28 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(())
     }
 
-    /// Batch update files AND record their hashes for a branch in a SINGLE transaction
-    ///
-    /// This is the recommended method for indexing as it ensures atomicity:
-    /// if files are inserted, their branch hashes are guaranteed to be inserted too.
-    pub fn batch_update_files_and_branch(
-        &self,
-        files: &[FileRow],
-        branch: &str,
-        commit_sha: Option<&str>,
-    ) -> Result<()> {
-        log::info!(
-            "batch_update_files_and_branch: Processing {} files for branch '{}'",
-            files.len(),
-            branch
-        );
-
-        let db_path = self.cache_path.join(META_DB);
-        let mut conn = open_meta_db(&db_path)
-            .context("Failed to open meta.db for batch update and branch recording")?;
-
-        let now = chrono::Utc::now().timestamp();
-
-        // Use a SINGLE transaction for both operations
-        let tx = conn.transaction()?;
-
-        // Step 1: Insert/update files table, fingerprint included.
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO files
-                     (path, last_indexed, language, line_count, size, mtime_ns, hash, dirty_at_index)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )?;
-            for row in files {
-                stmt.execute(rusqlite::params![
-                    row.path,
-                    now,
-                    row.language,
-                    row.line_count as i64,
-                    row.size as i64,
-                    row.mtime_ns,
-                    row.hash,
-                    row.dirty as i64,
-                ])?;
-            }
-        }
-        log::info!("Inserted {} files into files table", files.len());
-
-        // Step 2: Get or create branch_id (within same transaction)
-        let branch_id = self.get_or_create_branch_id(&tx, branch, commit_sha)?;
-        log::debug!("Got branch_id={} for branch '{}'", branch_id, branch);
-
-        // Step 3: Insert file_branches entries (within same transaction)
-        let mut inserted = 0;
-        for row in files {
-            // Lookup file_id from path (will find it because we just inserted above)
-            let file_id: i64 = tx
-                .query_row(
-                    "SELECT id FROM files WHERE path = ?",
-                    [row.path.as_str()],
-                    |r| r.get(0),
-                )
-                .context(format!(
-                    "File not found in index after insert: {}",
-                    row.path
-                ))?;
-
-            // Insert into file_branches using INTEGER values (not strings!)
-            tx.execute(
-                "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
-                 VALUES (?, ?, ?, ?)",
-                rusqlite::params![file_id, branch_id, row.hash.as_str(), now],
-            )?;
-            inserted += 1;
-        }
-        log::info!("Inserted {} file_branches entries", inserted);
-
-        // Step 4: Drop rows for files that are no longer on disk.
-        //
-        // Until 1.7.2 this method was INSERT OR REPLACE only, so `meta.db` never
-        // shrank. A deleted file kept its `files` and `file_branches` rows forever,
-        // `stats()` counts `file_branches`, and so `total_files` still reported 1027
-        // after a deletion. Pruning lived only in `compact()`, which is throttled to
-        // once a day AND skipped entirely for the `mcp`, `watch` and `serve` commands
-        // — so an MCP-only session never pruned at all.
-        //
-        // A temp table rather than a bound IN-list: SQLite caps a statement at 999
-        // parameters, and a workspace has far more files than that.
-        let pruned = {
-            tx.execute_batch(
-                "CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT PRIMARY KEY);
-                 DELETE FROM current_paths;",
-            )?;
-            {
-                let mut stmt =
-                    tx.prepare("INSERT OR IGNORE INTO current_paths (path) VALUES (?)")?;
-                for row in files {
-                    stmt.execute([row.path.as_str()])?;
-                }
-            }
-
-            // Detach this branch from files it no longer contains.
-            let unlinked = tx.execute(
-                "DELETE FROM file_branches
-                 WHERE branch_id = ?
-                   AND file_id NOT IN (SELECT id FROM files WHERE path IN (SELECT path FROM current_paths))",
-                rusqlite::params![branch_id],
-            )?;
-
-            // Then sweep files no branch references any more. Scoped this way so a
-            // file that still exists on another branch is never dropped.
-            let orphaned = tx.execute(
-                "DELETE FROM files WHERE id NOT IN (SELECT file_id FROM file_branches)",
-                [],
-            )?;
-
-            tx.execute_batch("DROP TABLE IF EXISTS current_paths;")?;
-            (unlinked, orphaned)
-        };
-        if pruned.0 > 0 || pruned.1 > 0 {
-            log::info!(
-                "Pruned {} stale file_branches rows and {} orphaned files rows",
-                pruned.0,
-                pruned.1
-            );
-        }
-
-        // Commit the entire transaction atomically
-        tx.commit()?;
-        log::info!("Transaction committed successfully (files + file_branches)");
-
-        // DIAGNOSTIC: Verify data was actually persisted after commit
-        // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
-        let verify_conn =
-            open_meta_db(&db_path).context("Failed to open meta.db for verification")?;
-
-        // Count actual files in database
-        let actual_file_count: i64 = verify_conn.query_row(
-            "SELECT COUNT(*) FROM files WHERE path IN (SELECT path FROM files ORDER BY id DESC LIMIT ?)",
-            [files.len()],
-            |row| row.get(0)
-        ).unwrap_or(0);
-
-        // Count actual file_branches entries for this branch
-        let actual_fb_count: i64 = verify_conn
-            .query_row(
-                "SELECT COUNT(*) FROM file_branches fb
-             JOIN branches b ON fb.branch_id = b.id
-             WHERE b.name = ?",
-                [branch],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        log::info!(
-            "Post-commit verification: {} files in files table (expected {}), {} file_branches entries for '{}' (expected {})",
-            actual_file_count,
-            files.len(),
-            actual_fb_count,
-            branch,
-            inserted
-        );
-
-        // DEFENSIVE: Warn if counts don't match expectations
-        if actual_file_count < files.len() as i64 {
-            log::warn!(
-                "MISMATCH: Expected {} files in database, but only found {}! Data may not have persisted.",
-                files.len(),
-                actual_file_count
-            );
-        }
-        if actual_fb_count < inserted as i64 {
-            log::warn!(
-                "MISMATCH: Expected {} file_branches entries for branch '{}', but only found {}! Data may not have persisted.",
-                inserted,
-                branch,
-                actual_fb_count
-            );
-        }
-
-        Ok(())
-    }
-
     /// Update statistics after indexing by calculating totals from database for a specific branch
     ///
     /// Counts only files indexed for the given branch, not all files across all branches.
     pub fn update_stats(&self, branch: &str) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn = open_meta_db(&db_path).context("Failed to open meta.db for stats update")?;
+        Self::update_stats_on(&conn, branch)
+    }
 
+    /// Record `total_files` (and its `updated_at`, the "Last updated" time) as `n`:
+    /// what [`Self::update_stats_on`] counts, for a caller that knows every file
+    /// has its branch row.
+    pub(crate) fn set_total_files_on(conn: &Connection, n: usize, now: i64) -> Result<()> {
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["total_files", &n.to_string(), &now.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// [`Self::update_stats`] on an open connection (inside the caller's transaction).
+    pub(crate) fn update_stats_on(conn: &Connection, branch: &str) -> Result<()> {
         // Count files for specific branch only (branch-aware statistics)
         let total_files: usize = conn
             .query_row(
@@ -1277,6 +1153,65 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         Ok(stored.as_deref() == Some(current))
     }
 
+    /// Whether this cache's dependency, export and symbol rows were written by
+    /// this binary's extraction code (see `build.rs`, `EXTRACTION_HASH`).
+    pub fn check_extraction_hash(&self) -> Result<bool> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(false);
+        }
+        let conn = open_meta_db(&db_path)?;
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM statistics WHERE key = 'extraction_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.as_deref() == Some(env!("EXTRACTION_HASH")))
+    }
+
+    /// Stamp the extraction hash; called at the end of a complete index run.
+    pub fn update_extraction_hash(&self) -> Result<()> {
+        let conn = open_meta_db(self.cache_path.join(META_DB))
+            .context("Failed to open meta.db for extraction hash update")?;
+        Self::update_extraction_hash_on(&conn)
+    }
+
+    /// [`Self::update_extraction_hash`] on an open connection.
+    pub(crate) fn update_extraction_hash_on(conn: &Connection) -> Result<()> {
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            [
+                "extraction_hash",
+                env!("EXTRACTION_HASH"),
+                &chrono::Utc::now().timestamp().to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete every symbol cache row; returns how many. A cache without the
+    /// symbols table (no symbol pass has run) has nothing to delete.
+    pub fn clear_symbol_cache(&self) -> Result<usize> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return Ok(0);
+        }
+        let conn = open_meta_db(&db_path)?;
+        let has_table: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'symbols'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)?;
+        if !has_table {
+            return Ok(0);
+        }
+        Ok(conn.execute("DELETE FROM symbols", [])?)
+    }
+
     /// Everything the freshness check reads from `meta.db`, on ONE connection.
     ///
     /// The per-query status check used to open three connections (`check_schema_hash`,
@@ -1291,6 +1226,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 branch_indexed: false,
                 branch_info: None,
                 dirty_at_index: Vec::new(),
+                rule_files: None,
             });
         }
         let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
@@ -1303,9 +1239,13 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 branch_indexed: false,
                 branch_info: None,
                 dirty_at_index: Vec::new(),
+                rule_files: None,
             });
         }
 
+        let rule_files = crate::meta_update::get_statistic(&conn, crate::indexer::RULE_FILES_KEY)
+            .ok()
+            .flatten();
         let Some(branch) = branch else {
             return Ok(StatusReads {
                 schema_ok,
@@ -1313,18 +1253,29 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 branch_indexed: false,
                 branch_info: None,
                 dirty_at_index: Vec::new(),
+                rule_files,
             });
         };
 
         let branch_indexed = Self::branch_exists_on(&conn, branch);
-        // The `files` table (and content.bin) is global, so an index written on
-        // another branch is still the baseline here; its row says which commit and
-        // when. Freshness is judged by file content, so a branch switch that leaves
-        // every file's bytes unchanged is not staleness.
-        let branch_info = if branch_indexed {
-            Self::get_branch_info_on(&conn, branch).ok()
-        } else {
-            Self::latest_branch_info_on(&conn).ok()
+        // The `files` table (and content.bin) is global: the baseline is the tree
+        // the LAST run indexed, whichever branch that was. Its row says which
+        // commit and when. The current branch's own row is not the baseline:
+        // after `checkout main` from an indexed side branch, main's row still
+        // names main's commit, and comparing against it reported `fresh` while the
+        // index held the side branch's files (2.0.3). Freshness is judged by file
+        // content, so a branch switch that leaves every byte unchanged is fresh.
+        let synced =
+            crate::meta_update::get_statistic(&conn, crate::meta_update::SYNCED_BRANCH_KEY)
+                .ok()
+                .flatten();
+        let branch_info = match synced
+            .as_deref()
+            .and_then(|b| Self::get_branch_info_on(&conn, b).ok())
+        {
+            Some(info) => Some(info),
+            None if branch_indexed => Self::get_branch_info_on(&conn, branch).ok(),
+            None => Self::latest_branch_info_on(&conn).ok(),
         };
 
         Ok(StatusReads {
@@ -1333,6 +1284,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             branch_indexed,
             branch_info,
             dirty_at_index: Self::dirty_at_index_on(&conn).unwrap_or_default(),
+            rule_files,
         })
     }
 
@@ -1424,7 +1376,11 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let db_path = self.cache_path.join(META_DB);
         let conn =
             open_meta_db(&db_path).context("Failed to open meta.db for schema hash update")?;
+        Self::update_schema_hash_on(&conn)
+    }
 
+    /// [`Self::update_schema_hash`] on an open connection.
+    pub(crate) fn update_schema_hash_on(conn: &Connection) -> Result<()> {
         let schema_hash = env!("CACHE_SCHEMA_HASH");
         let now = chrono::Utc::now().timestamp();
 
@@ -1503,8 +1459,6 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             });
         }
 
-        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
-
         // Determine current branch for branch-aware statistics
         let workspace_root = self.workspace_root();
         let current_branch = if crate::git::is_git_repo(&workspace_root) {
@@ -1514,6 +1468,20 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         } else {
             Some("_default".to_string())
         };
+        self.stats_on_branch(current_branch)
+    }
+
+    /// [`stats`](Self::stats) for a branch the caller already knows (`"_default"`
+    /// outside git), without running git again.
+    pub fn stats_on_branch(
+        &self,
+        current_branch: Option<String>,
+    ) -> Result<crate::models::IndexStats> {
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            return self.stats();
+        }
+        let conn = open_meta_db(&db_path).context("Failed to open meta.db")?;
 
         log::debug!("stats(): current_branch = {:?}", current_branch);
 
@@ -1521,15 +1489,19 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let total_files: usize = if let Some(ref branch) = current_branch {
             log::debug!("stats(): Counting files for branch '{}'", branch);
 
-            // Debug: Check all branches
-            let branches: Vec<(i64, String, i64)> = conn
-                .prepare("SELECT id, name, file_count FROM branches")
-                .and_then(|mut stmt| {
-                    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                        .map(|rows| rows.collect())
-                })
-                .and_then(|result| result)
-                .unwrap_or_default();
+            // Debug: Check all branches (two full scans: only when debug is on)
+            let debug = log::log_enabled!(log::Level::Debug);
+            let branches: Vec<(i64, String, i64)> = if !debug {
+                Vec::new()
+            } else {
+                conn.prepare("SELECT id, name, file_count FROM branches")
+                    .and_then(|mut stmt| {
+                        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                            .map(|rows| rows.collect())
+                    })
+                    .and_then(|result| result)
+                    .unwrap_or_default()
+            };
 
             for (id, name, count) in &branches {
                 log::debug!(
@@ -1541,8 +1513,10 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             }
 
             // Debug: Count file_branches per branch
-            let fb_counts: Vec<(String, i64)> = conn
-                .prepare(
+            let fb_counts: Vec<(String, i64)> = if !debug {
+                Vec::new()
+            } else {
+                conn.prepare(
                     "SELECT b.name, COUNT(*) FROM file_branches fb
                  JOIN branches b ON fb.branch_id = b.id
                  GROUP BY b.name",
@@ -1552,7 +1526,8 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                         .map(|rows| rows.collect())
                 })
                 .and_then(|result| result)
-                .unwrap_or_default();
+                .unwrap_or_default()
+            };
 
             for (name, count) in &fb_counts {
                 log::debug!(
@@ -1596,38 +1571,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
             )
             .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
 
-        // Calculate total cache size (all binary files)
-        let mut index_size_bytes: u64 = 0;
-        let mut trigram_index_bytes: u64 = 0;
-
-        for file_name in [META_DB, CONFIG_TOML, "content.bin", "trigrams.bin"] {
-            let file_path = self.cache_path.join(file_name);
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                index_size_bytes += metadata.len();
-                if file_name == "trigrams.bin" {
-                    trigram_index_bytes = metadata.len();
-                }
-            }
-        }
-
-        // Raw corpus size: content.bin stores the concatenated file bytes
-        // directly after its 32-byte header, and `index_offset` (bytes 16..24)
-        // marks where they end. Read just the header; never load the store.
-        let corpus_bytes: u64 = {
-            use std::io::Read;
-            std::fs::File::open(self.cache_path.join("content.bin"))
-                .ok()
-                .and_then(|mut f| {
-                    let mut header = [0u8; 32];
-                    f.read_exact(&mut header).ok()?;
-                    if &header[..4] != b"RFCT" {
-                        return None;
-                    }
-                    let index_offset = u64::from_le_bytes(header[16..24].try_into().ok()?);
-                    Some(index_offset.saturating_sub(32))
-                })
-                .unwrap_or(0)
-        };
+        let (index_size_bytes, trigram_index_bytes, corpus_bytes) = self.store_sizes();
 
         // Get file count breakdown by language (branch-aware if possible)
         let mut files_by_language = std::collections::HashMap::new();
@@ -1717,12 +1661,111 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         })
     }
 
+    /// On-disk size of the cache, of its trigram stores, and the live corpus
+    /// bytes (see `stats_on_branch`).
+    pub(crate) fn store_sizes(&self) -> (u64, u64, u64) {
+        // Calculate total cache size (all binary files)
+        let mut index_size_bytes: u64 = 0;
+        let mut trigram_index_bytes: u64 = 0;
+
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+        for file_path in [
+            self.cache_path.join(META_DB),
+            self.cache_path.join(CONFIG_TOML),
+        ]
+        .iter()
+        .chain(summary.files())
+        {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
+                index_size_bytes += metadata.len();
+            }
+        }
+        for file_path in &summary.trigram_files {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
+                trigram_index_bytes += metadata.len();
+            }
+        }
+
+        // Raw corpus size: the manifest records the live text bytes. A cache
+        // without one: content.bin stores the concatenated file bytes directly
+        // after its 32-byte header, and `index_offset` (bytes 16..24) marks where
+        // they end. Read just the header; never load the store.
+        let corpus_bytes: u64 = summary.live_corpus_bytes.unwrap_or_else(|| {
+            use std::io::Read;
+            std::fs::File::open(&summary.content_files[0])
+                .ok()
+                .and_then(|mut f| {
+                    let mut header = [0u8; 32];
+                    f.read_exact(&mut header).ok()?;
+                    if &header[..4] != b"RFCT" {
+                        return None;
+                    }
+                    let index_offset = u64::from_le_bytes(header[16..24].try_into().ok()?);
+                    Some(index_offset.saturating_sub(32))
+                })
+                .unwrap_or(0)
+        });
+
+        (index_size_bytes, trigram_index_bytes, corpus_bytes)
+    }
+
+    /// [`Self::stats_on_branch`] for a branch whose `file_branches` rows name every
+    /// file (the index run just synced them): the same numbers from `files` alone,
+    /// one scan instead of three joins.
+    pub(crate) fn stats_synced(&self) -> Result<crate::models::IndexStats> {
+        let conn = open_meta_db(self.cache_path.join(META_DB)).context("Failed to open meta.db")?;
+        let mut files_by_language = std::collections::HashMap::new();
+        let mut lines_by_language = std::collections::HashMap::new();
+        let mut total_files = 0usize;
+        {
+            let mut stmt = conn.prepare(
+                "SELECT language, COUNT(*), SUM(line_count) FROM files GROUP BY language",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, i64>(2)? as usize,
+                ))
+            })?;
+            for row in rows {
+                let (language, files, lines) = row?;
+                total_files += files;
+                files_by_language.insert(language.clone(), files);
+                lines_by_language.insert(language, lines);
+            }
+        }
+        let last_updated: String = conn
+            .query_row(
+                "SELECT updated_at FROM statistics WHERE key = 'total_files'",
+                [],
+                |row| {
+                    let timestamp: i64 = row.get(0)?;
+                    Ok(chrono::DateTime::from_timestamp(timestamp, 0)
+                        .unwrap_or_else(chrono::Utc::now)
+                        .to_rfc3339())
+                },
+            )
+            .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
+        let (index_size_bytes, trigram_index_bytes, corpus_bytes) = self.store_sizes();
+        Ok(crate::models::IndexStats {
+            total_files,
+            index_size_bytes,
+            last_updated,
+            files_by_language,
+            lines_by_language,
+            corpus_bytes,
+            trigram_index_bytes,
+            ..Default::default()
+        })
+    }
+
     // ===== Branch-aware indexing methods =====
 
     /// Get or create a branch ID by name
     ///
     /// Returns the numeric branch ID, creating a new entry if needed.
-    fn get_or_create_branch_id(
+    pub(crate) fn get_or_create_branch_id(
         &self,
         conn: &Connection,
         branch_name: &str,
@@ -1922,7 +1965,7 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     }
 
     /// The most recently written branch row, whatever its name.
-    fn latest_branch_info_on(conn: &Connection) -> Result<BranchInfo> {
+    pub(crate) fn latest_branch_info_on(conn: &Connection) -> Result<BranchInfo> {
         let info = conn.query_row(
             "SELECT name, commit_sha, last_indexed, file_count, is_dirty FROM branches
              ORDER BY last_indexed DESC LIMIT 1",
@@ -1972,7 +2015,17 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         let db_path = self.cache_path.join(META_DB);
         let conn =
             open_meta_db(&db_path).context("Failed to open meta.db for branch metadata update")?;
+        Self::update_branch_metadata_on(&conn, branch, commit_sha, file_count, is_dirty)
+    }
 
+    /// [`Self::update_branch_metadata`] on an open connection.
+    pub(crate) fn update_branch_metadata_on(
+        conn: &Connection,
+        branch: &str,
+        commit_sha: Option<&str>,
+        file_count: usize,
+        is_dirty: bool,
+    ) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         let is_dirty_int = if is_dirty { 1 } else { 0 };
 
@@ -2200,125 +2253,35 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
         // Get initial cache size
         let size_before = self.calculate_cache_size()?;
 
-        // Step 1: Identify deleted files (in DB but not on filesystem)
-        let deleted_files = self.identify_deleted_files()?;
-        log::info!(
-            "Found {} deleted files to remove from cache",
-            deleted_files.len()
-        );
-
-        if deleted_files.is_empty() {
-            log::info!("No deleted files to compact - cache is clean");
-            // Update timestamp anyway to prevent running compaction too frequently
-            self.update_compaction_timestamp()?;
-
-            return Ok(crate::models::CompactionReport {
-                files_removed: 0,
-                space_saved_bytes: 0,
-                duration_ms: start_time.elapsed().as_millis() as u64,
-            });
+        // Deleted files are NOT removed here. An index run removes a file's row
+        // and tombstones it in the stores in one publish; removing only the row
+        // left the stores returning the file while the freshness check (which
+        // compares rows with the disk) could no longer see the deletion.
+        let free_pages: i64 = {
+            let conn = open_meta_db(self.cache_path.join(META_DB))?;
+            conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))
+                .unwrap_or(0)
+        };
+        if free_pages > 0 {
+            self.vacuum_database()?;
+            log::info!("Completed VACUUM operation ({} free pages)", free_pages);
         }
 
-        // Step 2: Delete from database (CASCADE handles file_branches, file_dependencies, file_exports)
-        self.delete_files_from_db(&deleted_files)?;
-        log::info!("Deleted {} files from database", deleted_files.len());
-
-        // Step 3: Run VACUUM to reclaim disk space
-        self.vacuum_database()?;
-        log::info!("Completed VACUUM operation");
-
-        // Get final cache size
         let size_after = self.calculate_cache_size()?;
         let space_saved = size_before.saturating_sub(size_after);
-
-        // Step 4: Update last_compaction timestamp
         self.update_compaction_timestamp()?;
-
         let duration_ms = start_time.elapsed().as_millis() as u64;
-
         log::info!(
-            "Cache compaction completed: {} files removed, {} bytes saved ({:.2} MB), took {}ms",
-            deleted_files.len(),
+            "Cache compaction completed: {} bytes saved, took {}ms",
             space_saved,
-            space_saved as f64 / 1_048_576.0,
             duration_ms
         );
 
         Ok(crate::models::CompactionReport {
-            files_removed: deleted_files.len(),
+            files_removed: 0,
             space_saved_bytes: space_saved,
             duration_ms,
         })
-    }
-
-    /// Identify files in database that no longer exist on filesystem
-    ///
-    /// Returns a Vec of file IDs for files that should be removed from the cache.
-    pub(crate) fn identify_deleted_files(&self) -> Result<Vec<i64>> {
-        let db_path = self.cache_path.join(META_DB);
-        let conn = open_meta_db(&db_path)
-            .context("Failed to open meta.db for deleted file identification")?;
-
-        let workspace_root = self.workspace_root();
-
-        // Query all files from database (id, path)
-        let mut stmt = conn.prepare("SELECT id, path FROM files")?;
-        let files = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        log::debug!("Checking {} files for deletion status", files.len());
-
-        // Check which files no longer exist on disk
-        let mut deleted_file_ids = Vec::new();
-        for (file_id, file_path) in files {
-            let full_path = workspace_root.join(&file_path);
-            if !full_path.exists() {
-                log::trace!("File no longer exists: {} (id={})", file_path, file_id);
-                deleted_file_ids.push(file_id);
-            }
-        }
-
-        Ok(deleted_file_ids)
-    }
-
-    /// Delete files from database by file ID
-    ///
-    /// Uses a transaction for atomicity. CASCADE delete handles:
-    /// - file_branches entries
-    /// - file_dependencies entries
-    /// - file_exports entries
-    pub(crate) fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
-        if file_ids.is_empty() {
-            return Ok(());
-        }
-
-        let db_path = self.cache_path.join(META_DB);
-        let mut conn =
-            open_meta_db(&db_path).context("Failed to open meta.db for file deletion")?;
-
-        let tx = conn.transaction()?;
-
-        // Delete files in batches to avoid SQLite parameter limit (999 max)
-        const BATCH_SIZE: usize = 900;
-
-        for chunk in file_ids.chunks(BATCH_SIZE) {
-            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-
-            let delete_query = format!("DELETE FROM files WHERE id IN ({})", placeholders);
-
-            let params: Vec<i64> = chunk.to_vec();
-            tx.execute(&delete_query, rusqlite::params_from_iter(params))?;
-        }
-
-        tx.commit()?;
-        log::debug!(
-            "Deleted {} files from database (CASCADE handled related tables)",
-            file_ids.len()
-        );
-        Ok(())
     }
 
     /// Run VACUUM on SQLite database to reclaim disk space
@@ -2347,9 +2310,15 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
     fn calculate_cache_size(&self) -> Result<u64> {
         let mut total_size: u64 = 0;
 
-        for file_name in [META_DB, CONFIG_TOML, "content.bin", "trigrams.bin"] {
-            let file_path = self.cache_path.join(file_name);
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
+        let summary = crate::snapshot::store_summary(&self.cache_path);
+        for file_path in [
+            self.cache_path.join(META_DB),
+            self.cache_path.join(CONFIG_TOML),
+        ]
+        .iter()
+        .chain(summary.files())
+        {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
                 total_size += metadata.len();
             }
         }
@@ -2372,6 +2341,9 @@ pub struct StatusReads {
     /// Paths `git status` listed when the index was written. They must be
     /// re-checked by content even when git now reports them clean.
     pub dirty_at_index: Vec<String>,
+    /// The rule-file record of the last index run (`indexer::RULE_FILES_KEY`),
+    /// when the schema matches.
+    pub rule_files: Option<String>,
 }
 
 /// One `files` row as the indexer writes it.
@@ -2389,7 +2361,15 @@ pub struct FileRow {
     pub mtime_ns: i64,
     /// `git status` listed this path when it was indexed.
     pub dirty: bool,
+    /// Position in walk order (see [`WALK_SEQ_GAP`]). Every output that used to
+    /// list files by `files.id` sorts by this instead: a full build numbers files
+    /// in walk order, and ids stay stable across updates.
+    pub walk_seq: i64,
 }
+
+/// Spacing of `files.walk_seq` in a full build (`position * WALK_SEQ_GAP`), so a
+/// file added later can take a value between its neighbours without renumbering.
+pub const WALK_SEQ_GAP: i64 = 1 << 20;
 
 /// What freshness compares a file on disk against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2410,6 +2390,44 @@ impl FileFingerprint {
 }
 
 /// Modification time as nanoseconds since the Unix epoch, `0` when unavailable.
+/// The size and mtime a walk records for a file: all that change detection and a
+/// stored fingerprint need (24 bytes, where a `Metadata` is ~150; a walk keeps one
+/// per file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStat {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStat {
+    pub fn of(md: &std::fs::Metadata) -> Self {
+        Self {
+            len: md.len(),
+            modified: md.modified().ok(),
+        }
+    }
+
+    pub fn size(&self) -> u64 {
+        self.len
+    }
+
+    /// See [`mtime_ns`].
+    pub fn mtime_ns(&self) -> i64 {
+        self.modified
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+            .unwrap_or(0)
+    }
+
+    /// See [`recorded_mtime_ns`].
+    pub fn recorded_mtime_ns(&self, run_start: std::time::SystemTime) -> i64 {
+        match self.modified {
+            Some(t) if t < run_start => self.mtime_ns(),
+            _ => 0,
+        }
+    }
+}
+
 pub fn mtime_ns(md: &std::fs::Metadata) -> i64 {
     md.modified()
         .ok()
@@ -3020,5 +3038,43 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("files") && err.contains("missing"));
+    }
+
+    #[test]
+    fn effective_config_uses_the_saved_languages_until_a_run_clears_them() {
+        use crate::models::Language;
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        cache.init().unwrap();
+        assert!(
+            cache
+                .effective_index_config(&[])
+                .unwrap()
+                .languages
+                .is_empty()
+        );
+
+        cache.set_languages_override(&[Language::Rust]).unwrap();
+        assert_eq!(
+            cache.effective_index_config(&[]).unwrap().languages,
+            vec![Language::Rust]
+        );
+        // An explicit list wins over the saved one.
+        assert_eq!(
+            cache
+                .effective_index_config(&[Language::Go])
+                .unwrap()
+                .languages,
+            vec![Language::Go]
+        );
+
+        cache.set_languages_override(&[]).unwrap();
+        assert!(
+            cache
+                .effective_index_config(&[])
+                .unwrap()
+                .languages
+                .is_empty()
+        );
     }
 }

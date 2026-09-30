@@ -1,7 +1,8 @@
 //! File system watcher for automatic reindexing
 //!
 //! The watcher monitors the workspace for file changes and automatically
-//! triggers incremental reindexing with configurable debouncing.
+//! reindexes with configurable debouncing. A reindex rebuilds the whole index
+//! (there is no per-file update path yet; see `.context/TODO.md`).
 
 use anyhow::{Context, Result};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -41,7 +42,7 @@ impl Default for WatchConfig {
 /// 1. Set up file system watcher using notify crate
 /// 2. Collect file change events into a HashSet (deduplicate)
 /// 3. Wait for debounce period after last change
-/// 4. Trigger incremental reindex (only changed files)
+/// 4. Trigger a reindex (rebuilds the whole index and, today, the whole symbol cache)
 /// 5. Repeat
 ///
 /// # Debouncing
@@ -112,7 +113,9 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                             pending_deletions.insert(changed_path);
                             last_event_time = Some(Instant::now());
                         }
-                    } else if should_watch_file_with(&changed_path, Some(&policy)) {
+                    } else if should_watch_file_with(&changed_path, Some(&policy))
+                        || is_rule_file_path(path, &changed_path)
+                    {
                         log::debug!("Detected change: {:?}", changed_path);
                         pending_files.insert(changed_path);
                         last_event_time = Some(Instant::now());
@@ -146,8 +149,16 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                         }
                     }
 
+                    // Only the collected paths are read; `update_paths` runs a full
+                    // index itself when one of them needs it (an ignore file, the
+                    // config, a resolver config, a branch change).
+                    let changed: Vec<PathBuf> = pending_files
+                        .iter()
+                        .chain(&pending_deletions)
+                        .cloned()
+                        .collect();
                     let start = Instant::now();
-                    match indexer.index(path, false) {
+                    match indexer.update_paths(path, &changed) {
                         Ok(stats) => {
                             let elapsed = start.elapsed();
                             if !config.quiet {
@@ -217,6 +228,17 @@ fn should_watch_file(path: &Path) -> bool {
 }
 
 /// [`should_watch_file`] under the workspace's `[index] include/exclude` policy.
+/// Whether `changed` (absolute, under `root`) is a file that decides WHICH files
+/// are indexed: an ignore file or `.reflex/config.toml`.
+fn is_rule_file_path(root: &Path, changed: &Path) -> bool {
+    let rel = changed
+        .strip_prefix(root)
+        .unwrap_or(changed)
+        .to_string_lossy()
+        .replace('\\', "/");
+    crate::indexer::is_rule_file(rel.trim_start_matches("./"))
+}
+
 fn should_watch_file_with(path: &Path, policy: Option<&crate::indexer::PathPolicy>) -> bool {
     let default_policy;
     let policy = match policy {

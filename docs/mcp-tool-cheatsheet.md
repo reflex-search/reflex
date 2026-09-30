@@ -12,16 +12,17 @@
 | Goal | Tool | Why |
 |------|------|-----|
 | Known exact name, just need locations | `list_locations` | Cheapest — `{locations: [{path, line}], total_locations}`, no content |
+| Locations plus the matching line | `list_locations` with `preview: true` | Adds `preview` (the line, trimmed, 120 chars) to each location |
 | Need locations **and** code previews | `search_code` | Full results with line numbers + context |
 | Regex: alternation, wildcards, anchors, `->`, `::` | `search_regex` | Real regular expressions |
-| How many times does X appear? | `count_occurrences` | Total occurrences + file count — no content loaded |
+| How many times does X appear? | `search_code` with `mode: "count"` | `{count, files, pattern}` — no content loaded |
 
 ```
 "Where is UserController used?"
   → list_locations(pattern: "UserController")
 
 "How many places call unwrap()?"
-  → count_occurrences(pattern: "unwrap()")
+  → search_code(pattern: "unwrap()", mode: "count")
     # brackets are regex-escaped automatically; the rewrite is reported in `warnings`
 ```
 
@@ -50,21 +51,23 @@
 | Goal | Tool | Why |
 |------|------|-----|
 | What does this file import? | `get_dependencies` | Returns all static imports with type (internal/external/stdlib) |
-| What files import this file? | `get_dependents` | Reverse lookup — impact of changes |
-| Full import tree (deps of deps) | `get_transitive_deps` | Traverses N levels deep (default: 3) |
+| What files import this file? | `get_dependencies` with `reverse: true` | Reverse lookup — impact of changes |
+| Full import tree (deps of deps) | `get_dependencies` with `depth: N` | Follows imports N levels; returns `[{path, depth}]` |
 
 ```
 "What does src/query/mod.rs depend on?"
   → get_dependencies(path: "src/query/mod.rs")
 
 "What breaks if I change models/User.php?"
-  → get_dependents(path: "User.php")
+  → get_dependencies(path: "User.php", reverse: true)
 
 "Show the full dependency chain for main.rs"
-  → get_transitive_deps(path: "src/main.rs", depth: 3)
+  → get_dependencies(path: "src/main.rs", depth: 3)
 ```
 
-> **Note:** All dependency tools extract **static imports only**. Dynamic imports (variables, template literals) are filtered by design.
+`reverse` and `depth` cannot be combined.
+
+> **Note:** Dependency analysis extracts **static imports only**. Dynamic imports (variables, template literals) are filtered by design.
 
 ---
 
@@ -73,40 +76,38 @@
 | Goal | Tool | Why |
 |------|------|-----|
 | Project type, entry points, frameworks | `gather_context` (no params) | One-shot codebase overview |
-| Dependency health at a glance | `analyze_summary` | Returns counts: circular, hotspots, unused, islands |
-| Most-imported (critical) files | `find_hotspots` | Files ranked by import count — the load-bearing modules |
-| Unused / orphaned files | `find_unused` | Candidates for deletion (verify entry points aren't included) |
-| Circular dependency cycles | `find_circular` | Returns cycle arrays: A→B→C→A |
-| Isolated subsystems | `find_islands` | Groups of files with no cross-group imports |
+| Dependency health at a glance | `analyze(kind: "summary")` | Returns counts: circular, hotspots, unused, islands |
+| Most-imported (critical) files | `analyze(kind: "hotspots")` | Files ranked by import count — the load-bearing modules |
+| Unused / orphaned files | `analyze(kind: "unused")` | Candidates for deletion (verify entry points aren't included) |
+| Circular dependency cycles | `analyze(kind: "circular")` | Returns cycle arrays: A→B→C→A |
+| Isolated subsystems | `analyze(kind: "islands")` | Groups of files with no cross-group imports |
 
 ```
 "What kind of project is this?"
   → gather_context()
 
 "Is the dependency graph healthy?"
-  → analyze_summary()
-  → then drill into find_circular / find_hotspots / find_unused as needed
+  → analyze(kind: "summary")
+  → then drill into analyze(kind: "circular" | "hotspots" | "unused") as needed
 
 "What files are most central to this codebase?"
-  → find_hotspots(min_dependents: 3)
+  → analyze(kind: "hotspots", min_dependents: 3)
 ```
+
+`analyze` also takes `limit`, `offset`, `sort`, `min_dependents`, `min_island_size` and
+`max_island_size`.
 
 ---
 
 ### "I need to maintain the index"
 
+Nothing, normally. Every tool updates the index before it answers (only the changed files),
+and builds it when there is none; after an edit, a checkout or a rebase, just search.
+
 | Goal | Tool | Why |
 |------|------|-----|
-| Index seems stale / missing files | `index_project` | Incremental by default; use `force: true` for full rebuild |
-| Search returns "Index not found" error | `index_project` immediately | Required before any other tool will work |
-
-```
-# Always: if any tool returns "Index not found", call this first:
-index_project()
-
-# After large git operations (checkout, merge, rebase):
-index_project()
-```
+| A response has `can_trust_results: false` | read its `warnings` | The automatic update could not run (read-only `.reflex/`, a cache another rfx version owns) |
+| The index appears corrupted | `index_project` with `force: true` | Full rebuild |
 
 ---
 
@@ -115,29 +116,40 @@ index_project()
 | Tool | Cost | Returns | Requires |
 |------|------|---------|---------|
 | `list_locations` | ⚡ Cheapest | `[{path, line}]` | `pattern` |
-| `count_occurrences` | ⚡ Cheap | `{total, files}` | `pattern` |
+| `search_code` with `mode: "count"` | ⚡ Cheap | `{count, files, pattern}` | `pattern` |
 | `search_code` | 🟡 Medium | Full results with previews | `pattern` |
 | `search_regex` | 🟡 Medium | Full results with previews | `pattern` |
+| `find_references` | 🟡 Medium | Definition + every usage | `pattern` |
 | `gather_context` | 🟡 Medium | Project structure summary | — |
-| `get_dependencies` | 🟡 Medium | Import list for one file | `path` |
-| `get_dependents` | 🟡 Medium | Files importing this one | `path` |
-| `get_transitive_deps` | 🟡 Medium | Dep tree up to N levels | `path` |
-| `analyze_summary` | 🟡 Medium | Counts: circular/hotspots/unused | — |
-| `find_hotspots` | 🟡 Medium | Files by import count | — |
-| `find_unused` | 🟡 Medium | Orphaned file list | — |
-| `find_circular` | 🟡 Medium | Cycle arrays | — | opt-in |
-| `find_islands` | 🟡 Medium | Isolated component groups | — | opt-in |
+| `get_dependencies` | 🟡 Medium | Imports of one file; with `reverse: true`, files importing it; with `depth: N`, `[{path, depth}]` | `path` |
+| `analyze` | 🟡 Medium | `summary` counts, `hotspots`, `circular` cycles, `unused` files or `islands` | `kind` |
 | `index_project` | 🔴 Slow (write) | Status + stats | — |
 | `search_ast` | 🔴 Slowest | Structural matches | `pattern`, `lang` + glob |
 
-> **Structural analysis tools** (`find_circular`, `find_islands`, `find_unused`, `analyze_summary`,
-> `get_transitive_deps`) are shown by default. To hide them and reduce the tool surface for AI agents,
-> add to `~/.reflex/config.toml`:
+> **Structural analysis** (`analyze`) is shown by default. To hide it and reduce the tool
+> surface for AI agents, add to `~/.reflex/config.toml`:
 >
 > ```toml
 > [mcp]
-> enable_structural_tools = false  # hides find_circular, find_islands, find_unused, analyze_summary, get_transitive_deps
+> enable_structural_tools = false  # hides analyze
 > ```
+
+### Removed tool names
+
+These names are no longer listed but still answer. Each call carries a `warnings` entry
+naming the replacement, except `get_dependents` and `get_transitive_deps`, which answer
+bare arrays.
+
+| Old name | Use instead |
+|----------|-------------|
+| `count_occurrences` | `search_code(mode: "count")` (the old name still returns `{total, files, pattern}`) |
+| `get_dependents` | `get_dependencies(reverse: true)` |
+| `get_transitive_deps` | `get_dependencies(depth: N)` |
+| `analyze_summary` | `analyze(kind: "summary")` |
+| `find_hotspots` | `analyze(kind: "hotspots")` |
+| `find_circular` | `analyze(kind: "circular")` |
+| `find_unused` | `analyze(kind: "unused")` |
+| `find_islands` | `analyze(kind: "islands")` |
 
 ---
 
@@ -161,7 +173,7 @@ search_code(pattern: "authenticate", symbols: true, expand: true)
 get_dependencies(path: "src/auth.rs")
 # → auth.rs imports: jwt, crypto, models/user
 
-get_dependents(path: "src/auth.rs")
+get_dependencies(path: "src/auth.rs", reverse: true)
 # → 8 files use auth.rs — these are affected if you change it
 ```
 
@@ -176,7 +188,7 @@ get_dependents(path: "src/auth.rs")
 | `exclude` | array | `["target/**", "node_modules/**"]` — same rules |
 | `file` | string | `"Controllers"` (substring match) |
 | `contains` | bool | `true` = substring match (`grep -F`); default matches whole identifiers only. Not on `search_regex` |
-| `ignore_case` | bool | `true` = `rg -i` (with `contains`: `rg -i -F`). On `search_code`, `search_regex`, `count_occurrences`, `list_locations`, `find_references`. Uses the trigram index, so it costs about the same as a case-sensitive search |
+| `ignore_case` | bool | `true` = `rg -i` (with `contains`: `rg -i -F`). On `search_code`, `search_regex`, `list_locations`, `find_references`. Uses the trigram index, so it costs about the same as a case-sensitive search |
 | `paths` | bool | `true` = `{status, can_trust_results, paths, total_files}`, no rows — the cheapest "which files" answer |
 | `symbols` | bool | `true` = definitions only |
 | `kind` | string | `"function"`, `"class"`, `"struct"` |
@@ -195,7 +207,7 @@ habitual wrong names to the real ones and tells you about it.
 | `pattern` | `query`, `symbol`, `text`, `search` | every search tool, `find_references` |
 | `limit` | `max_results` | every tool with a `limit` |
 | `file` | `path` | search tools only |
-| `path` | — (real key, no alias) | `get_dependencies`, `get_dependents`, `get_transitive_deps`, `gather_context` |
+| `path` | — (real key, no alias) | `get_dependencies`, `gather_context` |
 
 Behaviour:
 
@@ -214,7 +226,7 @@ Behaviour:
 
 **Corrupted or missing index:** on `CacheCorrupted` the server rebuilds once (force) and retries
 the call automatically. If that cannot work (lock held, read-only cache), the error names the
-`index_project` tool rather than the CLI. `IndexNotFound` errors also point at `index_project`.
+`index_project` tool rather than the CLI. A missing index is built by the first tool call.
 
 ---
 
@@ -255,15 +267,15 @@ Measured on Reflex 2.0.3, 2026-09-28 (full report: `.context/EFFICACY-2.0.3.md`)
 costs more tokens than built-in Grep/Glob: 1.66× on 9 find-all-usages tasks (Opus 5.5 and
 Sonnet 5 alike) and 1.26× on 13 comprehension tasks (Opus 5.5). The cost is round-trips:
 the first Reflex call needs a ToolSearch turn to load the deferred schemas, and a
-`check_index_status` call before searching adds another. Every `search_code` /
-`search_regex` response already carries `status` and `can_trust_results`, so skip the
-separate status check unless you need the changed-file lists.
+`check_index_status` call before searching adds another. Since auto-update (unreleased)
+every tool updates the index before it answers and the descriptions no longer ask for the
+status check; the A/B has not been re-run yet.
 
 **When to prefer Reflex over built-in grep/glob** (capabilities, not measured savings):
 - Symbol-aware search (`symbols: true`, `kind: "function"`) — unavailable in grep/glob
-- Dependency analysis (`get_dependencies`, `get_dependents`, `find_hotspots`)
+- Dependency analysis (`get_dependencies`, with `reverse` / `depth`, and `analyze`)
 - Definition plus every usage in one call (`find_references`)
-- Exact counts without loading content (`count_occurrences`, `mode: "count"`)
+- Exact counts without loading content (`mode: "count"`)
 
 ### structuredContent: evaluated and rejected
 

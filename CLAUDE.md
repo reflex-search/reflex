@@ -29,19 +29,73 @@ Reflex uses **trigram-based indexing** to enable instant full-text search across
 | **Background Symbol Indexer** | `rfx index-symbols-internal`, spawned by `rfx index`; parses every file with a grammar and fills the symbol cache |
 | **Symbol Cache** | zstd-compressed symbol blobs in `meta.db` (`src/symbol_cache.rs`); symbol queries read it first |
 | **CLI / API Layer** | Single binary for human and programmatic use (CLI and optional HTTP/MCP) |
+| **Incremental updates** | `rfx index` and `Indexer::update_paths` publish a delta over the base instead of rebuilding (`src/snapshot.rs`, `src/indexer.rs`) |
+| **Auto-update** | Every command that reads the index updates a stale one first (`src/auto_update.rs`); `--no-update` opts out |
 | **Watcher (optional)** | Incrementally updates index on file changes |
 
 ### Index Cache Structure (`.reflex/`)
     .reflex/
-      meta.db          # SQLite: files + freshness fingerprints, branches, stats, dependencies, exports, symbol cache
-      trigrams.bin     # Inverted index (V4): trigram → [file_id, line_no] posting lists
-      content.bin      # Memory-mapped full file contents (V2) for verification and context
+      meta.db          # SQLite: files (stable ids, walk_seq) + freshness fingerprints, branches, stats, dependencies, exports, symbol cache
+      manifest.json    # The commit point: which store files make up the index (generation, base, delta, recent, tombstones)
+      content.<g>.bin  # Base content store (V2) for verification and context, generation g
+      trigrams.<g>.bin # Base inverted index (V4): trigram → [file_id, line_no] posting lists
+      trigrams.<g>.plan  # Id-free planning size per trigram (the candidate planner's order and stop rule)
+      delta.<g>.*      # Delta tier: files added/modified since the base (content, trigrams, plan), tombstoned sizes (.tomb, .dtomb)
+      recent.<g>.*     # Recent tier: the latest updates, rebuilt by each update, folded into a new delta past its limit
+      content.bin, trigrams.bin  # Hard links to the base, only while the base alone is the index (for older binaries)
+      resolver-configs.json  # Resolver config files the last walk found (`update_paths` parses them without walking)
+      .index-run       # Marker whose mtime is the run's start (race threshold for recorded mtimes)
       config.toml      # Project settings (index, performance)
       index.lock       # Advisory lock held by `rfx index` for the whole run
       indexing.status  # Progress of the background symbol pass (`rfx index status`)
       pulse/           # Pulse docs-site cache (only after `rfx pulse`)
 
-See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats.
+See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats and
+`.context/INCREMENTAL_INDEX_RESEARCH.md` for the update design.
+
+### Incremental updates
+- `rfx index` stats every file and hashes only those whose (size, mtime) moved; unchanged
+  files are not read. Nothing changed → only fingerprints, flags and branch rows are written.
+- A change is published as a **delta**: added/modified files go to a small **recent**
+  segment rebuilt by each update (folded into the **delta** tier past 256 files or 1/16 of
+  the delta limit); superseded or deleted base/delta files are **tombstoned**. Past 2000
+  files or 5 % of the corpus text, the delta is **merged** into a new base, taking
+  unchanged files' text from the published stores (byte-identical to a fresh build).
+- Rows keep their id across runs (`INSERT … ON CONFLICT(path)`), so symbols, other
+  branches' rows and unchanged files' dependencies survive; `files.walk_seq` keeps
+  walk order for every id-ordered output.
+- Publish order: store files, then `manifest.json` (tmp + fsync + rename), then one
+  `meta.db` transaction recording the same generation. Readers open the snapshot the
+  manifest names (`IndexSnapshot`); a manifest ahead of `meta.db` (a crash) forces a
+  full rebuild on the next run.
+- `Indexer::update_paths(root, paths)` is the library entry point for a caller that
+  knows what changed (1-file edit on Kubernetes: 51–53 ms at load 10; `rfx index` after
+  the same edit 0.3 s, nothing changed 0.19 s; see PERFORMANCE_RESEARCH.md). It falls back to
+  `Indexer::index` for ignore files, `.reflex/config.toml`, resolver configs, a branch
+  change or the merge limit. Test knobs are Rust APIs (`set_merge_limits`,
+  `set_recent_limits`, `set_abort_point`), never env vars.
+
+### Auto-update
+- Every command that reads the index (`rfx query`, `deps`, `analyze`, `stats`, `context`,
+  `list-files`, `ask`, `snapshot`, `pulse`, interactive mode, `rfx mcp` tools, `rfx serve`)
+  calls `auto_update::update_if_stale` first. The freshness check plans it
+  (`query::update_plan`): nothing; `update_paths` on the listed paths; a full `index` run
+  (lists truncated at 100, a rule-file edit, a format change). No index → built.
+- Searches run the check alongside the search (`QueryEngine::with_update`): fresh costs
+  nothing extra; stale → update → search again (at most twice). Other readers update
+  before they run (`cli::update_before`, the MCP `handle_call_tool` chokepoint).
+- `--no-update` (global flag; `rfx mcp --no-update`, `rfx serve --no-update`) = the old
+  behaviour. `QueryEngine::new` has no update (library default); front ends build engines
+  through `cli::engine` / `mcp::engine_in` (a test fails on any other `QueryEngine::new` in `src/`).
+- Never fails the command: `Updated::Skipped(reason)` → answer from the current index,
+  `stale`, reason in `warnings`. The CLI rebuilds another version's cache; servers skip it.
+  Waits for `index.lock` forever (`LOCK_WAIT_FOREVER`). A failed plan over the same bytes is
+  not retried.
+- Rule files: an index run records the blake3 of `.reflex/config.toml`, the root ignore
+  files and every dirty ignore file (`statistics.rule_files`); a change plans a full run.
+- The verdict memo (1 s per process) still applies: in `rfx mcp`, an edit made within 1 s
+  of the previous check can be missed by the next call. Plan and gates:
+  `.context/AUTO_UPDATE_RESEARCH.md`.
 
 ### User Configuration (`~/.reflex/`)
     ~/.reflex/
@@ -53,7 +107,7 @@ See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats.
 
 **Indexing:**
 ```bash
-rfx index                        # Build/update cache
+rfx index                        # Build/update cache (every command also updates a stale index itself)
 rfx index status                 # Check background symbol indexing
 rfx index compact                # Manually compact cache
 rfx watch                        # Auto-reindex on file changes
@@ -76,6 +130,9 @@ rfx query "(?i)realm_?id" --regex
 
 # JSON output for AI agents
 rfx query "format!" --json
+
+# Answer from the index as it is (no automatic update, no build)
+rfx query "format!" --no-update
 
 # Patterns that start with `-` (clap would read them as flags)
 rfx query --pattern '-> Result<'      # or: rfx query -- '-> Result<'
@@ -125,9 +182,9 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 | regular expression | `search_regex` | `grep -E` |
 | any of the above, case-insensitive | `ignore_case: true` (`-i` / `--ignore-case` on the CLI) | `rg -i` (+ `contains` = `rg -i -F`) |
 
-- `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
-  `find_references` (not `search_regex`, which is already substring-based).
-- `ignore_case` is available on those four **and** `search_regex` (where it prepends
+- `contains` is available on `search_code`, `list_locations` and `find_references` (not
+  `search_regex`, which is already substring-based).
+- `ignore_case` is available on those three **and** `search_regex` (where it prepends
   `(?i)`). A `(?i)` literal is looked up in the trigram index under every case
   variant, so it costs about what the case-sensitive query costs. A whole-identifier `ignore_case` search keeps
   whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
@@ -145,10 +202,10 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 
 ### Freshness contract
 
-List-mode `search_code` / `search_regex` responses and `check_index_status` carry `status` and
-`can_trust_results`. **Known gap (2.0.3):** `find_references`, `list_locations`,
-`count_occurrences` and every `mode: "count"` response carry `status` only, or nothing —
-no `can_trust_results`, even when stale (see `.context/TODO.md`, Open bugs). Freshness is judged by
+Every JSON-object MCP answer (search, count mode, `list_locations`, `find_references`,
+`analyze`) and `check_index_status` carry `status` and `can_trust_results`. Array answers
+(`get_dependencies` in every form, `search_ast`) do not. The index is updated before every call (see
+Auto-update), so agents are told NOT to call `check_index_status` / `index_project`. Freshness is judged by
 **file content, not by commit**: every indexed file has a recorded fingerprint (size,
 mtime, blake3 hash), and the index is stale only when a file on disk differs from it —
 edited, added or deleted, committed or not.
@@ -173,35 +230,32 @@ edited, added or deleted, committed or not.
   or `walk` (every file is stat'ed: no git repository, or the git candidate query failed).
 - The file lists are paths, capped at 100 per category; `truncated` says when.
 - `action_required` names the MCP tool (`index_project`), never the CLI.
+- With auto-update (default), a search that finds the index stale updates it and answers
+  again, so `stale` appears only when the update could not run (`warnings` says why) or
+  with `--no-update`. `check_index_status` never updates: it reports the truth.
 - The verdict is memoised for 1 s per workspace (`REFLEX_FRESHNESS_TTL_MS`; `0`
   disables). `check_index_status` always bypasses the memo.
 
-**Core search:**
+Ten tools (since 2026-09-30; was 17). Claude Code carries every listed schema on every
+turn, so `tools/list` is kept small (~10.6 KB, guarded by `tests/mcp_tool_surface.rs`);
+the shared matching / coverage / freshness rules live in `MCP_INSTRUCTIONS`, said once.
+
 | Tool | Purpose |
 |------|---------|
-| `check_index_status` | Check if index is fresh before searching |
-| `search_code` | Full-text search with previews (default limit: 200) |
-| `search_regex` | Regex pattern search (use for `->`, `::`, alternation, etc.) |
-| `list_locations` | Path+line only — cheapest, no content loaded |
-| `count_occurrences` | Count matches without loading content |
+| `search_code` | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
+| `search_regex` | Regex search (use for `->`, `::`, alternation, etc.) |
+| `list_locations` | Path+line only — cheapest; `preview: true` adds the matching line (120 chars) |
 | `find_references` | Definition + all usages in one atomic call (default limit: 200) |
-| `gather_context` | Project structure, frameworks, entry points |
 | `search_ast` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
+| `get_dependencies` | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
+| `analyze` | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
+| `gather_context` | Project structure, frameworks, entry points |
+| `index_project` | Force an index run (rarely needed: every tool updates first) |
+| `check_index_status` | Report freshness without updating (rarely needed) |
 
-**Index management:**
-| Tool | Purpose |
-|------|---------|
-| `index_project` | Build or update the search index |
-
-**Dependency analysis:**
-| Tool | Purpose |
-|------|---------|
-| `get_dependencies` | What a file imports |
-| `get_dependents` | What imports a file (reverse lookup) |
-| `find_hotspots` | Most-imported files by dependent count |
-
-**Structural analysis** (on by default; hide with `[mcp] enable_structural_tools = false` in `~/.reflex/config.toml`):
-`find_circular` · `find_islands` · `find_unused` · `analyze_summary` · `get_transitive_deps`
+Removed names still work, unlisted, with a deprecation warning (`LEGACY_TOOLS`):
+`count_occurrences`, `get_dependents`, `get_transitive_deps`, `find_hotspots`,
+`find_circular`, `find_unused`, `find_islands`, `analyze_summary`.
 
 See [`docs/mcp-tool-cheatsheet.md`](./docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.
 
@@ -251,8 +305,8 @@ to the same slice of a full run, but the total is not always exact:
 | `total_is_exact: false` | verification stopped early: `total_count` / `pagination.total` are **`null`** (never the verified-so-far number), `approx_total` is a **sampled estimate** (32 files spread over the remaining candidates, ≤16 lines each; typically within ±30%, omitted for a regex with no literal), and `has_more` is `true` |
 
 When 32 files or 128 candidate lines or fewer remain after the page fills, the search
-finishes instead and the total is exact. `mode: "count"`, `count_occurrences`,
-`list_locations` and `find_references` always verify everything. The CLI prints an
+finishes instead and the total is exact. `mode: "count"`, `list_locations` and
+`find_references` always verify everything. The CLI prints an
 inexact total as `Found 10 results (~1234 total, estimated)` and points at `--count`.
 Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 `best_total()` (exact, else estimate, else page end; for thresholds only).
@@ -275,7 +329,8 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 ### Latency diagnostics
 
 - `rfx query <pattern> --timing` prints per-phase timings (open, candidates, verify,
-  status, group) to stderr; with `--json` they appear as a `timings` object.
+  status, group) to stderr; with `--json` they appear as a `timings` object
+  (`update_us` when an automatic update ran).
 - `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` /
   `search_regex` responses from `rfx mcp`.
 - `timings.index_path` is `"trigram"` (candidates from the inverted index) or `"scan"`
@@ -313,7 +368,27 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   costs more tokens — 1.66× on find-all-usages (Opus 5.5 and Sonnet 5), 1.26× on
   comprehension tasks (Opus 5.5) — with equal or better accuracy. The cost is extra
   round-trips (ToolSearch for deferred schemas, `check_index_status`), not payload size.
-  Do not claim token savings over grep; the case for Reflex is capability.
+  Do not claim token savings over grep yet. **Goal:** parity or better on plain Grep-like
+  searches — do not route them to Grep; see the backlog in `.context/TODO.md`.
+- **Re-run after auto-update (2026-09-30):** Opus 5.5 1.675× (unchanged: it never called
+  `check_index_status`, 0 in 200 trials); Sonnet 5 1.603× (was 1.646×): its 33 status
+  calls fell to 0, arm-B median 4 → 3 turns and 148k → 101k tokens. What is left, on both
+  models, is the ToolSearch turn for the deferred schemas (backlog §1 B).
+- **`alwaysLoad` (eager schemas, 2026-09-30):** removes the ToolSearch turn (turns = Grep's)
+  and cuts cost: Sonnet 1.77× → 1.20×, Opus 1.32× → 0.98× Grep. Tokens: Sonnet 1.63× →
+  1.53×, Opus 1.68× → 1.82× (every turn carries the 44 KB `tools/list`). The docs'
+  example configs set it. Schema size is now the whole gap.
+- **Long sessions (`benches/efficacy/session_bench.py`, 2026-09-30):** per query Reflex
+  costs what Grep costs; the gap is the ~16K-token schema prefix per turn, so it shrinks
+  with session length. Cost vs Grep with `alwaysLoad`: 1.18–1.36× (12 questions), **1.10×**
+  (50 questions, Sonnet; cheaper than Grep on tokio). With deferred schemas agents mostly
+  skip Reflex in long sessions (22/30 Sonnet sessions used Grep only). The instructions' last paragraph
+  decides adoption (the schemas are deferred): keep a Reflex-first fallback rule there —
+  dropping it took adoption from 37/72 to 2/72 (`.context/AUTO_UPDATE_RESEARCH.md`).
+- **Slim tool surface (10 tools, 10.6 KB, 2026-09-30):** cost vs Grep with `alwaysLoad` —
+  Sonnet 1.05× (12 questions), 1.11× (50); Opus 1.15× (12; it drifts back to grep after
+  one preview-less `list_locations`), **0.89×** (50). Keep "where does X occur → list_locations"
+  in the instructions: without it agents return 1.3–1.9K-char previews per lookup.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
@@ -391,9 +466,9 @@ marker is **not** read (the query engine derives language from the path).
 
 | Tool / flag | Text / lock / generated tiers |
 | --- | --- |
-| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | text **included by default**; lock and generated on request |
+| `search_code`, `search_regex`, `list_locations` | text **included by default**; lock and generated on request |
 | `--symbols`, `--kind`, `--ast`, `search_ast` | excluded (there is no grammar) |
-| `find_references`, `get_dependents`, structural tools | excluded (a mention in a changelog is not a call site) |
+| `find_references`, `get_dependencies`, `analyze` | excluded (a mention in a changelog is not a call site) |
 
 - **Select the text tier**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
 - **Exclude it**: `exclude_text: true` on the four full-text MCP tools.
@@ -505,10 +580,12 @@ Designed for **codebase structure analysis**:
 Symbol queries combine the trigram index with tree-sitter, and a persistent cache sits
 between them.
 
-1. **`rfx index`**: extracts trigrams (and imports, with tree-sitter) from every file,
-   writes `trigrams.bin` and `content.bin`, then spawns the background symbol pass.
+1. **`rfx index`**: extracts trigrams (and imports, with tree-sitter) from the files
+   that changed, publishes the stores (see Incremental updates), then spawns the
+   background symbol pass.
 2. **Background symbol pass** (`rfx index-symbols-internal`): parses every file that has
-   a grammar, runs one combined tree-sitter query per language per file
+   a grammar and no cached symbols for its current hash (after a 1-file edit, that one
+   file), runs one combined tree-sitter query per language per file
    (`parsers::LanguageQueries`), and stores zstd symbol blobs in `meta.db`
    (`src/symbol_cache.rs`). Files with no grammar (text tiers, Swift) are skipped.
 3. **Query time** (`--symbols`, `--kind`, `find_references`):
@@ -525,8 +602,8 @@ Full-text queries never touch tree-sitter. New symbol kinds go into the language
 ## Design Notes
 - **Trigram Algorithm**: Extracts 3-character substrings; builds inverted index for O(1) lookups
 - **Symbol detection**: symbol cache first, tree-sitter on cache misses among trigram candidates (see above)
-- **Change detection by content**: an index run with no changed `blake3` hash is skipped; any change rebuilds `content.bin` and `trigrams.bin` in full
-- **Memory-mapped I/O**: Zero-copy access to trigrams.bin and content.bin
+- **Change detection by stat, then content**: files whose (size, mtime) match their row are not read; the rest are hashed (`blake3`). A change publishes a delta (see Incremental updates); a schema or extraction-code change forces one full rebuild
+- **Memory-mapped I/O**: Zero-copy access to the stores the manifest names
 - **Regex support**: Extracts guaranteed trigrams from patterns; falls back to full scan if needed
 - **Deterministic**: Same query always returns same results (sorted by file:line)
 - **Respects .gitignore**: Uses the `ignore` crate to skip gitignored files (untracked, non-ignored files are indexed)

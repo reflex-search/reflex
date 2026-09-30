@@ -27,12 +27,14 @@
 
 pub mod ast_query;
 pub mod atomic_write;
+pub mod auto_update;
 pub mod background_indexer;
 pub mod cache;
 pub mod cli;
 pub mod content_store;
 pub mod context;
 pub mod dependency;
+pub mod dependency_resolve;
 pub mod errors;
 pub mod formatter;
 pub mod git;
@@ -40,6 +42,7 @@ pub mod indexer;
 pub mod interactive;
 pub mod line_filter;
 pub mod mcp;
+pub mod meta_update;
 pub mod models;
 pub mod output;
 pub mod parsers;
@@ -47,9 +50,11 @@ pub mod pulse;
 pub mod query;
 pub mod regex_trigrams;
 pub mod semantic;
+pub mod snapshot;
 pub mod symbol_cache;
 pub mod trigram;
 pub mod trigram_build;
+pub mod walk_order;
 pub mod watcher;
 
 // Re-export commonly used types

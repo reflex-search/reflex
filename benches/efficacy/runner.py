@@ -60,24 +60,27 @@ SEARCH_TOOLS = frozenset([
 # Listing these in --allowedTools forces the Claude Code SDK to eagerly load
 # their schemas at session start, eliminating the "deferred schema" ToolSearch
 # calls that otherwise add 1-2 wasted turns to every arm B/C trial.
+# The tools `rfx mcp` lists (10 since 2026-09-30), plus the names merged into them
+# (still callable, unlisted) so a binary from before the merge also runs.
 REFLEX_MCP_TOOLS = [
-    "mcp__reflex__analyze_summary",
+    "mcp__reflex__analyze",
     "mcp__reflex__check_index_status",
-    "mcp__reflex__count_occurrences",
-    "mcp__reflex__find_circular",
-    "mcp__reflex__find_hotspots",
-    "mcp__reflex__find_islands",
     "mcp__reflex__find_references",
-    "mcp__reflex__find_unused",
     "mcp__reflex__gather_context",
     "mcp__reflex__get_dependencies",
-    "mcp__reflex__get_dependents",
-    "mcp__reflex__get_transitive_deps",
     "mcp__reflex__index_project",
     "mcp__reflex__list_locations",
     "mcp__reflex__search_ast",
     "mcp__reflex__search_code",
     "mcp__reflex__search_regex",
+    "mcp__reflex__analyze_summary",
+    "mcp__reflex__count_occurrences",
+    "mcp__reflex__find_circular",
+    "mcp__reflex__find_hotspots",
+    "mcp__reflex__find_islands",
+    "mcp__reflex__find_unused",
+    "mcp__reflex__get_dependents",
+    "mcp__reflex__get_transitive_deps",
 ]
 
 # Built-in tools allowed in MCP arms (B, C, Bprime).
@@ -115,6 +118,15 @@ ARMS = {
         # from loading alongside Reflex, which contaminated some Phase 4 arm C trials.
         # --allowedTools with explicit Reflex tool names forces eager schema loading,
         # eliminating the ToolSearch deferred-schema calls (~1/trial in Phase 4).
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
+        "append_system_prompt": None,
+    },
+    "Beager": {
+        "description": "Arm B with the Reflex server marked alwaysLoad: its schemas load at session start (no ToolSearch turn)",
+        "mcp_command": "TARGET_RELEASE_RFX",
+        "mcp_always_load": True,
         "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
         "disallowed_tools": [],
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
@@ -274,8 +286,12 @@ def make_mcp_config(
     tmp_dir: Path,
     arm_name: str,
     mcp_env: dict[str, str] | None = None,
+    always_load: bool = False,
 ) -> Path:
     """Write a temporary MCP config JSON and return its path.
+
+    ``always_load`` sets the server's ``alwaysLoad`` (Claude Code loads its tool
+    schemas at session start instead of deferring them behind ToolSearch).
 
     ``mcp_env`` (when set) is injected as the Reflex MCP server's ``env`` block so
     per-arm environment toggles reach the ``rfx mcp`` subprocess. REF-204 uses
@@ -292,6 +308,8 @@ def make_mcp_config(
         }
         if mcp_env:
             server["env"] = dict(mcp_env)
+        if always_load:
+            server["alwaysLoad"] = True
         config = {"mcpServers": {"reflex": server}}
     config_path.write_text(json.dumps(config))
     return config_path
@@ -707,7 +725,11 @@ def main() -> None:
             arm_cfg = ARMS[arm_name]
             rfx_bin = rfx_binary if arm_cfg["mcp_command"] == "TARGET_RELEASE_RFX" else None
             mcp_cfg_path = make_mcp_config(
-                rfx_bin, tmp, arm_name, mcp_env=arm_cfg.get("mcp_env")
+                rfx_bin,
+                tmp,
+                arm_name,
+                mcp_env=arm_cfg.get("mcp_env"),
+                always_load=arm_cfg.get("mcp_always_load", False),
             )
 
             print(f"=== ARM {arm_name}: {arm_cfg['description']} ===")

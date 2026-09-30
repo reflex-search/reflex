@@ -103,9 +103,13 @@ filtering. It aims for:
 
 | Path | Contents |
 | --- | --- |
-| `trigrams.bin` | Inverted index: trigram → sorted `(file_id, line_no)` postings. Memory-mapped. |
-| `content.bin` | Every indexed file's contents, addressable by `file_id`. Memory-mapped. |
-| `meta.db` | SQLite: file rows and fingerprints, branches, statistics, config, dependencies, exports, symbol cache. |
+| `manifest.json` | The commit point: generation, the base / delta / recent store files, tombstones, live counts. |
+| `trigrams.<g>.bin`, `trigrams.<g>.plan` | Base inverted index: trigram → sorted `(file_id, line_no)` postings, and each trigram's id-free planning size. Memory-mapped. |
+| `content.<g>.bin` | Every base file's contents, addressable by `file_id`. Memory-mapped. |
+| `delta.<g>.*`, `recent.<g>.*` | The two delta tiers (same formats, local ids), and the tombstoned postings' planning sizes (`.tomb`, `.dtomb`). |
+| `content.bin`, `trigrams.bin` | Hard links to the base while it alone is the index, for older binaries; absent while a delta holds changes. |
+| `resolver-configs.json` | The resolver config files the last walk found. |
+| `meta.db` | SQLite: file rows (stable ids, `walk_seq`) and fingerprints, branches, statistics, config, dependencies, exports, symbol cache. |
 | `config.toml` | Project settings (`[index]`, `[search]`, `[performance]`). |
 | `index.lock` | OS advisory lock held for a whole `rfx index` run. |
 | `indexing.lock`, `indexing.status`, `indexing.cancel` | Ownership, progress and cancel request for the background symbol pass. |
@@ -165,9 +169,13 @@ A stored `SYMBOL_FORMAT_VERSION` that differs from the binary's drops the cache.
 ### Versioning and ownership
 
 - `build.rs` hashes the cache-critical sources (`cache.rs`, `content_store.rs`,
-  `trigram.rs`, `indexer.rs`, `symbol_cache.rs`, `models.rs`, `dependency.rs`) into
-  `CACHE_SCHEMA_HASH`. A cache with a different hash reports stale, and `rfx index`
-  rebuilds it in full (`CacheManager::check_schema_hash`).
+  `trigram.rs`, `trigram_build.rs`, `indexer.rs`, `symbol_cache.rs`, `models.rs`,
+  `dependency.rs`, `snapshot.rs`, `meta_update.rs`) into `CACHE_SCHEMA_HASH`. A cache
+  with a different hash reports stale, and `rfx index` rebuilds it in full
+  (`CacheManager::check_schema_hash`, read before `init()` stamps the new hash).
+- A second hash, `EXTRACTION_HASH` (`src/parsers/`, `line_filter.rs`,
+  `dependency_resolve.rs`), covers what fills the dependency, export and symbol rows: a
+  mismatch re-extracts every file's imports and clears the symbol cache.
 - Readers degrade, writers refuse: a cache stamped by a different released version is
   not rewritten unless forced (`CacheManager::assert_writable`).
 - A `trigrams.bin` of an older version is served from an in-memory rebuild
@@ -208,7 +216,8 @@ and does not index lock or generated files.
 
 ## Indexing Pipeline
 
-`Indexer::index_with_callback` (`src/indexer.rs`):
+`Indexer::index_with_callback` (`src/indexer.rs`). Design and measurements:
+[`.context/INCREMENTAL_INDEX_RESEARCH.md`](../.context/INCREMENTAL_INDEX_RESEARCH.md).
 
 ```
 1. Lock and clean up
@@ -216,37 +225,54 @@ and does not index lock or generated files.
    ├─ remove_stale_tmp: delete *.tmp left by a crashed run
    └─ ask a running symbol pass to yield (indexing.cancel)
 
-2. Discover files
+2. Discover files (in parallel: git state, the resolver-config walk)
    ├─ ignore::WalkBuilder with PathPolicy (gitignore rules, hidden, globs)
-   └─ skip binaries and files over max_file_size
+   └─ skip binaries (NUL sniff, not for a file whose stat matches its row) and
+      files over max_file_size
 
-3. Fast path
-   └─ same file set, every hash matches the stored hash, schema hash matches
-      → refresh fingerprints and return without rewriting anything
+3. Classify by stat: a file whose (size, mtime) match its row is unchanged and not
+   read; the others are hashed → touched (same bytes) or modified
 
-4. Batch loop (plan_batches: ≤ REFLEX_INDEX_BATCH_FILES files, ≤ REFLEX_INDEX_BATCH_BYTES bytes)
+4. Nothing changed → refresh touched fingerprints, dirty flags, branch rows; return
+
+5. A change, stores intact, no full dependency pass needed → publish_delta:
+   read the added/modified files, rebuild the recent segment (or fold it into a new
+   delta), tombstone superseded base/delta files, write the manifest, then one
+   meta.db transaction with only the changed rows → return
+   (past the merge limits: continue with a merge, below)
+
+6. Batch loop — a full build, or a merge that takes unchanged files' text from the
+   published stores (plan_batches: ≤ REFLEX_INDEX_BATCH_FILES files,
+   ≤ REFLEX_INDEX_BATCH_BYTES bytes)
    ├─ in the rayon pool, per file: stat, read, blake3 hash, lossy UTF-8 decode,
    │  Language::from_path, extract_trigram_run, dependency + export extraction
    └─ serially, in discovery order: assign file_id, TrigramIndexBuilder::add_file,
       ContentWriter::add_file; flush_batch builds the batch's partial index
 
-5. meta.db
-   ├─ one transaction for file rows, fingerprints and branch hashes
-   └─ PathResolver (in memory) resolves imports; DependencyWriter writes all
-      dependency and export rows in one transaction
+7. Write stores and publish
+   ├─ TrigramIndexBuilder::write_with_plan → trigrams.<g>.bin + .plan (tmp + fsync + rename)
+   ├─ ContentWriter::finalize_if_needed → content.<g>.bin
+   └─ manifest.json (the commit point), then the hard links content.bin / trigrams.bin
 
-6. Write stores
-   ├─ TrigramIndexBuilder::write → trigrams.bin (tmp + fsync + rename)
-   └─ ContentWriter::finalize_if_needed → content.bin (tmp + fsync + rename)
+8. meta.db, one transaction: upserted rows (ids kept), deletes by set difference,
+   walk_seq, dependencies of changed files, re-resolution after adds/deletes, and the
+   generation the manifest carries
 
-7. Stats, schema hash, then spawn the background symbol pass (src/cli/index.rs)
+9. Stats, schema hash, then spawn the background symbol pass (src/cli/index.rs)
 ```
+
+`Indexer::update_paths(root, paths)` is the library form of steps 3–8 for a caller
+that knows what changed: it walks only the named paths and their ancestors, places
+new files by readdir order, and falls back to `index` for ignore files, the project
+config, resolver configs, a branch change or the merge limit.
 
 Points worth knowing:
 
-- **Change detection is by content hash.** When anything changed, the binary stores
-  are rebuilt from every file; the output does not depend on the previous index. The
-  new / modified / unchanged counts come from comparing hashes with `file_branches`.
+- **Change detection is by stat, then content hash.** Only files whose stat moved are
+  read. Answers never depend on how the index got there: an updated index answers
+  exactly as a fresh build of the same tree (`tests/incremental_equivalence.rs`), and
+  a merge writes byte-identical stores. The new / modified / unchanged counts come
+  from comparing hashes with `file_branches`.
 - **The trigram build is parallel and sharded** (`src/trigram_build.rs`). Extraction
   runs in the read pool and yields a sorted `TrigramRun` per file, with lines already
   deduplicated. Each batch is built per top-byte shard (256 shards) in parallel with no
@@ -364,7 +390,7 @@ not exact:
 - When `ESTIMATE_FINISH_LINES` candidate lines or fewer remain, the search finishes
   instead and the total is exact.
 
-Count mode (`--count`, `mode: "count"`, `count_occurrences`), `list_locations`,
+Count mode (`--count`, `mode: "count"`), `list_locations`,
 `find_references`, and symbol and AST searches verify everything. Count mode returns
 `(lines, files)` without building results.
 
@@ -420,7 +446,38 @@ yields `can_trust_results: false`. Freshness is judged by file content, not by c
   disables) in the private `status_cache` module of `src/query/mod.rs`. Every index
   write in the process invalidates it, and `check_index_status` always bypasses it.
 - Files outside every tier are never indexed, so a change to one never makes the index
-  stale.
+  stale. A new file counts as added only when the walk reaches it (a narrowed walk of
+  its ancestors), so a tracked file that `.gitignore` ignores is not reported.
+- The baseline commit is the one the last index run recorded (the `synced_branch` row),
+  not the current branch's row: after a switch back to an indexed branch, the index
+  still holds the other branch's files.
+- **Rule files** decide which files are indexed: `.reflex/config.toml`, and every
+  `.gitignore` / `.ignore` / `.rgignore`. An index run records their blake3
+  (`statistics.rule_files`: the fixed root files, plus each ignore file git lists as
+  dirty); the check compares them, lists a changed one under `files_modified`, and plans
+  a full run.
+
+### Auto-update
+
+Every command that reads the index updates a stale one before it answers
+(`src/auto_update.rs`). `query::update_plan` turns the snapshot into a plan: `Fresh`,
+`Paths` (→ `Indexer::update_paths`), `Full` (→ `Indexer::index`: lists truncated, a
+rule-file edit, a format change), `Foreign` (another released version: the CLI clears
+and rebuilds, servers skip) or `Unknown` (meta.db unreadable: skip). A missing index is
+built. `update_if_stale` holds one mutex per workspace; runs wait for `index.lock`
+without a limit; a plan that did not make the index fresh is not retried over the same
+bytes; a symbol pass that is still making progress is waited out; after a build, a full
+run or a cancelled pass, the binary restarts the symbol pass. A failure is
+`Updated::Skipped(reason)`: the command answers from the current index, `stale`, with
+the reason in `warnings`.
+
+Searches use `QueryEngine::with_update`: the search and the check run together as
+before; only a `stale` verdict triggers the update and a second search (at most two
+updates per call). The engine drops its open index before an update (`reset_open`).
+Other readers update before they run: `cli::update_before` in the CLI dispatch, the
+`handle_call_tool` chokepoint in MCP, the `/stats` handler in `rfx serve`.
+`QueryEngine::new` has no update, so embedders and most tests see the index as it is;
+`--no-update` gives every command that behaviour.
 
 The MCP-facing shape (`files_modified`, `files_added`, `files_deleted`, `truncated`,
 `action_required: "index_project"`) is documented in `CLAUDE.md` under
@@ -460,19 +517,27 @@ Text, lock and generated files never enter the graph.
   did-you-mean). `search_code` and `search_regex` return a columnar
   `{columns, rows}` shape (`to_columnar`; `REFLEX_MCP_COLUMNAR=0` restores
   `results[]`). A tool that fails with `CacheCorrupted` triggers one forced rebuild
-  and one retry (`with_corruption_recovery`). Structural tools can be hidden with
-  `[mcp] enable_structural_tools = false` in `~/.reflex/config.toml`. See
+  and one retry (`with_corruption_recovery`). Ten tools are listed (`tool_list`); the
+  structural analyses are one `analyze` tool (hidden with `[mcp]
+  enable_structural_tools = false` in `~/.reflex/config.toml`), and the reverse and
+  transitive lookups are options of `get_dependencies` (`handler_for` routes them). The
+  eight names merged on 2026-09-30 stay callable, unlisted, with a deprecation warning
+  (`LEGACY_TOOLS`). Shared rules live in `MCP_INSTRUCTIONS`, so descriptions stay short:
+  every listed schema is carried on every agent turn. See
   [`mcp-tool-cheatsheet.md`](./mcp-tool-cheatsheet.md).
 - **HTTP** (`src/cli/serve.rs`, axum): `GET /query`, `GET /stats`, `POST /index`,
   `GET /health`. Binds to `127.0.0.1` by default, with no authentication and permissive
   CORS. Do not expose it to a network.
-- **Watcher** (`src/watcher.rs`): `notify` events, debounced (`WatchConfig`), then a
-  normal `Indexer::index` run. The watcher uses the same `PathPolicy` to ignore events
-  for files outside every tier.
+- **Watcher** (`src/watcher.rs`): `notify` events, debounced (`WatchConfig`), then
+  `Indexer::update_paths` on the collected paths. The watcher uses the same `PathPolicy`
+  to ignore events for files outside every tier, and also passes rule-file edits.
 
+Every surface updates a stale index first (see Auto-update); `--no-update` turns it off.
 `rfx mcp` and `rfx serve` are long-lived, so they keep the `OpenIndex` handle and the
-freshness memo across calls. MCP, watcher and HTTP index runs fail fast if another
-indexer holds `index.lock`; the CLI waits (`IndexConfig::lock_wait_secs`).
+freshness memo across calls. Automatic updates, `index_project` and `POST /index` wait
+for `index.lock`; `rfx index` waits 30 s; the watcher fails fast
+(`IndexConfig::lock_wait_secs`). Every index run uses `CacheManager::effective_index_config`
+(`.reflex/config.toml` plus the `--languages` of the last `rfx index`).
 
 ---
 
@@ -510,7 +575,10 @@ files. If symbol output changes, bump `SYMBOL_FORMAT_VERSION` so old caches are 
     `zero_result_hints.rs`
   - symbols and dependencies: `symbol_equivalence.rs`, `symbol_lock.rs`,
     `dependency_equivalence.rs`
-  - freshness: `mcp_freshness.rs`, `freshness_no_git.rs`, `git_worktree_status.rs`
+  - freshness: `mcp_freshness.rs`, `freshness_no_git.rs`, `git_worktree_status.rs`,
+    `freshness_rules.rs`
+  - auto-update: `auto_update.rs` (the fidelity sequence: every answer equals a fresh
+    build), `auto_update_front_ends.rs` (CLI, MCP, the engine-construction guard)
   - MCP: `mcp_jsonrpc_compliance.rs`, `mcp_literal_search.rs`,
     `mcp_corruption_recovery.rs`
   - cache: `cache_version_guard.rs`, `sqlite_pragmas.rs`

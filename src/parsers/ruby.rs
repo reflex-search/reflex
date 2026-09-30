@@ -764,10 +764,18 @@ pub fn find_all_gemspec_files(root: &std::path::Path) -> Result<Vec<std::path::P
 /// Parse all Ruby projects from gemspec files
 pub fn parse_all_ruby_projects(root: &std::path::Path) -> Result<Vec<RubyProject>> {
     let gemspec_files = find_all_gemspec_files(root)?;
+    parse_ruby_projects_from(root, &gemspec_files)
+}
+
+/// [`parse_all_ruby_projects`] for gemspec files already found (in walk order).
+pub fn parse_ruby_projects_from(
+    root: &std::path::Path,
+    gemspec_files: &[std::path::PathBuf],
+) -> Result<Vec<RubyProject>> {
     let mut projects = Vec::new();
     let root_abs = root.canonicalize()?;
 
-    for gemspec_path in &gemspec_files {
+    for gemspec_path in gemspec_files {
         if let Some(project_dir) = gemspec_path.parent()
             && let Some(gem_name) = parse_gemspec_name(gemspec_path)
         {

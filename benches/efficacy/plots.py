@@ -65,6 +65,7 @@ ARM_COLORS = {
     "B": "#DD8452",      # treatment orange
     "C": "#55A868",      # green
     "Bprime": "#C44E52",  # red
+    "Beager": "#8172B2",  # purple
 }
 
 

@@ -1523,13 +1523,21 @@ pub fn find_all_maven_gradle_projects(root: &std::path::Path) -> Result<Vec<std:
 /// Similar to parse_all_go_modules() for Go
 pub fn parse_all_java_projects(root: &std::path::Path) -> Result<Vec<JavaProject>> {
     let config_files = find_all_maven_gradle_projects(root)?;
+    parse_java_projects_from(root, &config_files)
+}
+
+/// [`parse_all_java_projects`] for config files already found (in walk order).
+pub fn parse_java_projects_from(
+    root: &std::path::Path,
+    config_files: &[std::path::PathBuf],
+) -> Result<Vec<JavaProject>> {
     let mut projects = Vec::new();
 
     let root_abs = root
         .canonicalize()
         .with_context(|| format!("Failed to canonicalize root path: {}", root.display()))?;
 
-    for config_path in &config_files {
+    for config_path in config_files {
         // Get the directory containing the config file (project root)
         if let Some(project_dir) = config_path.parent() {
             // Parse the config file to get package name

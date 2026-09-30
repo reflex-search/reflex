@@ -218,11 +218,9 @@ pub fn parse_all_tsconfigs(
     root: &Path,
 ) -> Result<std::collections::HashMap<PathBuf, PathAliasMap>> {
     use ignore::WalkBuilder;
-    use std::collections::HashMap;
 
     log::debug!("Starting tsconfig discovery in {}", root.display());
-    let mut tsconfigs = HashMap::new();
-    let mut file_count = 0;
+    let mut paths = Vec::new();
 
     // Walk directory tree respecting .gitignore
     for entry in WalkBuilder::new(root)
@@ -234,28 +232,42 @@ pub fn parse_all_tsconfigs(
 
         // Check if this is a tsconfig.json file
         if path.file_name().and_then(|n| n.to_str()) == Some("tsconfig.json") {
-            file_count += 1;
-            log::debug!(
-                "Found tsconfig.json file #{}: {}",
-                file_count,
-                path.display()
-            );
+            paths.push(path.to_path_buf());
+        }
+    }
+    parse_tsconfigs_from(&paths)
+}
 
-            // Parse the tsconfig file
-            match PathAliasMap::from_file(path) {
-                Ok(alias_map) => {
-                    // Store using the directory containing the tsconfig as key
-                    let config_dir = alias_map.config_dir.clone();
-                    log::debug!(
-                        "  Parsed successfully: base_url={:?}, {} aliases",
-                        alias_map.base_url,
-                        alias_map.aliases.len()
-                    );
-                    tsconfigs.insert(config_dir, alias_map);
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse tsconfig.json at {}: {}", path.display(), e);
-                }
+/// [`parse_all_tsconfigs`] for `tsconfig.json` paths already found (in walk order).
+pub fn parse_tsconfigs_from(
+    paths: &[PathBuf],
+) -> Result<std::collections::HashMap<PathBuf, PathAliasMap>> {
+    use std::collections::HashMap;
+
+    let mut tsconfigs = HashMap::new();
+    let mut file_count = 0;
+    for path in paths {
+        file_count += 1;
+        log::debug!(
+            "Found tsconfig.json file #{}: {}",
+            file_count,
+            path.display()
+        );
+
+        // Parse the tsconfig file
+        match PathAliasMap::from_file(path) {
+            Ok(alias_map) => {
+                // Store using the directory containing the tsconfig as key
+                let config_dir = alias_map.config_dir.clone();
+                log::debug!(
+                    "  Parsed successfully: base_url={:?}, {} aliases",
+                    alias_map.base_url,
+                    alias_map.aliases.len()
+                );
+                tsconfigs.insert(config_dir, alias_map);
+            }
+            Err(e) => {
+                log::warn!("Failed to parse tsconfig.json at {}: {}", path.display(), e);
             }
         }
     }

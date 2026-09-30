@@ -449,9 +449,9 @@ fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
 - Unicode: trigrams are UTF-8 bytes and may span character boundaries. A non-ASCII
   literal under `(?i)` falls back to a scan.
 - Compression: V4 posting lists are varint-encoded, one posting per distinct trigram per line.
-- Very common trigrams: `max_posting_list_entries` caps a list at 500k (known defect: files
-  past the cap are dropped silently, see TODO.md), and `search_candidates` skips a list
-  larger than 2 bytes per surviving candidate.
+- Very common trigrams: `search_candidates` skips a list larger than 2 bytes per surviving
+  candidate. `max_posting_list_entries` (default 500k) is dead configuration in 2.0.3:
+  the indexer never applies it and `OpenIndex::posting_cap()` has no caller.
 
 ---
 

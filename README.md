@@ -43,9 +43,15 @@ rfx query "TODO" --json --limit 20
 With Claude Code:
 
 ```bash
-claude mcp add --scope user reflex -- rfx mcp      # every project
-claude mcp add --scope project reflex -- rfx mcp   # this project only (writes .mcp.json)
+# every project
+claude mcp add-json --scope user reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
+# this project only (writes .mcp.json)
+claude mcp add-json --scope project reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
 ```
+
+`"alwaysLoad": true` makes Claude Code load Reflex's tool schemas at session start, so the
+agent can call Reflex at once instead of first spending a turn on ToolSearch. The plain
+`claude mcp add --scope user reflex -- rfx mcp` also works, without it.
 
 For other MCP clients, register a stdio server with command `rfx` and args `["mcp"]`.
 
@@ -118,30 +124,25 @@ When connected via MCP, your AI assistant gets these tools:
 
 | Tool | What it does |
 |---|---|
-| `search_code` | Full-text or symbol search with line numbers and context |
-| `list_locations` | Fast file+line discovery (minimal tokens) |
-| `count_occurrences` | Quick match statistics without full content |
+| `search_code` | Full-text or symbol search with line numbers and context; `mode: "count"` for match and file counts only |
 | `search_regex` | Regex pattern matching across the codebase |
-| `search_ast` | Structure-aware search via Tree-sitter AST queries |
+| `list_locations` | Fast file+line discovery (minimal tokens) |
 | `find_references` | Symbol definition + all usage sites in a single call; the primary code-navigation tool for AI agents |
-| `index_project` | Trigger or refresh the search index |
-| `check_index_status` | Check whether the index is fresh, stale, or missing; call before any search session or after git operations |
-| `get_dependencies` | All imports for a specific file |
-| `get_dependents` | All files that import a given file (reverse lookup) |
-| `get_transitive_deps` | Transitive dependency graph up to a configurable depth |
-| `find_hotspots` | Most-imported files (dependency hotspots) |
-| `find_circular` | Detect circular dependency chains |
-| `find_unused` | Files with no incoming dependencies |
-| `find_islands` | Disconnected components in the dependency graph |
-| `analyze_summary` | High-level dependency counts and metrics |
+| `search_ast` | Structure-aware search via Tree-sitter AST queries (slow; always pass `glob`) |
+| `get_dependencies` | Imports of a file; `reverse: true` for the files that import it, `depth: N` to follow imports N levels |
+| `analyze` | Import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or `islands` |
 | `gather_context` | Codebase structure and project-type summary |
+| `index_project` | Force an index run (rarely needed: every tool updates the index first) |
+| `check_index_status` | Report whether the index matches the files on disk, without updating it |
 
-**Index not found error?** If an MCP tool returns `"Index not found. Call the index_project tool, then retry."`, call `index_project`, then retry the failed tool.
+Eight older tool names still work but are deprecated: `count_occurrences` (use `search_code` with `mode: "count"`), `get_dependents` and `get_transitive_deps` (use `get_dependencies` with `reverse` / `depth`), and `find_hotspots`, `find_circular`, `find_unused`, `find_islands`, `analyze_summary` (use `analyze` with `kind`).
+
+**No `rfx index` needed after edits.** Every command and MCP tool updates a stale index before it answers (only the changed files) and builds a missing one; pass `--no-update` (`rfx mcp --no-update`) to answer from the index as it is.
 
 Three behaviours agents rely on:
 
 - **Whole identifiers by default.** `verify_csrf` does not match `verify_csrf_form_field`; pass `contains: true` for substring matching (`grep -F`) or `ignore_case: true` for `rg -i`. A zero result names the substring count in a `hint`.
-- **Freshness on search responses.** `status` and `can_trust_results` compare the working tree (size, mtime, content hash) with what the index holds; a stale index always yields `can_trust_results: false`, and `action_required` names `index_project`.
+- **Freshness on search responses.** `status` and `can_trust_results` compare the working tree (size, mtime, content hash) with what the index holds; the index is updated before each call, so `can_trust_results: false` appears only when that update could not run (`warnings` says why).
 - **Lock and generated files stay out of the way.** They are indexed but excluded from results unless you pass `include_locks` / `include_generated`; a zero result caused only by them says so.
 
 See [`docs/mcp-tool-cheatsheet.md`](docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.

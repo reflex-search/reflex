@@ -1,6 +1,5 @@
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
-use crate::models::IndexConfig;
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -31,7 +30,7 @@ pub(super) fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Resu
         if !quiet {
             println!("No index found, running initial index...");
         }
-        let config = IndexConfig::default();
+        let config = cache.effective_index_config(&[])?;
         let indexer = Indexer::new(cache, config);
         indexer.index(&path, !quiet)?;
         if !quiet {
@@ -41,7 +40,7 @@ pub(super) fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Resu
 
     // Create indexer for watcher
     let cache = CacheManager::new(&path);
-    let config = IndexConfig::default();
+    let config = cache.effective_index_config(&[])?;
     let indexer = Indexer::new(cache, config);
 
     // Start watcher

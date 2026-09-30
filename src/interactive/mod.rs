@@ -16,7 +16,8 @@ use app::InteractiveApp;
 
 /// Main entry point for interactive mode
 /// Launches the TUI and runs the event loop
-pub fn run_interactive() -> Result<()> {
-    let mut app = InteractiveApp::new()?;
+/// Interactive search; searches update a stale index first unless `no_update`.
+pub fn run_interactive(no_update: bool) -> Result<()> {
+    let mut app = InteractiveApp::new(no_update)?;
     app.run()
 }

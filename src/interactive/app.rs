@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
-use crate::models::{IndexConfig, SearchResult};
+use crate::models::SearchResult;
 use crate::query::{QueryEngine, QueryFilter};
 
 use super::effects::EffectManager;
@@ -24,6 +24,8 @@ use super::ui;
 
 /// Main application state for interactive mode
 pub struct InteractiveApp {
+    /// `--no-update`: search the index as it is.
+    no_update: bool,
     /// Query input field
     input: InputField,
     /// Search results
@@ -159,7 +161,7 @@ pub enum IndexStatusState {
 
 impl InteractiveApp {
     /// Create a new interactive application
-    pub fn new() -> Result<Self> {
+    pub fn new(no_update: bool) -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let cache = CacheManager::new(&cwd);
         let cache2 = CacheManager::new(&cwd); // Create second instance for engine
@@ -211,6 +213,7 @@ impl InteractiveApp {
         };
 
         Ok(Self {
+            no_update,
             input: InputField::new(),
             results: ResultList::new(500),
             history,
@@ -1149,7 +1152,15 @@ impl InteractiveApp {
         let (tx, rx) = mpsc::channel();
         let pattern_owned = pattern.to_string();
         let cache = CacheManager::new(&self.cwd);
-        let engine = QueryEngine::new(cache);
+        let engine = if self.no_update {
+            QueryEngine::new(cache)
+        } else {
+            // No stderr notes: they would draw over the terminal UI.
+            QueryEngine::new(cache).with_update(crate::auto_update::UpdateOptions {
+                progress: false,
+                ..crate::auto_update::UpdateOptions::cli()
+            })
+        };
 
         std::thread::spawn(move || {
             let result = engine.search_with_metadata(&pattern_owned, filter);
@@ -1186,8 +1197,14 @@ impl InteractiveApp {
 
         // Spawn background thread for indexing with progress callback
         std::thread::spawn(move || {
-            let config = IndexConfig::default();
             let cache = CacheManager::new(&cwd);
+            let config = match cache.effective_index_config(&[]) {
+                Ok(config) => config,
+                Err(e) => {
+                    result_tx.send(Err(e)).ok();
+                    return;
+                }
+            };
             let indexer = Indexer::new(cache, config);
 
             // Create progress callback that sends updates through channel
@@ -1201,37 +1218,8 @@ impl InteractiveApp {
             if result.is_ok() {
                 log::debug!("Main indexing completed, spawning background symbol indexer");
 
-                // Spawn detached background process for symbol indexing
-                // (Same approach as CLI: use index-symbols-internal hidden command)
-                let current_exe = std::env::current_exe();
-                if let Ok(exe_path) = current_exe {
-                    #[cfg(unix)]
-                    {
-                        let _ = std::process::Command::new(&exe_path)
-                            .arg("index-symbols-internal")
-                            .arg(&cwd)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
-                    }
-
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-                        let _ = std::process::Command::new(&exe_path)
-                            .arg("index-symbols-internal")
-                            .arg(&cwd)
-                            .creation_flags(CREATE_NO_WINDOW)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
-                    }
-
-                    log::debug!("Background symbol indexing process spawned");
+                if let Err(e) = crate::background_indexer::BackgroundIndexer::spawn_detached(&cwd) {
+                    log::debug!("Could not start the symbol pass: {e}");
                 }
             }
 
@@ -1255,6 +1243,7 @@ impl InteractiveApp {
         // Be careful not to delete the entire directory as it might be recreated immediately
         let files_to_remove = [
             "meta.db",
+            crate::snapshot::MANIFEST,
             "trigrams.bin",
             "content.bin",
             "symbols.db",

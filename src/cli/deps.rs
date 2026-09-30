@@ -424,10 +424,13 @@ pub(super) fn handle_deps(
                         }
                     }
 
+                    // Within a depth, walk order: the id order of a full build.
+                    let ranks = deps_index.walk_ranks(&file_ids)?;
                     for (depth_level, ids) in &by_depth {
                         let indent = "  ".repeat(*depth_level - 1);
                         let mut sorted_ids = ids.clone();
-                        sorted_ids.sort_unstable();
+                        sorted_ids
+                            .sort_unstable_by_key(|id| ranks.get(id).copied().unwrap_or(i64::MAX));
                         for id in sorted_ids {
                             if let Some(path) = paths.get(&id) {
                                 println!("{}└─ {}", indent, path);
@@ -439,11 +442,15 @@ pub(super) fn handle_deps(
                 "table" => {
                     println!("Depth  File ID  Path");
                     println!("-----  -------  ----");
+                    // "File ID" is the id a full build gives the file (its 1-based
+                    // walk position), not the stable internal id.
+                    let ranks = deps_index.walk_ranks(&file_ids)?;
                     let mut sorted: Vec<_> = transitive.iter().collect();
                     sorted.sort_by_key(|(_, d)| *d);
                     for (id, d) in sorted {
                         if let Some(path) = paths.get(id) {
-                            println!("{:<5}  {:<7}  {}", d, id, path);
+                            let shown = ranks.get(id).copied().unwrap_or(*id);
+                            println!("{:<5}  {:<7}  {}", d, shown, path);
                         }
                     }
                     eprintln!("\nFound {} transitive dependencies", transitive.len());

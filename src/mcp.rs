@@ -9,11 +9,12 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
+use crate::auto_update::{UpdateOptions, Updated, update_if_stale};
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
 use crate::indexer::Indexer;
 use crate::line_filter;
-use crate::models::{IndexConfig, IndexStatus, Language, SymbolKind};
+use crate::models::{IndexStatus, Language, SymbolKind};
 use crate::query::{QueryEngine, QueryFilter};
 use crate::semantic::config::load_mcp_config;
 
@@ -34,6 +35,9 @@ const DEFAULT_MCP_PREVIEW_LENGTH: usize = 180;
 /// clamp on explicit limits). Callers who want a cheap cardinality probe should
 /// use `mode="count"`.
 const DEFAULT_MCP_RESULT_LIMIT: usize = 200;
+
+/// Characters of the matching line `list_locations` returns with `preview: true`.
+const LOCATION_PREVIEW_CHARS: usize = 120;
 
 /// Returns true if every occurrence of `pattern` in `preview` falls inside a
 /// string literal or comment for the given `lang`. Conservative: returns false
@@ -223,13 +227,15 @@ search_code {"pattern": "fn verify_totp", "limit": 40, "file": "src/identity"}
 search_regex {"pattern": "fn (get|set)_\w+", "glob": ["src/**/*.rs"]}
 find_references {"pattern": "start_webauthn_registration"}
 
-Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: a natural-language query like "hot tier promotion" matches nothing, so search for identifiers or code fragments.
+Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: natural-language queries match nothing; search for identifiers or code fragments.
 
-Use find_references for a definition plus every call site without string/comment noise. Use get_dependents for what imports a file.
+Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint saying why.
 
-Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated.
+Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated. glob and exclude follow gitignore rules: "src/**/*.rs" is anchored at the root, "*.rs" matches at any depth.
 
-On an "Index not found" or "corrupted" error, call index_project, then retry the failed tool. Only fall back to Grep/Glob after index_project has been called and the tool still fails."#;
+The index updates itself before every call and is built on first use: never call index_project or check_index_status after edits. can_trust_results: false means the update could not run; warnings say why.
+
+To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. Use search_code for context or symbols, find_references for a definition plus every call site without string/comment noise, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
 /// Handle initialize request
 fn handle_initialize(_params: Option<Value>) -> Result<Value> {
@@ -246,658 +252,248 @@ fn handle_initialize(_params: Option<Value>) -> Result<Value> {
     }))
 }
 
-/// Handle tools/list request
-///
-/// When `enable_structural` is false, the five structural-analysis-only tools
-/// (`find_circular`, `find_islands`, `find_unused`, `analyze_summary`,
-/// `get_transitive_deps`) are omitted from the response. Controlled by the
-/// `[mcp] enable_structural_tools` flag in `~/.reflex/config.toml`.
-fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<Value> {
-    // Names of tools gated behind enable_structural_tools config flag.
-    // These are structural-analysis tools rarely needed for day-to-day code search.
-    const STRUCTURAL_TOOLS: &[&str] = &[
-        "find_circular",
-        "find_islands",
-        "find_unused",
-        "analyze_summary",
-        "get_transitive_deps",
-    ];
+/// Parameter schemas shared by the search tools. Short on purpose: Claude Code sends
+/// every listed schema on every turn, so each word here is paid per turn per session
+/// (the matching and coverage rules are said once, in `MCP_INSTRUCTIONS`).
+fn search_params(extra: Value) -> Value {
+    let mut props = json!({
+        "pattern": {"type": "string", "description": "Text to find"},
+        "lang": {"type": "string", "description": "Language filter: rust, python, typescript, text, …"},
+        "file": {"type": "string", "description": "Only paths containing this substring"},
+        "glob": {"type": "array", "items": {"type": "string"}, "description": "Only paths matching (gitignore rules)"},
+        "exclude": {"type": "array", "items": {"type": "string"}, "description": "Skip paths matching (gitignore rules)"},
+        "ignore_case": {"type": "boolean", "description": "Case-insensitive (rg -i)"},
+        "include_locks": {"type": "boolean", "description": "Also search lock files"},
+        "include_generated": {"type": "boolean", "description": "Also search generated files"},
+        "force": {"type": "boolean", "description": "Run a pattern too broad to run by default"}
+    });
+    if let (Some(p), Some(e)) = (props.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            p.insert(k.clone(), v.clone());
+        }
+    }
+    json!({"type": "object", "properties": props, "required": ["pattern"]})
+}
 
-    let all_tools = json!({
-        "tools": [
-            {
-                "name": "list_locations",
-                "description": "Cheapest way to find every place a pattern occurs. Prefer this over Glob-based path hunting and over Grep when you only need file + line numbers (no previews). Returns `{locations: [{path, line}, …], total_locations, status}` — one location per match, no limit. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. \n\nUse this for: enumerating locations before deciding which files to Read; counting affected sites; listing all hits of a pattern without paying for previews. Supports `lang`, `file`, `glob`, `exclude` filters. \n\nExample: `pattern: \"CourtCase\"` → `[{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]`. COVERAGE matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …) — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile). Hidden paths are not indexed unless the project sets `[index] hidden = true`; use grep for those. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`. A zero result carries `excluded_reason` (`hidden` | `not_indexed` | `lock_or_generated` | `whole_identifier`) and a `hint` naming the one cause; `excluded_by_default` counts the lock/generated files under your filter. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Search pattern (text to find)"
-                        },
-                        "contains": {
-                            "type": "boolean",
-                            "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
-                        },
-                        "ignore_case": {
-                            "type": "boolean",
-                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
-                        },
-                        "include_locks": {
-                            "type": "boolean",
-                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
-                        },
-                        "include_generated": {
-                            "type": "boolean",
-                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the plain-text tier (every other non-binary file: docs, config, templates, extensionless), \"lock\" for lock files, \"generated\" for generated files (the last two are excluded unless named or include_locks / include_generated is set)."
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Filter by file path substring (e.g., 'Controllers')"
-                        },
-                        "glob": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Include files matching patterns (e.g., ['app/**/*.php']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "exclude": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Exclude files matching patterns (e.g., ['vendor/**', 'tests/**']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
-                        },
-                        "dependencies": {
-                            "type": "boolean",
-                            "description": "Include dependency information (imports) in results. Only extracts static imports."
-                        }
-                    },
-                    "required": ["pattern"]
-                }
-            },
-            {
-                "name": "count_occurrences",
-                "description": "Count-only statistics for a pattern. Prefer this over piping `grep -c` / `wc -l` / `rg --count` — returns total occurrences and file count in one call without loading any content. MATCHING: matches WHOLE IDENTIFIERS by default — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". Pass `contains: true` for substring matching. A 0 result carries a `hint` naming the substring count. COVERAGE matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …) — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile). Hidden paths are not indexed unless the project sets `[index] hidden = true`; use grep for those. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`. A zero result carries `excluded_reason` (`hidden` | `not_indexed` | `lock_or_generated` | `whole_identifier`) and a `hint` naming the one cause; `excluded_by_default` counts the lock/generated files under your filter. \n\nUse this for: \"how many times is X used?\"; impact checks before refactoring; validating search scope. Returns `{total, files, pattern}`. Supports all filters (`lang`, `file`, `glob`, `exclude`, `symbols`, `kind`). \n\nExample: `{\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Search pattern (text to find)"
-                        },
-                        "contains": {
-                            "type": "boolean",
-                            "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
-                        },
-                        "ignore_case": {
-                            "type": "boolean",
-                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
-                        },
-                        "include_locks": {
-                            "type": "boolean",
-                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
-                        },
-                        "include_generated": {
-                            "type": "boolean",
-                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" (docs, config and every other non-binary file), \"lock\" (lock files), \"generated\" (generated files by name)."
-                        },
-                        "symbols": {
-                            "type": "boolean",
-                            "description": "Count symbol definitions only (not usages)"
-                        },
-                        "kind": {
-                            "type": "string",
-                            "description": "Filter by symbol kind (function, class, etc.)"
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Filter by file path substring"
-                        },
-                        "glob": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Include files matching patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "exclude": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Exclude files matching patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
-                        },
-                        "dependencies": {
-                            "type": "boolean",
-                            "description": "Include dependency information (imports) in results. Only extracts static imports."
-                        }
-                    },
-                    "required": ["pattern"]
-                }
-            },
-            {
-                "name": "search_code",
-                "description": "Default code search across the codebase. Prefer this over Grep / Glob for any pattern made of letters, digits, underscores, or hyphens — one call returns every occurrence with file paths, line numbers, and code previews. MATCHING: three modes. DEFAULT matches WHOLE IDENTIFIERS only — \"verify_csrf\" does NOT match \"verify_csrf_form_field\". `contains: true` matches substrings, like `grep -F`. `search_regex` matches regular expressions. A pattern with brackets (`()`, `[]`, `<>`) is escaped and run as a regex automatically, and says so in `warnings`. COVERAGE matches ripgrep's defaults: every non-binary file that is not gitignored and not under a dot-directory (.github/, .githooks/, .cargo/ …) — code (rust, typescript, javascript, go, java, php, kotlin, python, c, c++, c#, ruby, vue, svelte, zig) AND every other text file (docs, config, templates, extensionless names such as OWNERS or Makefile). Hidden paths are not indexed unless the project sets `[index] hidden = true`; use grep for those. Use `lang: \"text\"` for the non-code tier only. Lock files and generated files (*.pb.go, *.min.js, *.map) are indexed but LEFT OUT unless you pass `include_locks: true` / `include_generated: true` or `lang: \"lock\"` / `lang: \"generated\"`. A zero result carries `excluded_reason` (`hidden` | `not_indexed` | `lock_or_generated` | `whole_identifier`) and a `hint` naming the one cause; `excluded_by_default` counts the lock/generated files under your filter. Use this for: finding where a pattern occurs; listing all usages of a function/class/variable; finding a symbol's definition (with `symbols: true`); getting line numbers + previews in a single call. \n\nModes: full-text by default (definitions + usages); `symbols: true` returns definitions only; `mode: \"count\"` returns just `{count, pattern}` to check cardinality before paginating. For an explicit regular expression (`.*+?|^$`, character classes, alternation), use `search_regex`. \n\nResult shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` is `rg -i`; combine with `contains` for `rg -i -F`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. \n\nPagination: if `response.pagination.has_more` is true, fetch the next page with the `offset` parameter. A list-mode search stops verifying once the page is full: `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Search pattern (text to find)"
-                        },
-                        "contains": {
-                            "type": "boolean",
-                            "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
-                        },
-                        "ignore_case": {
-                            "type": "boolean",
-                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
-                        },
-                        "include_locks": {
-                            "type": "boolean",
-                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
-                        },
-                        "include_generated": {
-                            "type": "boolean",
-                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["list", "count"],
-                            "description": "Response mode: \"list\" (default) returns full match results; \"count\" returns only {count, pattern} — faster, skips match body serialization."
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" for the plain-text tier (every other non-binary file: docs, config, templates, extensionless), \"lock\" for lock files, \"generated\" for generated files (the last two are excluded unless named or include_locks / include_generated is set)."
-                        },
-                        "kind": {
-                            "type": "string",
-                            "description": "Filter by symbol kind (function, class, struct, etc.)"
-                        },
-                        "symbols": {
-                            "type": "boolean",
-                            "description": "Symbol-only search (definitions, not usage)"
-                        },
-                        "exact": {
-                            "type": "boolean",
-                            "description": "Case-sensitive exact-identifier match. NOTE: substring matching is already OFF by default — use `contains: true` to turn it ON, not this flag."
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Filter by file path (substring)"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum results per page (default: 200, max: 500). The 200-result default covers most find-all tasks in a single call. IMPORTANT: If response.has_more is true, you MUST fetch more pages using offset parameter."
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N results). ALWAYS paginate when has_more=true. Example: First call offset=0, second call offset=100, third offset=200, etc."
-                        },
-                        "expand": {
-                            "type": "boolean",
-                            "description": "Show full symbol body (not just signature)"
-                        },
-                        "glob": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Include files matching glob patterns (e.g., 'src/**/*.rs') Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "exclude": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns (e.g., 'target/**') Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "paths": {
-                            "type": "boolean",
-                            "description": "Return only unique file paths: the response is `{status, can_trust_results, paths, total_files}` (plus `has_more` when a `limit` cut the list) instead of `{columns, rows}`. Without `limit`, every matching file is listed."
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
-                        },
-                        "dependencies": {
-                            "type": "boolean",
-                            "description": "Include dependency information (imports) in results. **IMPORTANT:** Currently only supported for Rust files — passing this with any other language (typescript, python, go, etc.) will produce no dependency data. Only extracts static imports (string literals); dynamic imports are filtered. See CLAUDE.md for details."
-                        },
-                        "preview_length": {
-                            "type": "integer",
-                            "description": "Maximum characters per preview line (default: 180). Use a smaller value (e.g. 60) for wide-result scans where short previews are sufficient."
-                        }
-                    },
-                    "required": ["pattern"]
-                }
-            },
-            {
-                "name": "search_regex",
-                "description": "Regex code search across the whole codebase — the same COVERAGE as search_code (ripgrep's defaults: not gitignored, not binary, not under a dot-directory; lock/generated files need include_locks / include_generated). Prefer this over `rg` / `grep -E` / `grep -P` for pattern matching across files — one call returns every match with file paths, line numbers, and previews. \n\nUse this for patterns with special characters or regex operators: `->with\\(`, `::new\\(`, `fn (get|set)_\\w+`, `\\[(derive|test)\\]`, `\\bAuth\\w*Controller\\b`, alternation `a|b`, anchors `^$`, wildcards `.*`. Escaping: must escape `( ) [ ] { } . * + ? \\\\ | ^ $`; no escaping needed for `-> :: - _ / = < >`; in JSON use double backslashes (`\\\\(`, `\\\\[`). \n\nFor simple alphanumeric patterns use `search_code` instead — it is faster and avoids escaping overhead. For symbol definitions use `search_code` with `symbols: true`. \n\n`mode: \"count\"` returns `{count, pattern}` only. List-mode result shape is columnar: `{columns, rows}` — each row aligns positionally to `columns` (path, language, start_line, end_line, preview; then kind/symbol/context when present). With `paths: true` the shape is `{status, can_trust_results, paths, total_files}` instead. `ignore_case: true` prepends `(?i)`. A `(?i)` regex with a literal of 3+ chars still uses the trigram index; only a pattern with no such literal (`\\w+_id`) scans every file, and says so in `warnings`. Set env `REFLEX_MCP_COLUMNAR=0` for the legacy `results[]` shape. Pagination: if `response.pagination.has_more` is true, fetch the next page with `offset`. `total_count` / `pagination.total` is a number only when `total_is_exact` is true; otherwise it is null and `approx_total` is a sample-based estimate (typically within ±30%). Use `mode: \"count\"` for an exact number. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Regex pattern"
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["list", "count"],
-                            "description": "Response mode: \"list\" (default) returns full match results; \"count\" returns only {count, pattern} — faster, skips match body serialization."
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Filter by language: rust, typescript, javascript, go, java, php, kotlin, python, c, cpp, csharp, ruby, vue, svelte, zig — or \"text\" (docs, config and every other non-binary file), \"lock\" (lock files), \"generated\" (generated files by name)."
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Filter by file path"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results (default: 200, max: 500). Use with offset for pagination."
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N results after sorting)"
-                        },
-                        "glob": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Include files matching glob patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "exclude": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "paths": {
-                            "type": "boolean",
-                            "description": "Return only unique file paths: the response is `{status, can_trust_results, paths, total_files}` (plus `has_more` when a `limit` cut the list) instead of `{columns, rows}`. Without `limit`, every matching file is listed."
-                        },
-                        "ignore_case": {
-                            "type": "boolean",
-                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
-                        },
-                        "include_locks": {
-                            "type": "boolean",
-                            "description": "Also search lock files (Cargo.lock, package-lock.json, *.lock, go.sum). They are indexed but left out unless asked for; `lang: \"lock\"` selects them alone. Default false."
-                        },
-                        "include_generated": {
-                            "type": "boolean",
-                            "description": "Also search generated files by name (*.pb.go, *.min.js, *.min.css, *.map, *_generated.*). Indexed but left out unless asked for; `lang: \"generated\"` selects them alone. Default false."
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
-                        },
-                        "dependencies": {
-                            "type": "boolean",
-                            "description": "Include dependency information (imports) in results. Only extracts static imports."
-                        }
-                    },
-                    "required": ["pattern"]
-                }
-            },
-            {
-                "name": "search_ast",
-                "description": "Structure-aware search using Tree-sitter AST patterns (S-expressions). ⚠️ SLOW: bypasses trigram optimization and parses every file the `lang` and `glob` select. In almost every case, prefer `search_code` with `symbols: true` instead (it reads the symbol cache). \n\nUse this only when you must match code structure rather than text: \"all async functions containing a `match` expression\", \"every class with a `serialize` method\", etc. You MUST pass `glob` to limit scope — without it, every file in the codebase is parsed. \n\nExample patterns — Rust: `(function_item) @fn`; Python: `(function_definition) @fn`; TypeScript: `(class_declaration) @class`. Refer to Tree-sitter grammar docs for each language. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "AST pattern (Tree-sitter S-expression, e.g., '(function_item) @fn')"
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Language (REQUIRED: rust, typescript, javascript, python, go, java, c, cpp, csharp, php, ruby, kotlin, zig)"
-                        },
-                        "glob": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Include files matching glob patterns (STRONGLY RECOMMENDED to limit scope, e.g., ['src/**/*.rs']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "exclude": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'node_modules/**']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Filter by file path (substring)"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results (use with offset for pagination)"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N results after sorting)"
-                        },
-                        "paths": {
-                            "type": "boolean",
-                            "description": "Return only unique file paths"
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
-                        },
-                        "dependencies": {
-                            "type": "boolean",
-                            "description": "Include dependency information (imports) in results. Only extracts static imports."
-                        }
-                    },
-                    "required": ["pattern", "lang"]
-                }
-            },
-            {
-                "name": "index_project",
-                "description": "Rebuild or update the code search index. Call this whenever any Reflex search tool returns an \"Index not found\" or \"stale\" error — the retry will then succeed. Also call after large git operations (checkout, merge, rebase, pull), user file edits, or when results seem stale or missing. \n\nIncremental by default (only changed files re-indexed). Pass `force: true` for a full rebuild when the index appears corrupted.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force full rebuild (ignore incremental)"
-                        },
-                        "languages": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Languages to include (empty = all)"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "get_dependencies",
-                "description": "List every import (dependency) of a single file. Prefer this over grep-ing for `import` / `use` / `require` statements — Reflex answers from its pre-built import index, which grep cannot replicate without scanning every file. Returns one object per import with path, line, type (internal/external/stdlib), and optional symbols. \n\nUse this for: understanding file dependencies, analyzing import structure, finding what a file depends on. Path matching is fuzzy — exact paths, fragments, or bare filenames all work. Only static imports (string literals) are extracted; dynamic imports are filtered by design. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path (supports fuzzy matching: 'Controllers/FooController.php' or just 'FooController.php')"
-                        }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "get_dependents",
-                "description": "Reverse dependency lookup — find every file that imports a given file. Prefer this over grep-based find-callers: Reflex answers from its pre-built reverse-import index in one call, which grep cannot replicate without scanning every file. Returns the list of importing file paths. \n\nUse this for: impact analysis before changing a module; finding consumers of a library; detecting file importance. Path matching is fuzzy — exact paths, fragments, or bare filenames all work. Only static imports (string literals) are considered; dynamic imports are filtered by design. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path (supports fuzzy matching: 'models/User.php' or just 'User.php')"
-                        }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "get_transitive_deps",
-                "description": "Walk the transitive dependency tree of a file up to `depth` levels (default 3). Prefer this over hand-rolling recursive grep across imports — Reflex traverses the static import graph directly, returning a map of file → depth. \n\nUse this for: understanding the full dependency chain, analyzing deep coupling, planning refactoring blast radius. Example: `depth=2` finds file → deps → deps of deps. Only static imports (string literals) are followed; dynamic imports are filtered by design. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path (supports fuzzy matching)"
-                        },
-                        "depth": {
-                            "type": "integer",
-                            "description": "Maximum depth to traverse (default: 3, max recommended: 5)"
-                        }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "find_hotspots",
-                "description": "Rank files by how many other files import them (dependency hotspots). Prefer this over any grep-based \"most-imported file\" heuristic — Reflex answers from its pre-built dependency index in one call; grep cannot answer this without scanning every file. \n\nUse this for: finding critical-path files; identifying refactoring blast radius; ranking modules by coupling; architecture review. Returns `{pagination, results: [{path, import_count}]}` sorted by import count (desc by default; use `sort` to change). Default page size 200; if `pagination.has_more` is true, fetch the next page with `offset`. Only static imports are counted. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error. \n\nExample: `{\"results\": [{\"path\": \"src/models.rs\", \"import_count\": 27}]}`",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of hotspots per page (default: 200)"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N results). Use with limit for pagination."
-                        },
-                        "min_dependents": {
-                            "type": "integer",
-                            "description": "Minimum number of dependents to include (default: 2)"
-                        },
-                        "sort": {
-                            "type": "string",
-                            "description": "Sort order: 'asc' (least imports first) or 'desc' (most imports first, default)"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "find_circular",
-                "description": "Detect circular dependencies (cycles A → B → C → A) in the static import graph. Prefer this over manually grepping for import chains — Reflex does the cycle detection directly. Returns `{pagination, results: [{paths: [\"a.rs\", \"b.rs\", \"a.rs\"]}]}`, sorted with longest cycles first by default. Default page size 200; if `pagination.has_more` is true, fetch the next page with `offset`. Only static imports are considered. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of cycles per page (default: 200)"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N cycles). Use with limit for pagination."
-                        },
-                        "sort": {
-                            "type": "string",
-                            "description": "Sort order: 'asc' (shortest cycles first) or 'desc' (longest cycles first, default)"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "find_unused",
-                "description": "List files that no other file imports — orphan candidates for deletion. Prefer this over manual Glob + Grep cross-referencing — Reflex answers from the static import graph in one call. Returns `{pagination, results: [\"src/unused.rs\", \"tests/old.rs\", ...]}`. Default page size 200; if `pagination.has_more` is true, fetch the next page with `offset`. Note: entry points (`main.rs`, `index.ts`) appear as unused by design — do not delete them. Only static imports are considered. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of unused files per page (default: 200)"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N files). Use with limit for pagination."
-                        }
-                    }
-                }
-            },
-            {
-                "name": "find_islands",
-                "description": "Find disconnected components (islands) in the static import graph — groups of files that have no imports crossing group boundaries. Prefer this over manual Glob + Grep cluster analysis — Reflex computes the connected components directly. Returns `{pagination, results: [{island_id, size, paths: [...]}]}` sorted with largest islands first by default. Default page size 200; if `pagination.has_more` is true, fetch the next page with `offset`. Use `min_island_size` and `max_island_size` to filter by component size (default: 2–500 files, or 50% of total). Only static imports are considered. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of islands per page (default: 200)"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset (skip first N islands). Use with limit for pagination."
-                        },
-                        "min_island_size": {
-                            "type": "integer",
-                            "description": "Minimum files in an island to include (default: 2)"
-                        },
-                        "max_island_size": {
-                            "type": "integer",
-                            "description": "Maximum files in an island to include (default: 500 or 50% of total files)"
-                        },
-                        "sort": {
-                            "type": "string",
-                            "description": "Sort order: 'asc' (smallest islands first) or 'desc' (largest islands first, default)"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "analyze_summary",
-                "description": "One-call overview of codebase dependency health. Prefer this over running `find_circular` + `find_hotspots` + `find_unused` + `find_islands` individually — returns aggregate counts so the agent can decide which specific analysis to drill into. Returns `{circular_dependencies, hotspots, unused_files, islands, min_dependents}`. Only static imports are considered. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error. \n\nExample: `{\"circular_dependencies\": 17, \"hotspots\": 10, \"unused_files\": 82, \"islands\": 81, \"min_dependents\": 2}`",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "min_dependents": {
-                            "type": "integer",
-                            "description": "Minimum number of dependents for hotspots (default: 2)"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "find_references",
-                "description": "Atomic symbol definition + every usage in one call. Prefer this over the two-step Grep-based find-all-callers pattern (search, then filter to call sites by eye) and over chaining `search_code(symbols=true) + search_code()` — `find_references` returns both the definition and all call sites in a single call, complete with no follow-up searches needed. \n\nUse this for: \"find all callers of X\" (the most common agent refactoring task); impact analysis before changing a function or class; rename planning; dead-code detection before deleting a function. \n\nBy default, matches inside string literals and comments are excluded (so test fixtures and doc comments don't drown out real call sites); pass `include_strings: true` to restore all occurrences. CODE FILES ONLY: the docs/config tier (md, yaml, json, toml, html, sh, proto) is never searched here, because a name mentioned in a changelog is not a call site — use search_code with `lang: \"text\"` for those. Coverage otherwise matches ripgrep's defaults: hidden paths (dot-directories) and gitignored files are not indexed. Returns `{definition, references, total_references, returned_count, filtered_out, pagination, status}`. `pagination.total` and `total_references` are the RAW totals before string/comment filtering (that is the space `offset` indexes into); `returned_count` is what this page actually returns after filtering, and `filtered_out` is the difference — they are not expected to be equal. `mode: \"count\"` returns `{count, pattern}`: the number of references AFTER string/comment filtering, over every page (so it equals `total_references` minus the `filtered_out` of all pages); with `include_strings: true` it is the raw total and equals `total_references`. `definition` is the first symbol definition (`{path, line, kind, symbol, span, preview}`) or null, and `references` is a flat array of `{path, line, preview}` covering every textual occurrence including the definition site itself. Pagination applies to `references` only; if `pagination.has_more` is true, fetch the next page with `offset`. On \"Index not found\" error, call `index_project`, then retry. \n\nFRESHNESS: every response carries `status` and `can_trust_results`. `status: \"stale\"` with `can_trust_results: false` means files on disk changed since the index was built — the accompanying `warning` names the changed paths. Results are still real matches; they may be incomplete, and a deleted file can still produce hits at its old lines. Call `index_project` and retry when completeness matters (find-all-callers, impact analysis, rename planning). This is normal after editing and is not an error.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "Symbol name or text pattern to find references for (e.g., 'CacheManager', 'extract_symbols')"
-                        },
-                        "contains": {
-                            "type": "boolean",
-                            "description": "Substring matching, like `grep -F`. DEFAULT IS FALSE, which matches WHOLE IDENTIFIERS ONLY: pattern \"verify_csrf\" does NOT match \"verify_csrf_form_field\", and \"jwks_rps\" does NOT match \"jwks_rps_limit\". Pass true to find a pattern anywhere inside a longer identifier. If a search returns 0, check the response `hint` — it reports how many substring matches exist."
-                        },
-                        "ignore_case": {
-                            "type": "boolean",
-                            "description": "Match letters regardless of case, like `rg -i` (`ignore_case` + `contains` is `rg -i -F`). Default false. The trigram index is still used, so this costs about the same as a case-sensitive search."
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["list", "count"],
-                            "description": "Response mode: \"list\" (default) returns full results with definition + references; \"count\" returns only {count, pattern}: every reference AFTER string/comment filtering (all pages, not one); with include_strings:true it is the raw total and equals list-mode total_references."
-                        },
-                        "kind": {
-                            "type": "string",
-                            "description": "Filter definition lookup by symbol kind (function, class, struct, trait, etc.)"
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "Filter by language (rust, typescript, python, go, etc.)"
-                        },
-                        "glob": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Include files matching glob patterns (e.g., ['src/**/*.rs']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "exclude": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'tests/**']) Patterns follow gitignore rules: a pattern containing '/' (src/**/*.rs) is anchored at the index root; a bare name (*.rs, Makefile) matches at any depth; **/src/**/*.rs matches src/ anywhere; * does not cross /."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max references per page (default: 200, max: 500). The 200-result default covers most find-all tasks in a single call. Pagination applies to references only."
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Pagination offset for references (skip first N). Use with limit."
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
-                        },
-                        "include_strings": {
-                            "type": "boolean",
-                            "description": "Include matches inside string literals and comments (default: false). By default these are excluded to focus on real call sites."
-                        }
-                    },
-                    "required": ["pattern"]
-                }
-            },
-            {
-                "name": "gather_context",
-                "description": "One-shot codebase orientation: structure, file types, project type, frameworks, entry points, test layout, config files. Prefer this over Glob-based recon at session start — Reflex returns a single consolidated overview instead of multiple glob calls. By default (no parameters) all context types are gathered; pass individual flags (`structure`, `framework`, `entry_points`, etc.) for a focused slice. Use `depth` to control tree depth (default 2) and `path` to focus on a subdirectory. \n\nUse this for: getting oriented in an unfamiliar codebase; locating entry points; confirming which frameworks/languages are in use. For finding where a specific symbol/pattern lives, use `search_code` or `find_references` instead.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "structure": {
-                            "type": "boolean",
-                            "description": "Show directory structure"
-                        },
-                        "file_types": {
-                            "type": "boolean",
-                            "description": "Show file type distribution"
-                        },
-                        "project_type": {
-                            "type": "boolean",
-                            "description": "Detect project type (CLI/library/webapp/monorepo)"
-                        },
-                        "framework": {
-                            "type": "boolean",
-                            "description": "Detect frameworks and conventions"
-                        },
-                        "entry_points": {
-                            "type": "boolean",
-                            "description": "Show entry point files"
-                        },
-                        "test_layout": {
-                            "type": "boolean",
-                            "description": "Show test organization pattern"
-                        },
-                        "config_files": {
-                            "type": "boolean",
-                            "description": "List important configuration files"
-                        },
-                        "depth": {
-                            "type": "integer",
-                            "description": "Tree depth for structure (default: 2)"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "Focus on specific directory path"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "check_index_status",
-                "description": "Check whether the Reflex search index is fresh, stale, or missing — without running any search. Call this at session start, after any git operation (checkout, merge, rebase, pull), and after editing files. \n\nReturns `{status: \"fresh\" | \"stale\" | \"missing\", can_trust_results, details, reason?, action_required?, files_modified?, files_added?, files_deleted?, changed_count?}`. The three file lists and `reason` are present only when stale; they name the actual paths (capped at 100 each; `truncated` is set if cut short). `details.checked_by` is `git` or `walk`. `action_required` is the tool to call — `index_project`. \n\nFreshness is judged by FILE CONTENT, not by commit: every indexed file has a recorded fingerprint, and the index is stale only when a file on disk differs from it — edited, newly created, or deleted, whether or not the change is committed. So: edit → stale; `index_project` → fresh again, with no commit needed. Committing already-indexed content, or switching to a branch with the same tree, is NOT stale; `details.indexed_commit` and `details.current_commit` may differ while status is fresh. Reverting a file after its edit was indexed IS stale. A deleted file is the serious one: it still produces hits at its old lines until you reindex. `details.checked_by` says how the tree was compared: `git` (candidates from `git status`, confirmed by fingerprint) or `walk` (no git; every file stat'ed). \n\nA stale index always has `can_trust_results: false`, including for a zero-result search. \n\nExample fresh: `{\"status\": \"fresh\", \"can_trust_results\": true, \"details\": {\"current_branch\": \"main\", \"indexed_commit\": \"9af2695…\", \"current_commit\": \"a473cae…\", \"checked_by\": \"git\"}}`. Example stale: `{\"status\": \"stale\", \"can_trust_results\": false, \"reason\": \"Files changed since the index was built (2 modified, 1 added)\", \"action_required\": \"index_project\", \"files_modified\": [\"src/storage/mod.rs\", \"src/lib.rs\"], \"files_added\": [\"src/storage/zz_probe.rs\"], \"changed_count\": 3}`",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
+/// The tools `tools/list` returns. `analyze` is left out when
+/// `[mcp] enable_structural_tools = false` (`~/.reflex/config.toml`).
+///
+/// 2026-09-30: 17 tools with ~44 KB of schemas became these 9 (~13 KB). Claude Code
+/// carries every listed schema on every turn, and that prefix was the whole token
+/// gap to Grep in long sessions (`.context/AUTO_UPDATE_RESEARCH.md`). The removed
+/// names still work, unlisted ([`LEGACY_TOOLS`]).
+fn tool_list(enable_structural: bool) -> Vec<Value> {
+    let contains = json!({"type": "boolean", "description": "Substring match (grep -F) instead of whole identifiers"});
+    let limit = json!({"type": "integer", "description": "Max results (default 200, at most 500)"});
+    let offset = json!({"type": "integer", "description": "Skip this many results (next page)"});
+    let mode = json!({"type": "string", "enum": ["list", "count"], "description": "count: {count, files} only"});
+    let paths = json!({"type": "boolean", "description": "Return file paths only"});
+    let mut tools = vec![
+        json!({
+            "name": "search_code",
+            "description": "Search code for a literal pattern: every match with path, line and preview (for path and line only, list_locations is cheaper). Whole identifiers by default; contains:true for substrings; symbols:true for definitions only (kind narrows them). Answer: {columns, rows} (each row aligns with columns) plus pagination; when has_more, fetch the next page with offset. total_count is exact only when total_is_exact.",
+            "inputSchema": search_params(json!({
+                "contains": contains,
+                "symbols": {"type": "boolean", "description": "Definitions only"},
+                "kind": {"type": "string", "description": "Symbol kind: function, struct, class, trait, …"},
+                "exact": {"type": "boolean", "description": "Exact symbol name"},
+                "expand": {"type": "boolean", "description": "Whole symbol body"},
+                "dependencies": {"type": "boolean", "description": "Attach each file's imports"},
+                "preview_length": {"type": "integer", "description": "Preview characters (default 180)"},
+                "mode": mode,
+                "paths": paths,
+                "limit": limit,
+                "offset": offset
+            }))
+        }),
+        json!({
+            "name": "search_regex",
+            "description": "Search code with a regular expression (Rust regex): alternation, classes, anchors, e.g. `fn (get|set)_\\w+` or `->with\\(`. In JSON double each backslash. Same filters and answer as search_code.",
+            "inputSchema": search_params(json!({
+                "dependencies": {"type": "boolean", "description": "Attach each file's imports"},
+                "mode": mode,
+                "paths": paths,
+                "limit": limit,
+                "offset": offset
+            }))
+        }),
+        json!({
+            "name": "list_locations",
+            "description": "Where does X occur? Every match as {path, line}: the cheapest search, no limit. preview:true adds each matching line (trimmed, 120 chars). Same matching as search_code.",
+            "inputSchema": search_params(json!({
+                "contains": contains,
+                "preview": {"type": "boolean", "description": "Add each matching line (120 chars)"},
+                "dependencies": {"type": "boolean", "description": "Attach each file's imports"}
+            }))
+        }),
+        json!({
+            "name": "find_references",
+            "description": "A symbol's definition and every usage in one call, in code files only; matches in strings and comments are left out (include_strings:true keeps them). Answer: {definition, references, total_references, returned_count, filtered_out, pagination}; mode:\"count\" returns the count after filtering.",
+            "inputSchema": search_params(json!({
+                "contains": contains,
+                "kind": {"type": "string", "description": "Symbol kind of the definition"},
+                "include_strings": {"type": "boolean", "description": "Keep matches in strings and comments"},
+                "mode": mode,
+                "limit": limit,
+                "offset": offset
+            }))
+        }),
+        json!({
+            "name": "search_ast",
+            "description": "Tree-sitter structural search, e.g. `(function_item) @fn`. Slow: parses every file that lang and glob select, so always pass glob. Prefer search_code with symbols:true.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Tree-sitter query (S-expression)"},
+                    "lang": {"type": "string", "description": "Language of the query"},
+                    "file": {"type": "string", "description": "Only paths containing this substring"},
+                    "glob": {"type": "array", "items": {"type": "string"}, "description": "Only paths matching (gitignore rules)"},
+                    "exclude": {"type": "array", "items": {"type": "string"}, "description": "Skip paths matching"},
+                    "force": {"type": "boolean", "description": "Run without a glob"},
+                    "dependencies": {"type": "boolean", "description": "Attach each file's imports"},
+                    "paths": paths,
+                    "limit": limit,
+                    "offset": offset
+                },
+                "required": ["pattern", "lang"]
+            }
+        }),
+        json!({
+            "name": "get_dependencies",
+            "description": "The imports of a file: path, line, internal/external/stdlib. reverse:true lists the files that import it instead; depth:N follows imports N levels (a list of {path, depth}). Static imports only; path may be a fragment or file name.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path, fragment or name"},
+                    "reverse": {"type": "boolean", "description": "Files that import this file"},
+                    "depth": {"type": "integer", "description": "Follow imports this many levels"}
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "analyze",
+            "description": "Import-graph analysis. kind: summary (counts), hotspots (most-imported files), circular (import cycles), unused (files nothing imports; entry points included), islands (disconnected groups). Answers are paginated with limit/offset.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["summary", "hotspots", "circular", "unused", "islands"]},
+                    "limit": {"type": "integer", "description": "Max results (default 200)"},
+                    "offset": offset,
+                    "sort": {"type": "string", "description": "asc or desc"},
+                    "min_dependents": {"type": "integer", "description": "hotspots/summary: minimum importers"},
+                    "min_island_size": {"type": "integer", "description": "islands: minimum files"},
+                    "max_island_size": {"type": "integer", "description": "islands: maximum files"}
+                },
+                "required": ["kind"]
+            }
+        }),
+        json!({
+            "name": "gather_context",
+            "description": "Project overview: structure, file types, frameworks, entry points, test layout, config files. Pass flags to pick sections (default: all).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Subdirectory"},
+                    "depth": {"type": "integer", "description": "Tree depth"},
+                    "structure": {"type": "boolean"},
+                    "file_types": {"type": "boolean"},
+                    "project_type": {"type": "boolean"},
+                    "framework": {"type": "boolean"},
+                    "entry_points": {"type": "boolean"},
+                    "test_layout": {"type": "boolean"},
+                    "config_files": {"type": "boolean"}
                 }
             }
-        ]
-    });
-
-    if enable_structural {
-        return Ok(all_tools);
+        }),
+        json!({
+            "name": "index_project",
+            "description": "Force an index run. Rarely needed: every tool updates the index before it answers. force:true rebuilds a corrupted index.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "force": {"type": "boolean", "description": "Full rebuild"},
+                    "languages": {"type": "array", "items": {"type": "string"}, "description": "Only these languages"}
+                }
+            }
+        }),
+        json!({
+            "name": "check_index_status",
+            "description": "Report whether the index matches the files on disk, without updating it. Rarely needed: every other tool updates the index first.",
+            "inputSchema": {"type": "object", "properties": {}}
+        }),
+    ];
+    if !enable_structural {
+        tools.retain(|t| t["name"] != "analyze");
     }
+    tools
+}
 
-    // Filter out structural-analysis tools when disabled in config
-    let tools: Vec<Value> = all_tools["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| !STRUCTURAL_TOOLS.contains(&t["name"].as_str().unwrap_or("")))
-        .cloned()
-        .collect();
-    Ok(json!({ "tools": tools }))
+/// Tool names removed from `tools/list` on 2026-09-30 that still work: each call
+/// runs as the named replacement and answers with a deprecation warning. Their
+/// arguments are checked against the old schema (properties only, no text).
+const LEGACY_TOOLS: &[(&str, &str)] = &[
+    ("count_occurrences", "search_code with mode:\"count\""),
+    ("get_dependents", "get_dependencies with reverse:true"),
+    ("get_transitive_deps", "get_dependencies with depth:N"),
+    ("find_hotspots", "analyze with kind:\"hotspots\""),
+    ("find_circular", "analyze with kind:\"circular\""),
+    ("find_unused", "analyze with kind:\"unused\""),
+    ("find_islands", "analyze with kind:\"islands\""),
+    ("analyze_summary", "analyze with kind:\"summary\""),
+];
+
+/// The input schemas of [`LEGACY_TOOLS`], for argument checking only.
+fn legacy_schemas() -> Vec<(&'static str, Value)> {
+    let int = json!({"type": "integer"});
+    let string = json!({"type": "string"});
+    let schema = |props: Value, required: &[&str]| json!({"type": "object", "properties": props, "required": required});
+    vec![
+        (
+            "count_occurrences",
+            search_params(json!({
+                "contains": {"type": "boolean"}, "symbols": {"type": "boolean"},
+                "kind": string, "dependencies": {"type": "boolean"}
+            })),
+        ),
+        ("get_dependents", schema(json!({"path": string}), &["path"])),
+        (
+            "get_transitive_deps",
+            schema(json!({"path": string, "depth": int}), &["path"]),
+        ),
+        (
+            "find_hotspots",
+            schema(
+                json!({"limit": int, "offset": int, "sort": string, "min_dependents": int}),
+                &[],
+            ),
+        ),
+        (
+            "find_circular",
+            schema(json!({"limit": int, "offset": int, "sort": string}), &[]),
+        ),
+        (
+            "find_unused",
+            schema(json!({"limit": int, "offset": int}), &[]),
+        ),
+        (
+            "find_islands",
+            schema(
+                json!({"limit": int, "offset": int, "sort": string,
+                                       "min_island_size": int, "max_island_size": int}),
+                &[],
+            ),
+        ),
+        (
+            "analyze_summary",
+            schema(json!({"min_dependents": int}), &[]),
+        ),
+    ]
+}
+
+/// Handle tools/list request
+fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<Value> {
+    Ok(json!({ "tools": tool_list(enable_structural) }))
 }
 
 /// Handle tools/call request
@@ -1018,6 +614,8 @@ const BOOL_ARG_KEYS: &[&str] = &[
     "force",
     "dependencies",
     "include_strings",
+    "preview",
+    "reverse",
     "structure",
     "file_types",
     "project_type",
@@ -1049,8 +647,13 @@ fn tool_specs() -> &'static std::collections::HashMap<String, ToolSpec> {
         std::sync::OnceLock::new();
     SPECS.get_or_init(|| {
         let mut map = std::collections::HashMap::new();
-        let listing = handle_list_tools(None, true).expect("static tool list is valid JSON");
-        for tool in listing["tools"].as_array().into_iter().flatten() {
+        let mut listing = tool_list(true);
+        listing.extend(
+            legacy_schemas()
+                .into_iter()
+                .map(|(name, schema)| json!({"name": name, "inputSchema": schema})),
+        );
+        for tool in &listing {
             let Some(name) = tool["name"].as_str() else {
                 continue;
             };
@@ -1291,14 +894,13 @@ fn rebuild_index(
     languages: Vec<Language>,
 ) -> Result<crate::models::IndexStats> {
     let cache = CacheManager::new(root);
+    // Read before a forced clear: the saved `--languages` lives in meta.db.
+    let mut config = cache.effective_index_config(&languages)?;
+    config.lock_wait_secs = crate::models::LOCK_WAIT_FOREVER;
     if force {
         log::info!("Force rebuild requested, clearing existing cache");
         cache.clear()?;
     }
-    let config = IndexConfig {
-        languages,
-        ..Default::default()
-    };
     let indexer = Indexer::new(cache, config);
     indexer.index(root, false)
 }
@@ -1579,7 +1181,75 @@ fn to_columnar(mut value: Value) -> Value {
     value
 }
 
-fn handle_call_tool(params: Option<Value>, root: &Path) -> Result<Value> {
+/// Tools whose query engine updates the index itself, alongside the search.
+const ENGINE_UPDATED_TOOLS: [&str; 6] = [
+    "search_code",
+    "search_regex",
+    "list_locations",
+    "count_occurrences",
+    "find_references",
+    "search_ast",
+];
+
+/// Tools that never update first: the explicit run, and the explicit probe (an
+/// agent asking whether the index is current gets the answer, not a repair).
+const NO_UPDATE_TOOLS: [&str; 2] = ["index_project", "check_index_status"];
+
+/// Tools whose JSON-object answer carries `status` and `can_trust_results`, added
+/// here when the tool's own answer lacks them (count mode, `list_locations`,
+/// `find_references`, `analyze`). Array answers (`get_dependencies` in every form,
+/// `search_ast`) have no place for them.
+const FRESHNESS_FIELD_TOOLS: [&str; 11] = [
+    "analyze",
+    "search_code",
+    "search_regex",
+    "list_locations",
+    "count_occurrences",
+    "find_references",
+    "find_hotspots",
+    "find_circular",
+    "find_unused",
+    "find_islands",
+    "analyze_summary",
+];
+
+/// Add the freshness verdict to a JSON-object answer that lacks
+/// `can_trust_results` (memoised, so it is the verdict the call already saw).
+fn add_freshness_fields(data: &mut Value, root: &Path) {
+    let Some(obj) = data.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("can_trust_results") {
+        return;
+    }
+    let Ok((status, trusted, warning)) =
+        QueryEngine::new(CacheManager::new(root)).get_index_status()
+    else {
+        return;
+    };
+    obj.insert("status".to_string(), json!(status));
+    obj.insert("can_trust_results".to_string(), json!(trusted));
+    if let Some(w) = warning
+        && !obj.contains_key("warning")
+        && let Ok(w) = serde_json::to_value(w)
+    {
+        obj.insert("warning".to_string(), w);
+    }
+}
+
+/// The query engine a tool searches with: with this server's update, if any.
+fn engine_in(cache: CacheManager, update: Option<UpdateOptions>) -> QueryEngine {
+    match update {
+        Some(opts) => QueryEngine::new(cache).with_update(opts),
+        None => QueryEngine::new(cache),
+    }
+}
+
+fn handle_call_tool(
+    params: Option<Value>,
+    root: &Path,
+    update: Option<UpdateOptions>,
+) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow::anyhow!("Missing params for tools/call"))?;
 
     let name = params["name"]
@@ -1589,15 +1259,101 @@ fn handle_call_tool(params: Option<Value>, root: &Path) -> Result<Value> {
     let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
     let (arguments, warnings) = normalize_arguments(name, spec, params["arguments"].clone())?;
 
-    let data = with_corruption_recovery(name, root, || dispatch_tool(name, &arguments, root))?;
+    // Tools that read the index without the engine bring it up to date here.
+    let mut warnings = warnings;
+    if let Some(opts) = update
+        && !ENGINE_UPDATED_TOOLS.contains(&name)
+        && !NO_UPDATE_TOOLS.contains(&name)
+        && let Updated::Skipped(reason) = update_if_stale(&CacheManager::new(root), &opts)
+            .map_err(|e| anyhow::anyhow!("{}", mcp_facing_message(&e)))?
+    {
+        warnings.push(format!("Index not updated: {reason}"));
+    }
+
+    // Merged tools run the handler of the form they name; removed names still run.
+    let handler = handler_for(name, &arguments)?;
+    if let Some((_, instead)) = LEGACY_TOOLS.iter().find(|(old, _)| *old == name) {
+        warnings.push(format!("`{name}` is deprecated; use {instead}"));
+    }
+
+    let mut data = with_corruption_recovery(name, root, || {
+        dispatch_tool(handler, &arguments, root, update)
+    })?;
+    if FRESHNESS_FIELD_TOOLS.contains(&name) {
+        add_freshness_fields(&mut data, root);
+    }
 
     Ok(finish_tool_result(data, warnings))
+}
+
+/// Every `dispatch_tool` arm (listed tools and the ones merged into them).
+const HANDLERS: &[&str] = &[
+    "search_code",
+    "search_regex",
+    "list_locations",
+    "count_occurrences",
+    "find_references",
+    "search_ast",
+    "get_dependencies",
+    "get_dependents",
+    "get_transitive_deps",
+    "find_hotspots",
+    "find_circular",
+    "find_unused",
+    "find_islands",
+    "analyze_summary",
+    "gather_context",
+    "index_project",
+    "check_index_status",
+];
+
+/// The `dispatch_tool` arm a call runs: `analyze` by its `kind`, `get_dependencies`
+/// by `reverse` / `depth`, everything else by its own name.
+fn handler_for(name: &str, arguments: &Value) -> Result<&'static str> {
+    Ok(match name {
+        "analyze" => match arguments["kind"].as_str() {
+            Some("summary") => "analyze_summary",
+            Some("hotspots") => "find_hotspots",
+            Some("circular") => "find_circular",
+            Some("unused") => "find_unused",
+            Some("islands") => "find_islands",
+            other => {
+                return Err(invalid_params(format!(
+                    "analyze: kind must be one of summary, hotspots, circular, unused, islands (got {})",
+                    other.map_or_else(|| "nothing".to_string(), |k| format!("\"{k}\""))
+                )));
+            }
+        },
+        "get_dependencies" => {
+            let reverse = arguments["reverse"].as_bool().unwrap_or(false);
+            match (reverse, arguments.get("depth").filter(|d| !d.is_null())) {
+                (true, Some(_)) => {
+                    return Err(invalid_params(
+                        "get_dependencies: reverse and depth cannot be combined".to_string(),
+                    ));
+                }
+                (true, None) => "get_dependents",
+                (false, Some(_)) => "get_transitive_deps",
+                (false, None) => "get_dependencies",
+            }
+        }
+        other => HANDLERS
+            .iter()
+            .copied()
+            .find(|h| *h == other)
+            .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", other))?,
+    })
 }
 
 /// Run one tool. Every arm returns the tool's *data* (a JSON object, or a
 /// plain `Value::String` for prose tools such as `gather_context`);
 /// `handle_call_tool` wraps it into the MCP `content` envelope.
-fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
+fn dispatch_tool(
+    name: &str,
+    arguments: &Value,
+    root: &Path,
+    update: Option<UpdateOptions>,
+) -> Result<Value> {
     match name {
         "list_locations" => {
             // Location discovery tool (minimal token usage)
@@ -1631,6 +1387,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 .unwrap_or_default();
             let force = arguments["force"].as_bool().unwrap_or(false);
             let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
+            let with_preview = arguments["preview"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
 
@@ -1665,7 +1422,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             // Extract locations (path + line) for each match
@@ -1674,10 +1431,23 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 .iter()
                 .flat_map(|file_group| {
                     file_group.matches.iter().map(move |m| {
-                        json!({
+                        let mut loc = json!({
                             "path": file_group.path.clone(),
                             "line": m.span.start_line
-                        })
+                        });
+                        // The matching line, trimmed and cut short: enough to tell a
+                        // definition from a call without a second search (agents that
+                        // could not see the line re-ran the search with grep).
+                        if with_preview {
+                            let line = m.preview.lines().next().unwrap_or("").trim();
+                            let mut short: String =
+                                line.chars().take(LOCATION_PREVIEW_CHARS).collect();
+                            if line.chars().count() > LOCATION_PREVIEW_CHARS {
+                                short.push('…');
+                            }
+                            loc["preview"] = json!(short);
+                        }
+                        loc
                     })
                 })
                 .collect();
@@ -1758,7 +1528,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             // Count unique files
@@ -1882,10 +1652,13 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     ..Default::default()
                 };
                 let cache = CacheManager::new(root);
-                let engine = QueryEngine::new(cache);
+                let engine = engine_in(cache, update);
                 let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
                 let mut result =
                     json!({"count": exact_total_or_count(&response), "pattern": pattern});
+                if let Some(files) = response.file_count {
+                    result["files"] = json!(files);
+                }
                 annotate_literal_result(&mut result, &response);
                 return Ok(result);
             }
@@ -1917,7 +1690,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let mut response = engine.search_with_metadata(&pattern, filter.clone())?;
 
             if paths_only {
@@ -2068,10 +1841,13 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     ..Default::default()
                 };
                 let cache = CacheManager::new(root);
-                let engine = QueryEngine::new(cache);
+                let engine = engine_in(cache, update);
                 let response = engine.search_with_metadata(&pattern, count_filter)?;
                 let mut result =
                     json!({"count": exact_total_or_count(&response), "pattern": pattern});
+                if let Some(files) = response.file_count {
+                    result["files"] = json!(files);
+                }
                 annotate_literal_result(&mut result, &response);
                 return Ok(result);
             }
@@ -2103,7 +1879,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let mut response = engine.search_with_metadata(&pattern, filter)?;
 
             if paths_only {
@@ -2252,7 +2028,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
 
             // Use the new search_ast_all_files method (no trigram filtering)
             let mut results = engine.search_ast_all_files(&ast_pattern, filter)?;
@@ -2747,7 +2523,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                 return Ok(result);
             }
 
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             // This is the explicit probe. An agent that asks whether the index is
             // current must never be answered from the freshness memo.
             let report = engine.fresh_index_report()?;
@@ -2863,7 +2639,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
                     ..Default::default()
                 };
                 let cache = CacheManager::new(root);
-                let engine = QueryEngine::new(cache);
+                let engine = engine_in(cache, update);
                 let response = engine.search_with_metadata(&pattern, count_filter.clone())?;
 
                 // `include_strings` must mean the same thing in count mode as in list
@@ -2920,7 +2696,7 @@ fn dispatch_tool(name: &str, arguments: &Value, root: &Path) -> Result<Value> {
             };
 
             let cache = CacheManager::new(root);
-            let engine = QueryEngine::new(cache);
+            let engine = engine_in(cache, update);
             let def_response = engine.search_with_metadata(&pattern, def_filter)?;
 
             // Extract first definition as a compact object (reuse MatchResult's Serialize impl)
@@ -3050,13 +2826,14 @@ fn process_request(
     request: JsonRpcRequest,
     enable_structural: bool,
     root: &Path,
+    update: Option<UpdateOptions>,
 ) -> JsonRpcResponse {
     log::debug!("MCP request: method={}", request.method);
 
     let result = match request.method.as_str() {
         "initialize" => handle_initialize(request.params),
         "tools/list" => handle_list_tools(request.params, enable_structural),
-        "tools/call" => handle_call_tool(request.params, root),
+        "tools/call" => handle_call_tool(request.params, root, update),
         _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
     };
 
@@ -3117,10 +2894,19 @@ fn handle_notification(method: &str, _params: Option<Value>) {
 }
 
 /// Run the MCP server on stdio.
-pub fn run_mcp_server() -> Result<()> {
+/// `rfx mcp`: every tool that reads the index updates a stale one first, unless
+/// `no_update`.
+pub fn run_mcp_server(no_update: bool) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    run_mcp_server_io(stdin.lock(), stdout.lock())
+    let mcp_config = load_mcp_config();
+    run_mcp_server_io_impl(
+        stdin.lock(),
+        stdout.lock(),
+        mcp_config.enable_structural_tools,
+        Path::new("."),
+        (!no_update).then(UpdateOptions::server),
+    )
 }
 
 /// Run the MCP server reading JSON-RPC messages from `reader` and writing
@@ -3132,6 +2918,7 @@ pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, writer: W) -> Result<(
         writer,
         mcp_config.enable_structural_tools,
         Path::new("."),
+        None,
     )
 }
 
@@ -3145,7 +2932,19 @@ pub fn run_mcp_server_io_in<R: BufRead, W: Write>(
     writer: W,
     enable_structural: bool,
 ) -> Result<()> {
-    run_mcp_server_io_impl(reader, writer, enable_structural, root)
+    run_mcp_server_io_impl(reader, writer, enable_structural, root, None)
+}
+
+/// Like [`run_mcp_server_io_in`], with the automatic update `rfx mcp` runs
+/// (`update`; use [`UpdateOptions::library`] in tests: no process is started).
+pub fn run_mcp_server_io_with<R: BufRead, W: Write>(
+    root: &Path,
+    reader: R,
+    writer: W,
+    enable_structural: bool,
+    update: Option<UpdateOptions>,
+) -> Result<()> {
+    run_mcp_server_io_impl(reader, writer, enable_structural, root, update)
 }
 
 /// Inner server loop. Accepts `enable_structural` so tests can drive the flag
@@ -3156,6 +2955,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     mut writer: W,
     enable_structural: bool,
     root: &Path,
+    update: Option<UpdateOptions>,
 ) -> Result<()> {
     log::info!("Starting Reflex MCP server on stdio");
 
@@ -3209,7 +3009,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
         }
 
         // Process request and write response
-        let response = process_request(request, enable_structural, root);
+        let response = process_request(request, enable_structural, root, update);
         let response_json = serde_json::to_string(&response)?;
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
@@ -3233,7 +3033,8 @@ mod tests {
     fn call_server_with_structural(input: &str, enable_structural: bool) -> String {
         let reader = Cursor::new(input.as_bytes());
         let mut output = Vec::new();
-        run_mcp_server_io_impl(reader, &mut output, enable_structural, Path::new(".")).unwrap();
+        run_mcp_server_io_impl(reader, &mut output, enable_structural, Path::new("."), None)
+            .unwrap();
         String::from_utf8(output).unwrap()
     }
 
@@ -3343,25 +3144,15 @@ mod tests {
     /// dot-directories. "Every tracked file" made an agent trust a false zero.
     #[test]
     fn test_coverage_text_matches_ripgrep_defaults() {
+        // The coverage rule is stated once, in the instructions (2026-09-30); no tool
+        // description may contradict it.
+        assert!(MCP_INSTRUCTIONS.contains("dot-director"));
         let tools = handle_list_tools(None, true).unwrap();
         let mut texts: Vec<String> = vec![MCP_INSTRUCTIONS.to_string()];
         for t in tools["tools"].as_array().unwrap() {
-            let d = t["description"].as_str().unwrap();
-            if d.contains("COVERAGE") || d.contains("Coverage") {
-                texts.push(d.to_string());
-            }
+            texts.push(t["description"].as_str().unwrap().to_string());
         }
-        assert!(
-            texts.len() >= 6,
-            "instructions + 5 tool descriptions: {}",
-            texts.len()
-        );
         for text in &texts {
-            assert!(
-                text.contains("dot-director"),
-                "{}",
-                &text[..text.len().min(120)]
-            );
             for bad in [
                 "every tracked file",
                 "every non-binary tracked file",
@@ -3399,10 +3190,11 @@ mod tests {
     #[test]
     fn test_instructions_size_budget() {
         assert!(
-            // 1700, not 1600: the ripgrep-default coverage sentence (2.0.0) costs ~25
-            // tokens per session and prevents an agent trusting a false zero.
-            MCP_INSTRUCTIONS.len() <= 1700,
-            "instructions are paid for on every session; keep them under 1700 chars (got {})",
+            // 2400 (was 1700): on 2026-09-30 the matching, coverage and freshness rules
+            // moved here from the tool descriptions. The instructions are sent once per
+            // session; each description is carried on every turn.
+            MCP_INSTRUCTIONS.len() <= 2400,
+            "instructions are paid for on every session; keep them under 2400 chars (got {})",
             MCP_INSTRUCTIONS.len()
         );
     }
@@ -3946,14 +3738,9 @@ mod tests {
     // REF-189: structural tools absent when enable_structural_tools = false
     #[test]
     fn test_structural_tools_gated_by_flag() {
-        const STRUCTURAL: &[&str] = &[
-            "find_circular",
-            "find_islands",
-            "find_unused",
-            "analyze_summary",
-            "get_transitive_deps",
-        ];
-        const ALWAYS_ON: &[&str] = &["search_code", "find_hotspots", "get_dependencies"];
+        // Since 2026-09-30 the structural analyses are one tool, `analyze`.
+        const STRUCTURAL: &[&str] = &["analyze"];
+        const ALWAYS_ON: &[&str] = &["search_code", "list_locations", "get_dependencies"];
 
         let req = r#"{"jsonrpc":"2.0","id":10,"method":"tools/list","params":null}"#;
 

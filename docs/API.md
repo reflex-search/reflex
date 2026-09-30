@@ -461,8 +461,9 @@ curl -s -X POST http://127.0.0.1:7878/index \
   -d '{"force": true, "languages": ["rust"]}'
 ```
 
-Response: the [`/stats`](#get-stats) shape, plus change counts for an incremental
-run. Each count is left out when 0:
+Response: the [`/stats`](#get-stats) shape, plus counts of new, modified and unchanged
+files since the last build (any change still rebuilds the whole index). Each count is left
+out when 0:
 
 ```json
 {

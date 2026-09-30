@@ -117,8 +117,8 @@ fn unindexed_target(
         return None;
     }
     let needle = fp.strip_prefix("./").unwrap_or(fp);
-    let any_indexed = (0..open.content.file_count() as u32).any(|id| {
-        open.content
+    let any_indexed = open.snapshot.live_ids().any(|id| {
+        open.snapshot
             .get_file_path(id)
             .and_then(|p| p.to_str())
             .is_some_and(|p| p.contains(needle))

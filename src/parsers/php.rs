@@ -1663,7 +1663,14 @@ pub fn find_all_composer_json(index_root: &Path) -> Result<Vec<PathBuf>> {
 /// Vector of PSR-4 mappings with project_root relative to index_root
 pub fn parse_all_composer_psr4(index_root: &Path) -> Result<Vec<Psr4Mapping>> {
     let composer_files = find_all_composer_json(index_root)?;
+    parse_composer_psr4_from(index_root, composer_files)
+}
 
+/// [`parse_all_composer_psr4`] for `composer.json` files already found (in walk order).
+pub fn parse_composer_psr4_from(
+    index_root: &Path,
+    composer_files: Vec<PathBuf>,
+) -> Result<Vec<Psr4Mapping>> {
     if composer_files.is_empty() {
         log::debug!("No composer.json files found in {:?}", index_root);
         return Ok(Vec::new());

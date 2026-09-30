@@ -1,0 +1,2205 @@
+{
+ "generated_by": "session_bench.py generate (pinned corpora); do not edit by hand",
+ "sessions": [
+  {
+   "id": "reflex-session-investigate",
+   "repo": "reflex",
+   "kind": "investigate",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `set_value` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "set_value",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `index_status` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "index_status",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ContextGatheringParams` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ContextGatheringParams",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `KotlinDependencyExtractor` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "KotlinDependencyExtractor",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_rust_workspace_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_rust_workspace_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `index_file` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "index_file",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `from_db_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "from_db_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `multiply` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "multiply",
+      "src"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `parse_concepts_response` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "src/pulse/glossary.rs:374"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `resolve_model` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "src/semantic/config.rs:488"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `src/` mention `ModuleDefinition` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "ModuleDefinition",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `src/` mention `EnsureSnapshotResult` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "EnsureSnapshotResult",
+      "src"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "reflex-session-edit",
+   "repo": "reflex",
+   "kind": "edit",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_zig_import_to_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_zig_import_to_path",
+      "src"
+     ],
+     "expected": [
+      "src/indexer.rs:1597",
+      "src/parsers/zig.rs:308",
+      "src/parsers/zig.rs:696",
+      "src/parsers/zig.rs:705",
+      "src/parsers/zig.rs:716",
+      "src/parsers/zig.rs:725",
+      "src/parsers/zig.rs:728",
+      "src/parsers/zig.rs:735",
+      "src/parsers/zig.rs:738"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `resolve_zig_import_to_path` to `resolve_zig_import_to_path_renamed` everywhere under `src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "resolve_zig_import_to_path",
+     "new": "resolve_zig_import_to_path_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_zig_import_to_path_renamed` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_zig_import_to_path_renamed",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `PaginationInfo` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "PaginationInfo",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_zig_import_to_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_zig_import_to_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `context_usage` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "context_usage",
+      "src"
+     ],
+     "expected": [
+      "src/semantic/chat_session.rs:246",
+      "src/semantic/chat_session.rs:255",
+      "src/semantic/chat_session.rs:260",
+      "src/semantic/chat_session.rs:438",
+      "src/semantic/chat_session.rs:444",
+      "src/semantic/chat_tui.rs:499"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `context_usage` to `context_usage_renamed` everywhere under `src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "context_usage",
+     "new": "context_usage_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `context_usage_renamed` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "context_usage_renamed",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `EvaluationReport` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "EvaluationReport",
+      "src"
+     ]
+    },
+    {
+     "kind": "files",
+     "prompt": "List every file under `src/` that now contains `resolve_zig_import_to_path_renamed` or `context_usage_renamed`. End your answer with a JSON code block {\"answer\": [\"path\", ...]}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "-e",
+      "resolve_zig_import_to_path_renamed",
+      "-e",
+      "context_usage_renamed",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `to_prompt_string` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "to_prompt_string",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_zig_import_to_path_renamed` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_zig_import_to_path_renamed",
+      "src"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-investigate",
+   "repo": "ripgrep",
+   "kind": "investigate",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `quit_byte` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "quit_byte",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `CounterWriter` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "CounterWriter",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `auto_heap_limit` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "auto_heap_limit",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `NoCaptures` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "NoCaptures",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `separator_field_context` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "separator_field_context",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `walk_builder` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "walk_builder",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `haystack_builder` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "haystack_builder",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Printer` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Printer",
+      "crates"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `set_pos` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "crates/searcher/src/searcher/core.rs:77"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `binary_data` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "crates/searcher/src/searcher/core.rs:97"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `crates/` mention `elapsed` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "elapsed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `crates/` mention `matched_path_or_any_parents` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "matched_path_or_any_parents",
+      "crates"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-edit",
+   "repo": "ripgrep",
+   "kind": "edit",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `preprocessor_globs` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "preprocessor_globs",
+      "crates"
+     ],
+     "expected": [
+      "crates/core/flags/hiargs.rs:1225",
+      "crates/core/flags/hiargs.rs:151",
+      "crates/core/flags/hiargs.rs:694",
+      "crates/core/search.rs:111",
+      "crates/core/search.rs:115",
+      "crates/core/search.rs:21",
+      "crates/core/search.rs:288",
+      "crates/core/search.rs:291",
+      "crates/core/search.rs:31"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `preprocessor_globs` to `preprocessor_globs_renamed` everywhere under `crates/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "preprocessor_globs",
+     "new": "preprocessor_globs_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `preprocessor_globs_renamed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "preprocessor_globs_renamed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `as_byte` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "as_byte",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `preprocessor_globs` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "preprocessor_globs",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LoggingMode` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LoggingMode",
+      "crates"
+     ],
+     "expected": [
+      "crates/core/flags/defs.rs:1447",
+      "crates/core/flags/defs.rs:1459",
+      "crates/core/flags/defs.rs:1462",
+      "crates/core/flags/defs.rs:27",
+      "crates/core/flags/defs.rs:6697",
+      "crates/core/flags/defs.rs:6709",
+      "crates/core/flags/defs.rs:6712",
+      "crates/core/flags/lowargs.rs:646",
+      "crates/core/flags/lowargs.rs:70",
+      "crates/core/flags/parse.rs:12",
+      "crates/core/flags/parse.rs:120",
+      "crates/core/flags/parse.rs:123"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `LoggingMode` to `LoggingMode_renamed` everywhere under `crates/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "LoggingMode",
+     "new": "LoggingMode_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LoggingMode_renamed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LoggingMode_renamed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Summary` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Summary",
+      "crates"
+     ]
+    },
+    {
+     "kind": "files",
+     "prompt": "List every file under `crates/` that now contains `preprocessor_globs_renamed` or `LoggingMode_renamed`. End your answer with a JSON code block {\"answer\": [\"path\", ...]}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "-e",
+      "preprocessor_globs_renamed",
+      "-e",
+      "LoggingMode_renamed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `pretty` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "pretty",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `preprocessor_globs_renamed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "preprocessor_globs_renamed",
+      "crates"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-investigate",
+   "repo": "tokio",
+   "kind": "investigate",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `spawn_named` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "spawn_named",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ctrl_shutdown` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ctrl_shutdown",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `RngSeed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "RngSeed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `is_cancelled` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "is_cancelled",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `global_queue_interval` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "global_queue_interval",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Lifecycle` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Lifecycle",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LocalOwnedTasks` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LocalOwnedTasks",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `RawSocket` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "RawSocket",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `globals` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "tokio/src/signal/registry.rs:162"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `output_mut` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "tokio/src/future/maybe_done.rs:37"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `tokio/src/` mention `filename` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "filename",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `tokio/src/` mention `unbounded_channel` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "unbounded_channel",
+      "tokio/src"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-edit",
+   "repo": "tokio",
+   "kind": "edit",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `timeout_at` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "timeout_at",
+      "tokio/src"
+     ],
+     "expected": [
+      "tokio/src/time/mod.rs:106",
+      "tokio/src/time/timeout.rs:129",
+      "tokio/src/time/timeout.rs:140",
+      "tokio/src/time/timeout.rs:145",
+      "tokio/src/time/timeout.rs:158"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `timeout_at` to `timeout_at_renamed` everywhere under `tokio/src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "timeout_at",
+     "new": "timeout_at_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `timeout_at_renamed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "timeout_at_renamed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `SignalKind` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "SignalKind",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `timeout_at` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "timeout_at",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `MetricAtomicU64` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "MetricAtomicU64",
+      "tokio/src"
+     ],
+     "expected": [
+      "tokio/src/runtime/metrics/histogram.rs:16",
+      "tokio/src/runtime/metrics/histogram.rs:271",
+      "tokio/src/runtime/metrics/histogram.rs:5",
+      "tokio/src/runtime/metrics/io.rs:10",
+      "tokio/src/runtime/metrics/io.rs:3",
+      "tokio/src/runtime/metrics/io.rs:8",
+      "tokio/src/runtime/metrics/io.rs:9",
+      "tokio/src/runtime/metrics/scheduler.rs:14",
+      "tokio/src/runtime/metrics/scheduler.rs:15",
+      "tokio/src/runtime/metrics/scheduler.rs:2",
+      "tokio/src/runtime/metrics/scheduler.rs:21",
+      "tokio/src/runtime/metrics/scheduler.rs:22",
+      "tokio/src/runtime/metrics/worker.rs:2",
+      "tokio/src/runtime/metrics/worker.rs:22",
+      "tokio/src/runtime/metrics/worker.rs:32",
+      "tokio/src/runtime/metrics/worker.rs:35",
+      "tokio/src/runtime/metrics/worker.rs:39",
+      "tokio/src/runtime/metrics/worker.rs:43",
+      "tokio/src/runtime/metrics/worker.rs:47",
+      "tokio/src/runtime/metrics/worker.rs:51",
+      "tokio/src/runtime/metrics/worker.rs:55",
+      "tokio/src/runtime/metrics/worker.rs:59",
+      "tokio/src/runtime/metrics/worker.rs:63",
+      "tokio/src/util/metric_atomics.rs:12",
+      "tokio/src/util/metric_atomics.rs:19",
+      "tokio/src/util/sharded_list.rs:17",
+      "tokio/src/util/sharded_list.rs:46",
+      "tokio/src/util/sharded_list.rs:5",
+      "tokio/src/util/sharded_list.rs:56"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `MetricAtomicU64` to `MetricAtomicU64_renamed` everywhere under `tokio/src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "MetricAtomicU64",
+     "new": "MetricAtomicU64_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `MetricAtomicU64_renamed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "MetricAtomicU64_renamed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `async_trace_leaf` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "async_trace_leaf",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "files",
+     "prompt": "List every file under `tokio/src/` that now contains `timeout_at_renamed` or `MetricAtomicU64_renamed`. End your answer with a JSON code block {\"answer\": [\"path\", ...]}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "-e",
+      "timeout_at_renamed",
+      "-e",
+      "MetricAtomicU64_renamed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `BlockingRegionGuard` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "BlockingRegionGuard",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `timeout_at_renamed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "timeout_at_renamed",
+      "tokio/src"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "reflex-session-long",
+   "repo": "reflex",
+   "kind": "long",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ContextGatheringParams` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ContextGatheringParams",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `KotlinDependencyExtractor` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "KotlinDependencyExtractor",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_rust_workspace_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_rust_workspace_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `index_file` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "index_file",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `from_db_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "from_db_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `multiply` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "multiply",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `parse_concepts_response` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "parse_concepts_response",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_model` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_model",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ModuleDefinition` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ModuleDefinition",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `EnsureSnapshotResult` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "EnsureSnapshotResult",
+      "src"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `OpenRouterModel` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "src/semantic/providers/openrouter.rs:15"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `resolve_rust_use_to_path` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "src/parsers/rust.rs:1379"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `set_value` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "set_value",
+      "src"
+     ],
+     "expected": [
+      "src/interactive/app.rs:796",
+      "src/interactive/app.rs:804",
+      "src/interactive/input.rs:265",
+      "src/interactive/input.rs:290",
+      "src/interactive/input.rs:300",
+      "src/interactive/input.rs:33"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `set_value` to `set_value_renamed` everywhere under `src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "set_value",
+     "new": "set_value_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `set_value_renamed` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "set_value_renamed",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `set_value` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "set_value",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_zig_import_to_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_zig_import_to_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `context_usage` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "context_usage",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `PaginationInfo` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "PaginationInfo",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `EvaluationReport` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "EvaluationReport",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `to_prompt_string` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "to_prompt_string",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `parse_all_rust_crates` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "parse_all_rust_crates",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `branch_exists` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "branch_exists",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Changelog` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Changelog",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `FilterBadgePositions` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "FilterBadgePositions",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `detect_circular_dependencies` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "detect_circular_dependencies",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `src/` mention `QueryHistory` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "QueryHistory",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `src/` mention `focus_state` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "focus_state",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `index_status` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "index_status",
+      "src"
+     ],
+     "expected": [
+      "src/interactive/app.rs:1158",
+      "src/interactive/app.rs:1165",
+      "src/interactive/app.rs:1266",
+      "src/interactive/app.rs:1377",
+      "src/interactive/app.rs:1378",
+      "src/interactive/app.rs:172",
+      "src/interactive/app.rs:222",
+      "src/interactive/app.rs:254",
+      "src/interactive/app.rs:398",
+      "src/interactive/app.rs:404",
+      "src/interactive/app.rs:420",
+      "src/interactive/app.rs:428",
+      "src/interactive/app.rs:491",
+      "src/interactive/app.rs:52",
+      "src/interactive/ui.rs:346",
+      "src/interactive/ui.rs:59",
+      "src/interactive/ui.rs:78"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `index_status` to `index_status_renamed` everywhere under `src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "index_status",
+     "new": "index_status_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `index_status_renamed` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "index_status_renamed",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `index_status` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "index_status",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `detect_modules` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "detect_modules",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `CompactionReport` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "CompactionReport",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_ts_import_to_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_ts_import_to_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `from_extension` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "from_extension",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `PathAliasMap` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "PathAliasMap",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `center_line` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "center_line",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `effects` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "effects",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `parse_all_python_packages` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "parse_all_python_packages",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `generate_ai_instruction` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "generate_ai_instruction",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `SymbolIndexingState` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "SymbolIndexingState",
+      "src"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `WatchConfig` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "src/watcher.rs:19"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `FilePreview` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "src/interactive/app.rs:91"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `src/` mention `get_current_branch` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "get_current_branch",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_cpp_include_to_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_cpp_include_to_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `preview_content` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "preview_content",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `resolve_ruby_require_to_path` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "resolve_ruby_require_to_path",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `QueryFilters` occurs under `src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "QueryFilters",
+      "src"
+     ]
+    },
+    {
+     "kind": "files",
+     "prompt": "List every file under `src/` that now contains `set_value_renamed` or `index_status_renamed`. End your answer with a JSON code block {\"answer\": [\"path\", ...]}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "-e",
+      "set_value_renamed",
+      "-e",
+      "index_status_renamed",
+      "src"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-long",
+   "repo": "ripgrep",
+   "kind": "long",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `auto_heap_limit` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "auto_heap_limit",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `NoCaptures` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "NoCaptures",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `separator_field_context` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "separator_field_context",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `walk_builder` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "walk_builder",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `haystack_builder` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "haystack_builder",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Printer` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Printer",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `set_pos` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "set_pos",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `binary_data` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "binary_data",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `elapsed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "elapsed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `matched_path_or_any_parents` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "matched_path_or_any_parents",
+      "crates"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `PrinterPath` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "crates/printer/src/util.rs:277"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `with_start` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "crates/matcher/src/lib.rs:111"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `quit_byte` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "quit_byte",
+      "crates"
+     ],
+     "expected": [
+      "crates/printer/src/json.rs:763",
+      "crates/printer/src/standard.rs:1458",
+      "crates/printer/src/standard.rs:890",
+      "crates/printer/src/summary.rs:696",
+      "crates/printer/src/summary.rs:761",
+      "crates/searcher/src/searcher/core.rs:166",
+      "crates/searcher/src/searcher/core.rs:179",
+      "crates/searcher/src/searcher/glue.rs:83",
+      "crates/searcher/src/searcher/mod.rs:102"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `quit_byte` to `quit_byte_renamed` everywhere under `crates/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "quit_byte",
+     "new": "quit_byte_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `quit_byte_renamed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "quit_byte_renamed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `quit_byte` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "quit_byte",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `as_byte` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "as_byte",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `preprocessor_globs` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "preprocessor_globs",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LoggingMode` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LoggingMode",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Summary` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Summary",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `pretty` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "pretty",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `before_context_by_line` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "before_context_by_line",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ConfiguredHIR` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ConfiguredHIR",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `max_filesize` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "max_filesize",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `trim_ascii_prefix` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "trim_ascii_prefix",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `always_begin_end` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "always_begin_end",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `crates/` mention `HyperlinkConfig` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "HyperlinkConfig",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `crates/` mention `SortMode` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "SortMode",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `CounterWriter` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "CounterWriter",
+      "crates"
+     ],
+     "expected": [
+      "crates/printer/src/counter.rs:14",
+      "crates/printer/src/counter.rs:15",
+      "crates/printer/src/counter.rs:16",
+      "crates/printer/src/counter.rs:20",
+      "crates/printer/src/counter.rs:52",
+      "crates/printer/src/counter.rs:67",
+      "crates/printer/src/counter.rs:8",
+      "crates/printer/src/json.rs:16",
+      "crates/printer/src/json.rs:453",
+      "crates/printer/src/json.rs:64",
+      "crates/printer/src/standard.rs:133",
+      "crates/printer/src/standard.rs:1579",
+      "crates/printer/src/standard.rs:22",
+      "crates/printer/src/standard.rs:495",
+      "crates/printer/src/summary.rs:17",
+      "crates/printer/src/summary.rs:171",
+      "crates/printer/src/summary.rs:356"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `CounterWriter` to `CounterWriter_renamed` everywhere under `crates/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "CounterWriter",
+     "new": "CounterWriter_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `CounterWriter_renamed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "CounterWriter_renamed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `CounterWriter` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "CounterWriter",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `max_depth` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "max_depth",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `unicode` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "unicode",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `errored` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "errored",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `bytes_printed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "bytes_printed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `bom_sniffing` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "bom_sniffing",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `is_absolute_parent` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "is_absolute_parent",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LineIter` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LineIter",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `detect_binary` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "detect_binary",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `size_limit` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "size_limit",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `TempDir` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "TempDir",
+      "crates"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `SinkContextKind` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "crates/searcher/src/sink.rs:430"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `context_kind` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "crates/printer/src/util.rs:222"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `crates/` mention `searches_with_match` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "searches_with_match",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `StandardStream` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "StandardStream",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `caseless` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "caseless",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ParallelVisitorBuilder` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ParallelVisitorBuilder",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `swap_greed` occurs under `crates/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "swap_greed",
+      "crates"
+     ]
+    },
+    {
+     "kind": "files",
+     "prompt": "List every file under `crates/` that now contains `quit_byte_renamed` or `CounterWriter_renamed`. End your answer with a JSON code block {\"answer\": [\"path\", ...]}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "-e",
+      "quit_byte_renamed",
+      "-e",
+      "CounterWriter_renamed",
+      "crates"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-long",
+   "repo": "tokio",
+   "kind": "long",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `RngSeed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "RngSeed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `is_cancelled` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "is_cancelled",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `global_queue_interval` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "global_queue_interval",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `Lifecycle` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "Lifecycle",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LocalOwnedTasks` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LocalOwnedTasks",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `RawSocket` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "RawSocket",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `globals` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "globals",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `output_mut` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "output_mut",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `filename` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "filename",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `unbounded_channel` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "unbounded_channel",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `EnterRuntime` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "tokio/src/runtime/context/runtime.rs:10"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `OwnedPermit` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "tokio/src/sync/mpsc/bounded.rs:95"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `spawn_named` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "spawn_named",
+      "tokio/src"
+     ],
+     "expected": [
+      "tokio/src/runtime/handle.rs:195",
+      "tokio/src/runtime/handle.rs:197",
+      "tokio/src/runtime/handle.rs:332",
+      "tokio/src/runtime/runtime.rs:238",
+      "tokio/src/runtime/runtime.rs:241",
+      "tokio/src/task/builder.rs:115",
+      "tokio/src/task/builder.rs:117",
+      "tokio/src/task/builder.rs:168",
+      "tokio/src/task/builder.rs:170",
+      "tokio/src/task/local.rs:573",
+      "tokio/src/task/local.rs:575",
+      "tokio/src/task/local.rs:695"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `spawn_named` to `spawn_named_renamed` everywhere under `tokio/src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "spawn_named",
+     "new": "spawn_named_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `spawn_named_renamed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "spawn_named_renamed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `spawn_named` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "spawn_named",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `timeout_at` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "timeout_at",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `MetricAtomicU64` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "MetricAtomicU64",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `SignalKind` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "SignalKind",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `async_trace_leaf` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "async_trace_leaf",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `BlockingRegionGuard` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "BlockingRegionGuard",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `LogHistogramBuilder` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "LogHistogramBuilder",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `sync_all` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "sync_all",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `read_to_string` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "read_to_string",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `IdleNotifiedSet` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "IdleNotifiedSet",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `instant_to_tick` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "instant_to_tick",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `tokio/src/` mention `Stdout` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "Stdout",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `tokio/src/` mention `Expiration` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "Expiration",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ctrl_shutdown` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ctrl_shutdown",
+      "tokio/src"
+     ],
+     "expected": [
+      "tokio/src/signal/windows.rs:340",
+      "tokio/src/signal/windows.rs:345",
+      "tokio/src/signal/windows.rs:353",
+      "tokio/src/signal/windows.rs:355",
+      "tokio/src/signal/windows.rs:380",
+      "tokio/src/signal/windows.rs:385",
+      "tokio/src/signal/windows.rs:414",
+      "tokio/src/signal/windows.rs:422",
+      "tokio/src/signal/windows/stub.rs:23",
+      "tokio/src/signal/windows/sys.rs:222",
+      "tokio/src/signal/windows/sys.rs:226",
+      "tokio/src/signal/windows/sys.rs:235",
+      "tokio/src/signal/windows/sys.rs:26",
+      "tokio/src/signal/windows/sys.rs:57",
+      "tokio/src/signal/windows/sys.rs:67",
+      "tokio/src/signal/windows/sys.rs:79",
+      "tokio/src/signal/windows/sys.rs:92"
+     ]
+    },
+    {
+     "kind": "rename",
+     "prompt": "Rename the identifier `ctrl_shutdown` to `ctrl_shutdown_renamed` everywhere under `tokio/src/`: the definition, every use, and every mention in comments, docs and strings. Do not build the project or run tests. End your answer with a JSON code block {\"answer\": \"done\"}.",
+     "old": "ctrl_shutdown",
+     "new": "ctrl_shutdown_renamed"
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ctrl_shutdown_renamed` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ctrl_shutdown_renamed",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `ctrl_shutdown` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "ctrl_shutdown",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `set_thread_id` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "set_thread_id",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `copy_to` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "copy_to",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `satisfies` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "satisfies",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `waker_ref` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "waker_ref",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `OwnedHandle` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "OwnedHandle",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `thread_keep_alive` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "thread_keep_alive",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `BacktraceFrame` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "BacktraceFrame",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `AtomicU16` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "AtomicU16",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `DuplexStream` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "DuplexStream",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `checked_add` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "checked_add",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `ReadExact` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "tokio/src/io/util/read_exact.rs:34"
+     ]
+    },
+    {
+     "kind": "locate",
+     "prompt": "Where is `share_mode` defined? Give the file and line of its definition. End your answer with a JSON code block {\"answer\": [\"path:line\"]}.",
+     "expected": [
+      "tokio/src/fs/open_options.rs:526"
+     ]
+    },
+    {
+     "kind": "count_files",
+     "prompt": "How many files under `tokio/src/` mention `pop_front` as a whole identifier? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "pop_front",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `is_panic` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "is_panic",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `sync_data` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "sync_data",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `deregister` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "deregister",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every place the identifier `as_usize` occurs under `tokio/src/` (whole identifier). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-w",
+      "as_usize",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "files",
+     "prompt": "List every file under `tokio/src/` that now contains `spawn_named_renamed` or `ctrl_shutdown_renamed`. End your answer with a JSON code block {\"answer\": [\"path\", ...]}.",
+     "oracle": [
+      "-w",
+      "-l",
+      "-e",
+      "spawn_named_renamed",
+      "-e",
+      "ctrl_shutdown_renamed",
+      "tokio/src"
+     ]
+    }
+   ]
+  }
+ ]
+}

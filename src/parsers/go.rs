@@ -1284,7 +1284,14 @@ pub fn find_all_go_mods(index_root: &std::path::Path) -> Result<Vec<std::path::P
 /// Parse all Go modules in a monorepo and track their project roots
 pub fn parse_all_go_modules(index_root: &std::path::Path) -> Result<Vec<GoModule>> {
     let go_mod_files = find_all_go_mods(index_root)?;
+    parse_go_modules_from(index_root, &go_mod_files)
+}
 
+/// [`parse_all_go_modules`] for `go.mod` files already found (in walk order).
+pub fn parse_go_modules_from(
+    index_root: &std::path::Path,
+    go_mod_files: &[std::path::PathBuf],
+) -> Result<Vec<GoModule>> {
     if go_mod_files.is_empty() {
         log::debug!("No go.mod files found in {:?}", index_root);
         return Ok(Vec::new());
@@ -1293,7 +1300,7 @@ pub fn parse_all_go_modules(index_root: &std::path::Path) -> Result<Vec<GoModule
     let mut modules = Vec::new();
     let mod_count = go_mod_files.len();
 
-    for go_mod_path in &go_mod_files {
+    for go_mod_path in go_mod_files {
         let project_root = go_mod_path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("go.mod has no parent directory"))?;

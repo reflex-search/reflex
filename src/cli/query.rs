@@ -1,6 +1,6 @@
 use crate::cache::CacheManager;
 use crate::models::Language;
-use crate::query::{QueryEngine, QueryFilter};
+use crate::query::QueryFilter;
 use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::time::Instant;
@@ -69,6 +69,7 @@ pub(super) fn handle_query(
     all: bool,
     force: bool,
     include_dependencies: bool,
+    no_update: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -76,7 +77,7 @@ pub(super) fn handle_query(
     let as_json = as_json || ai_mode;
 
     let cache = CacheManager::new(".");
-    let engine = QueryEngine::new(cache);
+    let engine = super::engine(cache, no_update);
 
     // Parse and validate language filter
     let language = if let Some(lang_str) = lang.as_deref() {
@@ -599,18 +600,17 @@ No dependency data will be included for {} files.",
                         .push(result.clone());
                 }
 
-                // Load ContentReader for extracting context lines
-                use crate::content_store::ContentReader;
+                // Open the index stores for extracting context lines
                 let local_cache = CacheManager::new(".");
-                let content_path = local_cache.path().join("content.bin");
-                let content_reader_opt = ContentReader::open(&content_path).ok();
+                let content_reader_opt =
+                    crate::snapshot::IndexSnapshot::open(local_cache.path()).ok();
 
                 let mut file_results: Vec<FileGroupedResult> = grouped
                     .into_iter()
                     .map(|(path, file_matches)| {
                         // Get file_id for context extraction
-                        // Note: We use ContentReader's get_file_id_by_path() which returns array indices,
-                        // not database file_ids (which are AUTO INCREMENT values)
+                        // Note: get_file_id_by_path() returns store file ids, not
+                        // database file_ids
                         let normalized_path = path.strip_prefix("./").unwrap_or(&path);
                         let file_id_for_context = if let Some(reader) = &content_reader_opt {
                             reader.get_file_id_by_path(normalized_path)
@@ -656,11 +656,17 @@ No dependency data will be included for {} files.",
                 // Sort by path for deterministic output
                 file_results.sort_by(|a, b| a.path.cmp(&b.path));
 
+                // The AST search updated the index first (unless --no-update); say
+                // what the index is now instead of assuming `fresh`.
+                let (status, can_trust_results, warning) =
+                    engine
+                        .get_index_status()
+                        .unwrap_or((IndexStatus::Fresh, true, None));
                 crate::models::QueryResponse {
                     ai_instruction: None, // Will be populated below if ai_mode is true
-                    status: IndexStatus::Fresh,
-                    can_trust_results: true,
-                    warning: None,
+                    status,
+                    can_trust_results,
+                    warning,
                     pagination: PaginationInfo {
                         total: Some(flat_results.len()),
                         count: flat_results.len(),
@@ -801,9 +807,9 @@ No dependency data will be included for {} files.",
 }
 
 /// Handle interactive mode (default when no command is given)
-pub(super) fn handle_interactive() -> Result<()> {
+pub(super) fn handle_interactive(no_update: bool) -> Result<()> {
     log::info!("Launching interactive mode");
-    crate::interactive::run_interactive()
+    crate::interactive::run_interactive(no_update)
 }
 
 #[cfg(test)]

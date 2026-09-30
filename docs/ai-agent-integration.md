@@ -42,13 +42,21 @@ rfx --version
 
 ## Step 2: Register Reflex with Claude Code
 
-Use `claude mcp add`. Pick a scope:
+Use `claude mcp add-json`. Pick a scope:
 
 ```bash
-claude mcp add --scope user reflex -- rfx mcp      # every project on this machine
-claude mcp add --scope project reflex -- rfx mcp   # this project only; writes .mcp.json
-claude mcp add reflex -- rfx mcp                   # this project, for you only (scope "local", the default)
+# every project on this machine
+claude mcp add-json --scope user reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
+# this project only; writes .mcp.json
+claude mcp add-json --scope project reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
+# this project, for you only (scope "local", the default)
+claude mcp add-json reflex '{"type":"stdio","command":"rfx","args":["mcp"],"alwaysLoad":true}'
 ```
+
+`"alwaysLoad": true` tells Claude Code to load Reflex's tool schemas when the session
+starts. Without it, Claude Code defers them: before its first Reflex call, the agent spends
+one turn on a ToolSearch to load them. `claude mcp add` has no flag for this key; the plain
+`claude mcp add --scope user reflex -- rfx mcp` registers the server without it.
 
 `--scope project` writes a `.mcp.json` file at the project root. Commit it to share the
 server with your team. Claude Code asks each person to approve a `.mcp.json` server
@@ -60,7 +68,8 @@ before it connects. The file looks like this:
     "reflex": {
       "type": "stdio",
       "command": "rfx",
-      "args": ["mcp"]
+      "args": ["mcp"],
+      "alwaysLoad": true
     }
   }
 }
@@ -103,8 +112,7 @@ reflex-mcp startup: version=2.0.3 build=d455c04 columnar=on structural_tools=on
 - `version` is the Reflex version. `build` is the commit it was built from, or `unknown`.
 - `columnar` is `on` unless `REFLEX_MCP_COLUMNAR=0` is set (see [Reading results](#reading-results)).
 - `structural_tools` is `on` unless `~/.reflex/config.toml` sets
-  `[mcp] enable_structural_tools = false`. When off, `find_circular`, `find_islands`,
-  `find_unused`, `analyze_summary` and `get_transitive_deps` are hidden.
+  `[mcp] enable_structural_tools = false`. When off, the `analyze` tool is hidden.
 
 Claude Code also records this line in its MCP logs. Check it there to confirm which
 binary Claude Code actually started.
@@ -120,8 +128,9 @@ cd /path/to/your/project
 rfx index
 ```
 
-The index lives in `.reflex/` at the project root. Later runs are incremental: only
-changed files are processed. `rfx index --force` rebuilds from scratch.
+The index lives in `.reflex/` at the project root. A later run with no changed files
+returns quickly; any change rebuilds the index from every file, and the background
+symbol pass parses every file again. `rfx index --force` rebuilds even when nothing changed.
 
 You can also skip this step. When a tool reports `Index not found`, Claude calls the
 `index_project` tool and retries.
@@ -158,25 +167,28 @@ The response has file paths, line ranges, symbol kinds and previews. See
 
 ## Key tools
 
-Reflex offers 17 tools (12 when structural tools are off). These are the ones Claude
+Reflex offers 10 tools (9 when structural tools are off). These are the ones Claude
 uses most:
 
 | Tool | Use it for |
 |------|------------|
-| `search_code` | Every occurrence of a name, with previews. `symbols: true` for definitions only. |
+| `search_code` | Every occurrence of a name, with previews. `symbols: true` for definitions only. `mode: "count"` for how many matches, in how many files. |
 | `search_regex` | Regular expressions, and patterns with `->`, `::`, `(`, `[`. |
 | `find_references` | A symbol's definition plus every usage, in one call. Skips strings and comments by default. Code files only. |
 | `list_locations` | Every `{path, line}` for a pattern, without previews. |
-| `count_occurrences` | How many matches, in how many files. |
-| `get_dependencies` / `get_dependents` | What a file imports / which files import it. |
+| `get_dependencies` | What a file imports. `reverse: true` for the files that import it; `depth: N` to follow imports N levels. |
 | `gather_context` | Project structure, frameworks, entry points. Useful at the start of a session. |
-| `check_index_status` | Whether the index matches the files on disk. |
-| `index_project` | Build or update the index. `force: true` rebuilds from scratch. |
+| `check_index_status` | Whether the index matches the files on disk. Rarely needed: every tool updates the index first. |
+| `index_project` | Force an index run. `force: true` rebuilds from scratch. |
 
-The rest are `search_ast` (slow Tree-sitter structural queries; always pass `glob`),
+The rest are `search_ast` (slow Tree-sitter structural queries; always pass `glob`) and
+`analyze` (import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or
+`islands`). See [`mcp-tool-cheatsheet.md`](./mcp-tool-cheatsheet.md) for a decision
+tree by intent.
+
+Older tool names still work but are deprecated: `count_occurrences`, `get_dependents`,
 `get_transitive_deps`, `find_hotspots`, `find_circular`, `find_unused`, `find_islands`
-and `analyze_summary`. See [`mcp-tool-cheatsheet.md`](./mcp-tool-cheatsheet.md) for a
-decision tree by intent.
+and `analyze_summary`. The cheatsheet lists their replacements.
 
 ### Arguments
 
@@ -254,9 +266,9 @@ substring count.
   `claude mcp add --scope user -e REFLEX_MCP_COLUMNAR=0 reflex -- rfx mcp`.
 
 Other tools use their own shapes. `list_locations` returns
-`{locations: [{path, line}], total_locations, status}`. `find_references` returns
-`{definition, references, total_references, returned_count, filtered_out, pagination, status}`.
-`count_occurrences` returns `{total, files, pattern, status}`.
+`{locations: [{path, line}], total_locations, status, can_trust_results}`. `find_references` returns
+`{definition, references, total_references, returned_count, filtered_out, pagination, status, can_trust_results}`.
+`search_code` with `mode: "count"` returns `{count, files, pattern, status, can_trust_results}`.
 
 ---
 
@@ -273,10 +285,9 @@ content does not make it stale. Inside a git repository, candidates come from
 
 | Response | Freshness fields |
 |----------|------------------|
-| `search_code`, `search_regex` (list and `paths` modes) | `status`, `can_trust_results`, and `warning` when stale |
+| `search_code`, `search_regex` (list, `paths` and `count` modes), `list_locations`, `find_references`, `analyze` | `status`, `can_trust_results`, and `warning` when stale |
 | `check_index_status` | `status`, `can_trust_results`, `details`, and the stale fields at the top level |
-| `find_references`, `list_locations`, `count_occurrences` | `status` only |
-| `mode: "count"` on `search_code` / `search_regex` / `find_references` | none |
+| `get_dependencies` (every form), `search_ast` | none (they answer bare arrays) |
 
 `status` is `fresh` or `stale`. `check_index_status` also returns
 `{"status": "missing", "action_required": "index_project"}` when there is no index. A stale index always has `can_trust_results: false`, even when a search finds

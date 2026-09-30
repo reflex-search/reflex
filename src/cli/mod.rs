@@ -33,6 +33,11 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Answer from the index as it is: do not update a stale index or build a
+    /// missing one first (every command that reads the index does by default)
+    #[arg(long, global = true)]
+    pub no_update: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -70,7 +75,7 @@ pub enum Command {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
 
-        /// Force full rebuild (ignore incremental cache)
+        /// Force a full rebuild even when no file changed
         #[arg(short, long)]
         force: bool,
 
@@ -389,7 +394,7 @@ pub enum Command {
     /// Watch for file changes and auto-reindex
     ///
     /// Continuously monitors the workspace for changes and automatically
-    /// triggers incremental reindexing. Useful for IDE integrations and
+    /// reindexes after the debounce period. Useful for IDE integrations and
     /// keeping the index always fresh during active development.
     ///
     /// The debounce timer resets on every file change, batching rapid edits
@@ -1065,6 +1070,51 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// The query engine every command searches with: it updates a stale index (and
+/// builds a missing one) before it answers, unless `--no-update` was given.
+pub(crate) fn engine(cache: CacheManager, no_update: bool) -> crate::query::QueryEngine {
+    let engine = crate::query::QueryEngine::new(cache);
+    if no_update {
+        engine
+    } else {
+        engine.with_update(crate::auto_update::UpdateOptions::cli())
+    }
+}
+
+/// Commands that read the index without the query engine's own update.
+fn reads_index_first(command: &Command) -> bool {
+    match command {
+        Command::Stats { .. }
+        | Command::ListFiles { .. }
+        | Command::Analyze { .. }
+        | Command::Deps { .. }
+        | Command::Ask { .. }
+        | Command::Context { .. } => true,
+        Command::Snapshot { command } => {
+            matches!(command, None | Some(SnapshotSubcommand::Diff { .. }))
+        }
+        Command::Pulse { command } => matches!(
+            command,
+            PulseSubcommand::Changelog { .. }
+                | PulseSubcommand::Map { .. }
+                | PulseSubcommand::Generate { .. }
+                | PulseSubcommand::Model { .. }
+                | PulseSubcommand::Glossary { .. }
+        ),
+        _ => false,
+    }
+}
+
+/// Update the index of `cache` before a command reads it. A build that fails
+/// fails the command; an update that cannot run is a warning.
+fn update_before(cache: &CacheManager) -> Result<()> {
+    use crate::auto_update::{UpdateOptions, Updated, update_if_stale};
+    if let Updated::Skipped(reason) = update_if_stale(cache, &UpdateOptions::cli())? {
+        crate::output::warn(&format!("⚠️  Index not updated: {reason}"));
+    }
+    Ok(())
+}
+
 /// Try to run background cache compaction if needed
 ///
 /// Checks if 24+ hours have passed since last compaction.
@@ -1073,6 +1123,7 @@ fn format_bytes(bytes: u64) -> String {
 ///
 /// Compaction is skipped for commands that don't need it:
 /// - Clear (will delete the cache anyway)
+/// - Index (rewrites meta.db itself; compaction would wait on its lock)
 /// - Mcp (long-running server process)
 /// - Watch (long-running watcher process)
 /// - Serve (long-running HTTP server)
@@ -1089,6 +1140,12 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
         }
         Command::Serve { .. } => {
             log::debug!("Skipping compaction for Serve command");
+            return;
+        }
+        // An index run rewrites meta.db itself and prunes deleted files; a
+        // compaction racing it would only wait on its lock.
+        Command::Index { .. } => {
+            log::debug!("Skipping compaction for Index command");
             return;
         }
         _ => {}
@@ -1123,6 +1180,20 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
                 .parent()
                 .expect("Cache should have parent directory"),
         );
+
+        // Never alongside an index run: skip when `index.lock` is held, and hold it
+        // for the compaction.
+        let _lock = match crate::atomic_write::IndexLock::try_acquire(cache.path()) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                log::debug!("Skipping background compaction: an index run holds the lock");
+                return;
+            }
+            Err(e) => {
+                log::debug!("Skipping background compaction: {}", e);
+                return;
+            }
+        };
 
         match cache.compact() {
             Ok(report) => {
@@ -1160,6 +1231,14 @@ impl Cli {
             // Use current directory as default cache location
             let cache = CacheManager::new(".");
             try_background_compact(&cache, command);
+        }
+
+        // A command that reads the index brings it up to date first. Searches do it
+        // inside the query engine, alongside the search, so a fresh index adds no
+        // wait; the other readers do it here.
+        let no_update = self.no_update;
+        if !no_update && self.command.as_ref().is_some_and(reads_index_first) {
+            update_before(&CacheManager::new("."))?;
         }
 
         // Execute the subcommand, or show help if no command provided
@@ -1230,7 +1309,7 @@ impl Cli {
                             eprintln!("Use 'rfx query <pattern>' for non-interactive search.");
                             std::process::exit(1);
                         }
-                        query::handle_interactive()
+                        query::handle_interactive(no_update)
                     }
                     Some(pattern) => query::handle_query(
                         pattern,
@@ -1263,10 +1342,11 @@ impl Cli {
                         all,
                         force,
                         dependencies,
+                        no_update,
                     ),
                 }
             }
-            Some(Command::Serve { port, host }) => serve::handle_serve(port, host),
+            Some(Command::Serve { port, host }) => serve::handle_serve(port, host, no_update),
             Some(Command::Stats { json, pretty }) => misc::handle_stats(json, pretty),
             Some(Command::Clear { yes }) => misc::handle_clear(yes),
             Some(Command::ListFiles {
@@ -1280,7 +1360,7 @@ impl Cli {
                 debounce,
                 quiet,
             }) => watch::handle_watch(path, debounce, quiet),
-            Some(Command::Mcp) => misc::handle_mcp(),
+            Some(Command::Mcp) => misc::handle_mcp(no_update),
             Some(Command::Analyze {
                 circular,
                 hotspots,
