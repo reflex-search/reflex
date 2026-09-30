@@ -446,7 +446,38 @@ yields `can_trust_results: false`. Freshness is judged by file content, not by c
   disables) in the private `status_cache` module of `src/query/mod.rs`. Every index
   write in the process invalidates it, and `check_index_status` always bypasses it.
 - Files outside every tier are never indexed, so a change to one never makes the index
-  stale.
+  stale. A new file counts as added only when the walk reaches it (a narrowed walk of
+  its ancestors), so a tracked file that `.gitignore` ignores is not reported.
+- The baseline commit is the one the last index run recorded (the `synced_branch` row),
+  not the current branch's row: after a switch back to an indexed branch, the index
+  still holds the other branch's files.
+- **Rule files** decide which files are indexed: `.reflex/config.toml`, and every
+  `.gitignore` / `.ignore` / `.rgignore`. An index run records their blake3
+  (`statistics.rule_files`: the fixed root files, plus each ignore file git lists as
+  dirty); the check compares them, lists a changed one under `files_modified`, and plans
+  a full run.
+
+### Auto-update
+
+Every command that reads the index updates a stale one before it answers
+(`src/auto_update.rs`). `query::update_plan` turns the snapshot into a plan: `Fresh`,
+`Paths` (→ `Indexer::update_paths`), `Full` (→ `Indexer::index`: lists truncated, a
+rule-file edit, a format change), `Foreign` (another released version: the CLI clears
+and rebuilds, servers skip) or `Unknown` (meta.db unreadable: skip). A missing index is
+built. `update_if_stale` holds one mutex per workspace; runs wait for `index.lock`
+without a limit; a plan that did not make the index fresh is not retried over the same
+bytes; a symbol pass that is still making progress is waited out; after a build, a full
+run or a cancelled pass, the binary restarts the symbol pass. A failure is
+`Updated::Skipped(reason)`: the command answers from the current index, `stale`, with
+the reason in `warnings`.
+
+Searches use `QueryEngine::with_update`: the search and the check run together as
+before; only a `stale` verdict triggers the update and a second search (at most two
+updates per call). The engine drops its open index before an update (`reset_open`).
+Other readers update before they run: `cli::update_before` in the CLI dispatch, the
+`handle_call_tool` chokepoint in MCP, the `/stats` handler in `rfx serve`.
+`QueryEngine::new` has no update, so embedders and most tests see the index as it is;
+`--no-update` gives every command that behaviour.
 
 The MCP-facing shape (`files_modified`, `files_added`, `files_deleted`, `truncated`,
 `action_required: "index_project"`) is documented in `CLAUDE.md` under
@@ -492,13 +523,16 @@ Text, lock and generated files never enter the graph.
 - **HTTP** (`src/cli/serve.rs`, axum): `GET /query`, `GET /stats`, `POST /index`,
   `GET /health`. Binds to `127.0.0.1` by default, with no authentication and permissive
   CORS. Do not expose it to a network.
-- **Watcher** (`src/watcher.rs`): `notify` events, debounced (`WatchConfig`), then a
-  normal `Indexer::index` run. The watcher uses the same `PathPolicy` to ignore events
-  for files outside every tier.
+- **Watcher** (`src/watcher.rs`): `notify` events, debounced (`WatchConfig`), then
+  `Indexer::update_paths` on the collected paths. The watcher uses the same `PathPolicy`
+  to ignore events for files outside every tier, and also passes rule-file edits.
 
+Every surface updates a stale index first (see Auto-update); `--no-update` turns it off.
 `rfx mcp` and `rfx serve` are long-lived, so they keep the `OpenIndex` handle and the
-freshness memo across calls. MCP, watcher and HTTP index runs fail fast if another
-indexer holds `index.lock`; the CLI waits (`IndexConfig::lock_wait_secs`).
+freshness memo across calls. Automatic updates, `index_project` and `POST /index` wait
+for `index.lock`; `rfx index` waits 30 s; the watcher fails fast
+(`IndexConfig::lock_wait_secs`). Every index run uses `CacheManager::effective_index_config`
+(`.reflex/config.toml` plus the `--languages` of the last `rfx index`).
 
 ---
 
@@ -536,7 +570,10 @@ files. If symbol output changes, bump `SYMBOL_FORMAT_VERSION` so old caches are 
     `zero_result_hints.rs`
   - symbols and dependencies: `symbol_equivalence.rs`, `symbol_lock.rs`,
     `dependency_equivalence.rs`
-  - freshness: `mcp_freshness.rs`, `freshness_no_git.rs`, `git_worktree_status.rs`
+  - freshness: `mcp_freshness.rs`, `freshness_no_git.rs`, `git_worktree_status.rs`,
+    `freshness_rules.rs`
+  - auto-update: `auto_update.rs` (the fidelity sequence: every answer equals a fresh
+    build), `auto_update_front_ends.rs` (CLI, MCP, the engine-construction guard)
   - MCP: `mcp_jsonrpc_compliance.rs`, `mcp_literal_search.rs`,
     `mcp_corruption_recovery.rs`
   - cache: `cache_version_guard.rs`, `sqlite_pragmas.rs`

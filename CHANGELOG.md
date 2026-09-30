@@ -1,5 +1,51 @@
 ## [Unreleased]
 
+### Added
+
+- **Every command answers from an up-to-date index; `rfx index` is no longer needed
+  after an edit.** `rfx query`, `rfx deps`, `rfx analyze`, `rfx stats`, `rfx context`,
+  `rfx list-files`, `rfx ask`, `rfx snapshot`, `rfx pulse`, interactive mode, `rfx mcp`
+  tools and `rfx serve` compare the tree with the index (the same check behind
+  `status` / `can_trust_results`) and, when it is stale, update it before they answer:
+  only the changed files for an edit, a full incremental run for many changes or an
+  ignore-file / `.reflex/config.toml` edit. A search runs alongside the check, so a fresh
+  index costs nothing extra; a stale one is updated and searched again, and the answer
+  reports `status: fresh`. A missing index is built. A command waits for another index
+  run rather than answer from a stale index.
+- **`--no-update`** (every command, before or after the subcommand; also
+  `rfx mcp --no-update`, `rfx serve --no-update`) answers from the index as it is, as
+  before, including the "Index not found" error.
+- If an update cannot run (a read-only `.reflex/`, a cache another rfx version wrote in
+  `rfx mcp` / `rfx serve`), the command still answers, from the index it has, marked
+  `stale`, with the reason in `warnings`. The CLI rebuilds another version's cache, as
+  `rfx index` does; the servers do not (two servers of different versions would rebuild
+  it in turns).
+- `--timing` / `REFLEX_MCP_TIMING=1`: `timings.update_us` when an update ran.
+- `rfx index` remembers `--languages`; later automatic updates index the same languages.
+  A plain `rfx index` clears it.
+
+### Fixed
+
+- An edit to `.gitignore` (any directory), `.ignore`, `.rgignore` or
+  `.reflex/config.toml` now makes the index stale (listed under `files_modified`): it
+  changes which files are indexed, and was never reported.
+- A tracked file that `.gitignore` ignores is no longer reported as `added` by every
+  check (a fresh build was stale forever).
+- After switching back to a branch indexed earlier, the check reported `fresh` while the
+  index held the other branch's files. It now compares with the commit of the last
+  index run.
+- Background compaction no longer deletes the rows of missing files: the stores still
+  returned them while the check could no longer see the deletion. `rfx index compact`
+  reports `files_removed: 0`; index runs remove deleted files.
+- `index_project`, `POST /index`, `rfx watch`, interactive mode and `rfx ask` indexed
+  with default settings and ignored `.reflex/config.toml`. `index_project` and
+  `POST /index` now wait for a concurrent index run instead of failing with
+  `IndexLocked`.
+- The version-mismatch rebuild in `rfx index` kept `--languages`.
+- `rfx query --ast --json` reported `status: fresh` whatever the index state.
+- `rfx watch` updates only the files it saw change (`Indexer::update_paths`) and reacts
+  to ignore-file and config edits.
+
 ### Performance
 
 - **`rfx index` updates the index instead of rebuilding it.** Files whose size and mtime
@@ -27,7 +73,11 @@
   changed files or directories without walking the tree (a 1-file edit on Kubernetes in
   about 50 ms). It falls back to `Indexer::index` when an ignore file,
   `.reflex/config.toml`, a resolver config (`go.mod`, `tsconfig.json`, …) or the branch
-  changed. It is not wired to any command yet.
+  changed. `rfx watch` and automatic updates use it.
+- **`reflex::auto_update::update_if_stale(cache, opts)`** brings a stale index up to date
+  (or builds a missing one) and says what it did; `QueryEngine::with_update(opts)` makes
+  an engine do it before it answers. `QueryEngine::new` still answers from the index as
+  it is. `query::update_plan` exposes the check's plan.
 
 ## [2.0.3] - 2026-09-28
 

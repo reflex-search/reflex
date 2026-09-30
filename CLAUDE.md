@@ -30,6 +30,7 @@ Reflex uses **trigram-based indexing** to enable instant full-text search across
 | **Symbol Cache** | zstd-compressed symbol blobs in `meta.db` (`src/symbol_cache.rs`); symbol queries read it first |
 | **CLI / API Layer** | Single binary for human and programmatic use (CLI and optional HTTP/MCP) |
 | **Incremental updates** | `rfx index` and `Indexer::update_paths` publish a delta over the base instead of rebuilding (`src/snapshot.rs`, `src/indexer.rs`) |
+| **Auto-update** | Every command that reads the index updates a stale one first (`src/auto_update.rs`); `--no-update` opts out |
 | **Watcher (optional)** | Incrementally updates index on file changes |
 
 ### Index Cache Structure (`.reflex/`)
@@ -74,6 +75,28 @@ See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats and
   change or the merge limit. Test knobs are Rust APIs (`set_merge_limits`,
   `set_recent_limits`, `set_abort_point`), never env vars.
 
+### Auto-update
+- Every command that reads the index (`rfx query`, `deps`, `analyze`, `stats`, `context`,
+  `list-files`, `ask`, `snapshot`, `pulse`, interactive mode, `rfx mcp` tools, `rfx serve`)
+  calls `auto_update::update_if_stale` first. The freshness check plans it
+  (`query::update_plan`): nothing; `update_paths` on the listed paths; a full `index` run
+  (lists truncated at 100, a rule-file edit, a format change). No index → built.
+- Searches run the check alongside the search (`QueryEngine::with_update`): fresh costs
+  nothing extra; stale → update → search again (at most twice). Other readers update
+  before they run (`cli::update_before`, the MCP `handle_call_tool` chokepoint).
+- `--no-update` (global flag; `rfx mcp --no-update`, `rfx serve --no-update`) = the old
+  behaviour. `QueryEngine::new` has no update (library default); front ends build engines
+  through `cli::engine` / `mcp::engine_in` (a test fails on any other `QueryEngine::new` in `src/`).
+- Never fails the command: `Updated::Skipped(reason)` → answer from the current index,
+  `stale`, reason in `warnings`. The CLI rebuilds another version's cache; servers skip it.
+  Waits for `index.lock` forever (`LOCK_WAIT_FOREVER`). A failed plan over the same bytes is
+  not retried.
+- Rule files: an index run records the blake3 of `.reflex/config.toml`, the root ignore
+  files and every dirty ignore file (`statistics.rule_files`); a change plans a full run.
+- The verdict memo (1 s per process) still applies: in `rfx mcp`, an edit made within 1 s
+  of the previous check can be missed by the next call. Plan and gates:
+  `.context/AUTO_UPDATE_RESEARCH.md`.
+
 ### User Configuration (`~/.reflex/`)
     ~/.reflex/
       config.toml      # User settings (semantic query provider, API keys, model preferences)
@@ -84,7 +107,7 @@ See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats and
 
 **Indexing:**
 ```bash
-rfx index                        # Build/update cache
+rfx index                        # Build/update cache (every command also updates a stale index itself)
 rfx index status                 # Check background symbol indexing
 rfx index compact                # Manually compact cache
 rfx watch                        # Auto-reindex on file changes
@@ -107,6 +130,9 @@ rfx query "(?i)realm_?id" --regex
 
 # JSON output for AI agents
 rfx query "format!" --json
+
+# Answer from the index as it is (no automatic update, no build)
+rfx query "format!" --no-update
 
 # Patterns that start with `-` (clap would read them as flags)
 rfx query --pattern '-> Result<'      # or: rfx query -- '-> Result<'
@@ -204,6 +230,9 @@ edited, added or deleted, committed or not.
   or `walk` (every file is stat'ed: no git repository, or the git candidate query failed).
 - The file lists are paths, capped at 100 per category; `truncated` says when.
 - `action_required` names the MCP tool (`index_project`), never the CLI.
+- With auto-update (default), a search that finds the index stale updates it and answers
+  again, so `stale` appears only when the update could not run (`warnings` says why) or
+  with `--no-update`. `check_index_status` never updates: it reports the truth.
 - The verdict is memoised for 1 s per workspace (`REFLEX_FRESHNESS_TTL_MS`; `0`
   disables). `check_index_status` always bypasses the memo.
 
@@ -306,7 +335,8 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 ### Latency diagnostics
 
 - `rfx query <pattern> --timing` prints per-phase timings (open, candidates, verify,
-  status, group) to stderr; with `--json` they appear as a `timings` object.
+  status, group) to stderr; with `--json` they appear as a `timings` object
+  (`update_us` when an automatic update ran).
 - `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` /
   `search_regex` responses from `rfx mcp`.
 - `timings.index_path` is `"trigram"` (candidates from the inverted index) or `"scan"`

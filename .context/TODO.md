@@ -12,11 +12,17 @@
 
 ---
 
-## 🔄 Auto-update (2026-09-29) — PLANNED, waiting for the user's go-ahead
+## 🔄 Auto-update (2026-09-29) — IN PROGRESS on `feature/auto-update` (not pushed)
 
 Every command that reads the index brings it up to date first; no watcher, no manual
 `rfx index`. Plan, code survey, steps and gates: `.context/AUTO_UPDATE_RESEARCH.md`.
-Builds on the incremental index branch below.
+Builds on the incremental index branch below. Steps 1–7 done (library, check fixes,
+engine, CLI, MCP, serve, watch); fidelity test 15/15. Left: perf gates and golden
+(step 8), **stop and ask** before removing the MCP `check_index_status` /
+`index_project` text (step 9), docs.
+
+Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
+of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
 
 Decisions (user, 2026-09-29): update inside the command when the check says stale;
 default on for every command, `--no-update` opt-out on all; always wait; no index →
@@ -48,9 +54,8 @@ Open follow-ups:
 - **Nothing-changed gate not fully met**: 0.19 s against a 0.15 s walk (+30 %; +21–30 %
   against the whole discovery phase). Left: the meta.db commit (8 ms, `synchronous=FULL`,
   it writes "Last updated" and the branch row), fixed process costs, classify.
-- **Wire `update_paths` into a caller**: `rfx watch` and MCP auto-reindex (the Grep-parity
-  goal) still call `Indexer::index`. Then decide whether the first update after an
-  `rfx index` should wait for the symbol pass that run spawned (~76 ms today).
+- Decide whether the first update after an `rfx index` should wait for the symbol pass
+  that run spawned (~76 ms today; auto-update restarts a cancelled pass).
 - `latency_budget`: four shapes read +6 … +12 % over 12 runs (`rare_ident`, `ci_regex`,
   `mcp/regex_getset`; 10–325 µs), ranges overlapping; re-measure on an idle machine.
 - An add or a delete through `update_paths` re-resolves every internal import (~90 ms on
@@ -198,13 +203,8 @@ Indexing and freshness:
   includes; changes `rfx deps` output).
 - Found during the incremental work (2026-09-29), not fixed (each changes output or
   needs its own decision):
-  - 2.0.3 reports `fresh` after returning to a previously indexed branch without a
-    reindex (found reading `cache.rs` ~1324–1328 of 2.0.3).
-  - A tracked file that `.gitignore` starts to ignore is reported as `added` by every
-    freshness check (git lists it; the walker skips it), on a fresh build too.
   - The resolver-config walk ignores `[index]` include/exclude patterns (`PathPolicy`);
     kept for identical dependency rows.
-  - The version-mismatch self-heal in `cli/index.rs` drops `--languages`.
   - `OpenIndex::posting_cap` is unused and the build-side cap is never applied.
   - Import resolution that reads the disk (`.exists()` in `rust.rs`, `canonicalize` in
     `c.rs`/`cpp.rs`/`zig.rs`/`ruby.rs`) can change without any indexed path changing; an
