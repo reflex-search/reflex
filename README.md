@@ -124,23 +124,18 @@ When connected via MCP, your AI assistant gets these tools:
 
 | Tool | What it does |
 |---|---|
-| `search_code` | Full-text or symbol search with line numbers and context |
-| `list_locations` | Fast file+line discovery (minimal tokens) |
-| `count_occurrences` | Quick match statistics without full content |
+| `search_code` | Full-text or symbol search with line numbers and context; `mode: "count"` for match and file counts only |
 | `search_regex` | Regex pattern matching across the codebase |
-| `search_ast` | Structure-aware search via Tree-sitter AST queries |
+| `list_locations` | Fast file+line discovery (minimal tokens) |
 | `find_references` | Symbol definition + all usage sites in a single call; the primary code-navigation tool for AI agents |
+| `search_ast` | Structure-aware search via Tree-sitter AST queries (slow; always pass `glob`) |
+| `get_dependencies` | Imports of a file; `reverse: true` for the files that import it, `depth: N` to follow imports N levels |
+| `analyze` | Import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or `islands` |
+| `gather_context` | Codebase structure and project-type summary |
 | `index_project` | Force an index run (rarely needed: every tool updates the index first) |
 | `check_index_status` | Report whether the index matches the files on disk, without updating it |
-| `get_dependencies` | All imports for a specific file |
-| `get_dependents` | All files that import a given file (reverse lookup) |
-| `get_transitive_deps` | Transitive dependency graph up to a configurable depth |
-| `find_hotspots` | Most-imported files (dependency hotspots) |
-| `find_circular` | Detect circular dependency chains |
-| `find_unused` | Files with no incoming dependencies |
-| `find_islands` | Disconnected components in the dependency graph |
-| `analyze_summary` | High-level dependency counts and metrics |
-| `gather_context` | Codebase structure and project-type summary |
+
+Eight older tool names still work but are deprecated: `count_occurrences` (use `search_code` with `mode: "count"`), `get_dependents` and `get_transitive_deps` (use `get_dependencies` with `reverse` / `depth`), and `find_hotspots`, `find_circular`, `find_unused`, `find_islands`, `analyze_summary` (use `analyze` with `kind`).
 
 **No `rfx index` needed after edits.** Every command and MCP tool updates a stale index before it answers (only the changed files) and builds a missing one; pass `--no-update` (`rfx mcp --no-update`) to answer from the index as it is.
 

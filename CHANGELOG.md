@@ -30,6 +30,24 @@
 - `rfx index` remembers `--languages`; later automatic updates index the same languages.
   A plain `rfx index` clears it.
 
+### ⚠️ Breaking (MCP)
+
+- **`rfx mcp` lists 10 tools instead of 17, and their schemas are a quarter of the
+  size** (`tools/list` 44 KB → 10.6 KB). Claude Code carries every listed schema on every
+  turn; in long sessions that prefix was the whole token gap between Reflex and Grep.
+  - `count_occurrences` → `search_code` with `mode: "count"` (now also returns `files`).
+  - `get_dependents` → `get_dependencies` with `reverse: true`; `get_transitive_deps` →
+    `get_dependencies` with `depth: N`.
+  - `find_hotspots`, `find_circular`, `find_unused`, `find_islands`, `analyze_summary` →
+    one `analyze` tool with `kind: "hotspots" | "circular" | "unused" | "islands" |
+    "summary"`. `[mcp] enable_structural_tools = false` now hides only `analyze`.
+  - The eight old names still work but are no longer listed; their answers carry a
+    `warnings` entry naming the replacement (except the two that answer bare arrays,
+    `get_dependents` and `get_transitive_deps`). Clients that allow-list tools by name
+    must add `mcp__reflex__analyze`.
+  - The matching, coverage and freshness rules moved from every tool description into
+    the server instructions (said once per session).
+
 ### Fixed
 
 - An edit to `.gitignore` (any directory), `.ignore`, `.rgignore` or

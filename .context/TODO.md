@@ -253,7 +253,9 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
 - **A. Keep the index fresh automatically.** Planned: `.context/AUTO_UPDATE_RESEARCH.md`
   (section "Auto-update" at the top). Removes both the status-check and the
   `index_project` turns once the fidelity test passes.
-- **B. Shrink the tool surface, then load it eagerly.** Eager loading is measured
+- **B. Shrink the tool surface, then load it eagerly.** DONE on `feature/auto-update`
+  (2026-09-30): 17 → 10 tools, `tools/list` 44 KB → 10.6 KB, old names callable; measure
+  with `session_bench.py` (see `AUTO_UPDATE_RESEARCH.md`). Eager loading is measured
   (2026-09-30, `AUTO_UPDATE_RESEARCH.md` "Eager schemas"): turns = Grep, cost ≤ 1.2×, tokens
   1.5–1.8× from the 44 KB schemas (search_code 7.6 KB, find_references 5.2 KB,
   search_regex 4.9 KB, list_locations 4.8 KB, count_occurrences 4.6 KB). Merge `count_occurrences` into

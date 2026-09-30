@@ -60,24 +60,27 @@ SEARCH_TOOLS = frozenset([
 # Listing these in --allowedTools forces the Claude Code SDK to eagerly load
 # their schemas at session start, eliminating the "deferred schema" ToolSearch
 # calls that otherwise add 1-2 wasted turns to every arm B/C trial.
+# The tools `rfx mcp` lists (10 since 2026-09-30), plus the names merged into them
+# (still callable, unlisted) so a binary from before the merge also runs.
 REFLEX_MCP_TOOLS = [
-    "mcp__reflex__analyze_summary",
+    "mcp__reflex__analyze",
     "mcp__reflex__check_index_status",
-    "mcp__reflex__count_occurrences",
-    "mcp__reflex__find_circular",
-    "mcp__reflex__find_hotspots",
-    "mcp__reflex__find_islands",
     "mcp__reflex__find_references",
-    "mcp__reflex__find_unused",
     "mcp__reflex__gather_context",
     "mcp__reflex__get_dependencies",
-    "mcp__reflex__get_dependents",
-    "mcp__reflex__get_transitive_deps",
     "mcp__reflex__index_project",
     "mcp__reflex__list_locations",
     "mcp__reflex__search_ast",
     "mcp__reflex__search_code",
     "mcp__reflex__search_regex",
+    "mcp__reflex__analyze_summary",
+    "mcp__reflex__count_occurrences",
+    "mcp__reflex__find_circular",
+    "mcp__reflex__find_hotspots",
+    "mcp__reflex__find_islands",
+    "mcp__reflex__find_unused",
+    "mcp__reflex__get_dependents",
+    "mcp__reflex__get_transitive_deps",
 ]
 
 # Built-in tools allowed in MCP arms (B, C, Bprime).

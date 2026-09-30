@@ -182,9 +182,9 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 | regular expression | `search_regex` | `grep -E` |
 | any of the above, case-insensitive | `ignore_case: true` (`-i` / `--ignore-case` on the CLI) | `rg -i` (+ `contains` = `rg -i -F`) |
 
-- `contains` is available on `search_code`, `count_occurrences`, `list_locations` and
-  `find_references` (not `search_regex`, which is already substring-based).
-- `ignore_case` is available on those four **and** `search_regex` (where it prepends
+- `contains` is available on `search_code`, `list_locations` and `find_references` (not
+  `search_regex`, which is already substring-based).
+- `ignore_case` is available on those three **and** `search_regex` (where it prepends
   `(?i)`). A `(?i)` literal is looked up in the trigram index under every case
   variant, so it costs about what the case-sensitive query costs. A whole-identifier `ignore_case` search keeps
   whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
@@ -202,10 +202,9 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 
 ### Freshness contract
 
-Every JSON-object MCP answer (search, count mode, `list_locations`, `count_occurrences`,
-`find_references`, the structural tools) and `check_index_status` carry `status` and
-`can_trust_results`. Array answers (`get_dependencies`, `get_dependents`, `search_ast`) and
-the path-keyed `get_transitive_deps` do not. The index is updated before every call (see
+Every JSON-object MCP answer (search, count mode, `list_locations`, `find_references`,
+`analyze`) and `check_index_status` carry `status` and `can_trust_results`. Array answers
+(`get_dependencies` in every form, `search_ast`) do not. The index is updated before every call (see
 Auto-update), so agents are told NOT to call `check_index_status` / `index_project`. Freshness is judged by
 **file content, not by commit**: every indexed file has a recorded fingerprint (size,
 mtime, blake3 hash), and the index is stale only when a file on disk differs from it —
@@ -237,32 +236,26 @@ edited, added or deleted, committed or not.
 - The verdict is memoised for 1 s per workspace (`REFLEX_FRESHNESS_TTL_MS`; `0`
   disables). `check_index_status` always bypasses the memo.
 
-**Core search:**
+Ten tools (since 2026-09-30; was 17). Claude Code carries every listed schema on every
+turn, so `tools/list` is kept small (~10.6 KB, guarded by `tests/mcp_tool_surface.rs`);
+the shared matching / coverage / freshness rules live in `MCP_INSTRUCTIONS`, said once.
+
 | Tool | Purpose |
 |------|---------|
-| `check_index_status` | Report freshness without updating (rarely needed: every tool updates first) |
-| `search_code` | Full-text search with previews (default limit: 200) |
-| `search_regex` | Regex pattern search (use for `->`, `::`, alternation, etc.) |
+| `search_code` | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
+| `search_regex` | Regex search (use for `->`, `::`, alternation, etc.) |
 | `list_locations` | Path+line only — cheapest, no content loaded |
-| `count_occurrences` | Count matches without loading content |
 | `find_references` | Definition + all usages in one atomic call (default limit: 200) |
-| `gather_context` | Project structure, frameworks, entry points |
 | `search_ast` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
-
-**Index management:**
-| Tool | Purpose |
-|------|---------|
+| `get_dependencies` | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
+| `analyze` | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
+| `gather_context` | Project structure, frameworks, entry points |
 | `index_project` | Force an index run (rarely needed: every tool updates first) |
+| `check_index_status` | Report freshness without updating (rarely needed) |
 
-**Dependency analysis:**
-| Tool | Purpose |
-|------|---------|
-| `get_dependencies` | What a file imports |
-| `get_dependents` | What imports a file (reverse lookup) |
-| `find_hotspots` | Most-imported files by dependent count |
-
-**Structural analysis** (on by default; hide with `[mcp] enable_structural_tools = false` in `~/.reflex/config.toml`):
-`find_circular` · `find_islands` · `find_unused` · `analyze_summary` · `get_transitive_deps`
+Removed names still work, unlisted, with a deprecation warning (`LEGACY_TOOLS`):
+`count_occurrences`, `get_dependents`, `get_transitive_deps`, `find_hotspots`,
+`find_circular`, `find_unused`, `find_islands`, `analyze_summary`.
 
 See [`docs/mcp-tool-cheatsheet.md`](./docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.
 
@@ -312,8 +305,8 @@ to the same slice of a full run, but the total is not always exact:
 | `total_is_exact: false` | verification stopped early: `total_count` / `pagination.total` are **`null`** (never the verified-so-far number), `approx_total` is a **sampled estimate** (32 files spread over the remaining candidates, ≤16 lines each; typically within ±30%, omitted for a regex with no literal), and `has_more` is `true` |
 
 When 32 files or 128 candidate lines or fewer remain after the page fills, the search
-finishes instead and the total is exact. `mode: "count"`, `count_occurrences`,
-`list_locations` and `find_references` always verify everything. The CLI prints an
+finishes instead and the total is exact. `mode: "count"`, `list_locations` and
+`find_references` always verify everything. The CLI prints an
 inexact total as `Found 10 results (~1234 total, estimated)` and points at `--count`.
 Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 `best_total()` (exact, else estimate, else page end; for thresholds only).
@@ -469,9 +462,9 @@ marker is **not** read (the query engine derives language from the path).
 
 | Tool / flag | Text / lock / generated tiers |
 | --- | --- |
-| `search_code`, `search_regex`, `count_occurrences`, `list_locations` | text **included by default**; lock and generated on request |
+| `search_code`, `search_regex`, `list_locations` | text **included by default**; lock and generated on request |
 | `--symbols`, `--kind`, `--ast`, `search_ast` | excluded (there is no grammar) |
-| `find_references`, `get_dependents`, structural tools | excluded (a mention in a changelog is not a call site) |
+| `find_references`, `get_dependencies`, `analyze` | excluded (a mention in a changelog is not a call site) |
 
 - **Select the text tier**: `--lang text` (aliases `txt`, `plaintext`, `plain`).
 - **Exclude it**: `exclude_text: true` on the four full-text MCP tools.

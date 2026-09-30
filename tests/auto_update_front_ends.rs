@@ -364,5 +364,5 @@ fn mcp_text_does_not_ask_for_manual_reindexing() {
     ] {
         assert!(!text.contains(stale_advice), "still says: {stale_advice}");
     }
-    assert!(text.contains("updated automatically before every call"));
+    assert!(text.contains("The index updates itself before every call"));
 }

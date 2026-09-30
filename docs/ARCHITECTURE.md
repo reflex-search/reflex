@@ -390,7 +390,7 @@ not exact:
 - When `ESTIMATE_FINISH_LINES` candidate lines or fewer remain, the search finishes
   instead and the total is exact.
 
-Count mode (`--count`, `mode: "count"`, `count_occurrences`), `list_locations`,
+Count mode (`--count`, `mode: "count"`), `list_locations`,
 `find_references`, and symbol and AST searches verify everything. Count mode returns
 `(lines, files)` without building results.
 
@@ -517,8 +517,13 @@ Text, lock and generated files never enter the graph.
   did-you-mean). `search_code` and `search_regex` return a columnar
   `{columns, rows}` shape (`to_columnar`; `REFLEX_MCP_COLUMNAR=0` restores
   `results[]`). A tool that fails with `CacheCorrupted` triggers one forced rebuild
-  and one retry (`with_corruption_recovery`). Structural tools can be hidden with
-  `[mcp] enable_structural_tools = false` in `~/.reflex/config.toml`. See
+  and one retry (`with_corruption_recovery`). Ten tools are listed (`tool_list`); the
+  structural analyses are one `analyze` tool (hidden with `[mcp]
+  enable_structural_tools = false` in `~/.reflex/config.toml`), and the reverse and
+  transitive lookups are options of `get_dependencies` (`handler_for` routes them). The
+  eight names merged on 2026-09-30 stay callable, unlisted, with a deprecation warning
+  (`LEGACY_TOOLS`). Shared rules live in `MCP_INSTRUCTIONS`, so descriptions stay short:
+  every listed schema is carried on every agent turn. See
   [`mcp-tool-cheatsheet.md`](./mcp-tool-cheatsheet.md).
 - **HTTP** (`src/cli/serve.rs`, axum): `GET /query`, `GET /stats`, `POST /index`,
   `GET /health`. Binds to `127.0.0.1` by default, with no authentication and permissive
