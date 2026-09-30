@@ -288,3 +288,48 @@ trials: `results-eager-sonnet5/`, `results-eager-opus/` (gitignored).
 - The whole remaining token gap is schema weight (Sonnet eager − Grep ≈ 28k over 2 turns).
   Next lever: shrink the tool surface and descriptions (backlog §1 B), then re-measure.
 - Accuracy 1.000 / 1.000 in every arm; 72/72 successes.
+
+## Long sessions (2026-09-30, `benches/efficacy/session_bench.py`)
+
+The REF-222 tasks are one search each (2–3 turns): they measure the fixed cost of
+bringing Reflex into a session. `session_bench.py` runs many questions in ONE Claude Code
+session (`claude --print --input-format stream-json`, one message at a time — a message
+queued while the agent works is merged into the running turn), each trial on its own
+fresh copy of the corpus (a new git repository; Reflex arms index it beforehand, outside
+the token count). Scripts: `tasks/sessions.json` (generated from the pinned corpora:
+lookups, definitions, file counts, renames with lookups before and after). Every answer
+is graded against ripgrep on the trial's final tree (pre-rename lookups on the start
+tree). Cache-weighted tokens = input + output + 0.1 × cache reads + 1.25 × cache writes.
+
+12-question sessions (investigate + edit per corpus, 5 trials, 30 sessions per arm):
+
+| vs Grep | Sonnet 5 deferred | Sonnet 5 eager | Opus 5.5 deferred | Opus 5.5 eager |
+| --- | --- | --- | --- | --- |
+| cost | 1.07× | 1.36× | 1.03× | 1.18× |
+| cache-weighted tokens | 1.06× | 1.45× | 1.05× | 1.52× |
+| raw tokens | 1.05× | 1.55× | 1.06× | 1.75× |
+| Reflex calls / session (median) | 0 | 12 | 0 | 9 |
+| accuracy (all arms) | 1.000 | 1.000 | 1.000 | 1.000 |
+
+50-question sessions (Sonnet 5; tokio ×2, ripgrep ×2, reflex ×1 per arm; Grep vs eager):
+
+| | Grep | Reflex eager |
+| --- | --- | --- |
+| turns / tool calls (median) | 119 / 69 | 105 / 55 |
+| cost / cache-weighted / raw vs Grep | 1.00 | **1.10× / 1.14× / 1.17×** |
+| accuracy | 0.992 | 1.000 |
+| tokio sessions (cost) | $2.29, $2.87 | $1.97, $1.93 (Grep needed 87–102 calls, Reflex 54–55) |
+
+Findings:
+- **Per query, Reflex costs what Grep costs.** In the 12-question Sonnet sessions the eager
+  arm made the same calls and turns as Grep, and `list_locations` answers were the size of
+  Grep's (median 584 vs 560 chars).
+- **The gap is the schema prefix**: ~16K tokens per turn with all 17 schemas loaded (the
+  first exchange re-reads 85K vs Grep's 53K). 16K × 27 turns ≈ 430K raw ≈ 43K weighted —
+  the whole measured gap. It shrinks with session length as a share of the context:
+  cost vs Grep 1.5–1.8× (2-turn tasks) → 1.18–1.36× (12 questions) → 1.10× (50 questions).
+- **Deferred loading ≈ Grep because agents mostly do not use Reflex in long sessions**
+  (Sonnet: 22/30 sessions Grep only; median Reflex calls 0). Eager loading is what makes
+  agents use it (every question answered through Reflex).
+- Next lever: fewer/smaller schemas (backlog §1 B) — at ~4K tokens the 50-question gap
+  would fall to about 1.03×.

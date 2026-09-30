@@ -384,7 +384,12 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 - **`alwaysLoad` (eager schemas, 2026-09-30):** removes the ToolSearch turn (turns = Grep's)
   and cuts cost: Sonnet 1.77× → 1.20×, Opus 1.32× → 0.98× Grep. Tokens: Sonnet 1.63× →
   1.53×, Opus 1.68× → 1.82× (every turn carries the 44 KB `tools/list`). The docs'
-  example configs set it. Schema size is now the whole gap. The instructions' last paragraph
+  example configs set it. Schema size is now the whole gap.
+- **Long sessions (`benches/efficacy/session_bench.py`, 2026-09-30):** per query Reflex
+  costs what Grep costs; the gap is the ~16K-token schema prefix per turn, so it shrinks
+  with session length. Cost vs Grep with `alwaysLoad`: 1.18–1.36× (12 questions), **1.10×**
+  (50 questions, Sonnet; cheaper than Grep on tokio). With deferred schemas agents mostly
+  skip Reflex in long sessions (22/30 Sonnet sessions used Grep only). The instructions' last paragraph
   decides adoption (the schemas are deferred): keep a Reflex-first fallback rule there —
   dropping it took adoption from 37/72 to 2/72 (`.context/AUTO_UPDATE_RESEARCH.md`).
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was

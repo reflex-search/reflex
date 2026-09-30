@@ -24,7 +24,9 @@ agents to `check_index_status` / `index_project`; every JSON-object answer carri
 status calls. Sonnet 5: 1.603× (was 1.646×); status calls 33 → 0, arm-B median turns
 4 → 3, tokens 148k → 101k. `alwaysLoad` (now in the docs' example configs) removes the
 ToolSearch turn: cost 1.20× (Sonnet) / 0.98× (Opus) Grep, tokens 1.53× / 1.82× — the
-44 KB `tools/list` rides on every turn. Next: shrink it (backlog §1 B).
+44 KB `tools/list` rides on every turn. Long sessions (`session_bench.py`): eager Reflex
+1.10× Grep's cost over 50 questions (1.18–1.36× over 12); per query it equals Grep.
+Next: shrink the schemas (backlog §1 B), re-measure with `session_bench.py`.
 
 Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
 of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
