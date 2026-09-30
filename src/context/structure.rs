@@ -349,8 +349,10 @@ mod tests {
             .collect();
         assert!(result.contains("a/"), "{result}");
         assert!(result.contains("b/"), "{result}");
+        // Skip the first line: it is the temp directory itself, whose random name
+        // can end in `c` too (`.tmpE0KsIc/`, 2026-09-30).
         assert!(
-            !result.lines().any(|l| l.trim_end().ends_with("c/")),
+            !result.lines().skip(1).any(|l| l.trim_end().ends_with("c/")),
             "depth 2 must not reach c/: {result}"
         );
         assert!(!names.contains(&"deep.txt"), "{result}");
