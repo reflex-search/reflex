@@ -222,3 +222,30 @@ Known limits:
 - Commands that did not check before (`deps`, `analyze`, `stats`, …) pay the check
   (~60–100 ms on Kubernetes; a stat of every file without git).
 - Nested ignore files outside git are not compared (walk mode checks the root's only).
+
+## Efficacy A/B after step 9 (2026-09-30)
+
+REF-222 design (9 find-all tasks × 8 trials × 2 arms), Opus 5.5, Claude Code 2.1.284,
+binary with the new MCP text (`cebddb9`). Raw trials: `benches/efficacy/results/`
+(gitignored); the 2.0.3 run was moved to `results-2.0.3-opus/`.
+
+| | 2.0.3 (2026-09-28) | auto-update (2026-09-30) |
+| --- | --- | --- |
+| total_tokens B/A (primary) | 1.663 [1.045, 1.685] | **1.675 [1.037, 1.688]** — unchanged, reflex_worse |
+| arm-B trials that used Reflex | 37/72 | 43/72 |
+| `check_index_status` / `index_project` calls | 0 / 0 (Opus never made them) | 0 / 0 |
+| used-Reflex call sequence | ToolSearch > search_code (3 turns) | same |
+
+- **Why no change on Opus:** Opus 5.5 never called the probe on these tasks, in 2.0.3 either
+  (0 calls in 200 trials). The remaining extra turn is the ToolSearch that loads the
+  deferred schemas (backlog §1 B). Sonnet 5 on 2.0.3 called `check_index_status` in 33/72
+  trials — that is where step 9 should show; **not re-measured** (about $6.70; waiting for
+  the user).
+- **Adoption is sensitive to the instructions' last paragraph.** Claude Code defers the
+  tool schemas, so the agent decides between Grep and a ToolSearch from the instructions
+  alone. Replacing "Only fall back to Grep/Glob after index_project has been called and the
+  tool still fails" (9e30ff5) collapsed adoption to 2/72 (the first A/B, discarded). Pilots
+  (3 tasks × 4 trials, trials that called Reflex): old text 8/12; "only fall back to
+  Grep/Glob if a Reflex tool fails" 4/12; "if a Reflex tool fails, retry it once; only
+  fall back to Grep/Glob after the retry also fails" 8/12 → kept (`cebddb9`).
+- Accuracy: precision and recall 1.000 in both arms; 72/72 successes each.
