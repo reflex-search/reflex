@@ -68,7 +68,8 @@ code_files() { # <tree>
     -print | sed 's|^\./||' | LC_ALL=C sort)
 }
 
-index() { "$1" index --quiet >/dev/null; }
+# <rfx> <tree>: an index run IN the tree (the cwd is the index root).
+index() { (cd "$2" && "$1" index --quiet >/dev/null); }
 # The manifest generation of <tree>'s index; 0 without a manifest (2.0.3).
 generation() {
   python3 -c 'import json,sys
@@ -124,10 +125,13 @@ cmd_updates() { # <rfx> <label>
       echo "error: $c: generation fell from $gen_before to $gen_after (a forced rebuild)" >&2
       return 1
     fi
-    mv "$t/.reflex" "$t/.reflex-inc"
+    # Parked outside the tree: an untracked directory inside it would make git
+    # (and `rfx stats`) call the fresh build's tree dirty.
+    local parked="$WORK/reflex-inc.$c"
+    rm -rf "$parked"; mv "$t/.reflex" "$parked"
     index "$bin" "$t"
     python3 "$HERE/golden.py" run --rfx "$bin" --tree "$t" --out "$GOLD/$label-upd-fresh/$c"
-    rm -rf "$t/.reflex"; mv "$t/.reflex-inc" "$t/.reflex"
+    rm -rf "$t/.reflex"; mv "$parked" "$t/.reflex"
     echo "updated $label/$c"
   done
   cmd_compare "$label-upd" "$label-upd-fresh"
