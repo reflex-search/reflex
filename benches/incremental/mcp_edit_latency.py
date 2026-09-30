@@ -15,7 +15,7 @@ import time
 
 rfx, path, runs = sys.argv[1], sys.argv[2], int(sys.argv[3])
 proc = subprocess.Popen(
-    [rfx, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    [rfx, "mcp"], env={**__import__("os").environ, "REFLEX_MCP_TIMING": "1"}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
 )
 next_id = 0
 
@@ -52,8 +52,11 @@ for i in range(runs):
     time.sleep(1.2)  # past the freshness memo, as an agent's next turn would be
     ms, body = call("search_code", {"pattern": token})
     found = len(body.get("rows", body.get("results", [])))
+    t = body.get("timings") or {}
+    phases = "  ".join(f"{k}={t[k] / 1000:.0f}" for k in
+                       ("update_us", "status_compute_us", "total_us") if k in t)
     print(f"mcp_edit    {ms:8.1f} ms  status={body.get('status')}  found={found}  "
-          f"load={open('/proc/loadavg').read().split()[0]}")
+          f"load={open('/proc/loadavg').read().split()[0]}  {phases}")
     with open(path, "wb") as f:
         f.write(original)
     time.sleep(1.2)

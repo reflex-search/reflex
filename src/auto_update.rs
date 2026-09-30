@@ -147,10 +147,11 @@ pub fn update_if_stale(cache: &CacheManager, opts: &UpdateOptions) -> Result<Upd
 
     // Asked after taking the mutex: an update that just finished invalidated the
     // memo, so a waiter sees the fresh index and does nothing.
-    let plan = match crate::query::update_plan(cache) {
-        Ok(plan) => plan,
+    let planned = match crate::query::plan_update(cache) {
+        Ok(planned) => planned,
         Err(e) => return Ok(Updated::Skipped(format!("freshness check failed: {e}"))),
     };
+    let plan = planned.plan.clone();
     let key = root.canonicalize().unwrap_or_else(|_| root.clone());
     match &plan {
         UpdatePlan::Fresh => {
@@ -210,7 +211,15 @@ pub fn update_if_stale(cache: &CacheManager, opts: &UpdateOptions) -> Result<Upd
         Err(e) => return Ok(Updated::Skipped(describe(&e))),
     };
 
-    // Did it work? The same plan over the same bytes is not retried.
+    // Did it work? For a path update, only those paths are compared again; the
+    // same plan over the same bytes is not retried.
+    if crate::query::settle_update(cache, &planned) {
+        if let Ok(mut failed) = failed_attempts().lock() {
+            failed.remove(&key);
+        }
+        restart_symbol_pass(cache, &root, opts, &updated);
+        return Ok(updated);
+    }
     match crate::query::update_plan(cache) {
         Ok(UpdatePlan::Fresh) => {
             if let Ok(mut failed) = failed_attempts().lock() {

@@ -11,7 +11,7 @@
 use reflex::auto_update::{UpdateOptions, Updated, update_if_stale};
 use reflex::cache::CacheManager;
 use reflex::indexer::Indexer;
-use reflex::models::IndexStatus;
+use reflex::models::{IndexConfig, IndexStatus};
 use reflex::query::{QueryEngine, QueryFilter};
 use std::fs;
 use std::path::Path;
@@ -417,4 +417,39 @@ fn a_symbol_search_after_an_edit_finds_the_new_definition() {
         )
         .unwrap();
     assert_eq!(results.len(), 1, "{results:?}");
+}
+
+#[test]
+fn a_settled_verdict_needs_every_updated_path_to_match() {
+    use reflex::query::{UpdatePlan, plan_update, settle_update, update_plan};
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    let cache = CacheManager::new(root);
+
+    write(root, "src/m1.rs", "pub fn token_new() {}\n");
+    reflex::query::invalidate_caches(root);
+    let planned = plan_update(&cache).unwrap();
+    let UpdatePlan::Paths(paths) = planned.plan.clone() else {
+        panic!("{:?}", planned.plan)
+    };
+    Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .update_paths(root, &paths)
+        .unwrap();
+    assert!(settle_update(&cache, &planned));
+    assert_eq!(update_plan(&cache).unwrap(), UpdatePlan::Fresh);
+
+    // Changed again after the update: not settled, and the next check sees it.
+    write(root, "src/m1.rs", "pub fn token_newer() {}\n");
+    reflex::query::invalidate_caches(root);
+    let planned = plan_update(&cache).unwrap();
+    let UpdatePlan::Paths(paths) = planned.plan.clone() else {
+        panic!("{:?}", planned.plan)
+    };
+    Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .update_paths(root, &paths)
+        .unwrap();
+    write(root, "src/m1.rs", "pub fn token_newest() {}\n");
+    assert!(!settle_update(&cache, &planned));
+    assert!(matches!(update_plan(&cache).unwrap(), UpdatePlan::Paths(_)));
 }

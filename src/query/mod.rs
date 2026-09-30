@@ -54,7 +54,30 @@ pub enum UpdatePlan {
 /// The update plan for the workspace `cache` belongs to (memoised with the
 /// freshness verdict for the same window).
 pub fn update_plan(cache: &CacheManager) -> Result<UpdatePlan> {
-    status_cache::update_plan(cache)
+    Ok(status_cache::update_plan(cache)?.0)
+}
+
+/// An update plan with the freshness check it came from ([`plan_update`]).
+pub struct PlannedUpdate {
+    pub plan: UpdatePlan,
+    snapshot: Arc<status_cache::Snapshot>,
+}
+
+/// [`update_plan`], keeping the check for [`settle_update`].
+pub fn plan_update(cache: &CacheManager) -> Result<PlannedUpdate> {
+    let (plan, snapshot) = status_cache::update_plan(cache)?;
+    Ok(PlannedUpdate { plan, snapshot })
+}
+
+/// After `planned`'s paths were updated: confirm only those paths against the
+/// index and, when all match, make "fresh" the memoised verdict for the rest of
+/// the original check's window. Saves the second tree comparison (a `git status`
+/// on a large repository) right after an update. False when it could not.
+pub fn settle_update(cache: &CacheManager, planned: &PlannedUpdate) -> bool {
+    match &planned.plan {
+        UpdatePlan::Paths(paths) => status_cache::settle(cache, &planned.snapshot, paths),
+        _ => false,
+    }
 }
 
 /// What `search_internal` hands back: the page plus the bookkeeping the public
@@ -4049,6 +4072,9 @@ mod status_cache {
         /// only a full run brings the index up to date. The paths are also listed
         /// in `changes` as modified.
         pub rules_changed: bool,
+        /// When the tree was compared. A verdict settled after an update keeps
+        /// the time of the check it came from, so it expires on that schedule.
+        pub checked_at: Instant,
     }
 
     impl Snapshot {
@@ -4060,6 +4086,7 @@ mod status_cache {
                 unreadable: true,
                 foreign: false,
                 rules_changed: false,
+                checked_at: Instant::now(),
             }
         }
     }
@@ -4123,7 +4150,7 @@ mod status_cache {
             map.insert(
                 key,
                 Entry {
-                    computed_at: Instant::now(),
+                    computed_at: snapshot.checked_at,
                     snapshot: Arc::clone(&snapshot),
                 },
             );
@@ -4205,6 +4232,7 @@ mod status_cache {
                 unreadable: false,
                 foreign,
                 rules_changed: false,
+                checked_at: Instant::now(),
             });
         }
 
@@ -4314,6 +4342,7 @@ mod status_cache {
             unreadable: false,
             foreign: false,
             rules_changed: !rules_changed.is_empty(),
+            checked_at: Instant::now(),
         })
     }
 
@@ -4504,31 +4533,35 @@ mod status_cache {
     }
 
     /// What an automatic update must do to make the index match the tree.
-    pub fn update_plan(cache: &CacheManager) -> Result<super::UpdatePlan> {
-        use super::UpdatePlan;
+    pub fn update_plan(cache: &CacheManager) -> Result<(super::UpdatePlan, Arc<Snapshot>)> {
         let snap = snapshot(cache)?;
+        Ok((plan_of(&snap), snap))
+    }
+
+    fn plan_of(snap: &Snapshot) -> super::UpdatePlan {
+        use super::UpdatePlan;
         if snap.unreadable {
-            return Ok(UpdatePlan::Unknown(
+            return UpdatePlan::Unknown(
                 "the index metadata (meta.db) could not be read".to_string(),
-            ));
+            );
         }
         if let Some((status, _, warning)) = &snap.decided {
             if *status == IndexStatus::Fresh {
-                return Ok(UpdatePlan::Fresh);
+                return UpdatePlan::Fresh;
             }
             let reason = warning
                 .as_ref()
                 .map(|w| w.reason.clone())
                 .unwrap_or_default();
-            return Ok(if snap.foreign {
+            return if snap.foreign {
                 UpdatePlan::Foreign(reason)
             } else {
                 UpdatePlan::Full(Vec::new())
-            });
+            };
         }
         let c = &snap.changes;
         if c.is_empty() {
-            return Ok(UpdatePlan::Fresh);
+            return UpdatePlan::Fresh;
         }
         let mut paths: Vec<PathBuf> = c
             .modified
@@ -4539,11 +4572,80 @@ mod status_cache {
             .collect();
         paths.sort();
         paths.dedup();
-        Ok(if snap.rules_changed || c.truncated {
+        if snap.rules_changed || c.truncated {
             UpdatePlan::Full(paths)
         } else {
             UpdatePlan::Paths(paths)
-        })
+        }
+    }
+
+    /// After an update of `paths` (every change `prior` listed): when each now
+    /// matches the index, remember "fresh" as the verdict, dated when `prior` was
+    /// checked, and return true. The tree is not compared again, exactly as a
+    /// memoised verdict is trusted for its window; a change made since `prior`
+    /// shows once that window ends. False (nothing remembered) when a path still
+    /// differs, the window has passed, or memoising is off.
+    pub fn settle(cache: &CacheManager, prior: &Snapshot, paths: &[PathBuf]) -> bool {
+        let ttl = ttl();
+        if ttl.is_zero()
+            || prior.checked_at.elapsed() >= ttl
+            || prior.decided.is_some()
+            || prior.rules_changed
+            || prior.changes.truncated
+        {
+            return false;
+        }
+        let root = cache.workspace_root();
+        let Ok(config) = cache.load_index_config() else {
+            return false;
+        };
+        let policy = PathPolicy::from_config(&root, &config);
+        let rels: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let keys: Vec<&str> = rels.iter().map(String::as_str).collect();
+        let Ok(fingerprints) = cache.fingerprints_for(&keys) else {
+            return false;
+        };
+        let mut still = WorktreeChanges::default();
+        let mut added = Vec::new();
+        for rel in &rels {
+            classify_one(
+                &root,
+                &config,
+                &policy,
+                rel,
+                fingerprints.get(rel),
+                &mut still,
+                &mut added,
+            );
+        }
+        if !still.is_empty() || !added.is_empty() {
+            return false;
+        }
+        let settled = Arc::new(Snapshot {
+            decided: None,
+            details: prior.details.clone(),
+            changes: WorktreeChanges::default(),
+            unreadable: false,
+            foreign: false,
+            rules_changed: false,
+            checked_at: prior.checked_at,
+        });
+        match store().lock() {
+            Ok(mut map) => {
+                map.insert(
+                    key(&root),
+                    Entry {
+                        computed_at: prior.checked_at,
+                        snapshot: settled,
+                    },
+                );
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Drop any memo for `root`, so the next read is fresh.
