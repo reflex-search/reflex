@@ -224,7 +224,7 @@ search_code {"pattern": "fn verify_totp", "limit": 40, "file": "src/identity"}
 search_regex {"pattern": "fn (get|set)_\w+", "glob": ["src/**/*.rs"]}
 find_references {"pattern": "start_webauthn_registration"}
 
-Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: a natural-language query like "hot tier promotion" matches nothing, so search for identifiers or code fragments.
+Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: natural-language queries match nothing; search for identifiers or code fragments.
 
 Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint (e.g. the substring count) and excluded_reason.
 
@@ -232,7 +232,7 @@ Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot
 
 The index updates itself before every call and is built on first use: never call index_project or check_index_status after edits. can_trust_results: false means the update could not run; warnings say why.
 
-Use find_references for a definition plus every call site without string/comment noise. Use get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
+To list where something occurs, use list_locations: path and line only, the cheapest answer. Use search_code when you need the matching lines, find_references for a definition plus every call site without string/comment noise, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
 /// Handle initialize request
 fn handle_initialize(_params: Option<Value>) -> Result<Value> {
@@ -288,7 +288,7 @@ fn tool_list(enable_structural: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "search_code",
-            "description": "Search code for a literal pattern: every match with path, line and preview. Whole identifiers by default; contains:true for substrings; symbols:true for definitions only (kind narrows them). Answer: {columns, rows} (each row aligns with columns) plus pagination; when has_more, fetch the next page with offset. total_count is exact only when total_is_exact.",
+            "description": "Search code for a literal pattern: every match with path, line and preview (for path and line only, list_locations is cheaper). Whole identifiers by default; contains:true for substrings; symbols:true for definitions only (kind narrows them). Answer: {columns, rows} (each row aligns with columns) plus pagination; when has_more, fetch the next page with offset. total_count is exact only when total_is_exact.",
             "inputSchema": search_params(json!({
                 "contains": contains,
                 "symbols": {"type": "boolean", "description": "Definitions only"},
@@ -316,7 +316,7 @@ fn tool_list(enable_structural: bool) -> Vec<Value> {
         }),
         json!({
             "name": "list_locations",
-            "description": "Cheapest search: every match as {path, line}, no previews, no limit. Same matching as search_code.",
+            "description": "Where does X occur? Every match as {path, line}: the cheapest search, no previews, no limit. Same matching as search_code.",
             "inputSchema": search_params(json!({
                 "contains": contains,
                 "dependencies": {"type": "boolean", "description": "Attach each file's imports"}
