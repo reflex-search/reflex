@@ -1,0 +1,171 @@
+# Auto-update: every command answers from a fresh index
+
+**Status:** plan, 2026-09-29 (on top of `feature/incremental-index`, Reflex 2.0.3 + the
+incremental index). Not started. Decisions: `.context/TODO.md` ("Auto-update").
+
+## Goal
+
+A user or agent never runs `rfx index` or calls `index_project` to see an edit. Every
+command that reads the index first brings it up to date, then answers. This removes the
+`check_index_status` and `index_project` round trips that made Reflex MCP cost 1.26–1.66×
+Grep's tokens (`.context/EFFICACY-2.0.3.md`).
+
+## Decisions (user, 2026-09-29)
+
+1. **No watcher.** The update runs inside the command, after the freshness check says
+   `stale`. A fresh index pays nothing extra.
+2. **Default on, everywhere**: `rfx query`, `deps`, `analyze`, `ask`, `context`, `stats`,
+   `list-files`, `snapshot`, `pulse`, interactive mode, `rfx serve`, `rfx mcp`. One opt-out
+   flag, `--no-update`, accepted by every command.
+3. **Always wait.** A command never returns stale results because the update is slow.
+   Claude Code waits ~28 h for an MCP tool call by default (`MCP_TOOL_TIMEOUT`, per-server
+   `timeout`; progress notifications do not reset it — code.claude.com/docs/en/mcp.md).
+4. **No index → build it**, in any directory. Running in `~` or a subdirectory is the
+   same question as running `rfx index` there; no special guard.
+5. **MCP text** ("call `check_index_status` / `index_project`") is removed only after the
+   agent-style test (below) shows 95–100 % of answers equal a fresh build.
+6. **Another version's index.** CLI commands rebuild it, as `rfx index` does. `rfx mcp`
+   and `rfx serve` do not write it; they answer with a warning naming the owner. A server
+   that cannot read the index at all rebuilds once (today's `with_corruption_recovery`).
+   No loop: a newer version reads an older version's index, so only the older side fails
+   to read; after its one rebuild the newer side reads and does not write.
+
+## Facts from the code survey (2026-09-29)
+
+Freshness check (`src/query/mod.rs`):
+- `status_cache::snapshot(cache)` (~3977) is the check: git candidates (or a walk), each
+  confirmed by fingerprint. Memoised 1 s per root; `invalidate(root)` clears it and every
+  index run calls it. The result holds `WorktreeChanges` (`src/git.rs:163`): lists capped
+  at 100 per category (`truncated`), true totals in `*_count`, paths relative to the root.
+- `search_with_metadata` (~830) runs the check on a scoped thread while it searches.
+- `search`, `search_ast_all_files`, `search_ast_with_text_filter` (and `find_symbol`,
+  `search_ast`, `list_by_kind` through `search`) run an older heuristic,
+  `check_index_freshness` (~3034): branch exists, commit moved, 10 sampled mtimes; it only
+  prints warnings. `rfx query --ast --json` hard-codes `status: fresh` (`cli/query.rs`
+  ~660).
+- `compute` returns **Fresh** when `cache.status_reads` fails (~4036).
+
+Who indexes today, and with what config:
+- `rfx index` (`cli/index.rs:93`) loads `.reflex/config.toml`, waits 30 s for the lock,
+  self-heals a version mismatch, prints a summary and spawns `index-symbols-internal`.
+- MCP `index_project` (`mcp.rs` ~1288), `POST /index` (`cli/serve.rs` ~239), `rfx watch`
+  and interactive mode use `IndexConfig::default()`: they **ignore config.toml**, while the
+  freshness check reads it (`query/mod.rs` ~4076). An update built on the default config
+  would index a different file set than the check expects.
+- `Indexer::update_paths` has no production caller. `rfx watch` collects changed paths
+  but calls the full `index`.
+
+Lock (`src/atomic_write.rs`): `index.lock`; `IndexConfig::lock_wait_secs` (default 0 =
+fail at once with `IndexLocked`). `index` and `try_update_paths` both take it, then ask the
+symbol pass to yield (up to 10 s, else `SymbolIndexingInProgress`). `update_paths` falls
+back to `index`, which takes the lock again.
+
+Front ends:
+- MCP: root `.`, one request at a time; each handler makes its own `QueryEngine`. Open
+  indexes are shared per process (`open_index::get_or_open`, reopened when the store files
+  change). `with_corruption_recovery` rebuilds once on `CacheCorrupted`.
+- `rfx serve`: root `.`, async handlers; `POST /index` runs on the async thread.
+- MCP tools with no freshness fields: `search_ast`, the dependency and structural tools,
+  `gather_context`; `find_references`, `list_locations`, `count_occurrences` carry
+  `status` only; `mode: "count"` carries nothing (TODO Open bugs).
+- clap: `Cli` (`cli/mod.rs:31`) has only `verbose`; a `#[arg(long, global = true)]` field
+  there makes `--no-update` valid before or after any subcommand.
+
+## Review findings (2026-09-29, before coding)
+
+A design review against the code found these; the design below includes each fix.
+
+1. `QueryEngine` pins its open index in a `OnceLock` (`query/mod.rs` ~588): a retry on
+   the same engine would read the pre-update snapshot. → resettable handle.
+2. The check's lists are capped at 100 and `Snapshot` is private. → an uncapped path list
+   inside the snapshot and a crate-level `update_plan`.
+3. `status_cache::snapshot` computes outside its lock and inserts afterwards: a check that
+   started before an update can re-insert a stale verdict. → an invalidation epoch.
+4. `compute` says Fresh when meta.db cannot be read. → `Unknown`, no update.
+5. `.gitignore` / `.ignore` / `.rgignore` and `.reflex/config.toml` edits never make the
+   index stale (`classify_one` drops paths that are not indexable; `.reflex/` is usually
+   ignored by git). → such candidates plan a full run; config.toml fingerprint stored.
+6. Background compaction deletes meta.db rows of missing files but leaves them in the
+   stores: the check then cannot see the deletion and search still returns the file. →
+   compaction stops deleting rows.
+7. No code inside the indexer or the symbol pass runs `QueryEngine`; `update_paths`
+   releases the lock before falling back to `index`. No self-deadlock.
+8. `lock_wait_secs = u64::MAX` is safe (`acquire_with_timeout` compares elapsed ≥ limit).
+9. An update cancels the symbol pass; nothing restarts it after a path update, so repeated
+   edit-then-query could starve it. → restart a `Cancelled` pass.
+10. `CacheManager::load_index_config` (`cache.rs:666`) is already in the library; the
+    `--languages` override is never persisted. → persist it.
+11. `cli/index.rs:140` keeps the version-mismatch self-heal out of MCP on purpose (the
+    1.6/1.7 rebuild stampede). → decision 6.
+12. `rfx serve` calls blocking code on async handlers (search, stats, index). →
+    `spawn_blocking`.
+13. About 15 tests assert `stale` or "Run `rfx index`" in-process. → the library default
+    stays off (`QueryEngine::with_update` opts in); every command turns it on through one
+    helper, enforced by a clippy `disallowed-methods` rule.
+14. The open bug "a tracked file `.gitignore` starts to ignore is reported as added by
+    every check" would make every query update again. → fixed first, plus a loop guard.
+
+## Design
+
+The approved plan (2026-09-29). Steps and gates are at the end.
+
+### Library entry point: `src/auto_update.rs`
+
+`update_if_stale(cache, opts) -> Updated { Nothing, Paths(n), Index, Built, Skipped(reason) }`
+
+1. No index → `Indexer::index` → `Built`.
+2. `update_plan` from the check: `Fresh` → `Nothing`; `Paths(list)` →
+   `update_paths(list)`; `Full` (truncated or missing lists, ignore file, config) →
+   `index`; `Unknown` → no write, `Skipped`.
+3. Config: `load_index_config` plus the persisted `--languages`; lock wait forever.
+4. Version mismatch: CLI clears and rebuilds; servers skip with the owner warning.
+5. Symbol pass: retry while it makes progress; restart it after a run that cancelled it
+   or after a full run (`BackgroundIndexer::spawn_detached`, binary callers only).
+6. One update per root per process; `index.lock` across processes.
+7. Loop guard: a path set an update could not make fresh is not updated again.
+8. Any failure → answer from the current index, `stale`, reason in `warnings`.
+
+### Query engine
+
+- `QueryEngine::with_update(opts)`; `new` unchanged. Front ends use one helper.
+- `search_with_metadata`: search and check in parallel; stale → update → search and check
+  again; at most two updates per call.
+- The other entry points update first. The old `check_index_freshness` heuristic goes;
+  `--ast --json` reports the real status.
+
+### Front ends
+
+- CLI: global `--no-update`; every index-reading command updates first; "No index found"
+  errors become builds; `rfx index status` stays read-only; one stderr line for a full
+  run or build; stdout unchanged.
+- MCP: `rfx mcp --no-update`; the update runs once in `handle_call_tool` (not for
+  `index_project` / `check_index_status`); `update_ms` in `timings`.
+- `rfx serve --no-update`; handlers in `spawn_blocking`.
+- `index_project`, `POST /index`, `rfx watch`, interactive mode and `rfx ask` use the same
+  config as `rfx index`; `rfx watch` passes its collected paths to `update_paths`.
+
+## Steps (one commit each)
+
+1. Prep, no output change: resettable engine handle, memo epoch, `Unknown`,
+   `spawn_detached`, shared config everywhere, lock wait forever, persisted `--languages`.
+2. Check fixes: ignore files and config plan a full run; tracked-but-ignored bug;
+   compaction keeps rows.
+3. `auto_update.rs` + `update_plan` + the fidelity harness (`tests/auto_update_fidelity.rs`).
+4. Query engine update-and-retry.
+5. CLI flag and per-command update.
+6. MCP and `rfx serve`; fidelity harness through `rfx mcp` and the CLI.
+7. `rfx watch` → `update_paths`.
+8. Perf gates and golden battery.
+9. **Stop and ask:** remove the MCP text that sends agents to `check_index_status` /
+   `index_project`; fix the missing `can_trust_results` fields.
+10. Docs.
+
+## Gates
+
+- Golden battery identical to 2.0.3 on four corpora with a fresh index.
+- `latency_budget` green with `REFLEX_LATENCY_BUDGET=1`, sum within +5 %.
+- Kubernetes, 1-file edit: `rfx query` in a new process < 0.5 s; MCP `search_code` < 150 ms.
+- Commands that newly check: added time ≤ the check (~60 ms).
+- Peak RSS of a query that updates ≤ an `update_paths` process (~70 MiB on Kubernetes).
+- Fidelity harness: 100 % target, 95 % floor.
+- Stop and ask on any other output change, a format change or a regression.

@@ -12,6 +12,19 @@
 
 ---
 
+## 🔄 Auto-update (2026-09-29) — PLANNED, waiting for the user's go-ahead
+
+Every command that reads the index brings it up to date first; no watcher, no manual
+`rfx index`. Plan, code survey, steps and gates: `.context/AUTO_UPDATE_RESEARCH.md`.
+Builds on the incremental index branch below.
+
+Decisions (user, 2026-09-29): update inside the command when the check says stale;
+default on for every command, `--no-update` opt-out on all; always wait; no index →
+build it (no directory guard); remove the MCP `check_index_status` / `index_project` text
+only after the fidelity test shows 95–100 % fresh answers.
+
+---
+
 ## ⚡ Incremental index updates (2026-09-29) — DONE on the branch, awaiting review
 
 Branch `feature/incremental-index` (not pushed). Design, what changed from the plan and
@@ -148,13 +161,11 @@ failed Zola build still exits 0.
 
 From the 1.7.2 MCP correctness release (2026-09-22):
 
-1. **Automatic refresh in MCP mode (decided 2026-09-29; replaces "honest staleness over
-   auto-refresh" from 1.7.2).** `rfx mcp` keeps its own index fresh: an in-process watcher
-   rebuilds after changes, and a query waits a bounded time for a pending rebuild. Not built
-   yet (Backlog §1 step A). The 1.7.2 objection was rebuild cost, and it still holds for
-   large trees: a 1-file edit reprocesses the whole tree (2026-09-29: Reflex 0.66 s;
-   Kubernetes 27.7 s under load, ~8 s idle), so the incremental update path is part of
-   step A, not optional. `REFLEX_MCP_AUTO_INDEX` was never built.
+1. **Auto-update everywhere (decided 2026-09-29; replaces "honest staleness over
+   auto-refresh" from 1.7.2 and the earlier in-process watcher plan).** Every command that
+   reads the index updates it first when the freshness check says stale, and always waits
+   for the update. No index → build it. Opt-out: `--no-update` on every command. Plan and
+   decisions: `.context/AUTO_UPDATE_RESEARCH.md`. Not built yet.
 2. **Stale always means `can_trust_results: false`**, including a zero-result search.
    Scope (did a changed file appear in the results?) only sharpens the warning text.
 3. **Readers degrade, writers refuse.** Refuse only when a different released version
@@ -241,17 +252,9 @@ Baseline (`.context/EFFICACY-2.0.3.md`): using Reflex costs 1.55–1.7× Grep's 
 extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref222.sh`
 (~$6, 35 min on Opus 5.5); pass = token CI includes 1.0 or sits below it.
 
-- **A. Keep the index fresh automatically in MCP mode** (user decision 2026-09-29). An
-  in-process watcher in `rfx mcp` (reuse `src/watcher.rs`, ~500 ms debounce) rebuilds under
-  `index.lock`; a stale query waits up to a budget (~1.5 s) for the rebuild, else answers
-  `can_trust_results: false` and the next query is fresh. Then drop "Call this at session
-  start…" from `check_index_status`; `action_required` only when auto-index is off or
-  blocked. Removes both the status-check and the `index_project` turns. Prerequisite: fix
-  the missing `can_trust_results` (Open bugs). **Includes the incremental update path**
-  (`.context/INCREMENTAL_INDEX_RESEARCH.md`: stage 0 stable metadata, stage 1 delta
-  segment + tombstones + manifest + background compaction):
-  today a 1-file edit on Kubernetes reprocesses all 27,448 files (11.3 s re-extract, 9.7 s
-  `files` rewrite, 3.5 s deps under load, 2026-09-29). Target: searchable in < 100 ms.
+- **A. Keep the index fresh automatically.** Planned: `.context/AUTO_UPDATE_RESEARCH.md`
+  (section "Auto-update" at the top). Removes both the status-check and the
+  `index_project` turns once the fidelity test passes.
 - **B. Shrink the tool surface, then load it eagerly.** Merge `count_occurrences` into
   `mode: "count"` and `get_dependents` into `get_dependencies`; structural tools off by
   default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B

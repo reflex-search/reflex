@@ -14,6 +14,7 @@ development sessions (human and AI). Committed to git.
 | `PERFORMANCE_RESEARCH.md` | Dated benchmark and latency rounds. Only the 2026-09 sections describe the 2.0.x format. |
 | `PULSE_RENDERER_SPIKE.md` | Pulse M0a renderer spike (2026-09-26). |
 | `INCREMENTAL_INDEX_RESEARCH.md` | How the index is rebuilt today (facts, file:line) and the staged design for incremental updates. |
+| `AUTO_UPDATE_RESEARCH.md` | Plan for auto-update: every command updates a stale index before it answers (decisions, code survey, steps, gates). |
 | `EFFICACY-2.0.3.md` | Efficacy A/B on 2.0.3 (Opus 5.5, Sonnet 5): method, all endpoints, per-task tables, limits. |
 
 ## Rules
