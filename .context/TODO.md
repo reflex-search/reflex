@@ -255,7 +255,9 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   `index_project` turns once the fidelity test passes.
 - **B. Shrink the tool surface, then load it eagerly.** DONE on `feature/auto-update`
   (2026-09-30): 17 → 10 tools, `tools/list` 44 KB → 10.6 KB, old names callable; measure
-  with `session_bench.py` (see `AUTO_UPDATE_RESEARCH.md`). Eager loading is measured
+  with `session_bench.py` (see `AUTO_UPDATE_RESEARCH.md`). Measured: Sonnet 1.05× (12 q) /
+  1.11× (50 q), Opus 1.15× / 0.89× cost vs Grep. Open: Opus drifts to grep after one
+  preview-less `list_locations` in short sessions (preview option for list_locations?). Eager loading is measured
   (2026-09-30, `AUTO_UPDATE_RESEARCH.md` "Eager schemas"): turns = Grep, cost ≤ 1.2×, tokens
   1.5–1.8× from the 44 KB schemas (search_code 7.6 KB, find_references 5.2 KB,
   search_regex 4.9 KB, list_locations 4.8 KB, count_occurrences 4.6 KB). Merge `count_occurrences` into

@@ -333,3 +333,33 @@ Findings:
   agents use it (every question answered through Reflex).
 - Next lever: fewer/smaller schemas (backlog §1 B) — at ~4K tokens the 50-question gap
   would fall to about 1.03×.
+
+## Slim tool surface (2026-09-30, `703d421`, `2b2cadc`)
+
+17 tools → 10 (`tools/list` 44 KB → 10.6 KB; merged names callable, unlisted), shared
+rules moved into the instructions, then one sentence steering "where does X occur" to
+`list_locations` (`2b2cadc`: without it agents answered with `search_code` /
+`find_references` and tool output per 50-question session rose 43K → 76K chars).
+`session_bench.py`, Grep arm run in the same wave; cost / cache-weighted tokens vs Grep:
+
+| | 44 KB schemas | 10.6 KB | 10.6 KB + steering |
+| --- | --- | --- | --- |
+| Sonnet 5, 12 questions, eager | 1.36× / 1.45× | 1.19× / 1.23× | **1.05× / 1.07×** |
+| Sonnet 5, 12 questions, deferred | 1.07× / 1.06× (Reflex barely used) | 1.22× / 1.20× | 1.11× / 1.13× |
+| Sonnet 5, 50 questions, eager | 1.10× / 1.14× (n=5) | 1.14× / 1.14× (n=20) | **1.11× / 1.12×** (n=10) |
+| Opus 5.5, 12 questions, eager | 1.18× / 1.52× (Reflex 9/session) | — | 1.15× / 1.25× (Reflex **1**/session) |
+| Opus 5.5, 50 questions, eager | — | — | **0.89× / 0.97×** (Reflex 46/session) |
+
+Accuracy 1.000 (0.998–1.000) in every arm.
+
+- The per-turn prefix is no longer the gap: the eager Reflex arm re-reads 17.2K tokens per
+  turn vs the Grep arm's 26.4K (Sonnet, 50 questions).
+- What is left in Sonnet's long sessions is editing style: renames through Read + Edit
+  (6.2K chars of Read) instead of `sed` through Bash (Grep arm), so more cache writes
+  (78K vs 56K).
+- **Opus and `list_locations`:** in 12-question sessions Opus called `list_locations`
+  once, then ran `grep -rnw` through Bash to see the matching lines ("defined here, calls in
+  tests") and kept using grep. Steering to the preview-less tool costs Opus adoption in
+  short sessions; in 50-question sessions Opus stayed on Reflex and was cheaper than Grep.
+  Open question for the user: give `list_locations` a short preview option, or steer to
+  `search_code` with a small `preview_length`.

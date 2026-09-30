@@ -385,6 +385,10 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   skip Reflex in long sessions (22/30 Sonnet sessions used Grep only). The instructions' last paragraph
   decides adoption (the schemas are deferred): keep a Reflex-first fallback rule there —
   dropping it took adoption from 37/72 to 2/72 (`.context/AUTO_UPDATE_RESEARCH.md`).
+- **Slim tool surface (10 tools, 10.6 KB, 2026-09-30):** cost vs Grep with `alwaysLoad` —
+  Sonnet 1.05× (12 questions), 1.11× (50); Opus 1.15× (12; it drifts back to grep after
+  one preview-less `list_locations`), **0.89×** (50). Keep "where does X occur → list_locations"
+  in the instructions: without it agents return 1.3–1.9K-char previews per lookup.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
