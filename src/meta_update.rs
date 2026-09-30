@@ -29,8 +29,8 @@ pub struct StoredFile {
 impl StoredFile {
     /// Whether `md` describes the file as it was indexed (same rule as the
     /// freshness check: an unknown mtime is never equal).
-    pub fn stat_matches(&self, md: &std::fs::Metadata) -> bool {
-        self.mtime_ns != 0 && self.size == md.len() && self.mtime_ns == crate::cache::mtime_ns(md)
+    pub fn stat_matches(&self, st: &crate::cache::FileStat) -> bool {
+        self.mtime_ns != 0 && self.size == st.size() && self.mtime_ns == st.mtime_ns()
     }
 }
 

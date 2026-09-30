@@ -445,6 +445,20 @@ impl ContentReader {
         })
     }
 
+    /// Let the kernel drop this mapping's resident pages: they stay in the page
+    /// cache, and the next read maps them again. A merge calls it between batches,
+    /// so the old store's text does not pile up in the process's memory.
+    pub fn release_pages(&self) {
+        #[cfg(unix)]
+        // SAFETY: a read-only mapping of a file that is never truncated or written
+        // while mapped: after MADV_DONTNEED a read faults the same bytes back in.
+        unsafe {
+            let _ = self
+                .mmap
+                .unchecked_advise(memmap2::UncheckedAdvice::DontNeed);
+        }
+    }
+
     /// Length in bytes of a file's content, from the entry table alone (no page of
     /// content is touched).
     pub fn file_len(&self, file_id: u32) -> Option<u64> {

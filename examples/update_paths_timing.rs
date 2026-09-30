@@ -16,6 +16,21 @@ fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
+/// `(VmRSS, VmHWM)` of this process in MiB.
+fn memory() -> (f64, f64) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let kb = |key: &str| {
+        status
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            / 1024.0
+    };
+    (kb("VmRSS:"), kb("VmHWM:"))
+}
+
 fn search_count(root: &Path, pattern: &str) -> usize {
     let engine = QueryEngine::new(CacheManager::new(root));
     let filter = QueryFilter {
@@ -51,6 +66,8 @@ fn main() {
     let original = std::fs::read(root.join(&file)).expect("read the file");
     let load = || std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
 
+    let (rss, _) = memory();
+    println!("memory before the first update: rss {rss:.1} MiB");
     for run in 0..runs {
         let token = format!("zz_update_probe_{run}_{}", std::process::id());
         let mut body = original.clone();
@@ -60,8 +77,9 @@ fn main() {
         let t = Instant::now();
         let (update_ms, direct) = update(&root, std::slice::from_ref(&file));
         let found = search_count(&root, &token);
+        let (rss, hwm) = memory();
         println!(
-            "edit1     update={update_ms:7.1} ms  searchable={:7.1} ms  direct={direct}  found={found}  load={}",
+            "edit1     update={update_ms:7.1} ms  searchable={:7.1} ms  direct={direct}  found={found}  load={}  rss={rss:.1} MiB  peak={hwm:.1} MiB",
             ms(t),
             load_at_start.split(' ').next().unwrap_or("?")
         );

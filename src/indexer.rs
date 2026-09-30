@@ -95,8 +95,6 @@ struct IndexedFile {
 /// One added or modified file a delta update reads.
 struct Rewrite {
     rel: String,
-    /// The path to read, as the walker names it.
-    path: PathBuf,
     /// Size from the walk's stat (the merge-limit check before any read).
     size: u64,
     walk_seq: i64,
@@ -155,7 +153,6 @@ struct DeltaChanges<'a> {
 /// What `Indexer::process_file` reads from the run.
 struct ProcessCtx<'a> {
     root: &'a Path,
-    files: &'a [PathBuf],
     rels: &'a [String],
     stored: &'a HashMap<String, crate::meta_update::StoredFile>,
     run_start: std::time::SystemTime,
@@ -166,7 +163,7 @@ struct ProcessCtx<'a> {
 /// Inputs of `Indexer::refresh_unchanged`.
 struct RefreshUnchanged<'a> {
     rels: &'a [String],
-    metas: &'a [Option<std::fs::Metadata>],
+    metas: &'a [Option<crate::cache::FileStat>],
     status: &'a [FileStatus],
     /// Each walked path's row (every one has a row: nothing was added).
     rows: &'a [Option<&'a crate::meta_update::StoredFile>],
@@ -204,7 +201,7 @@ struct MetaWrite<'a> {
     present: &'a [usize],
     /// Files read this run, in walk order (a subset of `present`).
     written: &'a [IndexedFile],
-    metas: &'a [Option<std::fs::Metadata>],
+    metas: &'a [Option<crate::cache::FileStat>],
     run_start: std::time::SystemTime,
     stored: &'a HashMap<String, crate::meta_update::StoredFile>,
     status: &'a [FileStatus],
@@ -724,14 +721,13 @@ struct Walked {
 /// What one directory walk found.
 #[derive(Debug, Default)]
 struct Discovered {
-    files: Vec<PathBuf>,
-    /// Each entry of `files` relative to the root, with forward slashes: the path
-    /// the stores and meta.db use.
+    /// Each file relative to the root, with forward slashes: the path the stores
+    /// and meta.db use. The walker's own path is `root.join(rel)`.
     rels: Vec<String>,
     /// On-disk size of each entry of `files` (0 when unknown); drives batching.
     sizes: Vec<u64>,
     /// The `stat` of each entry of `files`, taken during the walk.
-    metas: Vec<Option<std::fs::Metadata>>,
+    metas: Vec<Option<crate::cache::FileStat>>,
     skipped_too_large: usize,
     skipped_bytes_too_large: u64,
     skipped_binary: usize,
@@ -1303,7 +1299,6 @@ impl Indexer {
         // would see them now.
         let stored = crate::meta_update::load_rows_under(&conn, &named)?;
         let Discovered {
-            files: found_files,
             rels: found_rels,
             metas: found_metas,
             skipped_too_large,
@@ -1337,7 +1332,7 @@ impl Indexer {
             to_hash
                 .par_iter()
                 .map(|&i| {
-                    let hash = std::fs::read(&found_files[i])
+                    let hash = std::fs::read(root.join(&found_rels[i]))
                         .ok()
                         .map(|b| self.hash_content(&b));
                     (i, hash)
@@ -1399,8 +1394,7 @@ impl Indexer {
             if rewritten(i) {
                 rewrites.push(Rewrite {
                     rel: rel.clone(),
-                    path: found_files[i].clone(),
-                    size: found_metas[i].as_ref().map_or(0, |md| md.len()),
+                    size: found_metas[i].as_ref().map_or(0, |md| md.size()),
                     walk_seq: seq_of[rel],
                 });
                 if let Some(row) = stored.get(rel) {
@@ -1437,7 +1431,7 @@ impl Indexer {
                     if found_status[i] == FileStatus::Touched {
                         let (size, mtime) = found_metas[i]
                             .as_ref()
-                            .map(|md| (md.len(), crate::cache::recorded_mtime_ns(md, run_start)))
+                            .map(|md| (md.size(), md.recorded_mtime_ns(run_start)))
                             .unwrap_or((0, 0));
                         flags.touched.push((row.id, size, mtime, dirty));
                     } else if dirty != row.dirty {
@@ -1738,7 +1732,7 @@ impl Indexer {
             meta_read.map_err(|_| anyhow::anyhow!("meta.db read thread panicked"))??;
         // A non-code file is text only when it holds no NUL byte; one whose stat
         // matches its row was checked when it was indexed.
-        let discovered = walked.map(|w| Self::drop_binaries(w, &stored, Some(&pool)));
+        let discovered = walked.map(|w| Self::drop_binaries(root, w, &stored, Some(&pool)));
         // The snapshot currently published, and the generation the next publish takes.
         let prev_manifest = crate::snapshot::read_manifest(&cache_dir).ok().flatten();
         let generation = prev_manifest
@@ -1755,7 +1749,6 @@ impl Indexer {
             log::warn!("Failed to save the resolver config list: {:#}", e);
         }
         let Discovered {
-            files,
             rels,
             sizes,
             metas,
@@ -1763,7 +1756,7 @@ impl Indexer {
             skipped_bytes_too_large,
             skipped_binary,
         } = discovered?;
-        let total_files = files.len();
+        let total_files = rels.len();
         laps.lap("discover");
         log::info!(
             "Discovered {} files to index ({} skipped: too large, {} binary) in {} ms",
@@ -1821,7 +1814,9 @@ impl Indexer {
                 .map(|&i| {
                     (
                         i,
-                        std::fs::read(&files[i]).ok().map(|b| self.hash_content(&b)),
+                        std::fs::read(root.join(&rels[i]))
+                            .ok()
+                            .map(|b| self.hash_content(&b)),
                     )
                 })
                 .collect()
@@ -1923,7 +1918,6 @@ impl Indexer {
                     (FileStatus::Added | FileStatus::Modified, row) => {
                         rewrites.push(Rewrite {
                             rel: rel.clone(),
-                            path: files[i].clone(),
                             size: sizes[i],
                             walk_seq: seqs[i],
                         });
@@ -1944,9 +1938,7 @@ impl Indexer {
                         if status[i] == FileStatus::Touched {
                             let (size, mtime) = metas[i]
                                 .as_ref()
-                                .map(|md| {
-                                    (md.len(), crate::cache::recorded_mtime_ns(md, run_start))
-                                })
+                                .map(|md| (md.size(), md.recorded_mtime_ns(run_start)))
                                 .unwrap_or((0, 0));
                             touched.push((row.id, size, mtime, dirty));
                         } else if dirty != row.dirty {
@@ -2123,7 +2115,6 @@ impl Indexer {
             let tsconfigs = &resolver_configs.tsconfigs;
             let ctx = ProcessCtx {
                 root,
-                files: &files,
                 rels: &rels,
                 stored: &stored,
                 run_start,
@@ -2167,6 +2158,11 @@ impl Indexer {
                     .collect()
             });
             pool_ms += pool_start.elapsed().as_millis();
+            // A merge copied this batch's text out of the old stores: let their pages
+            // go, or the whole old base ends up resident by the last batch.
+            if let Some((snapshot, _)) = &merge_source {
+                snapshot.release_pages();
+            }
 
             // Process batch results immediately (streaming approach to minimize memory)
             for (offset, result) in results.into_iter().enumerate() {
@@ -2404,7 +2400,6 @@ impl Indexer {
         let mut laps = Laps::new();
 
         let rels: Vec<String> = c.rewrites.iter().map(|r| r.rel.clone()).collect();
-        let files: Vec<PathBuf> = c.rewrites.iter().map(|r| r.path.clone()).collect();
         let delta_len = snapshot.delta_len();
         // Ids below this are base and delta files, tombstoned in place; the recent
         // segment above them is rebuilt.
@@ -2469,7 +2464,6 @@ impl Indexer {
         // Read the rewritten files.
         let ctx = ProcessCtx {
             root: c.root,
-            files: &files,
             rels: &rels,
             stored: &c.stored,
             run_start: c.run_start,
@@ -3005,16 +2999,14 @@ impl Indexer {
         snapshot: &crate::snapshot::IndexSnapshot,
         id: u32,
         i: usize,
-        meta: &Option<std::fs::Metadata>,
+        meta: &Option<crate::cache::FileStat>,
         trigram_scratch: &mut Vec<u64>,
     ) -> Option<FileProcessingResult> {
         let row = ctx.stored.get(&ctx.rels[i])?;
         let content = snapshot.get_file_content(id).ok()?.to_string();
-        let file_path = &ctx.files[i];
+        let file_path = &ctx.root.join(&ctx.rels[i]);
         let (size, mtime_ns) = match meta {
-            Some(md) if !row.stat_matches(md) => {
-                (md.len(), crate::cache::recorded_mtime_ns(md, ctx.run_start))
-            }
+            Some(md) if !row.stat_matches(md) => (md.size(), md.recorded_mtime_ns(ctx.run_start)),
             _ => (row.size, row.mtime_ns),
         };
         let language = Language::from_path(file_path);
@@ -3044,7 +3036,7 @@ impl Indexer {
         i: usize,
         trigram_scratch: &mut Vec<u64>,
     ) -> Option<FileProcessingResult> {
-        let file_path = &ctx.files[i];
+        let file_path = &ctx.root.join(&ctx.rels[i]);
         let path_str = file_path.to_string_lossy().to_string();
 
         // Stat BEFORE the read. If the file changes between the two, the recorded
@@ -3121,22 +3113,26 @@ impl Indexer {
     /// Whether the published snapshot is complete, holds `expected` files (the rows
     /// of the last indexed tree) and is the one meta.db's rows go with.
     fn stores_intact(&self, expected: usize, meta_generation: Option<u64>) -> bool {
-        match crate::snapshot::IndexSnapshot::open(self.cache.path()) {
-            Ok(snapshot) => {
-                if snapshot.generation().is_none() {
-                    log::info!("Index written before the manifest - rebuilding");
-                    false
-                } else if snapshot.generation() != meta_generation {
+        // A manifest, headers and sizes: not the stores themselves (a run that
+        // changes nothing must not page in their path tables). Whatever opens them
+        // next validates them in full.
+        match crate::snapshot::check_published(self.cache.path()) {
+            Ok(None) => {
+                log::info!("Index written before the manifest - rebuilding");
+                false
+            }
+            Ok(Some(manifest)) => {
+                if Some(manifest.generation) != meta_generation {
                     log::warn!(
-                        "Manifest generation {:?} but meta.db rows are generation {:?} (a run stopped between the two) - rebuilding",
-                        snapshot.generation(),
+                        "Manifest generation {} but meta.db rows are generation {:?} (a run stopped between the two) - rebuilding",
+                        manifest.generation,
                         meta_generation
                     );
                     false
-                } else if snapshot.live_file_count() != expected {
+                } else if manifest.live_files() as usize != expected {
                     log::warn!(
                         "Stores hold {} files but meta.db lists {} - rebuilding",
-                        snapshot.live_file_count(),
+                        manifest.live_files(),
                         expected
                     );
                     false
@@ -3230,7 +3226,7 @@ impl Indexer {
             if r.status[i] == FileStatus::Touched {
                 let (size, mtime) = r.metas[i]
                     .as_ref()
-                    .map(|md| (md.len(), crate::cache::recorded_mtime_ns(md, r.run_start)))
+                    .map(|md| (md.size(), md.recorded_mtime_ns(r.run_start)))
                     .unwrap_or((0, 0));
                 touched.push((row.id, size, mtime, dirty));
             } else if dirty != row.dirty {
@@ -3383,7 +3379,7 @@ impl Indexer {
                     if w.status[i] == FileStatus::Touched && !written.contains_key(&i) {
                         let (size, mtime) = w.metas[i]
                             .as_ref()
-                            .map(|md| (md.len(), crate::cache::recorded_mtime_ns(md, w.run_start)))
+                            .map(|md| (md.size(), md.recorded_mtime_ns(w.run_start)))
                             .unwrap_or((0, 0));
                         touched.push((row.id, size, mtime, dirty));
                     } else if dirty != row.dirty {
@@ -3533,7 +3529,7 @@ impl Indexer {
         targets: Option<Arc<Targets>>,
     ) -> Result<Discovered> {
         let walked = self.walk_candidates(root, targets)?;
-        Ok(Self::drop_binaries(walked, stored, None))
+        Ok(Self::drop_binaries(root, walked, stored, None))
     }
 
     /// The walk half of discovery: every file the walker and the path policy admit,
@@ -3588,10 +3584,11 @@ impl Indexer {
                 }
             }
 
-            out.found.files.push(path.to_path_buf());
             out.found.rels.push(normalize_rel(root, path));
             out.found.sizes.push(size);
-            out.found.metas.push(metadata);
+            out.found
+                .metas
+                .push(metadata.as_ref().map(crate::cache::FileStat::of));
             out.non_code.push(!lang.is_code());
         }
 
@@ -3605,6 +3602,7 @@ impl Indexer {
     /// cache, since the main pass reads it again a moment later), and not a file
     /// that is unchanged since it was indexed. Order is kept.
     fn drop_binaries(
+        root: &Path,
         walked: Walked,
         stored: &HashMap<String, crate::meta_update::StoredFile>,
         pool: Option<&rayon::ThreadPool>,
@@ -3622,7 +3620,7 @@ impl Indexer {
                         .is_some_and(|(row, md)| row.stat_matches(md))
             })
             .collect();
-        let sniff = |i: &usize| looks_binary(&out.files[*i]);
+        let sniff = |i: &usize| looks_binary(&root.join(&out.rels[*i]));
         let binary: Vec<bool> = match pool {
             Some(pool) => pool.install(|| to_sniff.par_iter().map(sniff).collect()),
             None => to_sniff.iter().map(sniff).collect(),
@@ -3636,7 +3634,7 @@ impl Indexer {
             return out;
         }
         for &i in &dropped {
-            log::debug!("Skipping {} (binary)", out.files[i].display());
+            log::debug!("Skipping {} (binary)", out.rels[i]);
         }
         out.skipped_binary += dropped.len();
         fn keep<T>(v: &mut Vec<T>, dropped: &std::collections::HashSet<usize>) {
@@ -3647,7 +3645,6 @@ impl Indexer {
                 k
             });
         }
-        keep(&mut out.files, &dropped);
         keep(&mut out.rels, &dropped);
         keep(&mut out.sizes, &dropped);
         keep(&mut out.metas, &dropped);
@@ -4064,7 +4061,10 @@ mod tests {
         let files = indexer
             .discover_files(temp.path(), &HashMap::new())
             .unwrap()
-            .files;
+            .rels
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
         assert_eq!(files.len(), 0);
     }
 
@@ -4082,7 +4082,10 @@ mod tests {
         let files = indexer
             .discover_files(temp.path(), &HashMap::new())
             .unwrap()
-            .files;
+            .rels
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("main.rs"));
     }
@@ -4108,7 +4111,7 @@ mod tests {
         let found = indexer
             .discover_files(temp.path(), &HashMap::new())
             .unwrap();
-        assert_eq!(found.files.len(), 5, "3 code files, the markdown, the .xyz");
+        assert_eq!(found.rels.len(), 5, "3 code files, the markdown, the .xyz");
         assert_eq!(found.skipped_binary, 1);
     }
 
@@ -4132,7 +4135,10 @@ mod tests {
         let files = indexer
             .discover_files(temp.path(), &HashMap::new())
             .unwrap()
-            .files;
+            .rels
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
         assert_eq!(files.len(), 3);
     }
 
@@ -4166,7 +4172,10 @@ mod tests {
         let files = indexer
             .discover_files(temp.path(), &HashMap::new())
             .unwrap()
-            .files;
+            .rels
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
 
         // Verify the expected files are found
         assert!(

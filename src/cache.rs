@@ -2404,6 +2404,44 @@ impl FileFingerprint {
 }
 
 /// Modification time as nanoseconds since the Unix epoch, `0` when unavailable.
+/// The size and mtime a walk records for a file: all that change detection and a
+/// stored fingerprint need (24 bytes, where a `Metadata` is ~150; a walk keeps one
+/// per file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStat {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStat {
+    pub fn of(md: &std::fs::Metadata) -> Self {
+        Self {
+            len: md.len(),
+            modified: md.modified().ok(),
+        }
+    }
+
+    pub fn size(&self) -> u64 {
+        self.len
+    }
+
+    /// See [`mtime_ns`].
+    pub fn mtime_ns(&self) -> i64 {
+        self.modified
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+            .unwrap_or(0)
+    }
+
+    /// See [`recorded_mtime_ns`].
+    pub fn recorded_mtime_ns(&self, run_start: std::time::SystemTime) -> i64 {
+        match self.modified {
+            Some(t) if t < run_start => self.mtime_ns(),
+            _ => 0,
+        }
+    }
+}
+
 pub fn mtime_ns(md: &std::fs::Metadata) -> i64 {
     md.modified()
         .ok()

@@ -465,6 +465,93 @@ pub fn write_tomb_file(path: &Path, entries: &[(Trigram, u32)]) -> Result<()> {
         .with_context(|| format!("Failed to move {} into place", path.display()))
 }
 
+/// The first 32 bytes of a store file (both store formats have a 32-byte header).
+fn read_header(cache_dir: &Path, logical: &str, name: &str) -> Result<[u8; 32]> {
+    use std::io::Read;
+    let mut header = [0u8; 32];
+    std::fs::File::open(cache_dir.join(name))
+        .and_then(|mut f| f.read_exact(&mut header))
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                missing(logical, name)
+            } else {
+                ReflexError::CacheCorrupted(format!("{logical}: {name}: {e}")).into()
+            }
+        })?;
+    Ok(header)
+}
+
+/// Whether the snapshot the manifest names is complete, without opening it: every
+/// named file exists at the size the manifest recorded, each store's header has its
+/// magic, version and the manifest's file count, and every tombstone is in range.
+/// Reads one header per store, where [`IndexSnapshot::open`] maps the stores and
+/// walks their path tables (an index run that changes nothing only needs this).
+/// `Ok(None)` without a manifest.
+pub fn check_published(cache_dir: &Path) -> Result<Option<Manifest>> {
+    let Some(m) = read_manifest(cache_dir)? else {
+        return Ok(None);
+    };
+    let u32_at = |h: &[u8; 32], at: usize| u32::from_le_bytes(h[at..at + 4].try_into().unwrap());
+    let u64_at = |h: &[u8; 32], at: usize| u64::from_le_bytes(h[at..at + 8].try_into().unwrap());
+    for segment in [Some(&m.base), m.delta.as_ref(), m.recent.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        check_size(
+            cache_dir,
+            "content.bin",
+            &segment.content,
+            segment.content_bytes,
+        )?;
+        check_size(
+            cache_dir,
+            "trigrams.bin",
+            &segment.trigrams,
+            segment.trigrams_bytes,
+        )?;
+        let content = read_header(cache_dir, "content.bin", &segment.content)?;
+        if &content[0..4] != b"RFCT"
+            || u32_at(&content, 4) != 2
+            || u64_at(&content, 8) != segment.files
+        {
+            return Err(ReflexError::CacheCorrupted(format!(
+                "content.bin: {} does not hold the manifest's {} files",
+                segment.content, segment.files
+            ))
+            .into());
+        }
+        let trigrams = read_header(cache_dir, "trigrams.bin", &segment.trigrams)?;
+        if &trigrams[0..4] != crate::trigram::MAGIC
+            || u32_at(&trigrams, 4) != crate::trigram::VERSION
+            || u64_at(&trigrams, 16) != segment.files
+        {
+            return Err(ReflexError::CacheCorrupted(format!(
+                "trigrams.bin: {} does not hold the manifest's {} files",
+                segment.trigrams, segment.files
+            ))
+            .into());
+        }
+        if let Some(plan) = &segment.plan
+            && !cache_dir.join(plan).exists()
+        {
+            return Err(missing("trigrams.bin", plan));
+        }
+    }
+    for tomb in [&m.tomb, &m.tomb_delta].into_iter().flatten() {
+        if !cache_dir.join(tomb).exists() {
+            return Err(missing("trigrams.bin", tomb));
+        }
+    }
+    let bound = m.base.files + m.delta.as_ref().map_or(0, |d| d.files);
+    if m.tombstones.iter().any(|&id| id as u64 >= bound) {
+        return Err(ReflexError::CacheCorrupted(
+            "content.bin: a tombstone is past the base and delta's files".to_string(),
+        )
+        .into());
+    }
+    Ok(Some(m))
+}
+
 /// One pair of opened stores.
 pub struct Segment {
     pub content: ContentReader,
@@ -810,6 +897,17 @@ impl IndexSnapshot {
     pub fn get_file_content(&self, file_id: u32) -> Result<&str> {
         let (segment, local) = self.route(file_id);
         segment.content.get_file_content(local)
+    }
+
+    /// Drop the resident pages of every content store (see
+    /// [`ContentReader::release_pages`]).
+    pub fn release_pages(&self) {
+        for segment in [Some(&self.base), self.delta.as_ref(), self.recent.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            segment.content.release_pages();
+        }
     }
 
     /// Length of a file's text, from the entry table (no content page touched).
