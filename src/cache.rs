@@ -324,9 +324,11 @@ impl CacheManager {
 
         // The import graph: one row per (import, file it reaches). File-resolved
         // imports reach one file; package imports reach every member file
-        // (`package` is the key they reached it by). Vendored files are neither end
-        // of an edge (`crate::vendor`). Recreated every time: a view holds no data,
-        // and `IF NOT EXISTS` would keep an older definition.
+        // (`package` is the key they reached it by). A Python `from pkg import a`
+        // that resolved to `pkg/__init__.py` also reaches `pkg/a.py` or
+        // `pkg/a/__init__.py` when `a` is a submodule. Vendored files are neither
+        // end of an edge (`crate::vendor`). Recreated every time: a view holds no
+        // data, and `IF NOT EXISTS` would keep an older definition.
         conn.execute_batch(
             "DROP VIEW IF EXISTS import_edges;
              CREATE VIEW import_edges AS
@@ -343,6 +345,18 @@ impl CacheManager {
                   AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
                 WHERE d.resolved_package IS NOT NULL
                   AND m.file_id != d.file_id
+               UNION ALL
+               SELECT DISTINCT d.id, d.file_id, sub.id, d.import_type, NULL
+                 FROM file_dependencies d
+                 JOIN files t ON t.id = d.resolved_file_id
+                 JOIN json_each(d.imported_symbols) s
+                 JOIN files sub
+                   ON sub.path IN (substr(t.path, 1, length(t.path) - 11) || s.value || '.py',
+                                   substr(t.path, 1, length(t.path) - 11) || s.value || '/__init__.py')
+                WHERE d.imported_symbols IS NOT NULL
+                  AND substr(t.path, -11) = '__init__.py'
+                  AND (length(t.path) = 11 OR substr(t.path, -12, 1) = '/')
+                  AND sub.id != d.file_id
              ) e
              JOIN files s ON s.id = e.src AND s.vendored = 0
              JOIN files t ON t.id = e.dst AND t.vendored = 0;",

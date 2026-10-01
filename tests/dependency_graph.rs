@@ -1315,3 +1315,144 @@ pub fn build(b: *std.Build) void {
         reflex::models::ImportType::External
     );
 }
+
+/// `from pkg import name` reaches `pkg/__init__.py` and, when `name` is a
+/// submodule, `pkg/name.py` or `pkg/name/__init__.py` (`from django.db import
+/// models`). A submodule added later is reached without re-extracting.
+#[test]
+fn python_from_import_reaches_submodules() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "pyproject.toml", "[project]\nname = \"app\"\n");
+    write(r, "app/__init__.py", "Base = object\n");
+    write(r, "app/util.py", "X = 1\n");
+    write(r, "app/db/__init__.py", "");
+    write(
+        r,
+        "app/main.py",
+        "from app import util, Base, db\nfrom app import later as l\n",
+    );
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("app/main.py", "app/__init__.py"),
+            edge("app/main.py", "app/db/__init__.py"),
+            edge("app/main.py", "app/util.py"),
+        ]
+    );
+    let d = deps(r);
+    let main = d.get_file_id_by_path("app/main.py").unwrap().unwrap();
+    let info = d.get_dependencies_info(main).unwrap();
+    assert_eq!(
+        info[0].resolved_paths.as_deref(),
+        Some(
+            &[
+                "app/__init__.py".to_string(),
+                "app/util.py".to_string(),
+                "app/db/__init__.py".to_string()
+            ][..]
+        ),
+        "{info:?}"
+    );
+
+    write(r, "app/later.py", "Y = 2\n");
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .update_paths(r, &[r.join("app/later.py")])
+        .expect("update_paths");
+    assert!(
+        edges(r).contains(&edge("app/main.py", "app/later.py")),
+        "{:?}",
+        edges(r)
+    );
+}
+
+/// `from django import forms` is `django/__init__.py`: a candidate is an exact
+/// path, never a file that merely ends in `django.py`.
+#[test]
+fn python_package_import_never_matches_a_suffix() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "pyproject.toml", "[project]\nname = \"django\"\n");
+    write(r, "django/__init__.py", "");
+    write(r, "django/forms.py", "");
+    write(r, "django/template/backends/django.py", "");
+    write(r, "django/conf/settings.py", "from django import forms\n");
+    index(r);
+    let got: Vec<(String, String)> = edges(r)
+        .into_iter()
+        .filter(|(s, _)| s == "django/conf/settings.py")
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            edge("django/conf/settings.py", "django/__init__.py"),
+            edge("django/conf/settings.py", "django/forms.py"),
+        ]
+    );
+}
+
+/// Ruby searches every gem's `lib/`: in the rails monorepo `require
+/// "rails/command"` is `railties/lib/rails/command.rb`, not in the `rails` gem.
+#[test]
+fn ruby_require_searches_every_gem_lib() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    let spec = |name: &str| format!("Gem::Specification.new do |s|\n  s.name = '{name}'\nend\n");
+    write(r, "rails.gemspec", &spec("rails"));
+    write(r, "railties/railties.gemspec", &spec("railties"));
+    write(r, "railties/lib/rails/command.rb", "module Rails; end\n");
+    write(
+        r,
+        "railties/lib/rails/app.rb",
+        "require \"rails/command\"\n",
+    );
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![edge(
+            "railties/lib/rails/app.rb",
+            "railties/lib/rails/command.rb"
+        )]
+    );
+}
+
+/// `require "active_support/..."` reaches the gem `activesupport`, whose lib/
+/// provides `active_support`; `require_relative "helper"` is a sibling file.
+#[test]
+fn ruby_require_of_a_name_a_gem_lib_provides_is_internal() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    let spec = |name: &str| format!("Gem::Specification.new do |s|\n  s.name = '{name}'\nend\n");
+    write(
+        r,
+        "activesupport/activesupport.gemspec",
+        &spec("activesupport"),
+    );
+    write(
+        r,
+        "activesupport/lib/active_support/core_ext.rb",
+        "module ActiveSupport; end\n",
+    );
+    write(r, "actionpack/actionpack.gemspec", &spec("actionpack"));
+    write(
+        r,
+        "actionpack/lib/action_dispatch.rb",
+        "require \"active_support/core_ext\"\nrequire_relative \"helper\"\n",
+    );
+    write(r, "actionpack/lib/helper.rb", "module Helper; end\n");
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge(
+                "actionpack/lib/action_dispatch.rb",
+                "actionpack/lib/helper.rb"
+            ),
+            edge(
+                "actionpack/lib/action_dispatch.rb",
+                "activesupport/lib/active_support/core_ext.rb"
+            ),
+        ]
+    );
+}

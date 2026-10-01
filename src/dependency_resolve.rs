@@ -532,6 +532,7 @@ impl ResolverConfigs {
             h.finalize().to_hex().to_string()
         };
         let vendor = crate::vendor::VendorRules::new(root, files.vendor_roots(root), vendored);
+        let mut digest = digest;
         let zig_modules: Vec<crate::parsers::zig::ZigModule> = files
             .zig_builds
             .iter()
@@ -615,6 +616,21 @@ impl ResolverConfigs {
                 log::warn!("Failed to parse Ruby project configs: {}", e);
                 Vec::new()
             });
+        // What each gem's lib/ provides decides which requires are Internal: a new
+        // top-level name there must re-resolve every file
+        if !ruby_projects.is_empty() {
+            let mut h = blake3::Hasher::new();
+            h.update(digest.as_bytes());
+            for project in &ruby_projects {
+                h.update(project.project_root.as_bytes());
+                for name in &project.provides {
+                    h.update(b"\0");
+                    h.update(name.as_bytes());
+                }
+                h.update(b"\n");
+            }
+            digest = h.finalize().to_hex().to_string();
+        }
         if !ruby_projects.is_empty() {
             log::info!("Found {} Ruby projects", ruby_projects.len());
             for project in &ruby_projects {
@@ -876,6 +892,19 @@ impl<'a> ResolverContext<'a> {
                     break;
                 }
             }
+            // A name some workspace gem's lib/ provides (`active_support` is in the
+            // gem `activesupport`)
+            if !reclassified {
+                let first = import_info
+                    .imported_path
+                    .split('/')
+                    .next()
+                    .unwrap_or_default();
+                reclassified = ruby_projects.iter().any(|p| p.serves(first));
+                if reclassified {
+                    import_info.import_type = ImportType::Internal;
+                }
+            }
             // If no project matched, use base classification (will be External or Stdlib)
             if !reclassified {
                 import_info.import_type =
@@ -980,10 +1009,26 @@ impl<'a> ResolverContext<'a> {
         import_info: &ImportInfo,
         resolver: &PathResolver,
     ) -> Option<i64> {
-        let found = self
-            .import_candidates(file_path, &import_info.imported_path)
+        let candidates = self.import_candidates(file_path, &import_info.imported_path);
+        // Candidates are exact paths. Only C/C++ falls back to a suffix match, in
+        // place of the include-path search a compiler does; elsewhere a suffix
+        // finds the wrong file (`django.py` for `from django import forms`).
+        let suffix_ok = matches!(
+            file_path.rsplit_once('.').map_or("", |(_, e)| e),
+            "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h++" | "C" | "H"
+        );
+        let found = candidates
             .iter()
-            .find_map(|path| self.lookup(resolver, path));
+            .find_map(|path| self.lookup(resolver, path, false))
+            .or_else(|| {
+                suffix_ok
+                    .then(|| {
+                        candidates
+                            .iter()
+                            .find_map(|p| self.lookup(resolver, p, true))
+                    })
+                    .flatten()
+            });
         if found.is_none() {
             log::trace!(
                 "Could not resolve import '{}' of {}",
@@ -1036,13 +1081,11 @@ impl<'a> ResolverContext<'a> {
             ))
             .collect(),
             "rb" | "rake" | "gemspec" if !self.configs.ruby_projects.is_empty() => {
-                crate::parsers::ruby::resolve_ruby_require_to_path(
+                crate::parsers::ruby::ruby_require_candidates(
                     import,
                     &self.configs.ruby_projects,
                     Some(file_path),
                 )
-                .into_iter()
-                .collect()
             }
             "c" | "h" => crate::parsers::c::resolve_c_include_to_path(import, Some(file_path))
                 .into_iter()
@@ -1066,8 +1109,9 @@ impl<'a> ResolverContext<'a> {
     }
 
     /// The `files.id` of `path`: absolute under the root, or relative to it, with
-    /// `.` and `..` folded. A path outside the root is not indexed.
-    fn lookup(&self, resolver: &PathResolver, path: &str) -> Option<i64> {
+    /// `.` and `..` folded. A path outside the root is not indexed. With `suffix`,
+    /// a unique file ending in the path's whole segments also counts.
+    fn lookup(&self, resolver: &PathResolver, path: &str, suffix: bool) -> Option<i64> {
         let path = path.replace('\\', "/");
         let rel = if path.starts_with('/') {
             let rel = Path::new(&path).strip_prefix(self.root).ok()?;
@@ -1076,6 +1120,9 @@ impl<'a> ResolverContext<'a> {
             path
         };
         let rel = fold_path("", &rel)?;
+        if !suffix {
+            return resolver.get_exact(&rel);
+        }
         match resolver.get_file_id_by_path(&rel) {
             Ok(id) => id,
             Err(e) => {

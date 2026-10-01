@@ -121,9 +121,6 @@ failed Zola build still exits 0.
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
   (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
   `unwrap_or_default()`.
-- **Python `from pkg import submodule`** reaches only `pkg/__init__.py`, not
-  `pkg/submodule.py` (`from django.db import models`). The import counts as resolved, so
-  the rate does not show it.
 - **C# usings that do not resolve** (18 % of dotnet/runtime's internal ones): `using static
   A.B.C` names a type (keyed as namespace `A.B.C`); an alias `using X = A.B.C;` is stored
   as two rows (`X` and `A.B.C`, the query captures both); `global using` untested.

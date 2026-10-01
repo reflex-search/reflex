@@ -127,6 +127,11 @@ impl PathResolver {
         }
     }
 
+    /// The id of exactly `path` (after `normalize_path_for_lookup`), no suffix match.
+    pub fn get_exact(&self, path: &str) -> Option<i64> {
+        self.exact.get(&normalize_path_for_lookup(path)).copied()
+    }
+
     /// Same contract as [`DependencyIndex::get_file_id_by_path`]: `Ok(Some)` on an
     /// exact or unique-suffix match, `Ok(None)` on no match, `Err` when the suffix
     /// is ambiguous.
@@ -582,8 +587,8 @@ impl DependencyIndex {
         Ok(targets.into_iter().filter(|id| seen.insert(*id)).collect())
     }
 
-    /// For each package import of `file_id`, keyed by `(line, imported path)`, the
-    /// paths of the files it reaches, in walk order.
+    /// For each import of `file_id`, keyed by `(line, imported path)`, the paths of
+    /// the files it reaches: the import's own target first, then in walk order.
     fn package_targets(&self, file_id: i64) -> Result<HashMap<(usize, String), Vec<String>>> {
         let conn = self.open_conn()?;
         let mut stmt = conn.prepare(
@@ -591,8 +596,8 @@ impl DependencyIndex {
              FROM import_edges e
              JOIN file_dependencies d ON d.id = e.dep_id
              JOIN files t ON t.id = e.dst
-             WHERE e.src = ? AND d.resolved_package IS NOT NULL
-             ORDER BY d.id, t.walk_seq",
+             WHERE e.src = ?
+             ORDER BY d.id, t.id != COALESCE(d.resolved_file_id, -1), t.walk_seq",
         )?;
         let mut out: HashMap<(usize, String), Vec<String>> = HashMap::new();
         let rows = stmt.query_map([file_id], |row| {
@@ -620,12 +625,14 @@ impl DependencyIndex {
         let dep_infos = deps
             .into_iter()
             .map(|dep| {
-                // A package import keeps its written path and lists the files it reaches
-                let resolved_paths = dep
-                    .resolved_package
-                    .is_some()
-                    .then(|| packages.remove(&(dep.line_number, dep.imported_path.clone())))
-                    .map(Option::unwrap_or_default);
+                // A package import, or one that reaches several files (a Python
+                // package and its submodules), lists the files it reaches
+                let reached = packages.remove(&(dep.line_number, dep.imported_path.clone()));
+                let resolved_paths = if dep.resolved_package.is_some() {
+                    Some(reached.unwrap_or_default())
+                } else {
+                    reached.filter(|paths| paths.len() > 1)
+                };
                 // Try to get the resolved path (all deps are internal now)
                 let path = if let Some(resolved_id) = dep.resolved_file_id {
                     // Try to get the actual file path
