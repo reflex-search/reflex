@@ -328,3 +328,101 @@ fn incremental_add_and_delete_go_file_in_package_matches_full_build() {
         "{incremental:?}"
     );
 }
+
+/// Two Maven modules sharing one groupId (every neo4j module is `org.neo4j`), a
+/// package split across them, a wildcard import, and Kotlin importing Java and a
+/// top-level function from a file not named after it.
+fn jvm_project(r: &Path) {
+    let pom =
+        "<project>\n  <groupId>org.acme</groupId>\n  <artifactId>x</artifactId>\n</project>\n";
+    write(r, "pom.xml", pom);
+    write(r, "core/pom.xml", pom);
+    write(r, "app/pom.xml", pom);
+    write(
+        r,
+        "core/src/main/java/org/acme/util/Strings.java",
+        "package org.acme.util;\n\npublic class Strings {}\n",
+    );
+    write(
+        r,
+        "app/src/main/java/org/acme/util/Numbers.java",
+        "package org.acme.util;\n\npublic final class Numbers {}\n\nclass Helper {}\n",
+    );
+    write(
+        r,
+        "app/src/main/java/org/acme/app/Main.java",
+        "package org.acme.app;\n\nimport org.acme.util.Strings;\nimport org.acme.util.Helper;\nimport static org.acme.util.Numbers.parse;\nimport java.util.List;\n\npublic class Main {}\n",
+    );
+    write(
+        r,
+        "app/src/main/java/org/acme/app/All.java",
+        "package org.acme.app;\n\nimport org.acme.util.*;\n\nclass All {}\n",
+    );
+    write(
+        r,
+        "app/src/main/kotlin/org/acme/app/Tool.kt",
+        "package org.acme.app\n\nimport org.acme.util.Strings\nimport org.acme.app.helpers.greet\n\nclass Tool\n",
+    );
+    write(
+        r,
+        "app/src/main/kotlin/org/acme/app/helpers/Misc.kt",
+        "@file:JvmName(\"Misc\")\npackage org.acme.app.helpers\n\nfun greet() {}\n\ninternal fun <T> List<T>.second(): T = this[1]\n",
+    );
+}
+
+#[test]
+fn jvm_imports_resolve_by_declared_package() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    jvm_project(r);
+    index(r);
+
+    let main = "app/src/main/java/org/acme/app/Main.java";
+    let all = "app/src/main/java/org/acme/app/All.java";
+    let tool = "app/src/main/kotlin/org/acme/app/Tool.kt";
+    let strings = "core/src/main/java/org/acme/util/Strings.java";
+    let numbers = "app/src/main/java/org/acme/util/Numbers.java";
+    let misc = "app/src/main/kotlin/org/acme/app/helpers/Misc.kt";
+    assert_eq!(
+        edges(r),
+        vec![
+            edge(all, numbers),
+            edge(all, strings),
+            edge(main, numbers),
+            edge(main, strings),
+            edge(tool, misc),
+            edge(tool, strings),
+        ]
+    );
+    let d = deps(r);
+    for lang in d.internal_resolution_by_language().unwrap() {
+        assert_eq!(lang.internal, lang.resolved, "{lang:?}");
+    }
+}
+
+#[test]
+fn changing_package_line_moves_edges_incrementally() {
+    let moved = "package org.acme.other;\n\npublic final class Numbers {}\n\nclass Helper {}\n";
+    let numbers = "app/src/main/java/org/acme/util/Numbers.java";
+
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    jvm_project(r);
+    index(r);
+    write(r, numbers, moved);
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .update_paths(r, &[r.join(numbers)])
+        .expect("update_paths");
+    let incremental = edges(r);
+
+    let fresh = TempDir::new().unwrap();
+    jvm_project(fresh.path());
+    write(fresh.path(), numbers, moved);
+    index(fresh.path());
+
+    assert_eq!(incremental, edges(fresh.path()));
+    assert!(
+        !incremental.iter().any(|(_, to)| to == numbers),
+        "{incremental:?}"
+    );
+}

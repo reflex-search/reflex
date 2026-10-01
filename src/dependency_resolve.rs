@@ -510,15 +510,17 @@ pub enum Resolution {
 }
 
 /// The `(package key, member)` rows that make the file at `rel_path` reachable
-/// by package imports (`package_members`). Member `""` stands for the whole
-/// package.
-pub fn package_members(rel_path: &str) -> Vec<(String, String)> {
-    if rel_path.ends_with(".go") {
-        return crate::parsers::go::go_package_member(rel_path)
-            .map(|key| vec![(key, String::new())])
-            .unwrap_or_default();
+/// by package imports (`package_members`): a Go file's directory, plus what its
+/// content declares (`declared`: a JVM package and top-level names). Member `""`
+/// stands for the whole package.
+pub fn package_members(rel_path: &str, declared: &[(String, String)]) -> Vec<(String, String)> {
+    let mut members = declared.to_vec();
+    if rel_path.ends_with(".go")
+        && let Some(key) = crate::parsers::go::go_package_member(rel_path)
+    {
+        members.push((key, String::new()));
     }
-    Vec::new()
+    members
 }
 
 /// The resolution rules for one workspace, over its parsed configs.
@@ -748,6 +750,15 @@ impl<'a> ResolverContext<'a> {
                 member: None,
             });
         }
+        if [".java", ".kt", ".kts"]
+            .iter()
+            .any(|ext| file_path.ends_with(ext))
+        {
+            // A JVM import names a package and a class or top-level name in it,
+            // wherever (in whichever module) the file declaring it lives
+            let (key, member) = crate::parsers::java::jvm_import_key(&import_info.imported_path);
+            return Resolution::Package { key, member };
+        }
         self.resolve_import(file_path, import_info, resolver)
             .map_or(Resolution::Unresolved, Resolution::File)
     }
@@ -762,7 +773,6 @@ impl<'a> ResolverContext<'a> {
     ) -> Option<i64> {
         let root = self.root;
         let tsconfigs = &self.configs.tsconfigs;
-        let java_projects = &self.configs.java_projects;
         let python_packages = &self.configs.python_packages;
         let ruby_projects = &self.configs.ruby_projects;
         let rust_crates = &self.configs.rust_crates;
@@ -976,92 +986,6 @@ impl<'a> ResolverContext<'a> {
             } else {
                 log::trace!(
                     "Could not resolve Rust import (external or stdlib): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".java") && !java_projects.is_empty() {
-            // Resolve Java dependencies using project mappings
-            if let Some(resolved_path) = crate::parsers::java::resolve_java_import_to_path(
-                &import_info.imported_path,
-                java_projects,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Java dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Java dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Java dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Java import: {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if (file_path.ends_with(".kt") || file_path.ends_with(".kts"))
-            && !java_projects.is_empty()
-        {
-            // Resolve Kotlin dependencies using project mappings (same build systems as Java)
-            if let Some(resolved_path) = crate::parsers::java::resolve_kotlin_import_to_path(
-                &import_info.imported_path,
-                java_projects,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Kotlin dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Kotlin dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Kotlin dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Kotlin import: {}",
                     import_info.imported_path
                 );
                 None

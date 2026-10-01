@@ -631,7 +631,7 @@ fn extract_kotlin_imports(source: &str, _root: &tree_sitter::Node) -> Result<Vec
 /// Extract import path from import_header text
 /// Examples:
 ///   "import java.util.List" -> "java.util.List"
-///   "import kotlinx.coroutines.*" -> "kotlinx.coroutines"
+///   "import kotlinx.coroutines.*" -> "kotlinx.coroutines.*"
 ///   "import com.example.Foo as Bar" -> "com.example.Foo"
 fn extract_import_path_from_header(text: &str) -> Option<String> {
     let trimmed = text.trim();
@@ -640,16 +640,11 @@ fn extract_import_path_from_header(text: &str) -> Option<String> {
     let after_import = trimmed.strip_prefix("import")?;
     let after_import = after_import.trim();
 
-    // Find the end of the import path (before 'as' or wildcard)
-    let end_pos = after_import
-        .find(" as ")
-        .or_else(|| after_import.find(".*"))
-        .unwrap_or(after_import.len());
+    // Find the end of the import path (before 'as'); a wildcard keeps its `.*`,
+    // which tells a whole-package import from a top-level function's
+    let end_pos = after_import.find(" as ").unwrap_or(after_import.len());
 
-    let path = after_import[..end_pos].trim();
-
-    // Remove trailing wildcard if present
-    let path = path.trim_end_matches(".*");
+    let path = after_import[..end_pos].trim().trim_end_matches(';').trim();
 
     if path.is_empty() {
         None

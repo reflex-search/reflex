@@ -68,6 +68,14 @@
   unresolved). Files of one package count as one unit for islands and unused files.
   Kubernetes: 84 of 52,472 internal imports resolved (0.2 %) → 48,997 of 48,997;
   islands 27,303 → 1,368; unused files 27,371 → 4,802; `rfx analyze` 0.0 → 2.2 s.
+- **Java and Kotlin imports resolve by the package a file declares.** `import a.b.C`
+  reaches the file whose `package a.b` line declares `C` (as a file name or a top-level
+  type, function, property, object or type alias), in whichever Maven/Gradle module it
+  lives; `a.b.*` reaches the whole package. Kotlin can import Java and the reverse. The
+  old resolver bound every import to the first module whose groupId matched and guessed
+  one `src/main/java` path. Wildcard imports now keep their `.*` in `imported_path`
+  (Kotlin dropped it, Java too). neo4j: 356 of 59,658 internal imports resolved (0.6 %)
+  → 58,926 (98.8 %); islands 11,423 → 655; unused files 11,753 → 1,682.
 - Hotspots count distinct importers (a file with two imports of one target counted
   twice), and one cycle is no longer reported twice when a file imports a target twice.
 - Text, lock and generated files are no longer islands or unused files (every README

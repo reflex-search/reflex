@@ -1265,11 +1265,19 @@ fn extract_java_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<Im
         for capture in match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "import_path" {
-                let path = capture
+                let mut path = capture
                     .node
                     .utf8_text(source.as_bytes())
                     .unwrap_or("")
                     .to_string();
+                // `import a.b.*;` keeps its `.*`: the whole package, not a class `b`
+                let wildcard = capture.node.parent().is_some_and(|decl| {
+                    let mut walk = decl.walk();
+                    decl.children(&mut walk).any(|c| c.kind() == "asterisk")
+                });
+                if wildcard {
+                    path.push_str(".*");
+                }
                 let import_type = classify_java_import(&path);
                 let line_number = capture.node.start_position().row + 1;
 
@@ -1611,76 +1619,156 @@ fn extract_package_from_config(config_path: &std::path::Path) -> Option<String> 
     }
 }
 
-/// Resolve a Java import to a file path
+/// The package key (`jvm:<package>`) and member a Java or Kotlin import names.
 ///
-/// Java imports look like: `com.example.myapp.UserService`
-/// Files are located at: `src/main/java/com/example/myapp/UserService.java`
-/// or: `src/com/example/myapp/UserService.java`
-pub fn resolve_java_import_to_path(
-    import_path: &str,
-    projects: &[JavaProject],
-    _current_file_path: Option<&str>,
-) -> Option<String> {
-    // Java imports are absolute package paths, not relative
-    // Find which project this import belongs to
-    for project in projects {
-        if import_path.starts_with(&project.package_name) {
-            // Convert package to file path: com.example.UserService → com/example/UserService.java
-            let file_path = import_path.replace('.', "/");
-
-            // Try common Java source directory structures
-            let candidates = vec![
-                // Maven/Gradle standard structure
-                format!("{}/src/main/java/{}.java", project.project_root, file_path),
-                // Simpler structure
-                format!("{}/src/{}.java", project.project_root, file_path),
-                // Root-level src
-                format!("{}/{}.java", project.project_root, file_path),
-            ];
-
-            if let Some(candidate) = candidates.into_iter().next() {
-                log::trace!("Checking Java import path: {}", candidate);
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
+/// The package ends at the first segment that starts with a capital letter, which
+/// is the member: `a.b.C.Inner` and `static a.b.C.m` name class `C` of `a.b`. A
+/// wildcard with no class names the whole package (`a.b.*`); with none and no
+/// wildcard, the last segment is the member (a Kotlin top-level function).
+pub fn jvm_import_key(import_path: &str) -> (String, Option<String>) {
+    let (path, wildcard) = match import_path.strip_suffix(".*") {
+        Some(path) => (path, true),
+        None => (import_path, false),
+    };
+    let segments: Vec<&str> = path.split('.').collect();
+    let class = segments
+        .iter()
+        .position(|s| s.starts_with(|c: char| c.is_uppercase()));
+    let (package, member) = match class {
+        Some(i) => (&segments[..i], Some(segments[i])),
+        None if wildcard => (&segments[..], None),
+        None => (&segments[..segments.len() - 1], segments.last().copied()),
+    };
+    (
+        format!("jvm:{}", package.join(".")),
+        member.map(str::to_string),
+    )
 }
 
-/// Resolve a Kotlin import to a file path
+/// The `(jvm:<package>, member)` rows a Java or Kotlin file declares: its file
+/// stem and every top-level name (types; Kotlin functions, properties, objects,
+/// type aliases), under the package its `package` line names.
 ///
-/// Kotlin uses the same package system as Java, but with .kt extension
-pub fn resolve_kotlin_import_to_path(
-    import_path: &str,
-    projects: &[JavaProject],
-    _current_file_path: Option<&str>,
-) -> Option<String> {
-    // Kotlin imports are identical to Java imports
-    for project in projects {
-        if import_path.starts_with(&project.package_name) {
-            let file_path = import_path.replace('.', "/");
-
-            // Try common Kotlin source directory structures
-            let candidates = vec![
-                // Maven/Gradle standard structure
-                format!("{}/src/main/kotlin/{}.kt", project.project_root, file_path),
-                // Java source dir (Kotlin can be in java dir)
-                format!("{}/src/main/java/{}.kt", project.project_root, file_path),
-                // Simpler structure
-                format!("{}/src/{}.kt", project.project_root, file_path),
-                // Root-level src
-                format!("{}/{}.kt", project.project_root, file_path),
-            ];
-
-            if let Some(candidate) = candidates.into_iter().next() {
-                log::trace!("Checking Kotlin import path: {}", candidate);
-                return Some(candidate);
-            }
+/// The package comes from the file, not its path: a package can be split across
+/// Maven modules, and Kotlin files need not sit in their package's directory.
+/// Top-level declarations are found by a line scan at column 0 (nested ones are
+/// indented), which every formatter in use produces.
+pub fn jvm_package_members(path: &str, source: &str) -> Vec<(String, String)> {
+    let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = file_name
+        .split_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+    let mut package = String::new();
+    let mut names: Vec<String> = vec![stem.to_string()];
+    let mut in_comment = false;
+    for line in source.lines() {
+        if in_comment {
+            in_comment = !line.contains("*/");
+            continue;
+        }
+        if line.is_empty() || line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        if line.starts_with("/*") {
+            in_comment = !line.contains("*/");
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("package ") {
+            package = rest.trim().trim_end_matches(';').trim().replace('`', "");
+            continue;
+        }
+        if let Some(name) = top_level_name(line)
+            && !names.contains(&name)
+        {
+            names.push(name);
         }
     }
+    let key = format!("jvm:{package}");
+    names.into_iter().map(|name| (key.clone(), name)).collect()
+}
 
-    None
+/// The name a column-0 Java or Kotlin declaration line declares, if it is one.
+fn top_level_name(line: &str) -> Option<String> {
+    const MODIFIERS: &[&str] = &[
+        "public",
+        "private",
+        "protected",
+        "internal",
+        "abstract",
+        "final",
+        "open",
+        "sealed",
+        "non-sealed",
+        "static",
+        "strictfp",
+        "data",
+        "inline",
+        "value",
+        "annotation",
+        "inner",
+        "expect",
+        "actual",
+        "const",
+        "suspend",
+        "operator",
+        "infix",
+        "tailrec",
+        "external",
+        "lateinit",
+        "override",
+        "enum",
+    ];
+    let mut tokens = line.split_whitespace().peekable();
+    loop {
+        let token = tokens.next()?;
+        match token {
+            "@interface" | "class" | "interface" | "record" | "object" | "typealias" => {
+                return identifier(tokens.next()?);
+            }
+            // Java `enum Mode {`, Kotlin `enum class Color`
+            "enum" if tokens.peek() != Some(&"class") => return identifier(tokens.next()?),
+            "fun" if tokens.peek() == Some(&"interface") => {
+                tokens.next();
+                return identifier(tokens.next()?);
+            }
+            "fun" | "val" | "var" => {
+                let rest = tokens.collect::<Vec<_>>().join(" ");
+                return callable_name(&rest);
+            }
+            t if t.starts_with('@') || MODIFIERS.contains(&t) => continue,
+            _ => return None,
+        }
+    }
+}
+
+/// The name in a Kotlin `fun` / `val` declaration after the keyword: type
+/// parameters and an extension receiver are skipped (`<T> List<T>.second(): T`).
+fn callable_name(rest: &str) -> Option<String> {
+    let mut rest = rest.trim_start();
+    if rest.starts_with('<') {
+        let mut depth = 0;
+        let end = rest.char_indices().find_map(|(i, c)| {
+            match c {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(i)
+        })?;
+        rest = rest[end + 1..].trim_start();
+    }
+    let end = rest.find(['(', ':', '=', ' ']).unwrap_or(rest.len());
+    identifier(rest[..end].rsplit('.').next()?)
+}
+
+/// The identifier at the start of `token` (`Point(val` → `Point`).
+fn identifier(token: &str) -> Option<String> {
+    let name: String = token
+        .trim_matches('`')
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    (!name.is_empty()).then_some(name)
 }
 
 #[cfg(test)]
@@ -1688,79 +1776,6 @@ mod monorepo_tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-
-    #[test]
-    fn test_resolve_java_import_maven_structure() {
-        let projects = vec![JavaProject {
-            package_name: "com.example".to_string(),
-            project_root: "project1".to_string(),
-            abs_project_root: "/abs/project1".to_string(),
-        }];
-
-        let resolved = resolve_java_import_to_path("com.example.UserService", &projects, None);
-
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        // Should try Maven standard structure first
-        assert!(path.contains("src/main/java/com/example/UserService.java"));
-    }
-
-    #[test]
-    fn test_resolve_kotlin_import() {
-        let projects = vec![JavaProject {
-            package_name: "org.acme".to_string(),
-            project_root: "kotlin-project".to_string(),
-            abs_project_root: "/abs/kotlin-project".to_string(),
-        }];
-
-        let resolved = resolve_kotlin_import_to_path("org.acme.Repository", &projects, None);
-
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        assert!(path.contains("src/main/kotlin/org/acme/Repository.kt"));
-    }
-
-    #[test]
-    fn test_resolve_java_import_no_match() {
-        let projects = vec![JavaProject {
-            package_name: "com.example".to_string(),
-            project_root: "project1".to_string(),
-            abs_project_root: "/abs/project1".to_string(),
-        }];
-
-        // Different package
-        let resolved = resolve_java_import_to_path("org.other.Service", &projects, None);
-
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_resolve_java_import_monorepo() {
-        let projects = vec![
-            JavaProject {
-                package_name: "com.example.service1".to_string(),
-                project_root: "services/service1".to_string(),
-                abs_project_root: "/abs/services/service1".to_string(),
-            },
-            JavaProject {
-                package_name: "com.example.service2".to_string(),
-                project_root: "services/service2".to_string(),
-                abs_project_root: "/abs/services/service2".to_string(),
-            },
-        ];
-
-        // Should resolve to service1
-        let resolved1 =
-            resolve_java_import_to_path("com.example.service1.UserController", &projects, None);
-        assert!(resolved1.is_some());
-        assert!(resolved1.unwrap().contains("services/service1"));
-
-        // Should resolve to service2
-        let resolved2 =
-            resolve_java_import_to_path("com.example.service2.ProductController", &projects, None);
-        assert!(resolved2.is_some());
-        assert!(resolved2.unwrap().contains("services/service2"));
-    }
 
     #[test]
     fn test_extract_package_from_pom_xml() {
@@ -1817,5 +1832,60 @@ version = "2.0.0"
 
         let package = extract_package_from_config(&gradle_path);
         assert_eq!(package, Some("com.acme.tools".to_string()));
+    }
+
+    #[test]
+    fn jvm_import_split() {
+        let key = |p: &str| jvm_import_key(p);
+        let pkg = |p: &str, m: Option<&str>| (format!("jvm:{p}"), m.map(str::to_string));
+        assert_eq!(key("a.b.C"), pkg("a.b", Some("C")));
+        assert_eq!(key("a.b.C.Inner"), pkg("a.b", Some("C")));
+        assert_eq!(key("a.b.C.method"), pkg("a.b", Some("C")));
+        assert_eq!(key("a.b.*"), pkg("a.b", None));
+        assert_eq!(key("a.b.C.*"), pkg("a.b", Some("C")));
+        // A Kotlin top-level function, or a lower-case class name
+        assert_eq!(key("a.b.greet"), pkg("a.b", Some("greet")));
+        assert_eq!(key("Foo"), pkg("", Some("Foo")));
+    }
+
+    #[test]
+    fn jvm_members_are_the_package_and_top_level_names() {
+        let java = "// header\npackage org.acme.util;\n\nimport x.Y;\n\n@Deprecated\npublic final class Numbers {\n    class Inner {}\n}\nclass Helper {}\nenum Mode { A }\nrecord Pair(int a) {}\n@interface Marker {}\n";
+        assert_eq!(
+            jvm_package_members("app/src/main/java/org/acme/util/Numbers.java", java),
+            ["Numbers", "Helper", "Mode", "Pair", "Marker"]
+                .iter()
+                .map(|m| ("jvm:org.acme.util".to_string(), m.to_string()))
+                .collect::<Vec<_>>()
+        );
+        let kotlin = "@file:JvmName(\"Misc\")\npackage org.acme.app.helpers\n\nimport a.B\n\nfun greet() {}\ninternal fun <T> List<T>.second(): T = this[1]\nval answer: Int = 42\nprivate const val LIMIT = 3\ndata class Point(val x: Int)\nsealed interface Shape\nobject Registry {\n    fun nested() {}\n}\ntypealias Name = String\nenum class Color { RED }\nfun interface Action { fun run() }\n";
+        assert_eq!(
+            jvm_package_members("src/main/kotlin/Misc.kt", kotlin),
+            [
+                "Misc", "greet", "second", "answer", "LIMIT", "Point", "Shape", "Registry", "Name",
+                "Color", "Action"
+            ]
+            .iter()
+            .map(|m| ("jvm:org.acme.app.helpers".to_string(), m.to_string()))
+            .collect::<Vec<_>>()
+        );
+        // The default package
+        assert_eq!(
+            jvm_package_members("Foo.java", "class Foo {}\n"),
+            vec![("jvm:".to_string(), "Foo".to_string())]
+        );
+    }
+
+    #[test]
+    fn wildcard_keeps_star() {
+        let imports = JavaDependencyExtractor::extract_dependencies(
+            "import org.acme.util.*;\nimport static org.acme.Numbers.*;\nimport org.acme.Strings;\n",
+        )
+        .unwrap();
+        let paths: Vec<&str> = imports.iter().map(|i| i.imported_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["org.acme.util.*", "org.acme.Numbers.*", "org.acme.Strings"]
+        );
     }
 }

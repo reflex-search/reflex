@@ -49,8 +49,9 @@ struct FileProcessingResult {
     /// between the two is caught by the next status check, not hidden by it.
     size: u64,
     mtime_ns: i64,
-    /// Imports and re-exports, when they were extracted this run.
-    imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
+    /// Imports, re-exports and package memberships, when they were extracted
+    /// this run.
+    imports: Option<Extracted>,
     /// The file's trigram postings, extracted in the pool (no file id yet).
     trigram_run: TrigramRun,
 }
@@ -88,8 +89,9 @@ struct IndexedFile {
     line_count: usize,
     size: u64,
     mtime_ns: i64,
-    /// Imports and re-exports, when they were extracted this run.
-    imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
+    /// Imports, re-exports and package memberships, when they were extracted
+    /// this run.
+    imports: Option<Extracted>,
 }
 
 /// One added or modified file a delta update reads.
@@ -339,15 +341,19 @@ fn reresolve(
     Ok(total)
 }
 
-/// Imports and re-exports of one file, by language. `path_str` is the path as
-/// walked (for the nearest tsconfig).
+/// What import extraction yields for one file: its imports, its re-exports, and
+/// the `(package key, member)` rows its content declares (`package_members`).
+type Extracted = (Vec<ImportInfo>, Vec<ExportInfo>, Vec<(String, String)>);
+
+/// Imports, re-exports and declared package memberships of one file, by
+/// language. `path_str` is the path as walked (for the nearest tsconfig).
 fn extract_imports(
     language: Language,
     content: &str,
     path_str: &str,
     root: &Path,
     tsconfigs: &HashMap<PathBuf, crate::parsers::tsconfig::PathAliasMap>,
-) -> (Vec<ImportInfo>, Vec<ExportInfo>) {
+) -> Extracted {
     // Extract dependencies and exports for supported languages
     let mut parsed_exports: Vec<ExportInfo> = Vec::new();
     let dependencies = match language {
@@ -475,7 +481,13 @@ fn extract_imports(
 
     // Exports (barrel re-export tracking) came out of the same parse as the
     // dependencies above; only TypeScript/JavaScript/Vue have them.
-    (dependencies, parsed_exports)
+    let members = match language {
+        Language::Java | Language::Kotlin => {
+            crate::parsers::java::jvm_package_members(path_str, content)
+        }
+        _ => Vec::new(),
+    };
+    (dependencies, parsed_exports, members)
 }
 
 /// Manages the indexing process
@@ -2964,14 +2976,19 @@ impl Indexer {
         let mut writer = crate::dependency::DependencyWriter::new(&tx);
         let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
         for (&k, &file_id) in row_k.iter().zip(&ids) {
-            let Some((imports, exports)) = read[k].as_ref().and_then(|f| f.imports.as_ref()) else {
+            let Some((imports, exports, declared)) =
+                read[k].as_ref().and_then(|f| f.imports.as_ref())
+            else {
                 continue;
             };
             let rel = &rels[k];
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
-            writer.replace_members(file_id, &crate::dependency_resolve::package_members(rel))?;
+            writer.replace_members(
+                file_id,
+                &crate::dependency_resolve::package_members(rel, declared),
+            )?;
             writer.clear_exports(file_id)?;
             for export in exports {
                 let resolved = ctx.resolve_export(rel, export, &resolver);
@@ -3530,7 +3547,7 @@ impl Indexer {
         // In walk order: the row order a full build produces.
         let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
         for f in w.written {
-            let Some((imports, exports)) = &f.imports else {
+            let Some((imports, exports, declared)) = &f.imports else {
                 continue;
             };
             let rel = &w.rels[f.index];
@@ -3538,7 +3555,10 @@ impl Indexer {
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
-            writer.replace_members(file_id, &crate::dependency_resolve::package_members(rel))?;
+            writer.replace_members(
+                file_id,
+                &crate::dependency_resolve::package_members(rel, declared),
+            )?;
             if !w.full_deps {
                 writer.clear_exports(file_id)?;
             }
