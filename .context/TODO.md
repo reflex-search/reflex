@@ -116,12 +116,6 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
-- **IN PROGRESS: committed vendored code shows as islands and unused files** (2026-10-01,
-  branch `fix/package-import-resolution`). Kubernetes commits `vendor/` (4,238 Go files);
-  its 7,457 imports of vendored packages are External, so every vendored package was an
-  island (558 of 577). Fix: vendored files stay searchable but are not graph nodes
-  (`src/vendor.rs`, `files.vendored`, `[index.vendored] patterns`). All languages tested;
-  corpus measurements and docs next.
 - **`rfx snapshot diff` hotspots and islands are silently empty** (found 2026-09-30). The
   snapshot DB's `files` (`src/pulse/snapshot.rs`) has no `walk_seq`, but
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
@@ -144,7 +138,10 @@ failed Zola build still exits 0.
   as two rows (`X` and `A.B.C`, the query captures both); `global using` untested.
 - **Import resolution below 70 % in file-based languages** (2026-09-30, branch
   `fix/package-import-resolution`): PHP 58 % (laravel), C/C++ 64 % (dotnet), Ruby 67 %
-  (rails). Not investigated; see `.context/DEPENDENCY_RESOLUTION_RESEARCH.md`.
+  (rails). Not investigated; see `.context/DEPENDENCY_RESOLUTION_RESEARCH.md`. In
+  laravel-immutable-model (2026-10-01) 71 of 436 PHP imports resolve: 168 of the
+  package's own `Brighten\…` (`autoload-dev` PSR-4?), 161 `Illuminate\…` classified
+  Internal, 25 `use X as Y` aliases stored as a second row (as in C#).
 - **`rfx analyze` (summary) takes 2.2 s on Kubernetes** since Go imports resolve (was 0.0 s
   on an almost empty graph). Each of cycles, hotspots, unused and islands loads
   `import_edges` (~420k package-expanded edges) on its own connection; load once.

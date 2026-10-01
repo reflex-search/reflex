@@ -133,6 +133,65 @@ VIEW import_edges(dep_id, src, dst, import_type, package)
 - **The warning** fires for a language with at least 100 internal imports and under
   50 % of them resolved (`LOW_RESOLUTION_*` in `src/dependency.rs`).
 
+## Vendored code (2026-10-01)
+
+**Trigger.** After the package fix, an agent reported 577 Kubernetes islands, 558 of them
+in `vendor/`, and called them "normal". Kubernetes commits `vendor/` (5,247 tracked files,
+`vendor/modules.txt`). Project code imports vendored packages 7,457 times, all External
+and unresolved, so 0 edges reached `vendor/`. Each vendored Go package (a sibling unit)
+was an island. A repo that gitignores `vendor/` has none of this: Reflex respects
+`.gitignore`, so it only meets vendored code a repo commits.
+
+**Decision (user, 2026-10-01): searchable, not in the graph.** Vendored files stay in the
+trigram index (ripgrep searches them). They are not graph nodes, and imports of them stay
+External. The result is the graph of the same repo with `vendor/` gitignored.
+
+Rejected:
+- **Leave vendored code out of the index.** It breaks ripgrep parity; on Kubernetes that
+  is 19 % of the indexed files. `[index] exclude` already does it for a user who wants it.
+- **Link imports into vendored files.** It needs a resolver per ecosystem (Go
+  `modules.txt`, Composer autoload, Node `package.json`, Cargo, gem lib paths,
+  site-packages, Zig, C include paths). The gain is `deps --reverse` on a library file;
+  a search for the import string (`"k8s.io/klog/v2"`) answers the same question. Hotspots
+  and islands would need vendored nodes hidden anyway.
+- **Directory names for every language.** Kubernetes `third_party/forked/` is Go code the
+  module imports by its own path. Go, PHP, Rust and Ruby define vendoring with a marker,
+  so they get marker rules only; Java and Kotlin get only `third_party` names, because a
+  package named `external` or `vendor` is common.
+
+**Rules** (`src/vendor.rs`, in order): `[index.vendored] patterns`; marker roots (Go
+`vendor/modules.txt`, `vendor/composer/installed.json`, `.cargo-checksum.json`,
+`pyvenv.cfg`, `build.zig.zon` `.path` dependencies); dependency directories
+(`node_modules`, `bower_components`, `site-packages`, `dist-packages`,
+`ruby/<version>/{gems,specifications,...}`); per-language names (`vendor_dir_names`).
+- `files.vendored` is set by `refresh_vendored` (`src/indexer.rs`): every row when
+  `full_deps`, else the written rows. Markers are resolver configs; their paths (not
+  bytes: `go mod vendor` rewrites `modules.txt`) and the patterns are in the digest.
+- `.cargo-checksum.json` is a dotfile the config walk skips: it is found by a stat beside
+  each `Cargo.toml`.
+- Configs under a marker root or dependency directory are dropped. Before, a vendored
+  `Cargo.toml` made its crate Internal (`use serde::…` resolved to a wrong `src/de.rs`),
+  and a vendored gemspec made `require 'rack'` Internal.
+- `vendored_file_count` counts code files only (`modules.txt` is a vendored text file).
+
+**Measured** (branch before → after, same copies, release builds):
+
+| Corpus | Vendored code files | Islands | Unused files | Notes |
+|---|---|---|---|---|
+| kubernetes | 4,241 | 1,368 → 530 | 4,802 → 579 | 838 islands were all-vendored; Go 48,997/48,997 still |
+| dotnet/runtime | 1,052 | 16,346 → 16,087 | 14,989 → 14,440 | `src/native/external/`; 155 vendored hotspots gone |
+| django | 63 | 789 → 726 | 416 → 355 | admin `static/admin/js/vendor/`; the JavaScript warning (13/545) was vendored xregexp and is gone |
+| laravel-immutable-model, `vendor/` committed | 7,861 | 7,907 → 47 | 7,860 → 1 | PHP rate 71/12,431 → 71/436 (the rest was vendored code) |
+| tokio + `cargo vendor` | 7,982 | 2,054 → 110 | 1,280 → 155 | cycles 387 → 51; every answer identical to plain tokio |
+| tokio, react, rails | 0 | unchanged | unchanged | no row changed |
+
+- On every corpus, no project file's unused, island, hotspot or cycle answer changed,
+  except in tokio + `cargo vendor`: 5 hotspot counts fell by 1 (edges from vendored
+  crates into tokio) and one false cycle went (`signal/mod.rs` ↔ `signal/windows.rs`,
+  made by the vendored-crate misclassification; plain tokio never had it).
+- `rfx analyze` on Kubernetes: 3.90 s → 4.03 s on a loaded machine (2.2 s on 09-30); the
+  view joins `files` twice. meta.db 65 → 69 MB.
+
 ## Open (see TODO.md)
 
 - **C#:** 18 % of dotnet's internal usings do not resolve. Causes: `using static A.B.C`

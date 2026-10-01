@@ -90,6 +90,23 @@
   `from x.y import a, b` no longer lists `x` among the imported symbols. Django: 1,662
   of 8,673 internal imports resolved (19.2 %) → 8,672 (100 %); islands 4,327 → 789;
   unused files 2,919 → 416.
+- **Vendored code stays searchable but leaves the import graph.** A repository that
+  commits its dependencies now gets the graph a repository that gitignores them gets:
+  vendored files are not islands, unused files, hotspots, cycle members or `deps`
+  targets, and imports of them stay External. Reflex recognises Go `vendor/` (with
+  `vendor/modules.txt`), Composer `vendor/` (`vendor/composer/installed.json`),
+  `cargo vendor` crates (`.cargo-checksum.json`), virtualenvs (`pyvenv.cfg`),
+  `node_modules`, `bower_components`, `site-packages`, installed gems
+  (`ruby/<version>/gems`), `build.zig.zon` path dependencies, and per-language
+  directory names (`third_party/` everywhere but Go, PHP, Rust and Ruby; also
+  `vendor/`, `external/`, `extern/`, `deps/` for C/C++, `vendor/` for JS/TS, `_vendor/`
+  for Python). `[index.vendored] patterns` (gitignore rules) adds a directory, and
+  `!dir/` marks one as project code. `analyze` reports `vendored_files`, and `deps` on
+  a vendored file says it is not in the graph. A vendored `Cargo.toml` or gemspec no
+  longer makes its crate or gem Internal. Kubernetes (4,241 vendored files): islands
+  1,368 → 530, unused files 4,802 → 579. tokio after `cargo vendor` (7,982 vendored
+  files) answers exactly as tokio without it. A Composer project with `vendor/`
+  committed: islands 7,907 → 47, unused files 7,860 → 1.
 - Hotspots count distinct importers (a file with two imports of one target counted
   twice), and one cycle is no longer reported twice when a file imports a target twice.
 - Text, lock and generated files are no longer islands or unused files (every README
