@@ -715,23 +715,12 @@ pub fn resolve_c_include_to_path(
     // Only resolve relative includes (quoted includes, which are Internal)
     // Angle bracket includes are system/library headers and won't be resolved
 
+    // Beside the including file, folded without reading the disk
     let current_file = current_file_path?;
-
-    // Get directory of current file
-    let current_dir = std::path::Path::new(current_file).parent()?;
-
-    // Resolve the include path relative to current file
-    let resolved = current_dir.join(include_path);
-
-    // Normalize the path. Always emit forward slashes so resolved paths are
-    // deterministic across platforms.
-    match resolved.canonicalize() {
-        Ok(normalized) => Some(normalized.to_string_lossy().replace('\\', "/")),
-        Err(_) => {
-            // If canonicalize fails (file doesn't exist yet), return the joined path
-            Some(resolved.to_string_lossy().replace('\\', "/"))
-        }
-    }
+    crate::dependency_resolve::fold_path(
+        crate::dependency_resolve::parent_dir(current_file),
+        include_path,
+    )
 }
 
 // ============================================================================

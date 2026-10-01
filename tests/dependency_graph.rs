@@ -1004,8 +1004,7 @@ fn zig_path_dependency_is_not_in_graph() {
         "const inflate = @import(\"./inflate.zig\");\n",
     );
     write(r, "deps/zlib/src/inflate.zig", "pub const y = 2;\n");
-    // The Zig resolver canonicalizes against the working directory (TODO.md)
-    rfx(r, &["index"]);
+    index(r);
 
     let d = deps(r);
     assert_eq!(d.vendored_file_count().unwrap(), 2);
@@ -1112,4 +1111,124 @@ fn csharp_third_party_source_is_not_in_graph() {
     assert_eq!(d.vendored_file_count().unwrap(), 1);
     assert!(vendored_in_answers(&d, "third_party/").is_empty());
     assert_eq!(edges(r), vec![edge("src/Program.cs", "src/Core/Util.cs")]);
+}
+
+/// Relative includes resolve the same whatever the process's working directory:
+/// the test runs in the repository, not in the indexed root.
+#[test]
+fn relative_paths_resolve_from_any_working_directory() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/main.c",
+        "#include \"../include/api.h\"\nint main(void) { return 0; }\n",
+    );
+    write(r, "include/api.h", "int api(void);\n");
+    write(r, "lib/x.cpp", "#include \"./x.hpp\"\n");
+    write(r, "lib/x.hpp", "int x();\n");
+    write(
+        r,
+        "zig/main.zig",
+        "const u = @import(\"../zig/util.zig\");\n",
+    );
+    write(r, "zig/util.zig", "pub const x = 1;\n");
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("lib/x.cpp", "lib/x.hpp"),
+            edge("src/main.c", "include/api.h"),
+            edge("zig/main.zig", "zig/util.zig"),
+        ]
+    );
+}
+
+/// A path lookup that falls back to a suffix matches whole path segments:
+/// `a.h` is `include/a.h`, never `lib/xa.h`.
+#[test]
+fn path_lookup_matches_whole_segments() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "include/a.h", "int a(void);\n");
+    write(r, "lib/xa.h", "int xa(void);\n");
+    index(r);
+    let d = deps(r);
+    let a = d.get_file_id_by_path("include/a.h").unwrap();
+    assert_eq!(d.get_file_id_by_path("a.h").unwrap(), a);
+    let conn = reflex::cache::open_meta_db(r.join(".reflex/meta.db")).unwrap();
+    let resolver = reflex::dependency::PathResolver::from_conn(&conn).unwrap();
+    assert_eq!(resolver.get_file_id_by_path("a.h").unwrap(), a);
+    // Windows code names files in any case: the whole path still matches
+    assert_eq!(resolver.get_file_id_by_path("Include/A.h").unwrap(), a);
+    assert_eq!(d.get_file_id_by_path("Include/A.h").unwrap(), a);
+}
+
+/// Two workspace crates, each with `src/lib.rs`: a cross-crate `use` reaches the
+/// other crate's file, not an ambiguous `src/lib.rs`.
+#[test]
+fn rust_workspace_crate_import_reaches_its_crate() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+    );
+    write(
+        r,
+        "crates/a/Cargo.toml",
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        r,
+        "crates/a/src/lib.rs",
+        "use b::thing;\npub fn f() { thing() }\n",
+    );
+    write(
+        r,
+        "crates/b/Cargo.toml",
+        "[package]\nname = \"b\"\nversion = \"0.1.0\"\n",
+    );
+    write(r, "crates/b/src/lib.rs", "mod inner;\npub fn thing() {}\n");
+    write(r, "crates/b/src/inner.rs", "pub fn i() {}\n");
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("crates/a/src/lib.rs", "crates/b/src/lib.rs"),
+            edge("crates/b/src/lib.rs", "crates/b/src/inner.rs"),
+        ]
+    );
+}
+
+/// A crate named `b-core` is imported as `b_core`.
+#[test]
+fn rust_hyphenated_crate_is_imported_with_underscores() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"a\", \"b-core\"]\n",
+    );
+    write(
+        r,
+        "a/Cargo.toml",
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
+    );
+    write(r, "a/src/lib.rs", "use b_core::codec::Decoder;\n");
+    write(
+        r,
+        "b-core/Cargo.toml",
+        "[package]\nname = \"b-core\"\nversion = \"0.1.0\"\n",
+    );
+    write(r, "b-core/src/lib.rs", "pub mod codec;\n");
+    write(r, "b-core/src/codec.rs", "pub trait Decoder {}\n");
+    index(r);
+    assert!(
+        edges(r).contains(&edge("a/src/lib.rs", "b-core/src/codec.rs")),
+        "{:?}",
+        edges(r)
+    );
 }

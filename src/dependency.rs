@@ -136,13 +136,16 @@ impl PathResolver {
             return Ok(Some(id));
         }
 
+        // The whole path or a suffix of whole segments, ASCII case-insensitive:
+        // `a.h` matches `include/a.h`, not `lib/xa.h`
         let probe = Self::suffix_key(&normalized);
         let start = self
             .suffix
             .partition_point(|(key, _)| key.as_slice() < probe.as_slice());
         let mut matches = self.suffix[start..]
             .iter()
-            .take_while(|(key, _)| key.starts_with(&probe));
+            .take_while(|(key, _)| key.starts_with(&probe))
+            .filter(|(key, _)| key.len() == probe.len() || key[probe.len()] == b'/');
         match (matches.next(), matches.next()) {
             (None, _) => Ok(None),
             (Some((_, id)), None) => Ok(Some(*id)),
@@ -1237,8 +1240,13 @@ impl DependencyIndex {
             Err(e) => return Err(e.into()),
         }
 
-        // Try suffix match: find all files whose path ends with the normalized_path
-        let mut stmt = conn.prepare("SELECT id, path FROM files WHERE path LIKE '%' || ?")?;
+        // Try suffix match: files whose path ends with `/` + the normalized path
+        // (whole segments; ASCII case-insensitive, as `PathResolver` matches)
+        let mut stmt = conn.prepare(
+            "SELECT id, path FROM files
+             WHERE lower(path) = lower(?1)
+                OR lower(substr(path, -(length(?1) + 1))) = lower('/' || ?1)",
+        )?;
 
         let matches: Vec<(i64, String)> = stmt
             .query_map([&normalized_path], |row| Ok((row.get(0)?, row.get(1)?)))?

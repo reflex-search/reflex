@@ -869,26 +869,16 @@ pub fn resolve_ruby_require_to_path(
 ) -> Option<String> {
     // Handle require_relative (relative to current file)
     if require_path.starts_with("./") || require_path.starts_with("../") {
-        if let Some(current_file) = current_file_path {
-            // Get directory of current file
-            if let Some(current_dir) = std::path::Path::new(current_file).parent() {
-                let resolved = current_dir.join(require_path);
-
-                // Try with .rb extension
-                let candidates = vec![
-                    format!("{}.rb", resolved.display()),
-                    resolved.display().to_string(),
-                ];
-
-                for candidate in candidates {
-                    // Normalize path
-                    if let Ok(normalized) = std::path::Path::new(&candidate).canonicalize() {
-                        return Some(normalized.display().to_string());
-                    }
-                }
-            }
-        }
-        return None;
+        // Relative to the requiring file, folded without reading the disk
+        let resolved = crate::dependency_resolve::fold_path(
+            crate::dependency_resolve::parent_dir(current_file_path?),
+            require_path,
+        )?;
+        return Some(if resolved.ends_with(".rb") {
+            resolved
+        } else {
+            format!("{resolved}.rb")
+        });
     }
 
     // Handle gem-based requires
@@ -905,14 +895,11 @@ pub fn resolve_ruby_require_to_path(
                 let require_file_path = require_path.replace("::", "/");
 
                 // Try common Ruby directory structures
-                let candidates = vec![
-                    format!("{}/lib/{}.rb", project.project_root, require_file_path),
-                    format!("{}/{}.rb", project.project_root, require_file_path),
-                ];
-
-                if let Some(candidate) = candidates.into_iter().next() {
-                    return Some(candidate);
-                }
+                // `project_root` is "" for a gemspec at the index root
+                return crate::dependency_resolve::fold_path(
+                    &project.project_root,
+                    &format!("lib/{require_file_path}.rb"),
+                );
             }
         }
     }

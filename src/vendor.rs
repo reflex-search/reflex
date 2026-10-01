@@ -111,27 +111,11 @@ pub fn zig_path_dependencies(rel: &str, source: &str) -> Vec<String> {
             continue;
         };
         let Some(end) = value.find('"') else { break };
-        if let Some(root) = join_relative(dir, &value[..end]) {
-            roots.push(root);
+        if let Some(root) = crate::dependency_resolve::fold_path(dir, &value[..end]) {
+            roots.push(format!("{root}/"));
         }
     }
     roots
-}
-
-/// `dir/rel` with `.` and `..` folded, `/`-terminated; `None` when it leaves the
-/// root or is the root itself.
-fn join_relative(dir: &str, rel: &str) -> Option<String> {
-    let mut parts: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
-    for seg in rel.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                parts.pop()?;
-            }
-            s => parts.push(s),
-        }
-    }
-    (!parts.is_empty()).then(|| format!("{}/", parts.join("/")))
 }
 
 /// The directories of a RubyGems install (`bundle install --path vendor/bundle`

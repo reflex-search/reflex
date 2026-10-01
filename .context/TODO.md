@@ -127,9 +127,6 @@ failed Zola build still exits 0.
   tigerbeetle 489 of 646 External Zig imports are such files, so its "100 %" Zig rate
   counts only the 489 `./` imports. Named build modules (`@import("vsr")`, 140 rows) are
   External too.
-- **Zig and C/C++ resolvers depend on the working directory**: `resolve_zig_import_to_path`
-  (`zig.rs:285`) and the C/C++ include resolvers `canonicalize()` a root-relative path, so
-  in-process indexing (`Indexer::index` from another cwd) misses edges `rfx index` finds.
 - **Python `from pkg import submodule`** reaches only `pkg/__init__.py`, not
   `pkg/submodule.py` (`from django.db import models`). The import counts as resolved, so
   the rate does not show it.

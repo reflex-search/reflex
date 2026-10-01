@@ -291,18 +291,12 @@ pub fn resolve_zig_import_to_path(
         return None;
     }
 
+    // Relative to the importing file, folded without reading the disk
     let current_file = current_file_path?;
-    let current_dir = std::path::Path::new(current_file).parent()?;
-    let resolved = current_dir.join(import_path);
-
-    // Try to canonicalize (normalize) the path
-    match resolved.canonicalize() {
-        Ok(normalized) => Some(normalized.display().to_string()),
-        Err(_) => {
-            // If canonicalization fails (file doesn't exist), return the raw path
-            Some(resolved.display().to_string())
-        }
-    }
+    crate::dependency_resolve::fold_path(
+        crate::dependency_resolve::parent_dir(current_file),
+        import_path,
+    )
 }
 
 #[cfg(test)]

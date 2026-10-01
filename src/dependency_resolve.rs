@@ -91,6 +91,43 @@ pub fn is_resolver_config_name(name: &str) -> bool {
     ) || name.ends_with(".gemspec")
 }
 
+/// `dir/rel` with `.` and `..` folded without touching the disk, `/`-separated.
+/// An absolute `dir` (or `rel`) stays absolute. `None` when `..` climbs above the
+/// start or nothing is left.
+///
+/// Resolvers used `canonicalize()`, which reads the disk relative to the process's
+/// working directory: a root-relative path resolved only when the process ran in
+/// the root.
+pub fn fold_path(dir: &str, rel: &str) -> Option<String> {
+    let rel = rel.replace('\\', "/");
+    let dir = dir.replace('\\', "/");
+    let (absolute, joined) = if rel.starts_with('/') {
+        (true, rel)
+    } else {
+        (dir.starts_with('/'), format!("{dir}/{rel}"))
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in joined.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let body = parts.join("/");
+    Some(if absolute { format!("/{body}") } else { body })
+}
+
+/// The directory part of a `/`-separated file path (`""` for a bare name).
+pub fn parent_dir(file: &str) -> &str {
+    file.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
 /// `path` relative to `root`, `/`-separated.
 fn rel_slash(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
@@ -891,454 +928,110 @@ impl<'a> ResolverContext<'a> {
     }
 
     /// The `files.id` an import that is neither External nor Stdlib resolves to,
-    /// for the languages whose imports name one file (see [`Self::resolve`]).
+    /// for the languages whose imports name one file (see [`Self::resolve`]): the
+    /// first of the language's candidate paths that is indexed.
     pub fn resolve_import(
         &self,
         file_path: &str,
         import_info: &ImportInfo,
         resolver: &PathResolver,
     ) -> Option<i64> {
-        let root = self.root;
-        let tsconfigs = &self.configs.tsconfigs;
-        let python_packages = &self.configs.python_packages;
-        let ruby_projects = &self.configs.ruby_projects;
-        let rust_crates = &self.configs.rust_crates;
-        let php_psr4_mappings = &self.configs.php_psr4;
-
-        if file_path.ends_with(".php") && !php_psr4_mappings.is_empty() {
-            // Use PSR-4 to resolve namespace to file path
-            if let Some(resolved_path) = crate::parsers::php::resolve_php_namespace_to_path(
-                &import_info.imported_path,
-                php_psr4_mappings,
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved PHP dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "PHP dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping PHP dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve PHP namespace using PSR-4: {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".py")
-            && (!python_packages.is_empty() || import_info.imported_path.starts_with('.'))
-        {
-            // The first candidate that is indexed: a module, else a package's
-            // `__init__.py`
-            let candidates = crate::parsers::python::python_import_candidates(
-                &import_info.imported_path,
-                python_packages,
-                Some(file_path),
+        let found = self
+            .import_candidates(file_path, &import_info.imported_path)
+            .iter()
+            .find_map(|path| self.lookup(resolver, path));
+        if found.is_none() {
+            log::trace!(
+                "Could not resolve import '{}' of {}",
+                import_info.imported_path,
+                file_path
             );
-            let resolved = candidates
-                .iter()
-                .find_map(|path| resolver.get_file_id_by_path(path).ok().flatten());
-            if resolved.is_none() {
-                log::trace!(
-                    "Could not resolve Python import: {}",
-                    import_info.imported_path
-                );
+        }
+        found
+    }
+
+    /// The paths an import of `file_path` may name, most likely first. They may be
+    /// absolute (under the root) or relative to it; [`Self::lookup`] takes either.
+    fn import_candidates(&self, file_path: &str, import: &str) -> Vec<String> {
+        let ext = file_path.rsplit_once('.').map_or("", |(_, e)| e);
+        match ext {
+            "php" => {
+                crate::parsers::php::resolve_php_namespace_to_path(import, &self.configs.php_psr4)
+                    .into_iter()
+                    .collect()
             }
-            resolved
-        } else if file_path.ends_with(".ts")
-            || file_path.ends_with(".tsx")
-            || file_path.ends_with(".js")
-            || file_path.ends_with(".jsx")
-            || file_path.ends_with(".mts")
-            || file_path.ends_with(".cts")
-            || file_path.ends_with(".mjs")
-            || file_path.ends_with(".cjs")
-        {
-            // Resolve TypeScript/JavaScript dependencies (relative imports and path aliases)
-            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
-            if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-                alias_map,
-            ) {
-                // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
-                let candidates: Vec<&str> = candidates_str.split('|').collect();
-
-                // Try each candidate in order until we find one in the database
-                let mut resolved_id = None;
-                for candidate_path in candidates {
-                    // Normalize path to be relative to project root
-                    // Convert absolute paths to relative (without requiring file to exist)
-                    let normalized_candidate = if let Ok(rel_path) =
-                        std::path::Path::new(candidate_path).strip_prefix(root)
-                    {
-                        rel_path.to_string_lossy().replace('\\', "/")
-                    } else {
-                        // Not an absolute path or not under root - use as-is
-                        // (still normalize separators so DB lookups match).
-                        candidate_path.replace('\\', "/")
-                    };
-
-                    log::debug!(
-                        "Looking up TS/JS candidate: '{}' (from '{}')",
-                        normalized_candidate,
-                        candidate_path
-                    );
-                    match resolver.get_file_id_by_path(&normalized_candidate) {
-                        Ok(Some(id)) => {
-                            log::debug!(
-                                "Resolved TS/JS dependency: {} -> {} (file_id={})",
-                                import_info.imported_path,
-                                normalized_candidate,
-                                id
-                            );
-                            resolved_id = Some(id);
-                            break; // Found a match, stop trying
-                        }
-                        Ok(None) => {
-                            log::trace!("TS/JS candidate not in index: {}", candidate_path);
-                        }
-                        Err(e) => {
-                            log::debug!(
-                                "Skipping TS/JS dependency resolution for '{}': {}",
-                                normalized_candidate,
-                                e
-                            );
-                        }
-                    }
-                }
-
-                if resolved_id.is_none() {
-                    log::trace!(
-                        "TS/JS dependency: no matching file found in database for any candidate: {}",
-                        candidates_str
-                    );
-                }
-
-                resolved_id
-            } else {
-                log::trace!(
-                    "Could not resolve TS/JS import (non-relative or external): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".rs") {
-            // Resolve Rust dependencies (crate::, super::, self::, mod declarations)
-            // Falls back to workspace resolution for cross-crate imports
-            let resolved_path_opt = crate::parsers::rust::resolve_rust_use_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-                Some(root.to_str().unwrap_or("")),
-            )
-            .or_else(|| {
-                crate::parsers::rust::resolve_rust_workspace_path(
-                    &import_info.imported_path,
-                    rust_crates,
+            "py" if !self.configs.python_packages.is_empty() || import.starts_with('.') => {
+                crate::parsers::python::python_import_candidates(
+                    import,
+                    &self.configs.python_packages,
+                    Some(file_path),
                 )
-            });
-
-            if let Some(resolved_path) = resolved_path_opt {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Rust dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Rust dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Rust dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Rust import (external or stdlib): {}",
-                    import_info.imported_path
-                );
-                None
             }
-        } else if (file_path.ends_with(".rb")
-            || file_path.ends_with(".rake")
-            || file_path.ends_with(".gemspec"))
-            && !ruby_projects.is_empty()
-        {
-            // Resolve Ruby dependencies using project mappings
-            if let Some(resolved_path) = crate::parsers::ruby::resolve_ruby_require_to_path(
-                &import_info.imported_path,
-                ruby_projects,
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "vue" | "svelte" => {
+                let alias_map =
+                    find_nearest_tsconfig(file_path, self.root, &self.configs.tsconfigs);
+                crate::parsers::typescript::resolve_ts_import_to_path(
+                    import,
+                    Some(file_path),
+                    alias_map,
+                )
+                .map(|c| c.split('|').map(str::to_string).collect())
+                .unwrap_or_default()
+            }
+            // A module of this crate, else another workspace crate (`use b::x`
+            // also reads as a local module `b`)
+            "rs" => crate::parsers::rust::resolve_rust_use_to_path(
+                import,
                 Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Ruby dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Ruby dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Ruby dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Ruby require: {}",
-                    import_info.imported_path
-                );
-                None
+                Some(self.root.to_str().unwrap_or("")),
+            )
+            .into_iter()
+            .chain(crate::parsers::rust::resolve_rust_workspace_path(
+                import,
+                &self.configs.rust_crates,
+            ))
+            .collect(),
+            "rb" | "rake" | "gemspec" if !self.configs.ruby_projects.is_empty() => {
+                crate::parsers::ruby::resolve_ruby_require_to_path(
+                    import,
+                    &self.configs.ruby_projects,
+                    Some(file_path),
+                )
+                .into_iter()
+                .collect()
             }
-        } else if file_path.ends_with(".c") || file_path.ends_with(".h") {
-            // Resolve C dependencies (relative #include paths)
-            if let Some(resolved_path) = crate::parsers::c::resolve_c_include_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved C dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "C dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping C dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve C include (system header): {}",
-                    import_info.imported_path
-                );
-                None
+            "c" | "h" => crate::parsers::c::resolve_c_include_to_path(import, Some(file_path))
+                .into_iter()
+                .collect(),
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h++" | "C" | "H" => {
+                crate::parsers::cpp::resolve_cpp_include_to_path(import, Some(file_path))
+                    .into_iter()
+                    .collect()
             }
-        } else if file_path.ends_with(".cpp")
-            || file_path.ends_with(".cc")
-            || file_path.ends_with(".cxx")
-            || file_path.ends_with(".hpp")
-            || file_path.ends_with(".hxx")
-            || file_path.ends_with(".h++")
-            || file_path.ends_with(".C")
-            || file_path.ends_with(".H")
-        {
-            // Resolve C++ dependencies (relative #include paths)
-            if let Some(resolved_path) = crate::parsers::cpp::resolve_cpp_include_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved C++ dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "C++ dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping C++ dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve C++ include (system header): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".zig") {
-            // Resolve Zig dependencies (relative @import paths)
-            if let Some(resolved_path) = crate::parsers::zig::resolve_zig_import_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Zig dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Zig dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Zig dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Zig import (external or stdlib): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".vue") || file_path.ends_with(".svelte") {
-            // Resolve Vue/Svelte dependencies (use TypeScript/JavaScript resolver for imports in <script> blocks)
-            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
-            if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-                alias_map,
-            ) {
-                // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
-                let candidates: Vec<&str> = candidates_str.split('|').collect();
+            "zig" => crate::parsers::zig::resolve_zig_import_to_path(import, Some(file_path))
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
 
-                // Try each candidate in order until we find one in the database
-                let mut resolved_id = None;
-                for candidate_path in candidates {
-                    // Normalize path to be relative to project root
-                    // Convert absolute paths to relative (without requiring file to exist)
-                    let normalized_candidate = if let Ok(rel_path) =
-                        std::path::Path::new(candidate_path).strip_prefix(root)
-                    {
-                        rel_path.to_string_lossy().replace('\\', "/")
-                    } else {
-                        // Not an absolute path or not under root - use as-is
-                        // (still normalize separators so DB lookups match).
-                        candidate_path.replace('\\', "/")
-                    };
-
-                    match resolver.get_file_id_by_path(&normalized_candidate) {
-                        Ok(Some(id)) => {
-                            log::trace!(
-                                "Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
-                                import_info.imported_path,
-                                candidate_path,
-                                id
-                            );
-                            resolved_id = Some(id);
-                            break; // Found a match, stop trying
-                        }
-                        Ok(None) => {
-                            log::trace!("Vue/Svelte candidate not in index: {}", candidate_path);
-                        }
-                        Err(e) => {
-                            log::debug!(
-                                "Skipping Vue/Svelte dependency resolution for '{}': {}",
-                                normalized_candidate,
-                                e
-                            );
-                        }
-                    }
-                }
-
-                if resolved_id.is_none() {
-                    log::trace!(
-                        "Vue/Svelte dependency: no matching file found in database for any candidate: {}",
-                        candidates_str
-                    );
-                }
-
-                resolved_id
-            } else {
-                log::trace!(
-                    "Could not resolve Vue/Svelte import (non-relative or external): {}",
-                    import_info.imported_path
-                );
-                None
-            }
+    /// The `files.id` of `path`: absolute under the root, or relative to it, with
+    /// `.` and `..` folded. A path outside the root is not indexed.
+    fn lookup(&self, resolver: &PathResolver, path: &str) -> Option<i64> {
+        let path = path.replace('\\', "/");
+        let rel = if path.starts_with('/') {
+            let rel = Path::new(&path).strip_prefix(self.root).ok()?;
+            rel.to_string_lossy().replace('\\', "/")
         } else {
-            None
+            path
+        };
+        let rel = fold_path("", &rel)?;
+        match resolver.get_file_id_by_path(&rel) {
+            Ok(id) => id,
+            Err(e) => {
+                log::debug!("Skipping dependency resolution for '{}': {}", rel, e);
+                None
+            }
         }
     }
 

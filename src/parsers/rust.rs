@@ -1775,6 +1775,7 @@ mod path_resolution_tests {
 /// A Rust crate discovered by scanning for Cargo.toml files.
 #[derive(Debug, Clone)]
 pub struct RustCrate {
+    /// The name code imports it by (`-` in the package name becomes `_`).
     pub name: String,
     pub root_path: std::path::PathBuf,
 }
@@ -1810,7 +1811,8 @@ pub fn parse_rust_crates_from(manifests: &[std::path::PathBuf]) -> anyhow::Resul
             && let Some(crate_root) = path.parent()
         {
             crates.push(RustCrate {
-                name,
+                // Code names a crate `b-core` as `b_core`
+                name: name.replace('-', "_"),
                 root_path: crate_root.to_path_buf(),
             });
         }
@@ -1858,40 +1860,25 @@ pub fn resolve_rust_workspace_path(import_path: &str, crates: &[RustCrate]) -> O
             };
 
             let src_root = krate.root_path.join("src");
-
-            if relative_module.is_empty() {
-                // Bare crate import -> lib.rs or main.rs
-                let lib = src_root.join("lib.rs");
-                if lib.exists() {
-                    return Some(lib.to_string_lossy().to_string());
-                }
-                let main = src_root.join("main.rs");
-                if main.exists() {
-                    return Some(main.to_string_lossy().to_string());
-                }
+            let parts: Vec<&str> = if relative_module.is_empty() {
+                Vec::new()
             } else {
-                let parts: Vec<&str> = relative_module.split("::").collect();
+                relative_module.split("::").collect()
+            };
 
-                // Try resolving as a module file (only accept if the file exists)
-                if let Some(path) = resolve_rust_module_path(&src_root, &parts)
+            // The longest module path that is a file (the rest names items in it),
+            // else the crate root: `b::thing` is a function in b's lib.rs
+            for n in (1..=parts.len()).rev() {
+                if let Some(path) = resolve_rust_module_path(&src_root, &parts[..n])
                     && std::path::Path::new(&path).exists()
                 {
                     return Some(path);
                 }
-
-                // Try popping the last component (it may be an item like a struct/fn, not a module)
-                if parts.len() > 1
-                    && let Some(path) =
-                        resolve_rust_module_path(&src_root, &parts[..parts.len() - 1])
-                    && std::path::Path::new(&path).exists()
-                {
-                    return Some(path);
-                }
-
-                // Return the best-guess path even if it doesn't exist
-                // (the indexer will validate against its file database)
-                if let Some(path) = resolve_rust_module_path(&src_root, &parts) {
-                    return Some(path);
+            }
+            for root_file in ["lib.rs", "main.rs"] {
+                let path = src_root.join(root_file);
+                if path.exists() {
+                    return Some(path.to_string_lossy().to_string());
                 }
             }
         }
