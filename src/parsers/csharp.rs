@@ -17,8 +17,7 @@
 
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 use anyhow::{Context, Result};
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, QueryCursor};
+use tree_sitter::Parser;
 
 /// Parse C# source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -1481,6 +1480,94 @@ impl CSharpDependencyExtractor {
         collect_namespaces(source, root, "", &mut namespaces);
         Ok((usings, namespaces))
     }
+
+    /// The usings of `source` and its `package_members` rows: `(cs:N, "")` for
+    /// each namespace `N` it declares, `(cs:P, "C")` for each declared namespace
+    /// `P.C` (a sub-namespace is a member of its parent) and for each type `C`
+    /// declared directly in `P`. `using static P.C` and `using X = P.C` reach
+    /// member `C` of `cs:P`, whether `C` is a type or a namespace.
+    pub fn extract_dependencies_and_members(
+        source: &str,
+    ) -> Result<(Vec<ImportInfo>, Vec<(String, String)>)> {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_c_sharp::LANGUAGE.into())
+            .context("Failed to set C# language")?;
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse C# source")?;
+        let root = tree.root_node();
+        let usings = extract_csharp_usings(source, &root)?;
+        let mut members = Vec::new();
+        collect_members(source, root, "", &mut members);
+        let mut seen = std::collections::HashSet::new();
+        members.retain(|m| seen.insert(m.clone()));
+        Ok((usings, members))
+    }
+}
+
+/// Type declarations whose name is a member of the enclosing namespace.
+const CSHARP_TYPE_KINDS: [&str; 7] = [
+    "class_declaration",
+    "struct_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "record_declaration",
+    "record_struct_declaration",
+    "delegate_declaration",
+];
+
+/// See [`CSharpDependencyExtractor::extract_dependencies_and_members`]. `prefix`
+/// is the enclosing namespace (`""` for the global one).
+fn collect_members(
+    source: &str,
+    node: tree_sitter::Node,
+    prefix: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    let text = |n: tree_sitter::Node| -> Option<String> {
+        let t = n.utf8_text(source.as_bytes()).ok()?;
+        Some(t.chars().filter(|c| !c.is_whitespace()).collect())
+    };
+    // A file-scoped namespace holds the declarations that follow it
+    let mut current = prefix.to_string();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "namespace_declaration" || kind == "file_scoped_namespace_declaration" {
+            let Some(name) = child.child_by_field_name("name").and_then(text) else {
+                continue;
+            };
+            let full = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}.{name}")
+            };
+            out.push((format!("cs:{full}"), String::new()));
+            // `A.B.C` is member `C` of `A.B`, and `B` of `A`
+            let mut ns = full.as_str();
+            while let Some((parent, last)) = ns.rsplit_once('.') {
+                out.push((format!("cs:{parent}"), last.to_string()));
+                ns = parent;
+            }
+            if let Some(body) = child.child_by_field_name("body") {
+                collect_members(source, body, &full, out);
+            }
+            if kind == "file_scoped_namespace_declaration" {
+                current = full;
+            }
+        } else if CSHARP_TYPE_KINDS.contains(&kind) && !current.is_empty() {
+            if let Some(name) = child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            {
+                out.push((format!("cs:{current}"), name.to_string()));
+            }
+        } else if kind == "declaration_list" || kind.starts_with("preproc_") {
+            // A namespace body, or an `#if` block around declarations
+            collect_members(source, child, &current, out);
+        }
+    }
 }
 
 /// Every namespace declared under `node`, fully qualified, in source order.
@@ -1516,48 +1603,68 @@ fn collect_namespaces(source: &str, node: tree_sitter::Node, prefix: &str, out: 
 
 /// Extract C# using directives
 fn extract_csharp_usings(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
-    let language = tree_sitter_c_sharp::LANGUAGE;
-
-    let query_str = r#"
-        (using_directive
-            [
-                (qualified_name) @using_path
-                (identifier) @using_path
-            ])
-    "#;
-
-    static QUERY_1: crate::parsers::CachedQuery = crate::parsers::CachedQuery::new();
-    let query = crate::parsers::cached_query(&QUERY_1, language, query_str)
-        .context("Failed to create C# using query")?;
-
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, *root, source.as_bytes());
-
     let mut imports = Vec::new();
-
-    while let Some(match_) = matches.next() {
-        for capture in match_.captures {
-            let capture_name: &str = query.capture_names()[capture.index as usize];
-            if capture_name == "using_path" {
-                let path = capture
-                    .node
-                    .utf8_text(source.as_bytes())
-                    .unwrap_or("")
-                    .to_string();
-                let import_type = classify_csharp_using(&path);
-                let line_number = capture.node.start_position().row + 1;
-
-                imports.push(ImportInfo {
-                    imported_path: path,
-                    import_type,
-                    line_number,
-                    imported_symbols: None, // C# imports entire namespace
-                });
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        let children: Vec<tree_sitter::Node> = node.named_children(&mut cursor).collect();
+        // Source order: the stack pops the last pushed first
+        for child in children.iter().rev() {
+            if child.kind() == "using_directive" {
+                if let Some(import) = csharp_using(source, *child) {
+                    imports.push(import);
+                }
+            } else if matches!(
+                child.kind(),
+                "namespace_declaration" | "file_scoped_namespace_declaration" | "declaration_list"
+            ) || child.kind().starts_with("preproc_")
+            {
+                // Usings sit at file or namespace level, also inside `#if` blocks
+                stack.push(*child);
             }
         }
     }
-
+    imports.sort_by_key(|i| i.line_number);
     Ok(imports)
+}
+
+/// One `using` directive. `using A.B;` imports namespace `A.B`. `using static
+/// A.B.C;` and `using X = A.B.C;` name `C` in `A.B`: the import is `A.B.C` with
+/// `C` as its one imported symbol (generic arguments dropped). The alias `X` is
+/// not an import.
+fn csharp_using(source: &str, node: tree_sitter::Node) -> Option<ImportInfo> {
+    let alias = node.child_by_field_name("name");
+    let mut cursor = node.walk();
+    let is_static = node.children(&mut cursor).any(|c| c.kind() == "static");
+    let mut cursor = node.walk();
+    let target = node
+        .named_children(&mut cursor)
+        .find(|c| Some(*c) != alias && c.kind() != "comment")?;
+    let raw = target.utf8_text(source.as_bytes()).ok()?;
+    // `Acme.Util.Log<int>` → `Acme.Util.Log`
+    let path: String = raw
+        .split('<')
+        .next()
+        .unwrap_or(raw)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let path = path.trim_start_matches("global::").to_string();
+    if path.is_empty() {
+        return None;
+    }
+    let imported_symbols = (alias.is_some() || is_static)
+        .then(|| {
+            path.rsplit_once('.')
+                .map(|(_, last)| vec![last.to_string()])
+        })
+        .flatten();
+    Some(ImportInfo {
+        import_type: classify_csharp_using(&path),
+        imported_path: path,
+        line_number: node.start_position().row + 1,
+        imported_symbols,
+    })
 }
 
 /// Classify a C# using directive as internal, external, or stdlib

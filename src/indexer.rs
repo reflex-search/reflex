@@ -403,7 +403,7 @@ fn extract_imports(
 ) -> Extracted {
     // Extract dependencies and exports for supported languages
     let mut parsed_exports: Vec<ExportInfo> = Vec::new();
-    let mut declared_namespaces: Vec<String> = Vec::new();
+    let mut declared_namespaces: Vec<(String, String)> = Vec::new();
     let dependencies = match language {
         Language::Rust => match RustDependencyExtractor::extract_dependencies(content) {
             Ok(deps) => deps,
@@ -466,9 +466,9 @@ fn extract_imports(
             }
         },
         Language::CSharp => {
-            match CSharpDependencyExtractor::extract_dependencies_and_namespaces(content) {
-                Ok((deps, namespaces)) => {
-                    declared_namespaces = namespaces;
+            match CSharpDependencyExtractor::extract_dependencies_and_members(content) {
+                Ok((deps, members)) => {
+                    declared_namespaces = members;
                     deps
                 }
                 Err(e) => {
@@ -538,10 +538,7 @@ fn extract_imports(
         Language::Java | Language::Kotlin => {
             crate::parsers::java::jvm_package_members(path_str, content)
         }
-        Language::CSharp => declared_namespaces
-            .into_iter()
-            .map(|namespace| (format!("cs:{namespace}"), String::new()))
-            .collect(),
+        Language::CSharp => declared_namespaces,
         _ => Vec::new(),
     };
     (dependencies, parsed_exports, members)

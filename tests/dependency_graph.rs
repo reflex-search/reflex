@@ -1537,3 +1537,79 @@ fn php_uses_follow_composer_autoload() {
     );
     assert!(d.low_resolution_warnings().unwrap().is_empty());
 }
+
+/// `using static A.B.C` and `using X = A.B.C` name a type (or a namespace) `C`
+/// in `A.B`: they reach the files declaring it. The alias `X` is not an import.
+#[test]
+fn csharp_using_static_and_alias_reach_the_named_type() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/Program.cs",
+        "using static Acme.Util.Math;\nusing Json = Acme.Serialization;\nusing L = Acme.Util.Log<int>;\nglobal using Acme.Core;\nnamespace App { class Program {} }\n",
+    );
+    write(
+        r,
+        "src/Util/Math.cs",
+        "namespace Acme.Util { public static class Math {} }\n",
+    );
+    write(
+        r,
+        "src/Util/Other.cs",
+        "namespace Acme.Util { class Other {} }\n",
+    );
+    write(
+        r,
+        "src/Util/Log.cs",
+        "namespace Acme.Util;\npublic class Log<T> {}\n",
+    );
+    write(
+        r,
+        "src/Serialization/Json.cs",
+        "namespace Acme.Serialization { class JsonWriter {} }\n",
+    );
+    write(
+        r,
+        "src/Core/Core.cs",
+        "namespace Acme.Core { class C {} }\n",
+    );
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("src/Program.cs", "src/Core/Core.cs"),
+            edge("src/Program.cs", "src/Serialization/Json.cs"),
+            edge("src/Program.cs", "src/Util/Log.cs"),
+            edge("src/Program.cs", "src/Util/Math.cs"),
+        ]
+    );
+    let d = deps(r);
+    let id = d.get_file_id_by_path("src/Program.cs").unwrap().unwrap();
+    let paths: Vec<String> = d
+        .get_dependencies(id)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.imported_path)
+        .collect();
+    assert!(!paths.iter().any(|p| p == "Json" || p == "L"), "{paths:?}");
+}
+
+/// Usings and namespaces inside `#if` blocks count.
+#[test]
+fn csharp_usings_and_namespaces_inside_preprocessor_blocks() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/A.cs",
+        "#if NET8_0\nusing Acme.Core;\n#endif\nnamespace App { class A {} }\n",
+    );
+    write(
+        r,
+        "src/Core.cs",
+        "#if DEBUG\nnamespace Acme.Core { class C {} }\n#endif\n",
+    );
+    index(r);
+    assert_eq!(edges(r), vec![edge("src/A.cs", "src/Core.cs")]);
+}

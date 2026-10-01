@@ -715,8 +715,9 @@ pub enum Resolution {
 
 /// The `(package key, member)` rows that make the file at `rel_path` reachable
 /// by package imports (`package_members`): a Go file's directory, plus what its
-/// content declares (`declared`: a JVM package and top-level names). Member `""`
-/// stands for the whole package.
+/// content declares (`declared`: a JVM package and top-level names, C#
+/// namespaces, types and sub-namespaces). Member `""` stands for the whole
+/// package: an import with no member reaches exactly the `""` rows.
 pub fn package_members(rel_path: &str, declared: &[(String, String)]) -> Vec<(String, String)> {
     let mut members = declared.to_vec();
     if rel_path.ends_with(".go")
@@ -1002,9 +1003,21 @@ impl<'a> ResolverContext<'a> {
             });
         }
         if file_path.ends_with(".cs") {
-            // A `using` names a namespace: every file that declares it
+            // `using A.B` names a namespace: every file that declares it.
+            // `using static A.B.C` / `using X = A.B.C` name member `C` of `A.B`:
+            // the files declaring type `C` there, or namespace `A.B.C`
+            let path = &import_info.imported_path;
+            if let Some([member]) = import_info.imported_symbols.as_deref()
+                && let Some((namespace, last)) = path.rsplit_once('.')
+                && last == member
+            {
+                return Resolution::Package {
+                    key: format!("cs:{namespace}"),
+                    member: Some(member.clone()),
+                };
+            }
             return Resolution::Package {
-                key: format!("cs:{}", import_info.imported_path),
+                key: format!("cs:{path}"),
                 member: None,
             };
         }

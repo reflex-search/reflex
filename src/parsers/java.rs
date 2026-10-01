@@ -1684,7 +1684,11 @@ pub fn jvm_package_members(path: &str, source: &str) -> Vec<(String, String)> {
         }
     }
     let key = format!("jvm:{package}");
-    names.into_iter().map(|name| (key.clone(), name)).collect()
+    // `""`: the whole package, what a wildcard import reaches
+    std::iter::once(String::new())
+        .chain(names)
+        .map(|name| (key.clone(), name))
+        .collect()
 }
 
 /// The name a column-0 Java or Kotlin declaration line declares, if it is one.
@@ -1853,7 +1857,7 @@ version = "2.0.0"
         let java = "// header\npackage org.acme.util;\n\nimport x.Y;\n\n@Deprecated\npublic final class Numbers {\n    class Inner {}\n}\nclass Helper {}\nenum Mode { A }\nrecord Pair(int a) {}\n@interface Marker {}\n";
         assert_eq!(
             jvm_package_members("app/src/main/java/org/acme/util/Numbers.java", java),
-            ["Numbers", "Helper", "Mode", "Pair", "Marker"]
+            ["", "Numbers", "Helper", "Mode", "Pair", "Marker"]
                 .iter()
                 .map(|m| ("jvm:org.acme.util".to_string(), m.to_string()))
                 .collect::<Vec<_>>()
@@ -1862,8 +1866,8 @@ version = "2.0.0"
         assert_eq!(
             jvm_package_members("src/main/kotlin/Misc.kt", kotlin),
             [
-                "Misc", "greet", "second", "answer", "LIMIT", "Point", "Shape", "Registry", "Name",
-                "Color", "Action"
+                "", "Misc", "greet", "second", "answer", "LIMIT", "Point", "Shape", "Registry",
+                "Name", "Color", "Action"
             ]
             .iter()
             .map(|m| ("jvm:org.acme.app.helpers".to_string(), m.to_string()))
@@ -1872,7 +1876,10 @@ version = "2.0.0"
         // The default package
         assert_eq!(
             jvm_package_members("Foo.java", "class Foo {}\n"),
-            vec![("jvm:".to_string(), "Foo".to_string())]
+            vec![
+                ("jvm:".to_string(), String::new()),
+                ("jvm:".to_string(), "Foo".to_string())
+            ]
         );
     }
 

@@ -342,7 +342,7 @@ impl CacheManager {
                  FROM file_dependencies d
                  JOIN package_members m
                    ON m.package = d.resolved_package
-                  AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
+                  AND m.member = COALESCE(d.resolved_member, '')
                 WHERE d.resolved_package IS NOT NULL
                   AND m.file_id != d.file_id
                UNION ALL

@@ -121,9 +121,11 @@ failed Zola build still exits 0.
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
   (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
   `unwrap_or_default()`.
-- **C# usings that do not resolve** (18 % of dotnet/runtime's internal ones): `using static
-  A.B.C` names a type (keyed as namespace `A.B.C`); an alias `using X = A.B.C;` is stored
-  as two rows (`X` and `A.B.C`, the query captures both); `global using` untested.
+- **C# usings that do not resolve: 11.4 % of dotnet/runtime's** (2026-10-01, after
+  aliases and `using static` were fixed). Mostly NuGet namespaces whose root a repo file
+  also declares (`Microsoft.CodeAnalysis.Testing`, `Xunit.Abstractions`), so the NuGet
+  exclusion (root namespace declared by no file) keeps them. Telling them apart needs
+  `.csproj` `PackageReference`s.
 - **C/C++ include resolution is 62–64 %** (dotnet, 2026-10-01). Includes are resolved
   beside the including file, then by a unique whole-segment suffix; there is no
   include-path search (`-I`, `target_include_directories`, compile_commands.json). PHP

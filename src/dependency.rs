@@ -1286,7 +1286,7 @@ impl DependencyIndex {
                     SUM(d.resolved_file_id IS NOT NULL
                         OR EXISTS (SELECT 1 FROM package_members m
                                     WHERE m.package = d.resolved_package
-                                      AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
+                                      AND m.member = COALESCE(d.resolved_member, '')
                                       AND m.file_id != d.file_id))
              FROM file_dependencies d
              JOIN files f ON d.file_id = f.id
