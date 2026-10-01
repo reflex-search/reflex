@@ -1276,6 +1276,8 @@ impl DependencyIndex {
              FROM file_dependencies d
              JOIN files f ON d.file_id = f.id
              WHERE d.import_type = 'internal'
+               -- vendored code's own imports are not the project's graph
+               AND f.vendored = 0
                -- C# calls every non-System using internal: leave out the NuGet ones,
                -- whose root namespace (`Newtonsoft` of `Newtonsoft.Json`) no file declares
                AND NOT (COALESCE(d.resolved_package, '') LIKE 'cs:%' AND NOT EXISTS (
@@ -1299,6 +1301,38 @@ impl DependencyIndex {
     }
 
     /// The low-resolution warning for the language of the file at `path`, if any.
+    /// Vendored code files (`files.vendored`, text tiers left out): searchable, but
+    /// not in the import graph (see [`crate::vendor`]).
+    pub fn vendored_file_count(&self) -> Result<usize> {
+        let conn = self.open_conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM files
+             WHERE vendored = 1 AND language NOT IN ('Text', 'Lock', 'Generated', 'Unknown')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// The warnings a `get_dependencies` answer about `path` carries: the file is
+    /// vendored (so it has no edges), or its language's graph is mostly missing.
+    pub fn graph_warnings_for(&self, path: &str) -> Result<Vec<String>> {
+        let Some(id) = self.get_file_id_by_path(path).ok().flatten() else {
+            return Ok(Vec::new());
+        };
+        let conn = self.open_conn()?;
+        let vendored: bool =
+            conn.query_row("SELECT vendored FROM files WHERE id = ?", [id], |r| {
+                r.get(0)
+            })?;
+        if vendored {
+            return Ok(vec![format!(
+                "{path} is vendored; vendored files are not in the import graph"
+            )]);
+        }
+        Ok(self.low_resolution_warning_for(path)?.into_iter().collect())
+    }
+
     pub fn low_resolution_warning_for(&self, path: &str) -> Result<Option<String>> {
         let Some(id) = self.get_file_id_by_path(path).ok().flatten() else {
             return Ok(None);
@@ -1446,7 +1480,7 @@ fn sibling_groups(conn: &Connection) -> Result<Vec<Vec<i64>>> {
     let mut stmt = conn.prepare(
         "SELECT m.package, m.file_id FROM package_members m
          JOIN files f ON f.id = m.file_id
-         WHERE m.package LIKE 'go:%'
+         WHERE m.package LIKE 'go:%' AND f.vendored = 0
          ORDER BY m.package, f.walk_seq",
     )?;
     let mut groups: Vec<Vec<i64>> = Vec::new();
@@ -1468,7 +1502,8 @@ fn sibling_groups(conn: &Connection) -> Result<Vec<Vec<i64>>> {
 /// `files` rows that can take part in the import graph. Text, lock and generated
 /// files have no import extraction, so as graph nodes they were only ever islands
 /// and "unused" (every README and lock file on 2.1.0).
-const CODE_FILES: &str = "language NOT IN ('Text', 'Lock', 'Generated', 'Unknown')";
+const CODE_FILES: &str =
+    "language NOT IN ('Text', 'Lock', 'Generated', 'Unknown') AND vendored = 0";
 
 /// Return true if the given file path is a well-known project entry point.
 ///

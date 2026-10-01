@@ -82,7 +82,21 @@ pub fn is_resolver_config_name(name: &str) -> bool {
             | "composer.json"
             | "tsconfig.json"
             | "Cargo.toml"
+            // Vendoring markers (`crate::vendor`)
+            | "modules.txt"
+            | "installed.json"
+            | "pyvenv.cfg"
+            | ".cargo-checksum.json"
+            | "build.zig.zon"
     ) || name.ends_with(".gemspec")
+}
+
+/// `path` relative to `root`, `/`-separated.
+fn rel_slash(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// [`ConfigFiles`] on disk: paths relative to the root, `/`-separated.
@@ -95,6 +109,10 @@ struct ConfigList {
     cargo_tomls: Vec<String>,
     composer: Vec<String>,
     tsconfigs: Vec<String>,
+    #[serde(default)]
+    vendor_markers: Vec<String>,
+    #[serde(default)]
+    zig_zons: Vec<String>,
     walk_error: Option<String>,
 }
 
@@ -108,6 +126,10 @@ struct ConfigFiles {
     cargo_tomls: Vec<PathBuf>,
     composer: Vec<PathBuf>,
     tsconfigs: Vec<PathBuf>,
+    /// Vendoring markers (`crate::vendor::marker_root`): only their paths matter.
+    vendor_markers: Vec<PathBuf>,
+    /// `build.zig.zon` files, whose path dependencies are vendored roots.
+    zig_zons: Vec<PathBuf>,
     /// The first walk error. Every finder except tsconfig's stopped on its first
     /// error (`entry?`) and returned it, so their kinds fail with it here too.
     walk_error: Option<String>,
@@ -140,12 +162,28 @@ impl ConfigFiles {
                 "go.mod" | "pom.xml" | "build.gradle" | "build.gradle.kts" | "pyproject.toml"
                 | "setup.py" | "setup.cfg" | "composer.json" | "tsconfig.json" | "Cargo.toml" => {}
                 _ if is_gemspec => {}
+                "modules.txt" | "installed.json" | "pyvenv.cfg" => {
+                    let rel = rel_slash(root, path);
+                    if crate::vendor::marker_root(&rel).is_some() {
+                        out.vendor_markers.push(path.to_path_buf());
+                    }
+                    continue;
+                }
+                "build.zig.zon" => {
+                    out.zig_zons.push(path.to_path_buf());
+                    continue;
+                }
                 _ => continue,
             }
 
             // Rust's finder matched the name alone; tsconfig's likewise.
             if filename == "Cargo.toml" {
                 out.cargo_tomls.push(path.to_path_buf());
+                // A `cargo vendor` crate: the walk skips the dotfile itself
+                let checksum = path.with_file_name(".cargo-checksum.json");
+                if checksum.is_file() {
+                    out.vendor_markers.push(checksum);
+                }
             }
             if filename == "tsconfig.json" {
                 out.tsconfigs.push(path.to_path_buf());
@@ -184,7 +222,55 @@ impl ConfigFiles {
                 out.gemspecs.push(path.to_path_buf());
             }
         }
+        out.drop_vendored_configs(root);
         out
+    }
+
+    /// The vendored roots the markers and `build.zig.zon` path dependencies name,
+    /// relative and `/`-terminated.
+    fn vendor_roots(&self, root: &Path) -> Vec<String> {
+        let mut roots: Vec<String> = self
+            .vendor_markers
+            .iter()
+            .filter_map(|p| crate::vendor::marker_root(&rel_slash(root, p)))
+            .collect();
+        for zon in &self.zig_zons {
+            if let Ok(source) = std::fs::read_to_string(zon) {
+                roots.extend(crate::vendor::zig_path_dependencies(
+                    &rel_slash(root, zon),
+                    &source,
+                ));
+            }
+        }
+        roots
+    }
+
+    /// Drop the configs of vendored code: a vendored crate's `Cargo.toml` would make
+    /// its crate Internal, a vendored gemspec its gem.
+    fn drop_vendored_configs(&mut self, root: &Path) {
+        let rules = crate::vendor::VendorRules::new(root, self.vendor_roots(root), &[]);
+        let keep = |p: &PathBuf| !rules.in_vendored_dir(&rel_slash(root, p));
+        for list in [
+            &mut self.go_mods,
+            &mut self.java,
+            &mut self.python,
+            &mut self.gemspecs,
+            &mut self.cargo_tomls,
+            &mut self.composer,
+            &mut self.tsconfigs,
+        ] {
+            list.retain(keep);
+        }
+        // A vendored module's own markers and path dependencies are not ours
+        let dirs: Vec<String> = self
+            .vendor_markers
+            .iter()
+            .filter_map(|p| crate::vendor::marker_root(&rel_slash(root, p)))
+            .collect();
+        self.zig_zons.retain(|p| {
+            let rel = rel_slash(root, p);
+            !dirs.iter().any(|d| rel.starts_with(d.as_str())) && !rules.in_vendored_dir(&rel)
+        });
     }
 
     /// A digest of everything the config parsers read: each kind's files in walk
@@ -220,6 +306,9 @@ impl ConfigFiles {
                 file(tag, path);
             }
         }
+        for path in &self.zig_zons {
+            file("zig", path);
+        }
         // `find_python_package_name` reads all three names in each project root.
         for path in &self.python {
             if let Some(dir) = path.parent() {
@@ -227,6 +316,12 @@ impl ConfigFiles {
                     file("python-sibling", &dir.join(name));
                 }
             }
+        }
+        // A marker's bytes change on every `go mod vendor`; its root does not.
+        for path in &self.vendor_markers {
+            h.update(b"vendor-marker");
+            h.update(rel_slash(root, path).as_bytes());
+            h.update(b"\0");
         }
         h.update(if root.join("Cargo.toml").exists() {
             b"cargo-gate:1"
@@ -257,6 +352,8 @@ impl ConfigFiles {
             cargo_tomls: rel(&self.cargo_tomls),
             composer: rel(&self.composer),
             tsconfigs: rel(&self.tsconfigs),
+            vendor_markers: rel(&self.vendor_markers),
+            zig_zons: rel(&self.zig_zons),
             walk_error: self.walk_error.clone(),
         }
     }
@@ -272,6 +369,8 @@ impl ConfigFiles {
             cargo_tomls: abs(&list.cargo_tomls),
             composer: abs(&list.composer),
             tsconfigs: abs(&list.tsconfigs),
+            vendor_markers: abs(&list.vendor_markers),
+            zig_zons: abs(&list.zig_zons),
             walk_error: list.walk_error.clone(),
         }
     }
@@ -294,8 +393,11 @@ pub struct ResolverConfigs {
     pub ruby_projects: Vec<RubyProject>,
     pub rust_crates: Vec<RustCrate>,
     pub php_psr4: Vec<Psr4Mapping>,
-    /// Digest of every input above (see `ConfigFiles::digest`). An index run
-    /// whose digest differs from the stored one re-resolves every file.
+    /// Which files are vendored: the markers found, plus `[index.vendored] patterns`.
+    pub vendor: crate::vendor::VendorRules,
+    /// Digest of every input above (see `ConfigFiles::digest`) and the vendored
+    /// patterns. An index run whose digest differs from the stored one re-resolves
+    /// and re-flags every file.
     pub digest: String,
     /// The config files these were parsed from.
     files: ConfigFiles,
@@ -304,17 +406,22 @@ pub struct ResolverConfigs {
 impl ResolverConfigs {
     /// Find and parse every resolver config under `root`. A kind that fails to parse
     /// is logged and left empty, as before.
-    pub fn discover(root: &Path) -> Self {
-        Self::parse(root, ConfigFiles::walk(root))
+    /// `vendored` is `[index.vendored] patterns`.
+    pub fn discover(root: &Path, vendored: &[String]) -> Self {
+        Self::parse(root, ConfigFiles::walk(root), vendored)
     }
 
     /// Parse the config files listed in `cache_dir` by [`Self::save_list`], without
     /// walking. `None` when there is no list. The caller compares the digest with
     /// the stored one: a listed file that changed shows there.
-    pub fn from_saved_list(root: &Path, cache_dir: &Path) -> Option<Self> {
+    pub fn from_saved_list(root: &Path, cache_dir: &Path, vendored: &[String]) -> Option<Self> {
         let bytes = std::fs::read(cache_dir.join(CONFIG_LIST)).ok()?;
         let list: ConfigList = serde_json::from_slice(&bytes).ok()?;
-        Some(Self::parse(root, ConfigFiles::from_list(root, &list)))
+        Some(Self::parse(
+            root,
+            ConfigFiles::from_list(root, &list),
+            vendored,
+        ))
     }
 
     /// Write the list of config files (atomically) unless it is already there.
@@ -344,6 +451,8 @@ impl ResolverConfigs {
             &list.cargo_tomls,
             &list.composer,
             &list.tsconfigs,
+            &list.vendor_markers,
+            &list.zig_zons,
         ]
         .into_iter()
         .flatten()
@@ -356,8 +465,18 @@ impl ResolverConfigs {
         })
     }
 
-    fn parse(root: &Path, files: ConfigFiles) -> Self {
-        let digest = files.digest(root);
+    fn parse(root: &Path, files: ConfigFiles, vendored: &[String]) -> Self {
+        let digest = {
+            let mut h = blake3::Hasher::new();
+            h.update(files.digest(root).as_bytes());
+            for pattern in vendored {
+                h.update(b"vendored-pattern");
+                h.update(pattern.as_bytes());
+                h.update(b"\0");
+            }
+            h.finalize().to_hex().to_string()
+        };
+        let vendor = crate::vendor::VendorRules::new(root, files.vendor_roots(root), vendored);
 
         let tsconfigs = crate::parsers::tsconfig::parse_tsconfigs_from(&files.tsconfigs)
             .unwrap_or_else(|e| {
@@ -489,6 +608,7 @@ impl ResolverConfigs {
             ruby_projects,
             rust_crates,
             php_psr4,
+            vendor,
             digest,
             files,
         }
@@ -1368,7 +1488,7 @@ mod tests {
     fn one_walk_finds_what_the_seven_finders_found() {
         let temp = workspace();
         let root = temp.path();
-        let one = ResolverConfigs::discover(root);
+        let one = ResolverConfigs::discover(root, &[]);
 
         let mut tsconfigs: Vec<_> = crate::parsers::tsconfig::parse_all_tsconfigs(root)
             .unwrap()
@@ -1424,7 +1544,7 @@ mod tests {
             "crates/a/Cargo.toml",
             "[package]\nname = \"crate_a\"\n",
         );
-        let one = ResolverConfigs::discover(temp.path());
+        let one = ResolverConfigs::discover(temp.path(), &[]);
         assert!(one.rust_crates.is_empty());
     }
 }

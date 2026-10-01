@@ -116,6 +116,12 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
+- **IN PROGRESS: committed vendored code shows as islands and unused files** (2026-10-01,
+  branch `fix/package-import-resolution`). Kubernetes commits `vendor/` (4,238 Go files);
+  its 7,457 imports of vendored packages are External, so every vendored package was an
+  island (558 of 577). Fix: vendored files stay searchable but are not graph nodes
+  (`src/vendor.rs`, `files.vendored`, `[index.vendored] patterns`). Go done; PHP, Rust,
+  Ruby, JS, Python, Zig, C/C++, JVM, C# tests next.
 - **`rfx snapshot diff` hotspots and islands are silently empty** (found 2026-09-30). The
   snapshot DB's `files` (`src/pulse/snapshot.rs`) has no `walk_seq`, but
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids

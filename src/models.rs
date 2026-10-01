@@ -587,6 +587,11 @@ pub struct IndexConfig {
     /// never walked.
     #[serde(default)]
     pub hidden: bool,
+    /// `[index.vendored] patterns`: gitignore rules that mark directories vendored
+    /// (`!pattern` marks one project code), checked before the built-in rules.
+    /// Vendored files are searchable but not in the import graph (`crate::vendor`).
+    #[serde(default)]
+    pub vendored_patterns: Vec<String>,
 }
 
 /// Serde default for boolean options that are on unless explicitly disabled.
@@ -610,6 +615,7 @@ impl Default for IndexConfig {
             mode: IndexMode::Tracked, // ripgrep defaults: not ignored, not hidden, not binary
             hidden: false,            // dot-directories skipped, like ripgrep
             lock_wait_secs: 0,        // fail fast when another indexer runs
+            vendored_patterns: vec![],
         }
     }
 }

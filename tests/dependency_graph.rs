@@ -533,3 +533,229 @@ fn file_resolved_language_with_missing_targets_warns() {
         warnings[0]
     );
 }
+
+/// A module that commits `vendor/` (as Kubernetes does): `main.go` imports a
+/// vendored package, which imports another vendored package.
+fn go_vendored_module(r: &Path, modules_txt: bool) {
+    write(r, "go.mod", "module example.com/m\n\ngo 1.22\n");
+    write(
+        r,
+        "main.go",
+        "package main\n\nimport \"golang.org/x/sys/unix\"\n\nfunc main() { unix.Mmap() }\n",
+    );
+    write(
+        r,
+        "vendor/golang.org/x/sys/unix/mmap.go",
+        "package unix\n\nimport \"golang.org/x/sys/internal/unsafeheader\"\n\nfunc Mmap() { unsafeheader.Use() }\n",
+    );
+    write(
+        r,
+        "vendor/golang.org/x/sys/unix/zerrors.go",
+        "package unix\n\nconst EINVAL = 22\n",
+    );
+    write(
+        r,
+        "vendor/golang.org/x/sys/internal/unsafeheader/h.go",
+        "package unsafeheader\n\nfunc Use() {}\n",
+    );
+    if modules_txt {
+        write(
+            r,
+            "vendor/modules.txt",
+            "# golang.org/x/sys v0.20.0\n## explicit; go 1.18\ngolang.org/x/sys/unix\n",
+        );
+    }
+}
+
+fn island_paths(d: &DependencyIndex) -> HashSet<String> {
+    d.find_islands()
+        .unwrap()
+        .iter()
+        .flat_map(|i| paths(d, i))
+        .collect()
+}
+
+/// A repo that commits `vendor/` gets the graph a repo that gitignores it gets:
+/// vendored files are searchable, but no island, unused file or edge.
+#[test]
+fn go_vendor_is_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, true);
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 3);
+    let islands = island_paths(&d);
+    assert!(
+        islands.iter().all(|p| !p.starts_with("vendor/")),
+        "{islands:?}"
+    );
+    let unused = paths(&d, &d.find_unused_files().unwrap());
+    assert!(
+        unused.iter().all(|p| !p.starts_with("vendor/")),
+        "{unused:?}"
+    );
+    assert!(edges(r).is_empty(), "{:?}", edges(r));
+
+    let main = d.get_file_id_by_path("main.go").unwrap().unwrap();
+    let rows = d.get_dependencies(main).unwrap();
+    let unix = rows
+        .iter()
+        .find(|i| i.imported_path == "golang.org/x/sys/unix")
+        .expect("{rows:?}");
+    assert_eq!(unix.import_type, reflex::models::ImportType::External);
+
+    let (stdout, _) = rfx(r, &["analyze", "--json", "--no-update"]);
+    let summary: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(summary["vendored_files"], 3, "{summary}");
+
+    // Still searchable.
+    let (stdout, _) = rfx(r, &["query", "EINVAL", "--json", "--no-update"]);
+    assert!(
+        stdout.contains("vendor/golang.org/x/sys/unix/zerrors.go"),
+        "{stdout}"
+    );
+}
+
+/// Without `modules.txt`, Go does not read `vendor/`: it is project code.
+#[test]
+fn go_vendor_without_modules_txt_stays_project_code() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, false);
+    index(r);
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 0);
+    assert!(
+        island_paths(&d).contains("vendor/golang.org/x/sys/unix/zerrors.go"),
+        "{:?}",
+        island_paths(&d)
+    );
+}
+
+/// Kubernetes `third_party/forked/` is the module's own code, imported by its
+/// module path: Go has no name rule, so it stays in the graph.
+#[test]
+fn go_third_party_forked_stays_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, true);
+    write(
+        r,
+        "cmd/tool/main.go",
+        "package main\n\nimport \"example.com/m/third_party/forked/junit\"\n\nfunc main() { junit.Write() }\n",
+    );
+    write(
+        r,
+        "third_party/forked/junit/junit.go",
+        "package junit\n\nfunc Write() {}\n",
+    );
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![edge(
+            "cmd/tool/main.go",
+            "third_party/forked/junit/junit.go"
+        )]
+    );
+    assert_eq!(deps(r).vendored_file_count().unwrap(), 3);
+}
+
+/// `[index.vendored] patterns`: a pattern adds a directory, `!` takes one out.
+#[test]
+fn vendored_override_adds_and_negates() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, true);
+    write(r, "libs/acme/acme.go", "package acme\n\nfunc A() {}\n");
+    write(
+        r,
+        ".reflex/config.toml",
+        "[index.vendored]\npatterns = [\"libs/acme/\", \"!vendor/golang.org/x/sys/internal/\"]\n",
+    );
+    rfx(r, &["index"]);
+    let d = deps(r);
+    let islands = island_paths(&d);
+    assert!(!islands.contains("libs/acme/acme.go"), "{islands:?}");
+    assert!(
+        islands.contains("vendor/golang.org/x/sys/internal/unsafeheader/h.go"),
+        "{islands:?}"
+    );
+    // unix (2 files) and acme are vendored; unsafeheader is not.
+    assert_eq!(d.vendored_file_count().unwrap(), 3);
+}
+
+#[test]
+fn deps_on_vendored_file_warns() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, true);
+    index(r);
+    let file = "vendor/golang.org/x/sys/unix/mmap.go";
+    let warnings = deps(r).graph_warnings_for(file).unwrap();
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "{file} is vendored; vendored files are not in the import graph"
+        )]
+    );
+    let (stdout, stderr) = rfx(r, &["deps", file, "--json", "--no-update"]);
+    serde_json::from_str::<serde_json::Value>(&stdout).expect("stdout is JSON");
+    assert!(stderr.contains("Warning: vendor/golang.org"), "{stderr}");
+    assert!(deps(r).graph_warnings_for("main.go").unwrap().is_empty());
+}
+
+/// A cache from before `files.vendored` gets the column on the next index.
+#[test]
+fn index_upgrades_a_cache_without_vendored_column() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, true);
+    index(r);
+    {
+        let conn = reflex::cache::open_meta_db(r.join(".reflex/meta.db")).unwrap();
+        conn.execute_batch(
+            "DROP VIEW import_edges;
+             ALTER TABLE files DROP COLUMN vendored;
+             UPDATE statistics SET value = 'old' WHERE key = 'schema_hash';",
+        )
+        .unwrap();
+    }
+    index(r);
+    assert_eq!(deps(r).vendored_file_count().unwrap(), 3);
+}
+
+#[test]
+fn incremental_new_file_under_vendor_is_flagged() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, true);
+    index(r);
+    write(
+        r,
+        "vendor/golang.org/x/sys/unix/zsys.go",
+        "package unix\n\nconst X = 1\n",
+    );
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .update_paths(r, &[r.join("vendor/golang.org/x/sys/unix/zsys.go")])
+        .expect("update_paths");
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 4);
+    assert!(edges(r).is_empty(), "{:?}", edges(r));
+}
+
+#[test]
+fn adding_modules_txt_flags_vendor_on_next_index() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    go_vendored_module(r, false);
+    index(r);
+    assert_eq!(deps(r).vendored_file_count().unwrap(), 0);
+    go_vendored_module(r, true);
+    index(r);
+    assert_eq!(deps(r).vendored_file_count().unwrap(), 3);
+    fs::remove_file(r.join("vendor/modules.txt")).unwrap();
+    index(r);
+    assert_eq!(deps(r).vendored_file_count().unwrap(), 0);
+}

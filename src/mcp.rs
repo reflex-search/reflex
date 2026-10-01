@@ -1310,9 +1310,8 @@ fn graph_warnings(handler: &str, arguments: &Value, root: &Path) -> Vec<String> 
         }
         "get_dependencies" | "get_dependents" | "get_transitive_deps" => arguments["path"]
             .as_str()
-            .and_then(|path| deps.low_resolution_warning_for(path).ok().flatten())
-            .into_iter()
-            .collect(),
+            .and_then(|path| deps.graph_warnings_for(path).ok())
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -2483,13 +2482,18 @@ fn dispatch_tool(
             let unused = deps_index.find_unused_files()?;
             let all_islands = deps_index.find_islands()?;
 
-            let summary = json!({
+            let mut summary = json!({
                 "circular_dependencies": cycles.len(),
                 "hotspots": hotspots.len(),
                 "unused_files": unused.len(),
                 "islands": all_islands.len(),
                 "min_dependents": min_dependents,
             });
+            // Searchable, but left out of every count above (`crate::vendor`)
+            let vendored = deps_index.vendored_file_count()?;
+            if vendored > 0 {
+                summary["vendored_files"] = json!(vendored);
+            }
 
             Ok(summary)
         }

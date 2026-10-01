@@ -249,6 +249,53 @@ fn breakdown<'a>(
     (new, modified, unchanged)
 }
 
+/// Set `files.vendored` from `rules` for the rows in `ids`, or for every row
+/// (`None`: the rules may have changed). Returns how many rows changed.
+fn refresh_vendored(
+    tx: &rusqlite::Connection,
+    rules: &crate::vendor::VendorRules,
+    ids: Option<&[i64]>,
+) -> Result<usize> {
+    let mut changed: Vec<(i64, bool)> = Vec::new();
+    {
+        let mut visit = |id: i64, path: &str, old: bool| {
+            let new = rules.is_vendored(path, crate::models::Language::from_path(Path::new(path)));
+            if new != old {
+                changed.push((id, new));
+            }
+        };
+        match ids {
+            None => {
+                let mut stmt = tx.prepare("SELECT id, path, vendored FROM files")?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, bool>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, path, old) = row?;
+                    visit(id, &path, old);
+                }
+            }
+            Some(ids) => {
+                let mut stmt = tx.prepare("SELECT path, vendored FROM files WHERE id = ?")?;
+                for &id in ids {
+                    let (path, old): (String, bool) =
+                        stmt.query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                    visit(id, &path, old);
+                }
+            }
+        }
+    }
+    let mut stmt = tx.prepare("UPDATE files SET vendored = ? WHERE id = ?")?;
+    for (id, vendored) in &changed {
+        stmt.execute(rusqlite::params![vendored, id])?;
+    }
+    Ok(changed.len())
+}
+
 /// Resolve again every stored import (other than External/Stdlib) and every
 /// export of the files not in `skip`, updating the rows whose target changed.
 /// Package-keyed rows are skipped: their key depends on the import and the
@@ -1306,9 +1353,11 @@ impl Indexer {
         laps.lap("snapshot");
 
         // The resolver configs the last walk found, unchanged since.
-        let Some(resolver_configs) =
-            crate::dependency_resolve::ResolverConfigs::from_saved_list(root, &cache_dir)
-        else {
+        let Some(resolver_configs) = crate::dependency_resolve::ResolverConfigs::from_saved_list(
+            root,
+            &cache_dir,
+            &self.config.vendored_patterns,
+        ) else {
             return Ok(None);
         };
         if stored_digest.as_deref() != Some(resolver_configs.digest.as_str()) {
@@ -1786,7 +1835,10 @@ impl Indexer {
             });
             let configs = scope.spawn(|| {
                 let t = Instant::now();
-                let r = crate::dependency_resolve::ResolverConfigs::discover(root);
+                let r = crate::dependency_resolve::ResolverConfigs::discover(
+                    root,
+                    &self.config.vendored_patterns,
+                );
                 (r, t.elapsed().as_millis())
             });
             // Available disk space (a `df` subprocess), now that the cache exists.
@@ -3019,6 +3071,7 @@ impl Indexer {
         } else {
             0
         };
+        refresh_vendored(&tx, &c.resolver_configs.vendor, Some(&ids))?;
         laps.lap("deps");
 
         crate::meta_update::set_statistic(
@@ -3592,6 +3645,12 @@ impl Indexer {
         if !w.full_deps && paths_changed {
             reresolved = reresolve(&tx, &ctx, &resolver, &resolved_here)?;
         }
+        let written_ids: Vec<i64> = ids.values().copied().collect();
+        refresh_vendored(
+            &tx,
+            &w.resolver_configs.vendor,
+            (!w.full_deps).then_some(written_ids.as_slice()),
+        )?;
 
         crate::meta_update::set_statistic(
             &tx,

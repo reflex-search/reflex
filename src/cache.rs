@@ -165,7 +165,8 @@ impl CacheManager {
                 mtime_ns INTEGER NOT NULL DEFAULT 0,
                 hash TEXT NOT NULL DEFAULT '',
                 dirty_at_index INTEGER NOT NULL DEFAULT 0,
-                walk_seq INTEGER NOT NULL DEFAULT 0
+                walk_seq INTEGER NOT NULL DEFAULT 0,
+                vendored INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -323,23 +324,28 @@ impl CacheManager {
 
         // The import graph: one row per (import, file it reaches). File-resolved
         // imports reach one file; package imports reach every member file
-        // (`package` is the key they reached it by). Recreated every time: a view
-        // holds no data, and `IF NOT EXISTS` would keep an older definition.
+        // (`package` is the key they reached it by). Vendored files are neither end
+        // of an edge (`crate::vendor`). Recreated every time: a view holds no data,
+        // and `IF NOT EXISTS` would keep an older definition.
         conn.execute_batch(
             "DROP VIEW IF EXISTS import_edges;
              CREATE VIEW import_edges AS
-             SELECT id AS dep_id, file_id AS src, resolved_file_id AS dst, import_type,
-                    NULL AS package
-               FROM file_dependencies
-              WHERE resolved_file_id IS NOT NULL
-             UNION ALL
-             SELECT DISTINCT d.id, d.file_id, m.file_id, d.import_type, d.resolved_package
-               FROM file_dependencies d
-               JOIN package_members m
-                 ON m.package = d.resolved_package
-                AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
-              WHERE d.resolved_package IS NOT NULL
-                AND m.file_id != d.file_id;",
+             SELECT e.* FROM (
+               SELECT id AS dep_id, file_id AS src, resolved_file_id AS dst, import_type,
+                      NULL AS package
+                 FROM file_dependencies
+                WHERE resolved_file_id IS NOT NULL
+               UNION ALL
+               SELECT DISTINCT d.id, d.file_id, m.file_id, d.import_type, d.resolved_package
+                 FROM file_dependencies d
+                 JOIN package_members m
+                   ON m.package = d.resolved_package
+                  AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
+                WHERE d.resolved_package IS NOT NULL
+                  AND m.file_id != d.file_id
+             ) e
+             JOIN files s ON s.id = e.src AND s.vendored = 0
+             JOIN files t ON t.id = e.dst AND t.vendored = 0;",
         )?;
 
         conn.execute(
@@ -407,12 +413,13 @@ impl CacheManager {
     /// The schema hash already forces that index to rebuild every row, so the
     /// columns only need to exist; their defaults are overwritten immediately.
     fn migrate_files_columns(conn: &Connection) -> Result<()> {
-        const WANTED: [(&str, &str); 5] = [
+        const WANTED: [(&str, &str); 6] = [
             ("size", "INTEGER NOT NULL DEFAULT 0"),
             ("mtime_ns", "INTEGER NOT NULL DEFAULT 0"),
             ("hash", "TEXT NOT NULL DEFAULT ''"),
             ("dirty_at_index", "INTEGER NOT NULL DEFAULT 0"),
             ("walk_seq", "INTEGER NOT NULL DEFAULT 0"),
+            ("vendored", "INTEGER NOT NULL DEFAULT 0"),
         ];
         let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('files')")?;
         let present: std::collections::HashSet<String> = stmt
@@ -420,7 +427,7 @@ impl CacheManager {
             .collect::<Result<_, _>>()?;
         for (name, decl) in WANTED {
             if !present.contains(name) {
-                log::info!("meta.db: adding files.{} (pre-2.0.0 cache)", name);
+                log::info!("meta.db: adding files.{} (older cache)", name);
                 conn.execute(
                     &format!("ALTER TABLE files ADD COLUMN {} {}", name, decl),
                     [],
@@ -539,6 +546,12 @@ follow_symlinks = false
 patterns = []
 
 [index.exclude]
+patterns = []
+
+# Vendored code (gitignore rules): searchable, but not in the import graph. Reflex
+# finds vendor/modules.txt, Composer, cargo vendor, node_modules, site-packages and
+# third_party/ itself; "!dir/" marks a directory as project code.
+[index.vendored]
 patterns = []
 
 [performance]
@@ -865,6 +878,16 @@ symbol_threads = 0  # background symbol pass; 0 = auto (50% of available cores, 
                 .and_then(|v| v.as_array())
             {
                 cfg.exclude_patterns = exclude
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+            }
+            if let Some(vendored) = index_tbl
+                .get("vendored")
+                .and_then(|v| v.get("patterns"))
+                .and_then(|v| v.as_array())
+            {
+                cfg.vendored_patterns = vendored
                     .iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect();

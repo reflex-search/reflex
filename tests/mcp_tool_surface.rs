@@ -298,3 +298,49 @@ fn get_dependencies_warning_is_second_content_item() {
     let text = content[1]["text"].as_str().unwrap();
     assert!(text.starts_with("warnings: Go: 0 of 120"), "{text}");
 }
+
+#[test]
+fn vendored_file_warns_and_summary_counts_vendored() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    for (rel, body) in [
+        ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+        (
+            "main.go",
+            "package main\n\nimport \"golang.org/x/sys/unix\"\n\nfunc main() { unix.F() }\n",
+        ),
+        (
+            "vendor/modules.txt",
+            "# golang.org/x/sys v0.20.0\ngolang.org/x/sys/unix\n",
+        ),
+        (
+            "vendor/golang.org/x/sys/unix/u.go",
+            "package unix\n\nfunc F() {}\n",
+        ),
+    ] {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, body).unwrap();
+    }
+    Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .index(root, false)
+        .unwrap();
+
+    let v = rpc(
+        root,
+        "tools/call",
+        json!({"name": "get_dependencies",
+               "arguments": {"path": "vendor/golang.org/x/sys/unix/u.go", "reverse": true}}),
+    );
+    let content = v["result"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2, "{v}");
+    let text = content[1]["text"].as_str().unwrap();
+    assert!(
+        text.contains("vendor/golang.org/x/sys/unix/u.go is vendored"),
+        "{text}"
+    );
+
+    let v = call(root, "analyze", json!({"kind": "summary"}));
+    assert_eq!(v["vendored_files"], 1, "{v}");
+    assert_eq!(v["islands"], 1, "only main.go: {v}");
+}
