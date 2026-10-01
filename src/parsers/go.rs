@@ -835,141 +835,100 @@ func main() {
         }
     }
 
-    #[test]
-    fn test_resolve_go_import() {
-        use std::fs;
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let root = temp.path();
-
-        // Create a Go module structure
-        let myapp = root.join("myapp");
-        fs::create_dir_all(myapp.join("pkg/models")).unwrap();
-        fs::write(
-            myapp.join("go.mod"),
-            "module github.com/myorg/myapp\n\ngo 1.21\n",
-        )
-        .unwrap();
-
-        let modules = parse_all_go_modules(root).unwrap();
-        assert_eq!(modules.len(), 1);
-
-        // Test sub-package import resolution
-        // "github.com/myorg/myapp/pkg/models" → "myapp/pkg/models.go" or "myapp/pkg/models/models.go"
-        let resolved =
-            resolve_go_import_to_path("github.com/myorg/myapp/pkg/models", &modules, None);
-
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        assert!(path.contains("myapp/pkg/models"));
-        assert!(path.ends_with(".go"));
+    fn module(name: &str, root: &str) -> GoModule {
+        GoModule {
+            name: name.to_string(),
+            project_root: root.to_string(),
+            abs_project_root: std::path::PathBuf::from("/ws").join(root),
+        }
     }
 
     #[test]
-    fn test_resolve_go_import_module_root() {
-        use std::fs;
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let root = temp.path();
-
-        let myapp = root.join("cmd/server");
-        fs::create_dir_all(&myapp).unwrap();
-        fs::write(
-            myapp.join("go.mod"),
-            "module github.com/myorg/server\n\ngo 1.21\n",
-        )
-        .unwrap();
-
-        let modules = parse_all_go_modules(root).unwrap();
-
-        // Test module root import (no sub-package)
-        let resolved = resolve_go_import_to_path("github.com/myorg/server", &modules, None);
-
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        // Should try main.go or server.go
-        assert!(path.contains("cmd/server"));
-        assert!(path.ends_with(".go"));
-    }
-
-    #[test]
-    fn test_resolve_go_import_not_found() {
-        use std::fs;
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let root = temp.path();
-
-        let myapp = root.join("myapp");
-        fs::create_dir_all(&myapp).unwrap();
-        fs::write(
-            myapp.join("go.mod"),
-            "module github.com/myorg/myapp\n\ngo 1.21\n",
-        )
-        .unwrap();
-
-        let modules = parse_all_go_modules(root).unwrap();
-
-        // Try to resolve an import for a different module
-        let resolved = resolve_go_import_to_path("github.com/other/package", &modules, None);
-
-        // Should return None for modules not in the monorepo
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_resolve_go_import_relative() {
-        let modules = vec![];
-
-        // Relative imports are not supported yet
-        let resolved =
-            resolve_go_import_to_path("./utils", &modules, Some("myapp/pkg/api/handler.go"));
-
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_resolve_go_import_root_module_no_leading_slash() {
-        // When go.mod is at the repo root, project_root is "" and paths must not
-        // start with "/" (which would cause ambiguous fuzzy matches in the DB).
-        use std::fs;
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-        let root = temp.path();
-
-        // go.mod at repo root → project_root = ""
-        fs::write(root.join("go.mod"), "module k8s.io/kubernetes\n\ngo 1.21\n").unwrap();
-
-        let modules = parse_all_go_modules(root).unwrap();
-        assert_eq!(modules.len(), 1);
-        assert_eq!(modules[0].project_root, "");
-
-        // Sub-package import
-        let resolved =
-            resolve_go_import_to_path("k8s.io/kubernetes/test/internal/metric", &modules, None);
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        assert!(
-            !path.starts_with('/'),
-            "path must not start with '/': {}",
-            path
+    fn package_key_is_the_package_directory() {
+        let modules = [module("github.com/myorg/myapp", "myapp")];
+        assert_eq!(
+            go_package_key("github.com/myorg/myapp/pkg/models", &modules).as_deref(),
+            Some("go:myapp/pkg/models")
         );
-        assert!(path.ends_with(".go"));
-        assert!(path.contains("test/internal/metric"));
-
-        // Module-root import
-        let resolved = resolve_go_import_to_path("k8s.io/kubernetes", &modules, None);
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        assert!(
-            !path.starts_with('/'),
-            "path must not start with '/': {}",
-            path
+        assert_eq!(
+            go_package_key("github.com/myorg/myapp", &modules).as_deref(),
+            Some("go:myapp")
         );
-        assert!(path.ends_with(".go"));
+    }
+
+    #[test]
+    fn package_key_at_the_repo_root_has_no_leading_slash() {
+        let modules = [module("k8s.io/kubernetes", "")];
+        assert_eq!(
+            go_package_key("k8s.io/kubernetes/test/internal/metric", &modules).as_deref(),
+            Some("go:test/internal/metric")
+        );
+        assert_eq!(
+            go_package_key("k8s.io/kubernetes", &modules).as_deref(),
+            Some("go:")
+        );
+    }
+
+    #[test]
+    fn module_match_needs_path_boundary() {
+        // Walk order put `k8s.io/api` first; `k8s.io/apiserver/...` used to strip to
+        // `server/...` under it.
+        let modules = [
+            module("k8s.io/api", "staging/src/k8s.io/api"),
+            module("k8s.io/apiserver", "staging/src/k8s.io/apiserver"),
+        ];
+        assert_eq!(
+            go_package_key("k8s.io/apiserver/pkg/server", &modules).as_deref(),
+            Some("go:staging/src/k8s.io/apiserver/pkg/server")
+        );
+        assert_eq!(go_package_key("k8s.io/apimachinery/pkg", &modules), None);
+    }
+
+    #[test]
+    fn longest_module_wins() {
+        let modules = [
+            module("example.com/m", ""),
+            module("example.com/m/tools", "tools"),
+        ];
+        assert_eq!(
+            go_package_key("example.com/m/tools/gen", &modules).as_deref(),
+            Some("go:tools/gen")
+        );
+        assert_eq!(
+            go_package_key("example.com/m/pkg/a", &modules).as_deref(),
+            Some("go:pkg/a")
+        );
+    }
+
+    #[test]
+    fn import_outside_modules_has_no_key() {
+        let modules = [module("github.com/myorg/myapp", "myapp")];
+        assert_eq!(go_package_key("github.com/other/package", &modules), None);
+        assert_eq!(go_package_key("./utils", &modules), None);
+    }
+
+    #[test]
+    fn import_outside_modules_is_external() {
+        // Same domain as the module, but no module of the workspace owns it.
+        assert_eq!(
+            reclassify_go_import("k8s.io/klog/v2", Some("k8s.io/kubernetes")),
+            ImportType::External
+        );
+        assert_eq!(
+            reclassify_go_import("k8s.io/kubernetes/pkg/api", Some("k8s.io/kubernetes")),
+            ImportType::Internal
+        );
+        assert_eq!(
+            reclassify_go_import("k8s.io/kubernetesfoo/x", Some("k8s.io/kubernetes")),
+            ImportType::External
+        );
+    }
+
+    #[test]
+    fn package_membership_skips_test_files() {
+        assert_eq!(go_package_member("pkg/a/a.go").as_deref(), Some("go:pkg/a"));
+        assert_eq!(go_package_member("main.go").as_deref(), Some("go:"));
+        assert_eq!(go_package_member("pkg/a/a_test.go"), None);
     }
 }
 
@@ -1144,21 +1103,13 @@ fn classify_go_import(import_path: &str) -> ImportType {
 
 /// Internal implementation of Go import classification
 fn classify_go_import_impl(import_path: &str, module_prefix: Option<&str>) -> ImportType {
-    // If we have a module prefix, check if import starts with it → Internal
-    if let Some(prefix) = module_prefix {
-        if import_path.starts_with(prefix) {
-            return ImportType::Internal;
-        }
-        // Also check for multi-module repos - imports starting with k8s.io/* for Kubernetes
-        // Extract the domain portion and check if it matches
-        if let Some(import_domain) = import_path.split('/').next()
-            && let Some(module_domain) = prefix.split('/').next()
-        {
-            // If domains match (e.g., both start with k8s.io), consider it internal
-            if import_domain == module_domain && module_domain.contains('.') {
-                return ImportType::Internal;
-            }
-        }
+    // An import inside a module of the workspace is Internal. Only on a path
+    // boundary: `k8s.io/apiserver` is not in `k8s.io/api`, and a module that merely
+    // shares a domain (`k8s.io/klog` beside `k8s.io/kubernetes`) is not ours.
+    if let Some(prefix) = module_prefix
+        && in_module(import_path, prefix)
+    {
+        return ImportType::Internal;
     }
     // Relative imports (./ or ../) - rare in Go but possible
     if import_path.starts_with("./") || import_path.starts_with("../") {
@@ -1350,73 +1301,42 @@ pub fn parse_go_modules_from(
     Ok(modules)
 }
 
-/// Resolve a Go import to a file path
-///
-/// Handles:
-/// - Internal imports: `mymodule/pkg/utils` → `pkg/utils.go` or `pkg/utils/utils.go`
-/// - Sub-packages: `mymodule/internal/models` → `internal/models/models.go`
-/// - Relative imports: `./utils` (rare in Go but possible)
-pub fn resolve_go_import_to_path(
-    import_path: &str,
-    modules: &[GoModule],
-    _current_file_path: Option<&str>,
-) -> Option<String> {
-    // Handle relative imports (rare in Go)
-    if import_path.starts_with("./") || import_path.starts_with("../") {
-        // Go relative imports are rare and complex - skip for now
+/// Whether `import_path` is module `module` or a package inside it.
+fn in_module(import_path: &str, module: &str) -> bool {
+    import_path
+        .strip_prefix(module)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// The package key (`go:<dir>`, the directory relative to the index root) of an
+/// import in one of the workspace's modules. A Go import names a package, which
+/// is every non-test `.go` file of one directory ([`go_package_member`]). The
+/// longest matching module wins (a nested module owns its subtree).
+pub fn go_package_key(import_path: &str, modules: &[GoModule]) -> Option<String> {
+    let module = modules
+        .iter()
+        .filter(|m| in_module(import_path, &m.name))
+        .max_by(|a, b| {
+            a.name
+                .len()
+                .cmp(&b.name.len())
+                .then_with(|| b.project_root.cmp(&a.project_root))
+        })?;
+    let sub = import_path[module.name.len()..].trim_start_matches('/');
+    let dir = [module.project_root.as_str(), sub]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(format!("go:{dir}"))
+}
+
+/// The package a Go file belongs to: its directory, unless it is a `_test.go`
+/// file (never compiled into an importer).
+pub fn go_package_member(rel_path: &str) -> Option<String> {
+    if rel_path.ends_with("_test.go") {
         return None;
     }
-
-    // Find matching module
-    for module in modules {
-        if import_path.starts_with(&module.name) {
-            // Strip module name to get sub-package path
-            // "k8s.io/kubernetes/pkg/api" with module "k8s.io/kubernetes" → "pkg/api"
-            let sub_path = import_path
-                .strip_prefix(&module.name)
-                .unwrap_or(import_path)
-                .trim_start_matches('/');
-
-            if sub_path.is_empty() {
-                // Importing the module root - could be multiple files
-                // Try common patterns
-                let basename = module.name.split('/').next_back().unwrap_or("main");
-                let candidates = if module.project_root.is_empty() {
-                    vec!["main.go".to_string(), format!("{}.go", basename)]
-                } else {
-                    vec![
-                        format!("{}/main.go", module.project_root),
-                        format!("{}/{}.go", module.project_root, basename),
-                    ]
-                };
-
-                if let Some(candidate) = candidates.into_iter().next() {
-                    log::trace!("Checking Go module root: {}", candidate);
-                    return Some(candidate);
-                }
-            } else {
-                // Sub-package import
-                // Try both single file and package directory patterns
-                let package_name = sub_path.split('/').next_back().unwrap_or(sub_path);
-                let candidates = if module.project_root.is_empty() {
-                    vec![
-                        format!("{}.go", sub_path),
-                        format!("{}/{}.go", sub_path, package_name),
-                    ]
-                } else {
-                    vec![
-                        format!("{}/{}.go", module.project_root, sub_path),
-                        format!("{}/{}/{}.go", module.project_root, sub_path, package_name),
-                    ]
-                };
-
-                if let Some(candidate) = candidates.into_iter().next() {
-                    log::trace!("Checking Go package path: {}", candidate);
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-
-    None
+    let dir = rel_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+    Some(format!("go:{dir}"))
 }

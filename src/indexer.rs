@@ -249,6 +249,8 @@ fn breakdown<'a>(
 
 /// Resolve again every stored import (other than External/Stdlib) and every
 /// export of the files not in `skip`, updating the rows whose target changed.
+/// Package-keyed rows are skipped: their key depends on the import and the
+/// module config only, and which files a package holds is `package_members`.
 /// Returns how many rows changed.
 fn reresolve(
     tx: &rusqlite::Connection,
@@ -261,7 +263,8 @@ fn reresolve(
         let mut stmt = tx.prepare(
             "SELECT d.id, d.file_id, f.path, d.imported_path, d.resolved_file_id
              FROM file_dependencies d JOIN files f ON f.id = d.file_id
-             WHERE d.import_type NOT IN ('external', 'stdlib')",
+             WHERE d.import_type NOT IN ('external', 'stdlib')
+               AND d.resolved_package IS NULL",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -2968,6 +2971,7 @@ impl Indexer {
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
+            writer.replace_members(file_id, &crate::dependency_resolve::package_members(rel))?;
             writer.clear_exports(file_id)?;
             for export in exports {
                 let resolved = ctx.resolve_export(rel, export, &resolver);
@@ -3534,6 +3538,7 @@ impl Indexer {
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
+            writer.replace_members(file_id, &crate::dependency_resolve::package_members(rel))?;
             if !w.full_deps {
                 writer.clear_exports(file_id)?;
             }

@@ -60,6 +60,16 @@
   `content` text item, the array is unchanged; CLI: `Warning:` on stderr, and
   `warnings` in `rfx analyze --json`). On 2.1.0 Go, Java, C# and Kotlin resolved 0.3–7 %
   of internal imports, so islands, unused files and hotspots for them were mostly noise.
+- **Go imports resolve to their package.** A Go import names a directory, so it now
+  reaches every non-`_test.go` file of that directory (`get_dependencies` lists them as
+  `resolved_paths`). Modules match on a path boundary, longest first (`k8s.io/apiserver`
+  is no longer read as `k8s.io/api` + `server`), and an import in no module of the
+  workspace is External (`k8s.io/klog` beside `k8s.io/kubernetes` was Internal and
+  unresolved). Files of one package count as one unit for islands and unused files.
+  Kubernetes: 84 of 52,472 internal imports resolved (0.2 %) → 48,997 of 48,997;
+  islands 27,303 → 1,368; unused files 27,371 → 4,802; `rfx analyze` 0.0 → 2.2 s.
+- Hotspots count distinct importers (a file with two imports of one target counted
+  twice), and one cycle is no longer reported twice when a file imports a target twice.
 - Text, lock and generated files are no longer islands or unused files (every README
   and lock file was both). Entry points now cover `main.go`, `*_test.go`, `testdata/`,
   `Program.cs`, `*Test(s)`/`*IT` Java, Kotlin and C# files, `__main__.py`, `manage.py`,

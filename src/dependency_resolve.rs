@@ -495,6 +495,32 @@ impl ResolverConfigs {
     }
 }
 
+/// What an import resolved to (see [`ResolverContext::resolve`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// One indexed file (`file_dependencies.resolved_file_id`).
+    File(i64),
+    /// A package key (`resolved_package`) and optionally one member of it
+    /// (`resolved_member`); the graph reaches every file in `package_members`.
+    Package {
+        key: String,
+        member: Option<String>,
+    },
+    Unresolved,
+}
+
+/// The `(package key, member)` rows that make the file at `rel_path` reachable
+/// by package imports (`package_members`). Member `""` stands for the whole
+/// package.
+pub fn package_members(rel_path: &str) -> Vec<(String, String)> {
+    if rel_path.ends_with(".go") {
+        return crate::parsers::go::go_package_member(rel_path)
+            .map(|key| vec![(key, String::new())])
+            .unwrap_or_default();
+    }
+    Vec::new()
+}
+
 /// The resolution rules for one workspace, over its parsed configs.
 pub struct ResolverContext<'a> {
     pub root: &'a Path,
@@ -544,16 +570,18 @@ impl<'a> ResolverContext<'a> {
                 continue;
             }
 
-            let resolved_file_id = self.resolve_import(file_path, &import_info, resolver);
-
-            // resolved_file_id will be populated using deterministic language-specific resolution
-            // All language resolvers have been implemented!
+            let (resolved_file_id, resolved_package, resolved_member) =
+                match self.resolve(file_path, &import_info, resolver) {
+                    Resolution::File(id) => (Some(id), None, None),
+                    Resolution::Package { key, member } => (None, Some(key), member),
+                    Resolution::Unresolved => (None, None, None),
+                };
             resolved_deps.push(Dependency {
                 file_id,
                 imported_path: import_info.imported_path.clone(),
                 resolved_file_id,
-                resolved_package: None,
-                resolved_member: None,
+                resolved_package,
+                resolved_member,
                 import_type: import_info.import_type,
                 line_number: import_info.line_number,
                 imported_symbols: import_info.imported_symbols.clone(),
@@ -701,7 +729,31 @@ impl<'a> ResolverContext<'a> {
         }
     }
 
-    /// The `files.id` an import that is neither External nor Stdlib resolves to.
+    /// Where an import that is neither External nor Stdlib leads: one file, or a
+    /// package the graph expands to its member files ([`package_members`]).
+    pub fn resolve(
+        &self,
+        file_path: &str,
+        import_info: &ImportInfo,
+        resolver: &PathResolver,
+    ) -> Resolution {
+        if file_path.ends_with(".go") {
+            // A Go import names a package (a directory), never one file
+            return crate::parsers::go::go_package_key(
+                &import_info.imported_path,
+                &self.configs.go_modules,
+            )
+            .map_or(Resolution::Unresolved, |key| Resolution::Package {
+                key,
+                member: None,
+            });
+        }
+        self.resolve_import(file_path, import_info, resolver)
+            .map_or(Resolution::Unresolved, Resolution::File)
+    }
+
+    /// The `files.id` an import that is neither External nor Stdlib resolves to,
+    /// for the languages whose imports name one file (see [`Self::resolve`]).
     pub fn resolve_import(
         &self,
         file_path: &str,
@@ -710,7 +762,6 @@ impl<'a> ResolverContext<'a> {
     ) -> Option<i64> {
         let root = self.root;
         let tsconfigs = &self.configs.tsconfigs;
-        let go_modules = &self.configs.go_modules;
         let java_projects = &self.configs.java_projects;
         let python_packages = &self.configs.python_packages;
         let ruby_projects = &self.configs.ruby_projects;
@@ -798,45 +849,6 @@ impl<'a> ResolverContext<'a> {
                     "Could not resolve Python import: {}",
                     import_info.imported_path
                 );
-                None
-            }
-        } else if file_path.ends_with(".go") && !go_modules.is_empty() {
-            // Resolve Go dependencies using module mappings
-            if let Some(resolved_path) = crate::parsers::go::resolve_go_import_to_path(
-                &import_info.imported_path,
-                go_modules,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Go dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Go dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Go dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!("Could not resolve Go import: {}", import_info.imported_path);
                 None
             }
         } else if file_path.ends_with(".ts")

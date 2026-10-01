@@ -132,6 +132,9 @@ failed Zola build still exits 0.
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
   (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
   `unwrap_or_default()`.
+- **`rfx analyze` (summary) takes 2.2 s on Kubernetes** since Go imports resolve (was 0.0 s
+  on an almost empty graph). Each of cycles, hotspots, unused and islands loads
+  `import_edges` (~420k package-expanded edges) on its own connection; load once.
 - **Stale index, but no `can_trust_results: false`** — MCP fixed on `feature/auto-update`
   (every JSON-object answer carries it). Left: `check_index_status` with no index returns
   only `{status, action_required}`; `rfx query --count --json` returns `{count,

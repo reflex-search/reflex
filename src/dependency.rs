@@ -926,6 +926,22 @@ impl DependencyIndex {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
 
+        // A package whose member is used or an entry point is used as a whole
+        // (`cmd/x/flags.go` beside `cmd/x/main.go`)
+        let entry_points: HashSet<i64> = all_files
+            .iter()
+            .filter(|(_, path)| is_entry_point(path))
+            .map(|(id, _)| *id)
+            .collect();
+        for group in sibling_groups(&conn)? {
+            if group
+                .iter()
+                .any(|id| used_files.contains(id) || entry_points.contains(id))
+            {
+                used_files.extend(group);
+            }
+        }
+
         let unused: Vec<i64> = all_files
             .into_iter()
             .filter(|(id, path)| !used_files.contains(id) && !is_entry_point(path))
@@ -1021,6 +1037,14 @@ impl DependencyIndex {
             // Add edge in both directions for undirected graph
             graph.entry(file_id).or_default().push(target_id);
             graph.entry(target_id).or_default().push(file_id);
+        }
+
+        // Files of one package belong together even when none imports another
+        for group in sibling_groups(&conn)? {
+            for pair in group.windows(2) {
+                graph.entry(pair[0]).or_default().push(pair[1]);
+                graph.entry(pair[1]).or_default().push(pair[0]);
+            }
         }
 
         // Get all file IDs (including isolated files with no dependencies)
@@ -1399,6 +1423,33 @@ fn load_edges(conn: &Connection, order: EdgeOrder, mod_decl: bool) -> Result<Vec
         .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(edges.into_iter().filter(|e| seen.insert(*e)).collect())
+}
+
+/// The member files of each Go package, in walk order. They compile as one unit
+/// and use each other with no import, so islands and unused files treat each
+/// group as connected. (JVM and C# packages are not: a namespace can span
+/// unrelated projects.)
+fn sibling_groups(conn: &Connection) -> Result<Vec<Vec<i64>>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.package, m.file_id FROM package_members m
+         JOIN files f ON f.id = m.file_id
+         WHERE m.package LIKE 'go:%'
+         ORDER BY m.package, f.walk_seq",
+    )?;
+    let mut groups: Vec<Vec<i64>> = Vec::new();
+    let mut current: Option<String> = None;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (package, id) = row?;
+        if current.as_deref() != Some(package.as_str()) {
+            groups.push(Vec::new());
+            current = Some(package);
+        }
+        groups.last_mut().expect("pushed above").push(id);
+    }
+    Ok(groups)
 }
 
 /// `files` rows that can take part in the import graph. Text, lock and generated
