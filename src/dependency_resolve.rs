@@ -88,6 +88,7 @@ pub fn is_resolver_config_name(name: &str) -> bool {
             | "pyvenv.cfg"
             | ".cargo-checksum.json"
             | "build.zig.zon"
+            | "build.zig"
     ) || name.ends_with(".gemspec")
 }
 
@@ -150,6 +151,8 @@ struct ConfigList {
     vendor_markers: Vec<String>,
     #[serde(default)]
     zig_zons: Vec<String>,
+    #[serde(default)]
+    zig_builds: Vec<String>,
     walk_error: Option<String>,
 }
 
@@ -167,6 +170,8 @@ struct ConfigFiles {
     vendor_markers: Vec<PathBuf>,
     /// `build.zig.zon` files, whose path dependencies are vendored roots.
     zig_zons: Vec<PathBuf>,
+    /// `build.zig` files, whose named modules `@import("name")` reaches.
+    zig_builds: Vec<PathBuf>,
     /// The first walk error. Every finder except tsconfig's stopped on its first
     /// error (`entry?`) and returned it, so their kinds fail with it here too.
     walk_error: Option<String>,
@@ -208,6 +213,10 @@ impl ConfigFiles {
                 }
                 "build.zig.zon" => {
                     out.zig_zons.push(path.to_path_buf());
+                    continue;
+                }
+                "build.zig" => {
+                    out.zig_builds.push(path.to_path_buf());
                     continue;
                 }
                 _ => continue,
@@ -295,6 +304,7 @@ impl ConfigFiles {
             &mut self.cargo_tomls,
             &mut self.composer,
             &mut self.tsconfigs,
+            &mut self.zig_builds,
         ] {
             list.retain(keep);
         }
@@ -346,6 +356,9 @@ impl ConfigFiles {
         for path in &self.zig_zons {
             file("zig", path);
         }
+        for path in &self.zig_builds {
+            file("zig-build", path);
+        }
         // `find_python_package_name` reads all three names in each project root.
         for path in &self.python {
             if let Some(dir) = path.parent() {
@@ -391,6 +404,7 @@ impl ConfigFiles {
             tsconfigs: rel(&self.tsconfigs),
             vendor_markers: rel(&self.vendor_markers),
             zig_zons: rel(&self.zig_zons),
+            zig_builds: rel(&self.zig_builds),
             walk_error: self.walk_error.clone(),
         }
     }
@@ -408,6 +422,7 @@ impl ConfigFiles {
             tsconfigs: abs(&list.tsconfigs),
             vendor_markers: abs(&list.vendor_markers),
             zig_zons: abs(&list.zig_zons),
+            zig_builds: abs(&list.zig_builds),
             walk_error: list.walk_error.clone(),
         }
     }
@@ -430,6 +445,8 @@ pub struct ResolverConfigs {
     pub ruby_projects: Vec<RubyProject>,
     pub rust_crates: Vec<RustCrate>,
     pub php_psr4: Vec<Psr4Mapping>,
+    /// Named modules the workspace's `build.zig` files define.
+    pub zig_modules: Vec<crate::parsers::zig::ZigModule>,
     /// Which files are vendored: the markers found, plus `[index.vendored] patterns`.
     pub vendor: crate::vendor::VendorRules,
     /// Digest of every input above (see `ConfigFiles::digest`) and the vendored
@@ -490,6 +507,7 @@ impl ResolverConfigs {
             &list.tsconfigs,
             &list.vendor_markers,
             &list.zig_zons,
+            &list.zig_builds,
         ]
         .into_iter()
         .flatten()
@@ -514,6 +532,18 @@ impl ResolverConfigs {
             h.finalize().to_hex().to_string()
         };
         let vendor = crate::vendor::VendorRules::new(root, files.vendor_roots(root), vendored);
+        let zig_modules: Vec<crate::parsers::zig::ZigModule> = files
+            .zig_builds
+            .iter()
+            .filter_map(|p| {
+                let source = std::fs::read_to_string(p).ok()?;
+                Some(crate::parsers::zig::parse_build_zig_modules(
+                    &rel_slash(root, p),
+                    &source,
+                ))
+            })
+            .flatten()
+            .collect();
 
         let tsconfigs = crate::parsers::tsconfig::parse_tsconfigs_from(&files.tsconfigs)
             .unwrap_or_else(|e| {
@@ -645,6 +675,7 @@ impl ResolverConfigs {
             ruby_projects,
             rust_crates,
             php_psr4,
+            zig_modules,
             vendor,
             digest,
             files,
@@ -876,6 +907,19 @@ impl<'a> ResolverContext<'a> {
             }
         }
 
+        // A Zig module name the workspace's build.zig defines
+        if file_path.ends_with(".zig")
+            && matches!(import_info.import_type, ImportType::External)
+            && crate::parsers::zig::find_zig_module(
+                &import_info.imported_path,
+                file_path,
+                &self.configs.zig_modules,
+            )
+            .is_some()
+        {
+            import_info.import_type = ImportType::Internal;
+        }
+
         // Reclassify Rust imports using workspace crates
         if file_path.ends_with(".rs") && !rust_crates.is_empty() {
             let new_type = crate::parsers::rust::reclassify_rust_import(
@@ -1008,9 +1052,15 @@ impl<'a> ResolverContext<'a> {
                     .into_iter()
                     .collect()
             }
-            "zig" => crate::parsers::zig::resolve_zig_import_to_path(import, Some(file_path))
-                .into_iter()
-                .collect(),
+            "zig" => {
+                crate::parsers::zig::find_zig_module(import, file_path, &self.configs.zig_modules)
+                    .map(|m| m.root.clone())
+                    .or_else(|| {
+                        crate::parsers::zig::resolve_zig_import_to_path(import, Some(file_path))
+                    })
+                    .into_iter()
+                    .collect()
+            }
             _ => Vec::new(),
         }
     }

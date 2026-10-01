@@ -1232,3 +1232,86 @@ fn rust_hyphenated_crate_is_imported_with_underscores() {
         edges(r)
     );
 }
+
+/// Zig imports any `*.zig` path relative to the importer, `./` or not.
+#[test]
+fn zig_file_import_without_dot_slash_is_internal() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/main.zig",
+        "const util = @import(\"util.zig\");\nconst x = @import(\"lsm/tree.zig\");\nconst std = @import(\"std\");\n",
+    );
+    write(r, "src/util.zig", "pub const a = 1;\n");
+    write(
+        r,
+        "src/lsm/tree.zig",
+        "const util = @import(\"../util.zig\");\n",
+    );
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("src/lsm/tree.zig", "src/util.zig"),
+            edge("src/main.zig", "src/lsm/tree.zig"),
+            edge("src/main.zig", "src/util.zig"),
+        ]
+    );
+    let d = deps(r);
+    assert_eq!(
+        import_type_of(&d, "src/main.zig", "util.zig"),
+        reflex::models::ImportType::Internal
+    );
+}
+
+/// Named modules a `build.zig` defines: `b.addModule("stdx", …)`, and
+/// `b.createModule(…)` given a name by `.addImport("vsr", vsr_module)`.
+#[test]
+fn zig_named_build_modules_resolve_to_their_root_file() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "build.zig",
+        r#"const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const stdx_module = b.addModule("stdx", .{ .root_source_file = b.path("src/stdx/stdx.zig") });
+    const vsr_module = b.createModule(.{
+        .root_source_file = b.path("src/vsr.zig"),
+    });
+    vsr_module.addImport("stdx", stdx_module);
+    const exe = b.addExecutable(.{
+        .name = "app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+        }),
+    });
+    exe.root_module.addImport("vsr", options.vsr_module);
+    exe.root_module.addImport("zap", b.dependency("zap", .{}).module("zap"));
+}
+"#,
+    );
+    write(
+        r,
+        "src/main.zig",
+        "const vsr = @import(\"vsr\");\nconst stdx = @import(\"stdx\");\nconst zap = @import(\"zap\");\n",
+    );
+    write(r, "src/vsr.zig", "const stdx = @import(\"stdx\");\n");
+    write(r, "src/stdx/stdx.zig", "pub const x = 1;\n");
+    index(r);
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("src/main.zig", "src/stdx/stdx.zig"),
+            edge("src/main.zig", "src/vsr.zig"),
+            edge("src/vsr.zig", "src/stdx/stdx.zig"),
+        ]
+    );
+    let d = deps(r);
+    assert_eq!(
+        import_type_of(&d, "src/main.zig", "zap"),
+        reflex::models::ImportType::External
+    );
+}

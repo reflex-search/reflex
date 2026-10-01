@@ -121,12 +121,6 @@ failed Zola build still exits 0.
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
   (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
   `unwrap_or_default()`.
-- **Zig: a sibling import `@import("tree.zig")` is External** (found 2026-10-01). Zig
-  imports any `*.zig` path relative to the importer, `./` or not, but
-  `classify_zig_import` (`src/parsers/zig.rs:257`) calls only `./`/`../` Internal. On
-  tigerbeetle 489 of 646 External Zig imports are such files, so its "100 %" Zig rate
-  counts only the 489 `./` imports. Named build modules (`@import("vsr")`, 140 rows) are
-  External too.
 - **Python `from pkg import submodule`** reaches only `pkg/__init__.py`, not
   `pkg/submodule.py` (`from django.db import models`). The import counts as resolved, so
   the rate does not show it.
