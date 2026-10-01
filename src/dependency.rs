@@ -1278,7 +1278,7 @@ impl DependencyIndex {
              WHERE d.import_type = 'internal'
                -- C# calls every non-System using internal: leave out the NuGet ones,
                -- whose root namespace (`Newtonsoft` of `Newtonsoft.Json`) no file declares
-               AND NOT (d.resolved_package LIKE 'cs:%' AND NOT EXISTS (
+               AND NOT (COALESCE(d.resolved_package, '') LIKE 'cs:%' AND NOT EXISTS (
                    SELECT 1 FROM package_members m,
                        (SELECT 'cs:' || CASE WHEN instr(substr(d.resolved_package, 4), '.') > 0
                             THEN substr(d.resolved_package, 4, instr(substr(d.resolved_package, 4), '.') - 1)

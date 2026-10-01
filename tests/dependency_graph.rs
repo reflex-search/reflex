@@ -487,3 +487,49 @@ fn csharp_namespaces_using_each_other_are_not_a_cycle() {
     assert_eq!(edges(r).len(), 2);
     assert!(deps(r).detect_circular_dependencies().unwrap().is_empty());
 }
+
+#[test]
+fn python_package_imports_resolve_to_init_py() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "pyproject.toml", "[project]\nname = \"acme\"\n");
+    write(r, "acme/__init__.py", "");
+    write(r, "acme/db/__init__.py", "from .models import Model\n");
+    write(r, "acme/db/models.py", "class Model: pass\n");
+    write(
+        r,
+        "acme/views.py",
+        "from acme.db import models\nimport acme.db.models\nfrom . import db\n",
+    );
+    index(r);
+
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("acme/db/__init__.py", "acme/db/models.py"),
+            edge("acme/views.py", "acme/__init__.py"),
+            edge("acme/views.py", "acme/db/__init__.py"),
+            edge("acme/views.py", "acme/db/models.py"),
+        ]
+    );
+}
+
+/// A file-resolved language (no package keys) is counted and warns too.
+#[test]
+fn file_resolved_language_with_missing_targets_warns() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    let mut body = String::new();
+    for i in 0..120 {
+        body.push_str(&format!("import {{ x{i} }} from './missing{i}';\n"));
+    }
+    write(r, "web/a.ts", &body);
+    index(r);
+    let warnings = deps(r).low_resolution_warnings().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("TypeScript: 0 of 120"),
+        "{}",
+        warnings[0]
+    );
+}

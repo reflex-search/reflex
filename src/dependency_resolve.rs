@@ -826,48 +826,26 @@ impl<'a> ResolverContext<'a> {
                 );
                 None
             }
-        } else if file_path.ends_with(".py") && !python_packages.is_empty() {
-            // Resolve Python dependencies using package mappings
-            if let Some(resolved_path) = crate::parsers::python::resolve_python_import_to_path(
+        } else if file_path.ends_with(".py")
+            && (!python_packages.is_empty() || import_info.imported_path.starts_with('.'))
+        {
+            // The first candidate that is indexed: a module, else a package's
+            // `__init__.py`
+            let candidates = crate::parsers::python::python_import_candidates(
                 &import_info.imported_path,
                 python_packages,
                 Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Python dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Python dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Python dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
+            );
+            let resolved = candidates
+                .iter()
+                .find_map(|path| resolver.get_file_id_by_path(path).ok().flatten());
+            if resolved.is_none() {
                 log::trace!(
                     "Could not resolve Python import: {}",
                     import_info.imported_path
                 );
-                None
             }
+            resolved
         } else if file_path.ends_with(".ts")
             || file_path.ends_with(".tsx")
             || file_path.ends_with(".js")

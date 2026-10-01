@@ -13,12 +13,12 @@ go/functions.go | time | - | stdlib | 27 | -
 go/structs.go | encoding/json | - | stdlib | 22 | -
 java/classes.java | java.util.ArrayList | - | stdlib | 28 | -
 java/classes.java | java.util.List | - | stdlib | 29 | -
-python/classes.py | abc | - | stdlib | 25 | ["abc","ABC","abstractmethod"]
-python/classes.py | dataclasses | - | stdlib | 26 | ["dataclasses","dataclass"]
-python/classes.py | typing | - | stdlib | 27 | ["typing","Optional","List"]
+python/classes.py | abc | - | stdlib | 25 | ["ABC","abstractmethod"]
+python/classes.py | dataclasses | - | stdlib | 26 | ["dataclass"]
+python/classes.py | typing | - | stdlib | 27 | ["Optional","List"]
 python/functions.py | asyncio | - | stdlib | 29 | -
-python/functions.py | typing | - | stdlib | 30 | ["typing","List","Dict","Optional"]
-python/functions.py | functools | - | stdlib | 31 | ["functools","wraps"]
+python/functions.py | typing | - | stdlib | 30 | ["List","Dict","Optional"]
+python/functions.py | functools | - | stdlib | 31 | ["wraps"]
 rust/async_patterns.rs | std::future::Future | - | stdlib | 11 | -
 rust/error_handling.rs | std::fs::File | - | stdlib | 11 | -
 rust/error_handling.rs | std::io | - | stdlib | 12 | ["self","Read"]

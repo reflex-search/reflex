@@ -83,6 +83,13 @@
   edges they made 11,130 cycles of dotnet/runtime. dotnet/runtime: 281 of 23,051
   internal usings resolved (1.2 %) → 18,911 (82.0 %); islands 55,938 → 16,346; unused
   files 57,759 → 14,989; cycles 89 → 82.
+- **Python imports resolve to packages and from the repo root.** An import tries
+  `a/b.py`, then `a/b/__init__.py` (only the first was ever tried), with no leading `/`
+  when the package is at the index root (that path fell to a fuzzy filename match,
+  usually ambiguous). Relative imports resolve without a `pyproject.toml` / `setup.py`.
+  `from x.y import a, b` no longer lists `x` among the imported symbols. Django: 1,662
+  of 8,673 internal imports resolved (19.2 %) → 8,672 (100 %); islands 4,327 → 789;
+  unused files 2,919 → 416.
 - Hotspots count distinct importers (a file with two imports of one target counted
   twice), and one cycle is no longer reported twice when a file imports a target twice.
 - Text, lock and generated files are no longer islands or unused files (every README
