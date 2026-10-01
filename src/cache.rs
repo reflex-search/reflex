@@ -293,9 +293,49 @@ impl CacheManager {
                 import_type TEXT NOT NULL,
                 line_number INTEGER NOT NULL,
                 imported_symbols TEXT,
+                resolved_package TEXT,
+                resolved_member TEXT,
                 FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
                 FOREIGN KEY (resolved_file_id) REFERENCES files(id) ON DELETE SET NULL
             )",
+            [],
+        )?;
+
+        // Which files make up each package an import can name (`go:<dir>`,
+        // `jvm:<package>`, `cs:<namespace>`). A per-file fact, written when the file
+        // is extracted and deleted with it, so adding a file to a package needs no
+        // import to be resolved again.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS package_members (
+                package TEXT NOT NULL,
+                member TEXT NOT NULL,
+                file_id INTEGER NOT NULL,
+                PRIMARY KEY (package, member, file_id),
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+            ) WITHOUT ROWID",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_package_members_file ON package_members(file_id)",
+            [],
+        )?;
+
+        // The import graph: one row per (import, file it reaches). File-resolved
+        // imports reach one file; package imports reach every member file.
+        conn.execute(
+            "CREATE VIEW IF NOT EXISTS import_edges AS
+             SELECT id AS dep_id, file_id AS src, resolved_file_id AS dst, import_type
+               FROM file_dependencies
+              WHERE resolved_file_id IS NOT NULL
+             UNION ALL
+             SELECT DISTINCT d.id, d.file_id, m.file_id, d.import_type
+               FROM file_dependencies d
+               JOIN package_members m
+                 ON m.package = d.resolved_package
+                AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
+              WHERE d.resolved_package IS NOT NULL
+                AND m.file_id != d.file_id",
             [],
         )?;
 
@@ -311,6 +351,12 @@ impl CacheManager {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_deps_type ON file_dependencies(import_type)",
+            [],
+        )?;
+
+        Self::migrate_dependency_columns(&conn)?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deps_package ON file_dependencies(resolved_package)",
             [],
         )?;
 
@@ -374,6 +420,29 @@ impl CacheManager {
                 log::info!("meta.db: adding files.{} (pre-2.0.0 cache)", name);
                 conn.execute(
                     &format!("ALTER TABLE files ADD COLUMN {} {}", name, decl),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Add the package-resolution columns (2.2.0) to an older `file_dependencies`,
+    /// for the same reason as [`Self::migrate_files_columns`]: the schema hash makes
+    /// the next index write every row again, but the columns must exist first.
+    fn migrate_dependency_columns(conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('file_dependencies')")?;
+        let present: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        for name in ["resolved_package", "resolved_member"] {
+            if !present.contains(name) {
+                log::info!(
+                    "meta.db: adding file_dependencies.{} (pre-2.2.0 cache)",
+                    name
+                );
+                conn.execute(
+                    &format!("ALTER TABLE file_dependencies ADD COLUMN {} TEXT", name),
                     [],
                 )?;
             }

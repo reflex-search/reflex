@@ -208,12 +208,11 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
         [],
     )?;
 
-    // Copy dependency edges (projected from file_dependencies)
+    // Copy dependency edges (file-resolved and package-expanded, `import_edges`)
     conn.execute(
         "INSERT INTO dependency_edges (source_file_id, target_file_id, import_type)
-         SELECT file_id, resolved_file_id, import_type
-         FROM source.file_dependencies
-         WHERE resolved_file_id IS NOT NULL",
+         SELECT src, dst, import_type
+         FROM source.import_edges",
         [],
     )?;
 

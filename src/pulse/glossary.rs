@@ -193,20 +193,16 @@ pub fn collect_glossary_evidence(cache: &CacheManager) -> Result<Option<Glossary
 
     // Dependency edge count (best-effort; may be 0 if table absent).
     let dependency_edges: usize = conn
-        .query_row::<usize, _, _>(
-            "SELECT COUNT(*) FROM file_dependencies WHERE resolved_file_id IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
+        .query_row::<usize, _, _>("SELECT COUNT(*) FROM import_edges", [], |row| row.get(0))
         .unwrap_or(0);
 
     // Top hotspot files (most-imported) — good anchor hints for the LLM.
     let mut hotspot_files: Vec<String> = Vec::new();
     if dependency_edges > 0
         && let Ok(mut stmt) = conn.prepare(
-            "SELECT f.path, COUNT(DISTINCT fd.file_id) as dep_count, MIN(f.walk_seq) AS ws \
-             FROM file_dependencies fd JOIN files f ON fd.resolved_file_id = f.id \
-             GROUP BY fd.resolved_file_id ORDER BY dep_count DESC, ws LIMIT 8",
+            "SELECT f.path, COUNT(DISTINCT e.src) as dep_count, MIN(f.walk_seq) AS ws \
+             FROM import_edges e JOIN files f ON e.dst = f.id \
+             GROUP BY e.dst ORDER BY dep_count DESC, ws LIMIT 8",
         )
         && let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0))
     {

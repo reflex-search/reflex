@@ -148,3 +148,49 @@ fn cli_analyze_and_deps_warn_on_stderr() {
     serde_json::from_str::<serde_json::Value>(&stdout).expect("stdout is JSON");
     assert!(stderr.contains("Warning: Go: 0 of 120"), "{stderr}");
 }
+
+#[test]
+fn hotspots_count_distinct_importers() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "Cargo.toml",
+        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        r,
+        "src/lib.rs",
+        "mod util;\nuse crate::util::a;\nuse crate::util::b;\npub fn f() { a(); b(); }\n",
+    );
+    write(r, "src/util.rs", "pub fn a() {}\npub fn b() {}\n");
+    index(r);
+
+    let d = deps(r);
+    let util = d.get_file_id_by_path("src/util.rs").unwrap().unwrap();
+    let hot = d.find_hotspots(None, 1).unwrap();
+    assert_eq!(hot, vec![(util, 1)], "one importer, three rows");
+}
+
+/// A 2.1.0 cache has `file_dependencies` without the package columns, and
+/// `CREATE TABLE IF NOT EXISTS` does not add them: the next index must.
+#[test]
+fn index_upgrades_a_cache_without_package_columns() {
+    let t = go_workspace_with_missing_package(2);
+    let r = t.path();
+    index(r);
+    {
+        let conn = reflex::cache::open_meta_db(r.join(".reflex/meta.db")).unwrap();
+        conn.execute_batch(
+            "DROP VIEW import_edges;
+             DROP INDEX idx_deps_package;
+             ALTER TABLE file_dependencies DROP COLUMN resolved_package;
+             ALTER TABLE file_dependencies DROP COLUMN resolved_member;
+             DROP TABLE package_members;
+             UPDATE statistics SET value = 'from-2.1.0' WHERE key = 'schema_hash';",
+        )
+        .unwrap();
+    }
+    index(r);
+    assert!(deps(r).find_islands().is_ok());
+}

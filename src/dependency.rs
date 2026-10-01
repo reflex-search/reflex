@@ -168,8 +168,9 @@ pub struct DependencyWriter<'c> {
 
 impl<'c> DependencyWriter<'c> {
     const INSERT_DEPENDENCY: &'static str = "INSERT INTO file_dependencies \
-         (file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols) \
-         VALUES (?, ?, ?, ?, ?, ?)";
+         (file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols, \
+          resolved_package, resolved_member) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
     const INSERT_EXPORT: &'static str = "INSERT INTO file_exports \
          (file_id, exported_symbol, source_path, resolved_source_id, line_number) \
          VALUES (?, ?, ?, ?, ?)";
@@ -206,17 +207,36 @@ impl<'c> DependencyWriter<'c> {
                 import_type_str(&dep.import_type),
                 dep.line_number as i64,
                 symbols_json,
+                dep.resolved_package,
+                dep.resolved_member,
             ])?;
         }
         self.deps += deps.len();
         Ok(())
     }
 
-    /// Drop every dependency and export row (a full build writes them all again).
+    /// Drop every package membership of `file_id`, then record `members`
+    /// (`(package key, member)`; member `""` for a whole-directory package).
+    pub fn replace_members(&mut self, file_id: i64, members: &[(String, String)]) -> Result<()> {
+        self.tx
+            .prepare_cached("DELETE FROM package_members WHERE file_id = ?")?
+            .execute([file_id])?;
+        let mut stmt = self.tx.prepare_cached(
+            "INSERT OR IGNORE INTO package_members (package, member, file_id) VALUES (?, ?, ?)",
+        )?;
+        for (package, member) in members {
+            stmt.execute(rusqlite::params![package, member, file_id])?;
+        }
+        Ok(())
+    }
+
+    /// Drop every dependency, export and package-membership row (a full build
+    /// writes them all again).
     pub fn clear_all(&mut self) -> Result<()> {
         self.tx.execute_batch(
             "DELETE FROM file_dependencies;
-             DELETE FROM file_exports;",
+             DELETE FROM file_exports;
+             DELETE FROM package_members;",
         )?;
         Ok(())
     }
@@ -458,8 +478,7 @@ impl DependencyIndex {
                 .map(|syms| serde_json::to_string(syms).unwrap_or_else(|_| "[]".to_string()));
 
             tx.execute(
-                "INSERT INTO file_dependencies (file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                DependencyWriter::INSERT_DEPENDENCY,
                 rusqlite::params![
                     dep.file_id,
                     dep.imported_path,
@@ -467,6 +486,8 @@ impl DependencyIndex {
                     import_type_str,
                     dep.line_number as i64,
                     symbols_json,
+                    dep.resolved_package,
+                    dep.resolved_member,
                 ],
             )?;
         }
@@ -483,7 +504,8 @@ impl DependencyIndex {
         let conn = self.open_conn()?;
 
         let mut stmt = conn.prepare(
-            "SELECT file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols
+            "SELECT file_id, imported_path, resolved_file_id, import_type, line_number, imported_symbols,
+                    resolved_package, resolved_member
              FROM file_dependencies
              WHERE file_id = ?
              ORDER BY line_number",
@@ -508,6 +530,8 @@ impl DependencyIndex {
                     file_id: row.get(0)?,
                     imported_path: row.get(1)?,
                     resolved_file_id: row.get(2)?,
+                    resolved_package: row.get(6)?,
+                    resolved_member: row.get(7)?,
                     import_type,
                     line_number: row.get::<_, i64>(4)? as usize,
                     imported_symbols,
@@ -530,7 +554,7 @@ impl DependencyIndex {
         let mut stmt = conn.prepare(
             "SELECT f.id
              FROM files f
-             WHERE f.id IN (SELECT file_id FROM file_dependencies WHERE resolved_file_id = ?)
+             WHERE f.id IN (SELECT src FROM import_edges WHERE dst = ?)
              ORDER BY f.walk_seq",
         )?;
 
@@ -541,6 +565,47 @@ impl DependencyIndex {
         Ok(dependents)
     }
 
+    /// The files `file_id` imports, each once, in (import row, target walk) order.
+    fn direct_targets(&self, file_id: i64) -> Result<Vec<i64>> {
+        let conn = self.open_conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT e.dst FROM import_edges e JOIN files t ON t.id = e.dst
+             WHERE e.src = ? ORDER BY e.dep_id, t.walk_seq",
+        )?;
+        let mut seen = HashSet::new();
+        let targets = stmt
+            .query_map([file_id], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(targets.into_iter().filter(|id| seen.insert(*id)).collect())
+    }
+
+    /// For each package import of `file_id`, keyed by `(line, imported path)`, the
+    /// paths of the files it reaches, in walk order.
+    fn package_targets(&self, file_id: i64) -> Result<HashMap<(usize, String), Vec<String>>> {
+        let conn = self.open_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT d.line_number, d.imported_path, t.path
+             FROM import_edges e
+             JOIN file_dependencies d ON d.id = e.dep_id
+             JOIN files t ON t.id = e.dst
+             WHERE e.src = ? AND d.resolved_package IS NOT NULL
+             ORDER BY d.id, t.walk_seq",
+        )?;
+        let mut out: HashMap<(usize, String), Vec<String>> = HashMap::new();
+        let rows = stmt.query_map([file_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as usize,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (line, imported, path) = row?;
+            out.entry((line, imported)).or_default().push(path);
+        }
+        Ok(out)
+    }
+
     /// Get dependencies as DependencyInfo (for API output)
     ///
     /// Converts internal Dependency records to simplified DependencyInfo
@@ -548,9 +613,16 @@ impl DependencyIndex {
     pub fn get_dependencies_info(&self, file_id: i64) -> Result<Vec<DependencyInfo>> {
         let deps = self.get_dependencies(file_id)?;
 
+        let mut packages = self.package_targets(file_id)?;
         let dep_infos = deps
             .into_iter()
             .map(|dep| {
+                // A package import keeps its written path and lists the files it reaches
+                let resolved_paths = dep
+                    .resolved_package
+                    .is_some()
+                    .then(|| packages.remove(&(dep.line_number, dep.imported_path.clone())))
+                    .map(Option::unwrap_or_default);
                 // Try to get the resolved path (all deps are internal now)
                 let path = if let Some(resolved_id) = dep.resolved_file_id {
                     // Try to get the actual file path
@@ -563,6 +635,7 @@ impl DependencyIndex {
                     path,
                     line: Some(dep.line_number),
                     symbols: dep.imported_symbols,
+                    resolved_paths,
                 }
             })
             .collect();
@@ -601,18 +674,11 @@ impl DependencyIndex {
                 continue;
             }
 
-            // Get direct dependencies using resolved_file_id (instant)
-            let deps = self.get_dependencies(current_id)?;
-
-            for dep in deps {
-                // Use resolved_file_id directly (already populated during indexing)
-                if let Some(resolved_id) = dep.resolved_file_id {
-                    // Only visit if we haven't seen it or found a shorter path
-                    if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(resolved_id)
-                    {
-                        e.insert(depth + 1);
-                        queue.push_back((resolved_id, depth + 1));
-                    }
+            for resolved_id in self.direct_targets(current_id)? {
+                // Only visit if we haven't seen it or found a shorter path
+                if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(resolved_id) {
+                    e.insert(depth + 1);
+                    queue.push_back((resolved_id, depth + 1));
                 }
             }
         }
@@ -636,20 +702,7 @@ impl DependencyIndex {
         // Exclude mod_decl edges: `mod foo;` is parent→child ownership, not a usage dependency.
         // Including them creates false positives when a child module uses `use crate::` (REF-88).
         // Each file's edges in row order (= extraction order).
-        let mut stmt = conn.prepare(
-            "SELECT file_id, resolved_file_id
-             FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL
-               AND import_type != 'mod_decl'
-             ORDER BY file_id, id",
-        )?;
-
-        let dependencies: Vec<(i64, i64)> = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Build adjacency list directly from resolved IDs
-        for (file_id, target_id) in dependencies {
+        for (file_id, target_id) in load_edges(&conn, EdgeOrder::ImporterId, false)? {
             graph.entry(file_id).or_default().push(target_id);
         }
 
@@ -677,37 +730,47 @@ impl DependencyIndex {
         Ok(cycles)
     }
 
-    /// DFS helper for cycle detection using pre-built graph
+    /// DFS for cycle detection over the pre-built graph. Iterative (a real Go or
+    /// Java graph is thousands of files deep), visiting in the order the recursive
+    /// version did, so the cycles come out the same.
     fn dfs_cycle_detect(
         &self,
-        file_id: i64,
+        start: i64,
         graph: &HashMap<i64, Vec<i64>>,
         visited: &mut HashSet<i64>,
         rec_stack: &mut HashSet<i64>,
         path: &mut Vec<i64>,
         cycles: &mut Vec<Vec<i64>>,
     ) -> Result<()> {
-        visited.insert(file_id);
-        rec_stack.insert(file_id);
-        path.push(file_id);
+        const NONE: &[i64] = &[];
+        // (node, index of its next neighbour)
+        let mut stack: Vec<(i64, usize)> = vec![(start, 0)];
+        visited.insert(start);
+        rec_stack.insert(start);
+        path.push(start);
 
-        // Get dependencies from the pre-built graph
-        if let Some(dependencies) = graph.get(&file_id) {
-            for &target_id in dependencies {
+        while let Some((node, next)) = stack.last_mut() {
+            let neighbors = graph.get(node).map_or(NONE, Vec::as_slice);
+            if let Some(&target_id) = neighbors.get(*next) {
+                *next += 1;
                 if !visited.contains(&target_id) {
-                    self.dfs_cycle_detect(target_id, graph, visited, rec_stack, path, cycles)?;
+                    visited.insert(target_id);
+                    rec_stack.insert(target_id);
+                    path.push(target_id);
+                    stack.push((target_id, 0));
                 } else if rec_stack.contains(&target_id) {
                     // Found a cycle! Extract it from path
                     if let Some(cycle_start) = path.iter().position(|&id| id == target_id) {
-                        let cycle = path[cycle_start..].to_vec();
-                        cycles.push(cycle);
+                        cycles.push(path[cycle_start..].to_vec());
                     }
                 }
+            } else {
+                let node = *node;
+                stack.pop();
+                path.pop();
+                rec_stack.remove(&node);
             }
         }
-
-        path.pop();
-        rec_stack.remove(&file_id);
 
         Ok(())
     }
@@ -794,14 +857,13 @@ impl DependencyIndex {
     ) -> Result<Vec<(i64, usize)>> {
         let conn = self.open_conn()?;
 
-        // Pure SQL aggregation on resolved_file_id (instant). Ties in walk order,
-        // which is the id order a full build produces.
+        // Distinct importers per file (a file importing a target twice counts once).
+        // Ties in walk order, which is the id order a full build produces.
         let mut stmt = conn.prepare(
-            "SELECT d.resolved_file_id, COUNT(*) as count, MIN(f.walk_seq) AS ws
-             FROM file_dependencies d
-             JOIN files f ON f.id = d.resolved_file_id
-             WHERE d.resolved_file_id IS NOT NULL
-             GROUP BY d.resolved_file_id
+            "SELECT e.dst, COUNT(DISTINCT e.src) as count, MIN(f.walk_seq) AS ws
+             FROM import_edges e
+             JOIN files f ON f.id = e.dst
+             GROUP BY e.dst
              ORDER BY count DESC, ws",
         )?;
 
@@ -840,11 +902,7 @@ impl DependencyIndex {
         let mut used_files = HashSet::new();
 
         // Step 1: Get all files directly referenced in resolved_file_id
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT resolved_file_id
-             FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL",
-        )?;
+        let mut stmt = conn.prepare("SELECT DISTINCT dst FROM import_edges ORDER BY dst")?;
 
         let direct_imports: Vec<i64> = stmt
             .query_map([], |row| row.get(0))?
@@ -958,20 +1016,8 @@ impl DependencyIndex {
 
         // Rows in (importer walk order, row order): the order a full build inserts
         // them in. Adjacency order decides each island's member order.
-        let mut stmt = conn.prepare(
-            "SELECT d.file_id, d.resolved_file_id
-             FROM file_dependencies d
-             JOIN files f ON f.id = d.file_id
-             WHERE d.resolved_file_id IS NOT NULL
-             ORDER BY f.walk_seq, d.id",
-        )?;
-
-        let dependencies: Vec<(i64, i64)> = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-
         // Build adjacency list (undirected) directly from resolved IDs
-        for (file_id, target_id) in dependencies {
+        for (file_id, target_id) in load_edges(&conn, EdgeOrder::ImporterWalk, true)? {
             // Add edge in both directions for undirected graph
             graph.entry(file_id).or_default().push(target_id);
             graph.entry(target_id).or_default().push(file_id);
@@ -1005,21 +1051,31 @@ impl DependencyIndex {
         Ok(islands)
     }
 
-    /// DFS helper for finding connected components (islands)
+    /// DFS for finding connected components (islands). Iterative, in the
+    /// preorder the recursive version produced.
     fn dfs_island(
         &self,
-        file_id: &i64,
+        start: &i64,
         graph: &HashMap<i64, Vec<i64>>,
         visited: &mut HashSet<i64>,
         island: &mut Vec<i64>,
     ) {
-        visited.insert(*file_id);
-        island.push(*file_id);
-
-        if let Some(neighbors) = graph.get(file_id) {
-            for &neighbor in neighbors {
-                if !visited.contains(&neighbor) {
-                    self.dfs_island(&neighbor, graph, visited, island);
+        const NONE: &[i64] = &[];
+        visited.insert(*start);
+        island.push(*start);
+        let mut stack: Vec<(i64, usize)> = vec![(*start, 0)];
+        while let Some((node, next)) = stack.last_mut() {
+            let neighbors = graph.get(node).map_or(NONE, Vec::as_slice);
+            match neighbors.get(*next) {
+                Some(&neighbor) => {
+                    *next += 1;
+                    if visited.insert(neighbor) {
+                        island.push(neighbor);
+                        stack.push((neighbor, 0));
+                    }
+                }
+                None => {
+                    stack.pop();
                 }
             }
         }
@@ -1187,7 +1243,12 @@ impl DependencyIndex {
     pub fn internal_resolution_by_language(&self) -> Result<Vec<LanguageResolution>> {
         let conn = self.open_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT f.language, COUNT(*), SUM(d.resolved_file_id IS NOT NULL)
+            "SELECT f.language, COUNT(*),
+                    SUM(d.resolved_file_id IS NOT NULL
+                        OR EXISTS (SELECT 1 FROM package_members m
+                                    WHERE m.package = d.resolved_package
+                                      AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
+                                      AND m.file_id != d.file_id))
              FROM file_dependencies d
              JOIN files f ON d.file_id = f.id
              WHERE d.import_type = 'internal'
@@ -1301,6 +1362,43 @@ impl DependencyIndex {
 
         Ok(counts)
     }
+}
+
+/// The order [`load_edges`] returns edges in: the row order each graph reader read
+/// `file_dependencies` in before package edges existed, so outputs are unchanged.
+#[derive(Clone, Copy)]
+enum EdgeOrder {
+    /// By importer id, then import row (cycle detection).
+    ImporterId,
+    /// By importer walk position, then import row (islands).
+    ImporterWalk,
+}
+
+/// Every import edge `(importer, imported file)` once, file-resolved and
+/// package-expanded (`import_edges`), targets of one import in walk order.
+/// `mod_decl` edges (Rust `mod foo;`, ownership rather than use) only when asked.
+fn load_edges(conn: &Connection, order: EdgeOrder, mod_decl: bool) -> Result<Vec<(i64, i64)>> {
+    let order_by = match order {
+        EdgeOrder::ImporterId => "e.src, e.dep_id, t.walk_seq",
+        EdgeOrder::ImporterWalk => "s.walk_seq, e.dep_id, t.walk_seq",
+    };
+    let filter = if mod_decl {
+        ""
+    } else {
+        "WHERE e.import_type != 'mod_decl'"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT e.src, e.dst FROM import_edges e
+         JOIN files s ON s.id = e.src
+         JOIN files t ON t.id = e.dst
+         {filter}
+         ORDER BY {order_by}"
+    ))?;
+    let mut seen = HashSet::new();
+    let edges = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(edges.into_iter().filter(|e| seen.insert(*e)).collect())
 }
 
 /// `files` rows that can take part in the import graph. Text, lock and generated
@@ -1741,6 +1839,74 @@ mod tests {
         (temp, cache)
     }
 
+    /// A Go-style package import: one row keyed by package, expanded to every
+    /// member file when the graph is read.
+    #[test]
+    fn package_import_links_every_member() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        cache.init().unwrap();
+        cache.update_file("cmd/a.go", "Go", 10).unwrap();
+        cache.update_file("pkg/b/b1.go", "Go", 10).unwrap();
+        cache.update_file("pkg/b/b2.go", "Go", 10).unwrap();
+        let index = DependencyIndex::new(cache);
+        let id = |p: &str| index.get_file_id_by_path(p).unwrap().unwrap();
+        let (a, b1, b2) = (id("cmd/a.go"), id("pkg/b/b1.go"), id("pkg/b/b2.go"));
+        {
+            let conn = index.open_conn().unwrap();
+            let mut writer = DependencyWriter::new(&conn);
+            for b in [b1, b2] {
+                writer
+                    .replace_members(b, &[("go:pkg/b".to_string(), String::new())])
+                    .unwrap();
+            }
+            writer
+                .replace_dependencies(
+                    a,
+                    &[Dependency {
+                        file_id: a,
+                        imported_path: "example.com/m/pkg/b".to_string(),
+                        resolved_file_id: None,
+                        resolved_package: Some("go:pkg/b".to_string()),
+                        resolved_member: None,
+                        import_type: ImportType::Internal,
+                        line_number: 3,
+                        imported_symbols: None,
+                    }],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(index.get_dependents(b2).unwrap(), vec![a]);
+        let mut reached: Vec<i64> = index
+            .get_transitive_deps(a, 1)
+            .unwrap()
+            .into_keys()
+            .collect();
+        reached.sort();
+        assert_eq!(reached, vec![a, b1, b2]);
+        assert_eq!(index.find_islands().unwrap(), vec![vec![a, b1, b2]]);
+        assert_eq!(
+            index.find_hotspots(None, 1).unwrap(),
+            vec![(b1, 1), (b2, 1)]
+        );
+        assert!(!index.find_unused_files().unwrap().contains(&b2));
+        assert_eq!(
+            index.internal_resolution_by_language().unwrap(),
+            vec![LanguageResolution {
+                language: "Go".to_string(),
+                internal: 1,
+                resolved: 1,
+            }]
+        );
+        let info = index.get_dependencies_info(a).unwrap();
+        assert_eq!(info.len(), 1, "one entry per import: {info:?}");
+        assert_eq!(
+            info[0].resolved_paths,
+            Some(vec!["pkg/b/b1.go".to_string(), "pkg/b/b2.go".to_string()])
+        );
+    }
+
     #[test]
     fn entry_points_cover_each_language() {
         for p in [
@@ -1897,6 +2063,8 @@ mod tests {
                 file_id: 1,
                 imported_path: "std::collections".to_string(),
                 resolved_file_id: None,
+                resolved_package: None,
+                resolved_member: None,
                 import_type: ImportType::Stdlib,
                 line_number: 1,
                 imported_symbols: Some(vec!["HashMap".to_string()]),
@@ -1905,6 +2073,8 @@ mod tests {
                 file_id: 1,
                 imported_path: "crate::lib".to_string(),
                 resolved_file_id: Some(2),
+                resolved_package: None,
+                resolved_member: None,
                 import_type: ImportType::Internal,
                 line_number: 2,
                 imported_symbols: None,

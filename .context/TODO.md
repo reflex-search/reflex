@@ -127,6 +127,11 @@ failed Zola build still exits 0.
   directory, a C# `using` names a namespace. Go also matches modules with no `/` boundary
   (`k8s.io/api` vs `k8s.io/apiserver`). Text/lock/generated files count as islands and
   unused (`src/dependency.rs:723`, `:818`). Search is not affected (17 counts = `rg`).
+- **`rfx snapshot diff` hotspots and islands are silently empty** (found 2026-09-30). The
+  snapshot DB's `files` (`src/pulse/snapshot.rs`) has no `walk_seq`, but
+  `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
+  (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
+  `unwrap_or_default()`.
 - **Stale index, but no `can_trust_results: false`** — MCP fixed on `feature/auto-update`
   (every JSON-object answer carries it). Left: `check_index_status` with no index returns
   only `{status, action_required}`; `rfx query --count --json` returns `{count,
