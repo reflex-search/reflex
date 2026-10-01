@@ -134,12 +134,26 @@ fn join_relative(dir: &str, rel: &str) -> Option<String> {
     (!parts.is_empty()).then(|| format!("{}/", parts.join("/")))
 }
 
+/// The directories of a RubyGems install (`bundle install --path vendor/bundle`
+/// writes `vendor/bundle/ruby/<version>/{gems,specifications,...}`).
+const GEM_INSTALL_DIRS: [&str; 7] = [
+    "gems",
+    "specifications",
+    "extensions",
+    "cache",
+    "build_info",
+    "doc",
+    "bundler",
+];
+
 /// Whether a directory of `rel` (not its file name) holds every language's
 /// dependencies: `node_modules`, `site-packages`, installed gems.
 fn in_dependency_dir(dirs: &[&str]) -> bool {
     dirs.iter().any(|d| DEPENDENCY_DIRS.contains(d))
         || dirs.windows(3).any(|w| {
-            w[0] == "ruby" && w[1].starts_with(|c: char| c.is_ascii_digit()) && w[2] == "gems"
+            w[0] == "ruby"
+                && w[1].starts_with(|c: char| c.is_ascii_digit())
+                && GEM_INSTALL_DIRS.contains(&w[2])
         })
 }
 

@@ -759,3 +759,161 @@ fn adding_modules_txt_flags_vendor_on_next_index() {
     index(r);
     assert_eq!(deps(r).vendored_file_count().unwrap(), 0);
 }
+
+/// Vendored paths among the island and unused-file answers (none expected).
+fn vendored_in_answers(d: &DependencyIndex, prefix: &str) -> Vec<String> {
+    let mut out: Vec<String> = island_paths(d)
+        .into_iter()
+        .chain(paths(d, &d.find_unused_files().unwrap()))
+        .filter(|p| p.starts_with(prefix))
+        .collect();
+    out.sort();
+    out
+}
+
+fn import_type_of(d: &DependencyIndex, file: &str, import: &str) -> reflex::models::ImportType {
+    let id = d.get_file_id_by_path(file).unwrap().unwrap();
+    d.get_dependencies(id)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.imported_path == import)
+        .unwrap_or_else(|| panic!("{file} has no import {import}"))
+        .import_type
+}
+
+#[test]
+fn composer_vendor_is_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "composer.json",
+        r#"{"autoload": {"psr-4": {"App\\": "src/"}}}"#,
+    );
+    write(
+        r,
+        "src/Http/Controller.php",
+        "<?php\nnamespace App\\Http;\nuse App\\Models\\User;\nuse Acme\\Widgets\\Widget;\nclass Controller {}\n",
+    );
+    write(
+        r,
+        "src/Models/User.php",
+        "<?php\nnamespace App\\Models;\nclass User {}\n",
+    );
+    write(r, "vendor/composer/installed.json", "{\"packages\": []}\n");
+    write(
+        r,
+        "vendor/autoload.php",
+        "<?php\nrequire __DIR__ . '/composer/autoload_real.php';\n",
+    );
+    write(
+        r,
+        "vendor/acme/widgets/composer.json",
+        r#"{"autoload": {"psr-4": {"Acme\\Widgets\\": "src/"}}}"#,
+    );
+    write(
+        r,
+        "vendor/acme/widgets/src/Widget.php",
+        "<?php\nnamespace Acme\\Widgets;\nuse Acme\\Widgets\\Base;\nclass Widget extends Base {}\n",
+    );
+    write(
+        r,
+        "vendor/acme/widgets/src/Base.php",
+        "<?php\nnamespace Acme\\Widgets;\nclass Base {}\n",
+    );
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 3);
+    assert!(vendored_in_answers(&d, "vendor/").is_empty());
+    assert_eq!(
+        edges(r),
+        vec![edge("src/Http/Controller.php", "src/Models/User.php")]
+    );
+}
+
+/// `cargo vendor` output: a crate directory with `.cargo-checksum.json`. Its
+/// `Cargo.toml` is not a workspace crate, so `use serde::…` stays External.
+#[test]
+fn cargo_vendor_crate_is_not_in_graph_and_not_internal() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "Cargo.toml",
+        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        r,
+        "src/lib.rs",
+        "mod util;\nuse serde::de::Deserialize;\npub fn f() { util::g() }\n",
+    );
+    write(r, "src/util.rs", "pub fn g() {}\n");
+    write(
+        r,
+        "vendor/serde/Cargo.toml",
+        "[package]\nname = \"serde\"\nversion = \"1.0.200\"\n",
+    );
+    write(
+        r,
+        "vendor/serde/.cargo-checksum.json",
+        "{\"files\":{},\"package\":\"abc\"}\n",
+    );
+    write(r, "vendor/serde/src/lib.rs", "pub mod de;\n");
+    write(r, "vendor/serde/src/de.rs", "pub trait Deserialize {}\n");
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(
+        import_type_of(&d, "src/lib.rs", "serde::de::Deserialize"),
+        reflex::models::ImportType::External
+    );
+    assert_eq!(d.vendored_file_count().unwrap(), 2);
+    assert!(vendored_in_answers(&d, "vendor/").is_empty());
+    assert_eq!(edges(r), vec![edge("src/lib.rs", "src/util.rs")]);
+}
+
+/// `bundle install --path vendor/bundle`: installed gems and their gemspecs are
+/// not the project's, so `require 'rack'` stays External.
+#[test]
+fn installed_gems_are_not_in_graph_and_their_gemspecs_not_projects() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "app.gemspec",
+        "Gem::Specification.new do |s|\n  s.name = 'app'\nend\n",
+    );
+    write(r, "lib/app.rb", "require 'rack'\nrequire 'app/web'\n");
+    write(r, "lib/app/web.rb", "module App; end\n");
+    let gems = "vendor/bundle/ruby/3.3.0";
+    write(
+        r,
+        &format!("{gems}/specifications/rack-3.0.0.gemspec"),
+        "Gem::Specification.new do |s|\n  s.name = 'rack'\nend\n",
+    );
+    write(
+        r,
+        &format!("{gems}/gems/rack-3.0.0/rack.gemspec"),
+        "Gem::Specification.new do |s|\n  s.name = 'rack'\nend\n",
+    );
+    write(
+        r,
+        &format!("{gems}/gems/rack-3.0.0/lib/rack.rb"),
+        "require 'rack/builder'\n",
+    );
+    write(
+        r,
+        &format!("{gems}/gems/rack-3.0.0/lib/rack/builder.rb"),
+        "module Rack; end\n",
+    );
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(
+        import_type_of(&d, "lib/app.rb", "rack"),
+        reflex::models::ImportType::External
+    );
+    assert!(vendored_in_answers(&d, "vendor/").is_empty());
+    assert_eq!(edges(r), vec![edge("lib/app.rb", "lib/app/web.rb")]);
+}
