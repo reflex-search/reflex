@@ -107,6 +107,38 @@
   1,368 → 530, unused files 4,802 → 579. tokio after `cargo vendor` (7,982 vendored
   files) answers exactly as tokio without it. A Composer project with `vendor/`
   committed: islands 7,907 → 47, unused files 7,860 → 1.
+- **Paths resolve the same from any working directory.** The C, C++, Zig and Ruby
+  resolvers called `canonicalize()`, which reads the disk relative to the process's
+  working directory: in-process indexing lost every relative include, and under
+  `rfx index` the absolute result was cut at the first `src`/`app`/`lib` or reduced
+  to its file name. Paths are now folded lexically and looked up relative to the
+  root. Candidates are exact paths; only C/C++ fall back to a suffix match, which now
+  matches whole path segments (`a.h` is no longer `lib/xa.h`).
+- **Rust workspace crates.** A cross-crate `use b::thing` falls back to shorter
+  module paths and the crate root (`thing` in `b/src/lib.rs`), and a crate `b-core`
+  is imported as `b_core`. tokio: 86.5 % → 90.4 % of 1,593 internal imports,
+  islands 110 → 68.
+- **Zig sibling imports and build modules.** `@import("tree.zig")` (no `./`) is a
+  file import, and a module a `build.zig` defines (`b.addModule("stdx", …)`, or
+  `b.createModule` named by `.addImport("vsr", …)`) resolves to its root file.
+  tigerbeetle: Zig internal imports 489 → 1,118 (all resolved), islands 107 → 48.
+- **Python `from pkg import submodule`** reaches `pkg/submodule.py` as well as
+  `pkg/__init__.py` (`from django.db import models`). django: edges 8,684 → 10,145,
+  unused files 355 → 330.
+- **Ruby requires search every workspace gem's `lib/`** (`require "rails/command"` is
+  in railties), a require whose first segment a gem's `lib/` provides is Internal
+  (`active_support` is in the gem `activesupport`), and `require_relative "x"` is no
+  longer External. rails: internal requires 555 → 2,883 (97.1 % resolved), islands
+  3,115 → 1,689, unused files 1,435 → 712.
+- **PHP uses follow `composer.json`.** `autoload-dev` and PSR-0 are read, every
+  directory of a prefix is tried, and with `composer.json` a `use` is Internal
+  exactly when a project autoload prefix holds it (`Illuminate\…` is External).
+  `use A\B as C` no longer stores `C`; `use A\{B, C}` stores `A\B` and `A\C`.
+  laravel: 57.8 % → 98.9 % resolved, islands 630 → 427.
+- **C# `using static A.B.C` and `using X = A.B.C`** reach the files declaring `C` in
+  `A.B` (a type or a namespace); the alias `X` is no longer stored as a using, and
+  usings and namespaces inside `#if` blocks count. dotnet/runtime: C# 82.0 % →
+  88.6 % resolved.
 - Hotspots count distinct importers (a file with two imports of one target counted
   twice), and one cycle is no longer reported twice when a file imports a target twice.
 - Text, lock and generated files are no longer islands or unused files (every README

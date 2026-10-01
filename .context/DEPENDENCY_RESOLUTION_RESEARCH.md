@@ -192,6 +192,46 @@ Rejected:
 - `rfx analyze` on Kubernetes: 3.90 s → 4.03 s on a loaded machine (2.2 s on 09-30); the
   view joins `files` twice. meta.db 65 → 69 MB.
 
+## Resolver fixes found by the vendor work (2026-10-01)
+
+Measured with the vendor-commit binary (`9348c87`) and the final one (`c4614f3`), each
+on a fresh copy of the corpus.
+
+| Corpus | Language | Resolved before | Resolved after | Edges | Islands | Unused files |
+|---|---|---|---|---|---|---|
+| tokio | Rust | 1,185/1,370 (86.5 %) | 1,440/1,593 (90.4 %) | 1,393 → 1,648 | 110 → 68 | 155 → 150 |
+| tigerbeetle | Zig | 489/489, 646 External | 1,118/1,118, 17 External | 775 → 1,408 | 107 → 48 | 152 → 57 |
+| django | Python | 8,672/8,673 | same | 8,684 → 10,145 | 726 → 721 | 355 → 330 |
+| rails | Ruby | 373/555 (67.2 %) | 2,800/2,883 (97.1 %) | 429 → 2,856 | 3,115 → 1,689 | 1,435 → 712 |
+| laravel | PHP | 5,647/9,763 (57.8 %) | 7,232/7,315 (98.9 %) | 5,647 → 7,232 | 630 → 427 | 518 → 420 |
+| dotnet/runtime | C# | 18,911/23,051 (82.0 %) | 19,286/21,760 (88.6 %) | +1,640 | 16,087 → 16,066 | 14,440 → 14,429 |
+| kubernetes, neo4j, ktorio, react, vuejs | | | unchanged | | | |
+
+What each was:
+- **A rate can hide a gap.** Zig (489/489) and Ruby (98.9 %) looked complete while
+  most imports were classified External: the rate counts Internal imports only. Zig
+  sibling `@import("x.zig")` and Ruby `require "active_support/..."` were the gap.
+- **`canonicalize()` in resolvers** read the disk relative to the process's working
+  directory. Under `rfx index` (cwd = root) it returned an absolute path that
+  `normalize_path_for_lookup` cut at the first `src`/`app`/`lib`, or reduced to the
+  file name; in-process (tests, `rfx mcp` started elsewhere) every relative include
+  failed. Now `fold_path` folds `.`/`..` lexically.
+- **The suffix fallback** matched across segments (`a.h` = `lib/xa.h`). Made
+  segment-aware, it turned a near-miss into a wrong answer: `from django import
+  forms` tried `django.py` first and found `django/template/backends/django.py`
+  (98 django edges moved). Candidates are exact paths now; only C/C++ keep the suffix
+  fallback, in place of an include-path search. Ruby had depended on it: `require
+  "rails/command"` is in railties, so every gem's `lib/` is a candidate (Ruby's load
+  path).
+- **C# member keys.** `using static A.B.C` / `using X = A.B.C` name `C` in `A.B`. A
+  file lists `(cs:A.B, C)` for each type it declares in `A.B` and for a declared
+  `A.B.C`, so one key covers a type and a namespace. A whole-package import matches
+  only `""` rows (`m.member = COALESCE(d.resolved_member, '')`), else `using A.B`
+  would reach every sub-namespace; JVM files write a `""` row for that.
+- **Python submodules** are expanded in the `import_edges` view (`json_each` over
+  `imported_symbols` of a row that resolved to `__init__.py`), so a submodule added
+  later needs no re-extraction.
+
 ## Open (see TODO.md)
 
 - **C#:** 18 % of dotnet's internal usings do not resolve. Causes: `using static A.B.C`
