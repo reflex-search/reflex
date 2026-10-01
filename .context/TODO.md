@@ -132,6 +132,9 @@ failed Zola build still exits 0.
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
   (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
   `unwrap_or_default()`.
+- **C# usings that do not resolve** (18 % of dotnet/runtime's internal ones): `using static
+  A.B.C` names a type (keyed as namespace `A.B.C`); an alias `using X = A.B.C;` is stored
+  as two rows (`X` and `A.B.C`, the query captures both); `global using` untested.
 - **`rfx analyze` (summary) takes 2.2 s on Kubernetes** since Go imports resolve (was 0.0 s
   on an almost empty graph). Each of cycles, hotspots, unused and islands loads
   `import_edges` (~420k package-expanded edges) on its own connection; load once.

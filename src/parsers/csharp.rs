@@ -1461,6 +1461,59 @@ impl DependencyExtractor for CSharpDependencyExtractor {
     }
 }
 
+impl CSharpDependencyExtractor {
+    /// The using directives and the namespaces the file declares (block,
+    /// nested and file-scoped), from one parse. A `using` names a namespace, so the
+    /// declared namespaces are what makes this file reachable from one.
+    pub fn extract_dependencies_and_namespaces(
+        source: &str,
+    ) -> Result<(Vec<ImportInfo>, Vec<String>)> {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_c_sharp::LANGUAGE.into())
+            .context("Failed to set C# language")?;
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse C# source")?;
+        let root = tree.root_node();
+        let usings = extract_csharp_usings(source, &root)?;
+        let mut namespaces = Vec::new();
+        collect_namespaces(source, root, "", &mut namespaces);
+        Ok((usings, namespaces))
+    }
+}
+
+/// Every namespace declared under `node`, fully qualified, in source order.
+fn collect_namespaces(source: &str, node: tree_sitter::Node, prefix: &str, out: &mut Vec<String>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if !matches!(
+            child.kind(),
+            "namespace_declaration" | "file_scoped_namespace_declaration"
+        ) {
+            continue;
+        }
+        let Some(name) = child
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        else {
+            continue;
+        };
+        let name: String = name.chars().filter(|c| !c.is_whitespace()).collect();
+        let full = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if !out.contains(&full) {
+            out.push(full.clone());
+        }
+        if let Some(body) = child.child_by_field_name("body") {
+            collect_namespaces(source, body, &full, out);
+        }
+    }
+}
+
 /// Extract C# using directives
 fn extract_csharp_usings(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_c_sharp::LANGUAGE;
@@ -1614,37 +1667,6 @@ fn classify_csharp_using(using_path: &str) -> ImportType {
 // Path Resolution
 // ============================================================================
 
-/// Resolve a C# using directive to a file path
-///
-/// # Arguments
-/// * `using_path` - The namespace from the using directive (e.g., "MyApp.Models.User")
-/// * `current_file_path` - Path to the file containing the using directive (unused for C#)
-///
-/// # Returns
-/// * `Some(path)` if the namespace can be resolved to a file
-/// * `None` if resolution fails
-///
-/// # Notes
-/// C# namespace-to-file resolution follows these common patterns:
-/// - `MyApp.Models.User` → `MyApp/Models/User.cs`
-/// - `MyApp.Services.UserService` → `MyApp/Services/UserService.cs`
-///
-/// This resolver tries to convert namespace paths to file paths based on
-/// C# naming conventions where namespace structure matches directory structure.
-pub fn resolve_csharp_using_to_path(
-    using_path: &str,
-    _current_file_path: Option<&str>,
-) -> Option<String> {
-    // C# namespaces typically map to directory structure
-    // Example: MyApp.Models.User → MyApp/Models/User.cs
-
-    // Convert namespace separators to path separators
-    let path_without_extension = using_path.replace('.', "/");
-
-    // Try with .cs extension (most common)
-    Some(format!("{}.cs", path_without_extension))
-}
-
 // ============================================================================
 // Tests for Path Resolution
 // ============================================================================
@@ -1654,30 +1676,23 @@ mod resolution_tests {
     use super::*;
 
     #[test]
-    fn test_resolve_csharp_using_simple_namespace() {
-        let result = resolve_csharp_using_to_path("MyApp.Models.User", None);
+    fn declared_namespaces() {
+        let (_, namespaces) = CSharpDependencyExtractor::extract_dependencies_and_namespaces(
+            "using System;\nnamespace A.B\n{\n    namespace C { class X {} }\n    class Y {}\n}\nnamespace D { }\n",
+        )
+        .unwrap();
+        assert_eq!(namespaces, ["A.B", "A.B.C", "D"]);
 
-        assert_eq!(result, Some("MyApp/Models/User.cs".to_string()));
-    }
+        let (usings, namespaces) = CSharpDependencyExtractor::extract_dependencies_and_namespaces(
+            "using Acme.Util;\nnamespace Acme.App;\n\nclass Program {}\n",
+        )
+        .unwrap();
+        assert_eq!(namespaces, ["Acme.App"]);
+        assert_eq!(usings[0].imported_path, "Acme.Util");
 
-    #[test]
-    fn test_resolve_csharp_using_services() {
-        let result = resolve_csharp_using_to_path("MyApp.Services.UserService", None);
-
-        assert_eq!(result, Some("MyApp/Services/UserService.cs".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_csharp_using_single_level() {
-        let result = resolve_csharp_using_to_path("MyApp", None);
-
-        assert_eq!(result, Some("MyApp.cs".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_csharp_using_deep_namespace() {
-        let result = resolve_csharp_using_to_path("MyApp.Core.Domain.Models.User", None);
-
-        assert_eq!(result, Some("MyApp/Core/Domain/Models/User.cs".to_string()));
+        let (_, namespaces) =
+            CSharpDependencyExtractor::extract_dependencies_and_namespaces("class Global {}\n")
+                .unwrap();
+        assert!(namespaces.is_empty());
     }
 }

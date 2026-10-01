@@ -750,6 +750,13 @@ impl<'a> ResolverContext<'a> {
                 member: None,
             });
         }
+        if file_path.ends_with(".cs") {
+            // A `using` names a namespace: every file that declares it
+            return Resolution::Package {
+                key: format!("cs:{}", import_info.imported_path),
+                member: None,
+            };
+        }
         if [".java", ".kt", ".kts"]
             .iter()
             .any(|ext| file_path.ends_with(ext))
@@ -1122,47 +1129,6 @@ impl<'a> ResolverContext<'a> {
             } else {
                 log::trace!(
                     "Could not resolve C++ include (system header): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".cs") {
-            // Resolve C# dependencies (using namespace-to-path mapping)
-            if let Some(resolved_path) = crate::parsers::csharp::resolve_csharp_using_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved C# dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "C# dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping C# dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve C# using directive: {}",
                     import_info.imported_path
                 );
                 None

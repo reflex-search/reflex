@@ -76,6 +76,13 @@
   one `src/main/java` path. Wildcard imports now keep their `.*` in `imported_path`
   (Kotlin dropped it, Java too). neo4j: 356 of 59,658 internal imports resolved (0.6 %)
   → 58,926 (98.8 %); islands 11,423 → 655; unused files 11,753 → 1,682.
+- **C# `using` directives resolve to every file that declares the namespace** (block,
+  nested and file-scoped declarations). A using whose root namespace no file declares
+  (a NuGet package) is left out of the resolution rate. Whole-namespace edges are not
+  used for cycles: a `using` is no evidence that one file uses another, and as file
+  edges they made 11,130 cycles of dotnet/runtime. dotnet/runtime: 281 of 23,051
+  internal usings resolved (1.2 %) → 18,911 (82.0 %); islands 55,938 → 16,346; unused
+  files 57,759 → 14,989; cycles 89 → 82.
 - Hotspots count distinct importers (a file with two imports of one target counted
   twice), and one cycle is no longer reported twice when a file imports a target twice.
 - Text, lock and generated files are no longer islands or unused files (every README

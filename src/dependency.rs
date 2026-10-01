@@ -1276,6 +1276,15 @@ impl DependencyIndex {
              FROM file_dependencies d
              JOIN files f ON d.file_id = f.id
              WHERE d.import_type = 'internal'
+               -- C# calls every non-System using internal: leave out the NuGet ones,
+               -- whose root namespace (`Newtonsoft` of `Newtonsoft.Json`) no file declares
+               AND NOT (d.resolved_package LIKE 'cs:%' AND NOT EXISTS (
+                   SELECT 1 FROM package_members m,
+                       (SELECT 'cs:' || CASE WHEN instr(substr(d.resolved_package, 4), '.') > 0
+                            THEN substr(d.resolved_package, 4, instr(substr(d.resolved_package, 4), '.') - 1)
+                            ELSE substr(d.resolved_package, 4) END AS root)
+                   WHERE m.package = root
+                      OR (m.package > root || '.' AND m.package < root || '/')))
              GROUP BY f.language
              ORDER BY f.language",
         )?;
@@ -1400,16 +1409,20 @@ enum EdgeOrder {
 
 /// Every import edge `(importer, imported file)` once, file-resolved and
 /// package-expanded (`import_edges`), targets of one import in walk order.
-/// `mod_decl` edges (Rust `mod foo;`, ownership rather than use) only when asked.
-fn load_edges(conn: &Connection, order: EdgeOrder, mod_decl: bool) -> Result<Vec<(i64, i64)>> {
+/// With `every_edge` false (cycle detection), Rust `mod foo;` edges (ownership
+/// rather than use) and C# whole-namespace edges are left out.
+fn load_edges(conn: &Connection, order: EdgeOrder, every_edge: bool) -> Result<Vec<(i64, i64)>> {
     let order_by = match order {
         EdgeOrder::ImporterId => "e.src, e.dep_id, t.walk_seq",
         EdgeOrder::ImporterWalk => "s.walk_seq, e.dep_id, t.walk_seq",
     };
-    let filter = if mod_decl {
+    let filter = if every_edge {
         ""
     } else {
-        "WHERE e.import_type != 'mod_decl'"
+        // Cycles: a C# `using` reaches every file of a namespace, which is no
+        // evidence that this file uses that one, and namespaces commonly use each
+        // other; as file edges they made 11,130 "cycles" of dotnet/runtime.
+        "WHERE e.import_type != 'mod_decl' AND (e.package IS NULL OR e.package NOT LIKE 'cs:%')"
     };
     let mut stmt = conn.prepare(&format!(
         "SELECT e.src, e.dst FROM import_edges e

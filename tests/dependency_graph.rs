@@ -426,3 +426,64 @@ fn changing_package_line_moves_edges_incrementally() {
         "{incremental:?}"
     );
 }
+
+#[test]
+fn csharp_using_links_every_declaring_file() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/Core/Strings.cs",
+        "namespace Acme.Util\n{\n    public class Strings {}\n}\n",
+    );
+    write(
+        r,
+        "src/Core/Numbers.cs",
+        "namespace Acme.Util;\n\npublic class Numbers {}\n",
+    );
+    write(
+        r,
+        "src/Core/Nested.cs",
+        "namespace Acme\n{\n    namespace Util.Extra\n    {\n        class X {}\n    }\n}\n",
+    );
+    let mut program = String::from("using System;\nusing Acme.Util;\n");
+    // A NuGet package: "internal" to the classifier, declared by no file here
+    for i in 0..120 {
+        program.push_str(&format!("using Newtonsoft.Json.N{i};\n"));
+    }
+    program.push_str("namespace Acme.App { class Program {} }\n");
+    write(r, "src/App/Program.cs", &program);
+    index(r);
+
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("src/App/Program.cs", "src/Core/Numbers.cs"),
+            edge("src/App/Program.cs", "src/Core/Strings.cs"),
+        ]
+    );
+    let d = deps(r);
+    let cs = d
+        .internal_resolution_by_language()
+        .unwrap()
+        .into_iter()
+        .find(|l| l.language == "CSharp")
+        .unwrap();
+    assert_eq!(
+        (cs.internal, cs.resolved),
+        (1, 1),
+        "NuGet usings are not counted"
+    );
+    assert!(d.low_resolution_warnings().unwrap().is_empty());
+}
+
+#[test]
+fn csharp_namespaces_using_each_other_are_not_a_cycle() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "A.cs", "using Beta;\nnamespace Alpha { class A {} }\n");
+    write(r, "B.cs", "using Alpha;\nnamespace Beta { class B {} }\n");
+    index(r);
+    assert_eq!(edges(r).len(), 2);
+    assert!(deps(r).detect_circular_dependencies().unwrap().is_empty());
+}

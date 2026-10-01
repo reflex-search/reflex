@@ -322,21 +322,24 @@ impl CacheManager {
         )?;
 
         // The import graph: one row per (import, file it reaches). File-resolved
-        // imports reach one file; package imports reach every member file.
-        conn.execute(
-            "CREATE VIEW IF NOT EXISTS import_edges AS
-             SELECT id AS dep_id, file_id AS src, resolved_file_id AS dst, import_type
+        // imports reach one file; package imports reach every member file
+        // (`package` is the key they reached it by). Recreated every time: a view
+        // holds no data, and `IF NOT EXISTS` would keep an older definition.
+        conn.execute_batch(
+            "DROP VIEW IF EXISTS import_edges;
+             CREATE VIEW import_edges AS
+             SELECT id AS dep_id, file_id AS src, resolved_file_id AS dst, import_type,
+                    NULL AS package
                FROM file_dependencies
               WHERE resolved_file_id IS NOT NULL
              UNION ALL
-             SELECT DISTINCT d.id, d.file_id, m.file_id, d.import_type
+             SELECT DISTINCT d.id, d.file_id, m.file_id, d.import_type, d.resolved_package
                FROM file_dependencies d
                JOIN package_members m
                  ON m.package = d.resolved_package
                 AND (d.resolved_member IS NULL OR m.member = d.resolved_member)
               WHERE d.resolved_package IS NOT NULL
-                AND m.file_id != d.file_id",
-            [],
+                AND m.file_id != d.file_id;",
         )?;
 
         conn.execute(
