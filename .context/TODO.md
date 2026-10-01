@@ -120,13 +120,25 @@ failed Zola build still exits 0.
   branch `fix/package-import-resolution`). Kubernetes commits `vendor/` (4,238 Go files);
   its 7,457 imports of vendored packages are External, so every vendored package was an
   island (558 of 577). Fix: vendored files stay searchable but are not graph nodes
-  (`src/vendor.rs`, `files.vendored`, `[index.vendored] patterns`). Go done; PHP, Rust,
-  Ruby, JS, Python, Zig, C/C++, JVM, C# tests next.
+  (`src/vendor.rs`, `files.vendored`, `[index.vendored] patterns`). All languages tested;
+  corpus measurements and docs next.
 - **`rfx snapshot diff` hotspots and islands are silently empty** (found 2026-09-30). The
   snapshot DB's `files` (`src/pulse/snapshot.rs`) has no `walk_seq`, but
   `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
   (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
   `unwrap_or_default()`.
+- **Zig: a sibling import `@import("tree.zig")` is External** (found 2026-10-01). Zig
+  imports any `*.zig` path relative to the importer, `./` or not, but
+  `classify_zig_import` (`src/parsers/zig.rs:257`) calls only `./`/`../` Internal. On
+  tigerbeetle 489 of 646 External Zig imports are such files, so its "100 %" Zig rate
+  counts only the 489 `./` imports. Named build modules (`@import("vsr")`, 140 rows) are
+  External too.
+- **Zig and C/C++ resolvers depend on the working directory**: `resolve_zig_import_to_path`
+  (`zig.rs:285`) and the C/C++ include resolvers `canonicalize()` a root-relative path, so
+  in-process indexing (`Indexer::index` from another cwd) misses edges `rfx index` finds.
+- **Python `from pkg import submodule`** reaches only `pkg/__init__.py`, not
+  `pkg/submodule.py` (`from django.db import models`). The import counts as resolved, so
+  the rate does not show it.
 - **C# usings that do not resolve** (18 % of dotnet/runtime's internal ones): `using static
   A.B.C` names a type (keyed as namespace `A.B.C`); an alias `using X = A.B.C;` is stored
   as two rows (`X` and `A.B.C`, the query captures both); `global using` untested.

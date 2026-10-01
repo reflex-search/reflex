@@ -917,3 +917,199 @@ fn installed_gems_are_not_in_graph_and_their_gemspecs_not_projects() {
     assert!(vendored_in_answers(&d, "vendor/").is_empty());
     assert_eq!(edges(r), vec![edge("lib/app.rb", "lib/app/web.rb")]);
 }
+
+#[test]
+fn node_modules_are_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/a.ts",
+        "import map from 'lodash/map';\nimport { b } from './b';\nexport const a = b + map;\n",
+    );
+    write(r, "src/b.ts", "export const b = 1;\n");
+    write(
+        r,
+        "node_modules/lodash/map.js",
+        "const base = require('./_base');\nmodule.exports = base;\n",
+    );
+    write(r, "node_modules/lodash/_base.js", "module.exports = 1;\n");
+    write(
+        r,
+        "node_modules/lodash/tsconfig.json",
+        r#"{"compilerOptions": {"paths": {"./b": ["./_base.js"]}}}"#,
+    );
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 2);
+    assert!(vendored_in_answers(&d, "node_modules/").is_empty());
+    assert_eq!(edges(r), vec![edge("src/a.ts", "src/b.ts")]);
+}
+
+/// A virtualenv (`pyvenv.cfg`), `site-packages`, and pip-style `_vendor`.
+#[test]
+fn python_venv_site_packages_and_vendor_are_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(r, "pyproject.toml", "[project]\nname = \"app\"\n");
+    write(r, "app/__init__.py", "");
+    write(
+        r,
+        "app/main.py",
+        "import requests\nimport app.util\nfrom app._vendor import six\n",
+    );
+    write(r, "app/util.py", "X = 1\n");
+    write(r, "app/_vendor/__init__.py", "");
+    write(r, "app/_vendor/six.py", "PY3 = True\n");
+    write(r, "venv/pyvenv.cfg", "home = /usr/bin\n");
+    write(r, "venv/bin/activate_this.py", "import os\n");
+    let site = "venv/lib/python3.12/site-packages";
+    write(
+        r,
+        &format!("{site}/requests/__init__.py"),
+        "from . import api\n",
+    );
+    write(r, &format!("{site}/requests/api.py"), "def get(): pass\n");
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 5);
+    let leaked: Vec<String> = vendored_in_answers(&d, "venv/")
+        .into_iter()
+        .chain(vendored_in_answers(&d, "app/_vendor/"))
+        .collect();
+    assert!(leaked.is_empty(), "{leaked:?}");
+    assert_eq!(edges(r), vec![edge("app/main.py", "app/util.py")]);
+}
+
+#[test]
+fn zig_path_dependency_is_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "build.zig.zon",
+        ".{\n    .name = .app,\n    .dependencies = .{\n        .zlib = .{ .path = \"deps/zlib\" },\n    },\n}\n",
+    );
+    write(
+        r,
+        "src/main.zig",
+        "const zlib = @import(\"zlib\");\nconst util = @import(\"./util.zig\");\n",
+    );
+    write(r, "src/util.zig", "pub const x = 1;\n");
+    write(
+        r,
+        "deps/zlib/src/root.zig",
+        "const inflate = @import(\"./inflate.zig\");\n",
+    );
+    write(r, "deps/zlib/src/inflate.zig", "pub const y = 2;\n");
+    // The Zig resolver canonicalizes against the working directory (TODO.md)
+    rfx(r, &["index"]);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 2);
+    assert!(vendored_in_answers(&d, "deps/").is_empty());
+    assert_eq!(edges(r), vec![edge("src/main.zig", "src/util.zig")]);
+}
+
+#[test]
+fn c_third_party_is_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/main.c",
+        "#include \"util.h\"\n#include \"../third_party/zlib/zlib.h\"\nint main(void) { return 0; }\n",
+    );
+    write(r, "src/util.h", "int util(void);\n");
+    write(r, "third_party/zlib/zlib.h", "int inflate(void);\n");
+    write(
+        r,
+        "third_party/zlib/inflate.c",
+        "#include \"zlib.h\"\nint inflate(void) { return 0; }\n",
+    );
+    write(
+        r,
+        "src/native/external/brotli/decode.c",
+        "int decode(void) { return 0; }\n",
+    );
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 3);
+    let leaked: Vec<String> = vendored_in_answers(&d, "third_party/")
+        .into_iter()
+        .chain(vendored_in_answers(&d, "src/native/external/"))
+        .collect();
+    assert!(leaked.is_empty(), "{leaked:?}");
+    assert_eq!(edges(r), vec![edge("src/main.c", "src/util.h")]);
+}
+
+/// Java keeps to `third_party` names: a package called `external` is project code.
+#[test]
+fn java_package_named_external_stays_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "pom.xml",
+        "<project>\n  <groupId>org.acme</groupId>\n  <artifactId>x</artifactId>\n</project>\n",
+    );
+    let src = "src/main/java/org/acme";
+    write(
+        r,
+        &format!("{src}/App.java"),
+        "package org.acme;\n\nimport org.acme.external.Client;\nimport com.google.common.collect.ImmutableList;\n\npublic class App {}\n",
+    );
+    write(
+        r,
+        &format!("{src}/external/Client.java"),
+        "package org.acme.external;\n\npublic class Client {}\n",
+    );
+    write(
+        r,
+        "third_party/guava/com/google/common/collect/ImmutableList.java",
+        "package com.google.common.collect;\n\npublic class ImmutableList {}\n",
+    );
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 1);
+    assert!(vendored_in_answers(&d, "third_party/").is_empty());
+    assert_eq!(
+        edges(r),
+        vec![edge(
+            &format!("{src}/App.java"),
+            &format!("{src}/external/Client.java")
+        )]
+    );
+}
+
+/// C# links a using to every file declaring the namespace, vendored source too.
+#[test]
+fn csharp_third_party_source_is_not_in_graph() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "src/Program.cs",
+        "using Newtonsoft.Json;\nusing Acme.Core;\nnamespace Acme { class Program {} }\n",
+    );
+    write(
+        r,
+        "src/Core/Util.cs",
+        "namespace Acme.Core { class Util {} }\n",
+    );
+    write(
+        r,
+        "third_party/Newtonsoft.Json/JsonConvert.cs",
+        "namespace Newtonsoft.Json { class JsonConvert {} }\n",
+    );
+    index(r);
+
+    let d = deps(r);
+    assert_eq!(d.vendored_file_count().unwrap(), 1);
+    assert!(vendored_in_answers(&d, "third_party/").is_empty());
+    assert_eq!(edges(r), vec![edge("src/Program.cs", "src/Core/Util.cs")]);
+}
