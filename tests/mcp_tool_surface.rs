@@ -244,3 +244,57 @@ fn list_locations_adds_the_line_on_request() {
     );
     assert!(coerced["locations"][0]["preview"].is_string(), "{coerced}");
 }
+
+/// 120 Go files importing a missing package of their own module: a Go graph with
+/// 0 % of its internal imports resolved.
+fn unresolved_go() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::write(root.join("go.mod"), "module example.com/m\n\ngo 1.22\n").unwrap();
+    for i in 0..120 {
+        let dir = root.join(format!("pkg/p{i}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("p.go"),
+            format!("package p{i}\n\nimport \"example.com/m/pkg/missing\"\n\nvar _ = missing.X\n"),
+        )
+        .unwrap();
+    }
+    Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .index(root, false)
+        .unwrap();
+    temp
+}
+
+#[test]
+fn analyze_warns_on_low_resolution() {
+    let temp = unresolved_go();
+    for kind in ["summary", "islands", "unused"] {
+        let v = call(temp.path(), "analyze", json!({"kind": kind}));
+        assert!(
+            warnings(&v).contains("Go: 0 of 120 internal imports (0.0%) resolve"),
+            "{kind}: {v}"
+        );
+    }
+    // A fully resolved graph says nothing.
+    let fine = indexed();
+    let v = call(fine.path(), "analyze", json!({"kind": "summary"}));
+    assert!(v.get("warnings").is_none(), "{v}");
+}
+
+#[test]
+fn get_dependencies_warning_is_second_content_item() {
+    let temp = unresolved_go();
+    let v = rpc(
+        temp.path(),
+        "tools/call",
+        json!({"name": "get_dependencies", "arguments": {"path": "pkg/p0/p.go"}}),
+    );
+    let content = v["result"]["content"].as_array().unwrap();
+    // The array answer keeps its shape.
+    let first: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+    assert!(first.is_array(), "{first}");
+    assert_eq!(content.len(), 2, "{v}");
+    let text = content[1]["text"].as_str().unwrap();
+    assert!(text.starts_with("warnings: Go: 0 of 120"), "{text}");
+}

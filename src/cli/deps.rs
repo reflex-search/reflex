@@ -45,6 +45,11 @@ pub(super) fn handle_analyze(
 
     let deps_index = DependencyIndex::new(cache);
 
+    // On stderr, so stdout stays parseable in every format
+    for warning in deps_index.low_resolution_warnings().unwrap_or_default() {
+        eprintln!("Warning: {warning}");
+    }
+
     // JSON mode overrides format
     let format = if as_json { "json" } else { &format };
 
@@ -158,6 +163,7 @@ fn handle_analyze_summary(
                 "singletons": singleton_islands,
             },
             "min_dependents": min_dependents,
+            "warnings": deps_index.low_resolution_warnings().unwrap_or_default(),
         });
 
         let json_str = if pretty_json {
@@ -276,6 +282,9 @@ pub(super) fn handle_deps(
     let file_id = deps_index
         .get_file_id_by_path(&file_str)?
         .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", file_str))?;
+    if let Ok(Some(warning)) = deps_index.low_resolution_warning_for(&file_str) {
+        eprintln!("Warning: {warning}");
+    }
 
     if reverse {
         // Show dependents (who imports this file)

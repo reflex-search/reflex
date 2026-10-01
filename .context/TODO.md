@@ -116,6 +116,17 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
+- **Package-based imports almost never resolve, so `analyze` is wrong for Go, Java, C#,
+  Kotlin, Python** — IN PROGRESS on `fix/package-import-resolution` (plan:
+  `~/.claude/plans/ok-do-that-gleaming-brook.md`). Internal imports that resolve to a file,
+  2.1.0, 2026-09-30: Go 0.3 % (kubernetes, 135/52,472), Java 1 % (neo4j), C# 1 % (dotnet),
+  Kotlin 7 % (ktorio), Python 19 % (django); TS/JS 91–100 %, Rust 73–90 %, Zig 100 %.
+  Kubernetes reported 27,313 islands and 27,431 unused files. Each resolver guesses ONE file
+  (`src/parsers/go.rs:1359`, `java.rs:1619`/`:1654`, `csharp.rs:1634`, `python.rs:1085`)
+  and `resolve_import` (`src/dependency_resolve.rs:701`) makes one lookup; a Go package is a
+  directory, a C# `using` names a namespace. Go also matches modules with no `/` boundary
+  (`k8s.io/api` vs `k8s.io/apiserver`). Text/lock/generated files count as islands and
+  unused (`src/dependency.rs:723`, `:818`). Search is not affected (17 counts = `rg`).
 - **Stale index, but no `can_trust_results: false`** — MCP fixed on `feature/auto-update`
   (every JSON-object answer carries it). Left: `check_index_status` with no index returns
   only `{status, action_required}`; `rfx query --count --json` returns `{count,

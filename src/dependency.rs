@@ -266,6 +266,50 @@ fn import_type_str(import_type: &ImportType) -> &'static str {
     }
 }
 
+/// Below this many internal imports a language's resolution rate is not reported.
+pub const LOW_RESOLUTION_MIN_IMPORTS: usize = 100;
+
+/// A language whose resolved share of internal imports is below this gets a warning.
+pub const LOW_RESOLUTION_RATE: f64 = 0.5;
+
+/// Internal imports of one language and how many resolve to an indexed file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LanguageResolution {
+    /// The `files.language` name (`Go`, `CSharp`, …).
+    pub language: String,
+    pub internal: usize,
+    pub resolved: usize,
+}
+
+impl LanguageResolution {
+    pub fn rate(&self) -> f64 {
+        if self.internal == 0 {
+            1.0
+        } else {
+            self.resolved as f64 / self.internal as f64
+        }
+    }
+
+    pub fn is_low(&self) -> bool {
+        self.internal >= LOW_RESOLUTION_MIN_IMPORTS && self.rate() < LOW_RESOLUTION_RATE
+    }
+
+    pub fn warning(&self) -> String {
+        let name = match self.language.as_str() {
+            "CSharp" => "C#",
+            "Cpp" => "C++",
+            other => other,
+        };
+        format!(
+            "{name}: {} of {} internal imports ({:.1}%) resolve to indexed files; \
+             islands, unused files, hotspots, cycles and dependents for {name} files are incomplete",
+            self.resolved,
+            self.internal,
+            self.rate() * 100.0
+        )
+    }
+}
+
 /// Manages dependency storage and graph operations
 pub struct DependencyIndex {
     cache: Option<CacheManager>,
@@ -723,7 +767,9 @@ impl DependencyIndex {
     fn get_all_file_ids(&self) -> Result<Vec<i64>> {
         let conn = self.open_conn()?;
 
-        let mut stmt = conn.prepare("SELECT id FROM files ORDER BY path")?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id FROM files WHERE {CODE_FILES} ORDER BY path"
+        ))?;
         let file_ids = stmt
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -815,7 +861,9 @@ impl DependencyIndex {
 
         // Step 3: Get all files NOT in the used set, excluding known entry points.
         // Entry points are always reachable by definition (they are the roots of the dep graph).
-        let mut stmt = conn.prepare("SELECT id, path FROM files ORDER BY walk_seq")?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, path FROM files WHERE {CODE_FILES} ORDER BY walk_seq"
+        ))?;
         let all_files: Vec<(i64, String)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1131,64 +1179,62 @@ impl DependencyIndex {
         }
     }
 
-    /// Get dependency resolution statistics grouped by language
+    /// Internal imports per language (the `files.language` name) and how many of them
+    /// resolve to an indexed file, in language order.
     ///
-    /// Returns statistics showing how many internal dependencies are resolved vs unresolved
-    /// for each language in the project.
-    ///
-    /// # Returns
-    ///
-    /// A vector of tuples: (language, total_deps, resolved_deps, resolution_rate)
-    pub fn get_resolution_stats(&self) -> Result<Vec<(String, usize, usize, f64)>> {
+    /// The graph `analyze` and `get_dependencies` answer from holds only resolved
+    /// imports, so a low rate means those answers are incomplete for that language.
+    pub fn internal_resolution_by_language(&self) -> Result<Vec<LanguageResolution>> {
         let conn = self.open_conn()?;
-
         let mut stmt = conn.prepare(
-            "SELECT
-                CASE
-                    WHEN f.path LIKE '%.py' THEN 'Python'
-                    WHEN f.path LIKE '%.go' THEN 'Go'
-                    WHEN f.path LIKE '%.ts' THEN 'TypeScript'
-                    WHEN f.path LIKE '%.rs' THEN 'Rust'
-                    WHEN f.path LIKE '%.js' OR f.path LIKE '%.jsx' THEN 'JavaScript'
-                    WHEN f.path LIKE '%.php' THEN 'PHP'
-                    WHEN f.path LIKE '%.java' THEN 'Java'
-                    WHEN f.path LIKE '%.kt' THEN 'Kotlin'
-                    WHEN f.path LIKE '%.rb' THEN 'Ruby'
-                    WHEN f.path LIKE '%.c' OR f.path LIKE '%.h' THEN 'C'
-                    WHEN f.path LIKE '%.cpp' OR f.path LIKE '%.cc' OR f.path LIKE '%.hpp' THEN 'C++'
-                    WHEN f.path LIKE '%.cs' THEN 'C#'
-                    WHEN f.path LIKE '%.zig' THEN 'Zig'
-                    ELSE 'Other'
-                END as language,
-                COUNT(*) as total,
-                SUM(CASE WHEN d.resolved_file_id IS NOT NULL THEN 1 ELSE 0 END) as resolved
-            FROM file_dependencies d
-            JOIN files f ON d.file_id = f.id
-            WHERE d.import_type = 'internal'
-            GROUP BY language
-            ORDER BY language",
+            "SELECT f.language, COUNT(*), SUM(d.resolved_file_id IS NOT NULL)
+             FROM file_dependencies d
+             JOIN files f ON d.file_id = f.id
+             WHERE d.import_type = 'internal'
+             GROUP BY f.language
+             ORDER BY f.language",
         )?;
-
-        let mut stats = Vec::new();
-
         let rows = stmt.query_map([], |row| {
-            let language: String = row.get(0)?;
-            let total: i64 = row.get(1)?;
-            let resolved: i64 = row.get(2)?;
-            let rate = if total > 0 {
-                (resolved as f64 / total as f64) * 100.0
-            } else {
-                0.0
-            };
-
-            Ok((language, total as usize, resolved as usize, rate))
+            Ok(LanguageResolution {
+                language: row.get(0)?,
+                internal: row.get::<_, i64>(1)? as usize,
+                resolved: row.get::<_, i64>(2)? as usize,
+            })
         })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
 
-        for row in rows {
-            stats.push(row?);
-        }
+    /// The low-resolution warning for the language of the file at `path`, if any.
+    pub fn low_resolution_warning_for(&self, path: &str) -> Result<Option<String>> {
+        let Some(id) = self.get_file_id_by_path(path).ok().flatten() else {
+            return Ok(None);
+        };
+        let conn = self.open_conn()?;
+        let language: Option<String> = conn
+            .query_row("SELECT language FROM files WHERE id = ?", [id], |row| {
+                row.get(0)
+            })
+            .ok();
+        Ok(language.and_then(|language| {
+            self.internal_resolution_by_language()
+                .ok()?
+                .into_iter()
+                .find(|l| l.language == language && l.is_low())
+                .map(|l| l.warning())
+        }))
+    }
 
-        Ok(stats)
+    /// One warning per language whose graph is mostly missing: at least
+    /// [`LOW_RESOLUTION_MIN_IMPORTS`] internal imports, under [`LOW_RESOLUTION_RATE`]
+    /// of them resolved. Front ends attach these to `analyze` and `get_dependencies`
+    /// answers so a graph built from 0.3 % of the edges is never presented as fact.
+    pub fn low_resolution_warnings(&self) -> Result<Vec<String>> {
+        Ok(self
+            .internal_resolution_by_language()?
+            .iter()
+            .filter(|l| l.is_low())
+            .map(LanguageResolution::warning)
+            .collect())
     }
 
     /// Get all internal dependencies with their resolution status
@@ -1257,6 +1303,11 @@ impl DependencyIndex {
     }
 }
 
+/// `files` rows that can take part in the import graph. Text, lock and generated
+/// files have no import extraction, so as graph nodes they were only ever islands
+/// and "unused" (every README and lock file on 2.1.0).
+const CODE_FILES: &str = "language NOT IN ('Text', 'Lock', 'Generated', 'Unknown')";
+
 /// Return true if the given file path is a well-known project entry point.
 ///
 /// Entry points are always reachable by definition and should never appear in the
@@ -1273,21 +1324,45 @@ fn is_entry_point(path: &str) -> bool {
         return true;
     }
 
-    // Standard test / bench / example directories
-    if p.starts_with("tests/") || p.starts_with("benches/") || p.starts_with("examples/") {
+    // Test / bench / example / fixture directories, at any depth (`staging/x/test/`,
+    // Maven's `src/test/`, a .NET `Foo.Tests/` project)
+    let (dirs, filename) = match p.rsplit_once('/') {
+        Some((dirs, name)) => (dirs, name),
+        None => ("", p),
+    };
+    if dirs.split('/').any(|d| {
+        matches!(
+            d,
+            "tests" | "test" | "benches" | "examples" | "testdata" | "__tests__"
+        ) || d.ends_with(".Tests")
+            || d.ends_with(".UnitTests")
+    }) {
+        return true;
+    }
+
+    // Program entry points by language convention
+    if matches!(
+        filename,
+        "main.go" | "Program.cs" | "__main__.py" | "manage.py" | "conftest.py" | "setup.py"
+    ) {
         return true;
     }
 
     // Files whose names follow common test/spec conventions
-    let filename = p.rsplit('/').next().unwrap_or(p);
-    if filename.starts_with("test_")
+    let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+    filename.starts_with("test_")
         || filename.ends_with("_test.rs")
         || filename.ends_with("_spec.rs")
-    {
-        return true;
-    }
-
-    false
+        || filename.ends_with("_test.go")
+        || filename.ends_with("_test.py")
+        || ((filename.ends_with(".java") || filename.ends_with(".kt") || filename.ends_with(".cs"))
+            && (stem.ends_with("Test")
+                || stem.ends_with("Tests")
+                // Maven Failsafe integration tests: `FooIT`, not `EXIT`
+                || stem
+                    .strip_suffix("IT")
+                    .and_then(|s| s.chars().last())
+                    .is_some_and(char::is_lowercase)))
 }
 
 /// Generate path variants for an import path
@@ -1664,6 +1739,41 @@ mod tests {
         cache.update_file("src/utils.rs", "rust", 30).unwrap();
 
         (temp, cache)
+    }
+
+    #[test]
+    fn entry_points_cover_each_language() {
+        for p in [
+            "src/main.rs",
+            "tests/a.rs",
+            "staging/src/k8s.io/api/test/x.go",
+            "cmd/kubelet/main.go",
+            "pkg/a/a_test.go",
+            "pkg/a/testdata/x.go",
+            "module/src/test/java/org/x/FooTest.java",
+            "module/src/main/java/org/x/FooIT.java",
+            "app/src/main/kotlin/FooTests.kt",
+            "src/App/Program.cs",
+            "src/Foo.Tests/Bar.cs",
+            "django/__main__.py",
+            "manage.py",
+            "pkg/conftest.py",
+            "pkg/test_views.py",
+            "pkg/views_test.py",
+        ] {
+            assert!(is_entry_point(p), "{p}");
+        }
+        for p in [
+            "src/util.rs",
+            "pkg/a/a.go",
+            "pkg/latest/x.go",
+            "src/main/java/org/x/EXIT.java",
+            "src/main/java/org/x/Audit.java",
+            "src/App/Contest.cs",
+            "django/db/models.py",
+        ] {
+            assert!(!is_entry_point(p), "{p}");
+        }
     }
 
     #[test]

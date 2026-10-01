@@ -53,6 +53,17 @@
 
 ### Fixed
 
+- **`analyze` and `get_dependencies` say when the import graph is incomplete.** When a
+  language has 100+ internal imports and under half of them resolve to an indexed file,
+  the answer carries a warning such as `Go: 135 of 52472 internal imports (0.3%) resolve
+  to indexed files; …` (MCP `analyze`: `warnings[]`; MCP `get_dependencies`: a second
+  `content` text item, the array is unchanged; CLI: `Warning:` on stderr, and
+  `warnings` in `rfx analyze --json`). On 2.1.0 Go, Java, C# and Kotlin resolved 0.3–7 %
+  of internal imports, so islands, unused files and hotspots for them were mostly noise.
+- Text, lock and generated files are no longer islands or unused files (every README
+  and lock file was both). Entry points now cover `main.go`, `*_test.go`, `testdata/`,
+  `Program.cs`, `*Test(s)`/`*IT` Java, Kotlin and C# files, `__main__.py`, `manage.py`,
+  `conftest.py`, `setup.py`, `*_test.py`, and test directories at any depth.
 - An edit to `.gitignore` (any directory), `.ignore`, `.rgignore` or
   `.reflex/config.toml` now makes the index stale (listed under `files_modified`): it
   changes which files are indexed, and was never reported.
