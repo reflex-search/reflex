@@ -1486,9 +1486,7 @@ impl CSharpDependencyExtractor {
     /// `P.C` (a sub-namespace is a member of its parent) and for each type `C`
     /// declared directly in `P`. `using static P.C` and `using X = P.C` reach
     /// member `C` of `cs:P`, whether `C` is a type or a namespace.
-    pub fn extract_dependencies_and_members(
-        source: &str,
-    ) -> Result<(Vec<ImportInfo>, Vec<(String, String)>)> {
+    pub fn extract_dependencies_and_members(source: &str) -> Result<UsingsAndMembers> {
         let mut parser = Parser::new();
         parser
             .set_language(&tree_sitter_c_sharp::LANGUAGE.into())
@@ -1505,6 +1503,9 @@ impl CSharpDependencyExtractor {
         Ok((usings, members))
     }
 }
+
+/// A C# file's usings and its `package_members` rows `(key, member)`.
+pub type UsingsAndMembers = (Vec<ImportInfo>, Vec<(String, String)>);
 
 /// Type declarations whose name is a member of the enclosing namespace.
 const CSHARP_TYPE_KINDS: [&str; 7] = [
