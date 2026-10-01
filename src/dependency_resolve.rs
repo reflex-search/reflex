@@ -936,6 +936,27 @@ impl<'a> ResolverContext<'a> {
             }
         }
 
+        // With composer.json, a PHP `use` is Internal exactly when a project
+        // autoload prefix holds it (Illuminate\... in vendor/ is External)
+        if file_path.ends_with(".php")
+            && !self.configs.php_psr4.is_empty()
+            && !import_info.imported_path.contains('/')
+            && !import_info.imported_path.ends_with(".php")
+            && !matches!(import_info.import_type, ImportType::Stdlib)
+        {
+            let internal = self.configs.php_psr4.iter().any(|m| {
+                crate::parsers::php::php_prefix_matches(
+                    &import_info.imported_path,
+                    &m.namespace_prefix,
+                )
+            });
+            import_info.import_type = if internal {
+                ImportType::Internal
+            } else {
+                ImportType::External
+            };
+        }
+
         // A Zig module name the workspace's build.zig defines
         if file_path.ends_with(".zig")
             && matches!(import_info.import_type, ImportType::External)
@@ -1044,11 +1065,15 @@ impl<'a> ResolverContext<'a> {
     fn import_candidates(&self, file_path: &str, import: &str) -> Vec<String> {
         let ext = file_path.rsplit_once('.').map_or("", |(_, e)| e);
         match ext {
-            "php" => {
-                crate::parsers::php::resolve_php_namespace_to_path(import, &self.configs.php_psr4)
+            // A `require 'x.php'` names a file: beside the requiring file, else
+            // from the root; a `use` names a class the autoload mappings place
+            "php" if import.contains('/') || import.ends_with(".php") => {
+                fold_path(parent_dir(file_path), import)
                     .into_iter()
+                    .chain(fold_path("", import))
                     .collect()
             }
+            "php" => crate::parsers::php::php_namespace_candidates(import, &self.configs.php_psr4),
             "py" if !self.configs.python_packages.is_empty() || import.starts_with('.') => {
                 crate::parsers::python::python_import_candidates(
                     import,

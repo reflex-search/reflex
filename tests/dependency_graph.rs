@@ -1456,3 +1456,84 @@ fn ruby_require_of_a_name_a_gem_lib_provides_is_internal() {
         ]
     );
 }
+
+/// composer.json decides what a PHP `use` is: a project PSR-4 prefix
+/// (`autoload` or `autoload-dev`, a directory list too) is Internal, anything
+/// else External. An alias is not an import; a group use carries its prefix.
+#[test]
+fn php_uses_follow_composer_autoload() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    write(
+        r,
+        "composer.json",
+        r#"{"autoload": {"psr-4": {"App\\": "app", "Lib\\": ["src/", "lib/"]}},
+            "autoload-dev": {"psr-4": {"Tests\\": "tests/"}}}"#,
+    );
+    write(
+        r,
+        "tests/Feature/UserTest.php",
+        "<?php\nnamespace Tests\\Feature;\nuse App\\Models\\User;\nuse App\\Models\\{Post, Comment as C};\nuse Lib\\Helper as H;\nuse Tests\\TestCase;\nuse Illuminate\\Support\\Str;\nrequire 'bootstrap.php';\nclass UserTest extends TestCase {}\n",
+    );
+    write(
+        r,
+        "tests/TestCase.php",
+        "<?php\nnamespace Tests;\nclass TestCase {}\n",
+    );
+    write(r, "tests/Feature/bootstrap.php", "<?php\n");
+    write(
+        r,
+        "app/Models/User.php",
+        "<?php\nnamespace App\\Models;\nclass User {}\n",
+    );
+    write(
+        r,
+        "app/Models/Post.php",
+        "<?php\nnamespace App\\Models;\nclass Post {}\n",
+    );
+    write(
+        r,
+        "app/Models/Comment.php",
+        "<?php\nnamespace App\\Models;\nclass Comment {}\n",
+    );
+    write(
+        r,
+        "lib/Helper.php",
+        "<?php\nnamespace Lib;\nclass Helper {}\n",
+    );
+    index(r);
+
+    let from = "tests/Feature/UserTest.php";
+    assert_eq!(
+        edges(r),
+        vec![
+            edge(from, "app/Models/Comment.php"),
+            edge(from, "app/Models/Post.php"),
+            edge(from, "app/Models/User.php"),
+            edge(from, "lib/Helper.php"),
+            edge(from, "tests/Feature/bootstrap.php"),
+            edge(from, "tests/TestCase.php"),
+        ]
+    );
+    let d = deps(r);
+    let id = d.get_file_id_by_path(from).unwrap().unwrap();
+    let rows: Vec<(String, reflex::models::ImportType)> = d
+        .get_dependencies(id)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.imported_path, r.import_type))
+        .collect();
+    assert!(
+        rows.iter()
+            .all(|(p, _)| p != "C" && p != "H" && p != "Post"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&(
+            "Illuminate\\Support\\Str".to_string(),
+            reflex::models::ImportType::External
+        )),
+        "{rows:?}"
+    );
+    assert!(d.low_resolution_warnings().unwrap().is_empty());
+}

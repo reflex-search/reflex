@@ -124,12 +124,11 @@ failed Zola build still exits 0.
 - **C# usings that do not resolve** (18 % of dotnet/runtime's internal ones): `using static
   A.B.C` names a type (keyed as namespace `A.B.C`); an alias `using X = A.B.C;` is stored
   as two rows (`X` and `A.B.C`, the query captures both); `global using` untested.
-- **Import resolution below 70 % in file-based languages** (2026-09-30, branch
-  `fix/package-import-resolution`): PHP 58 % (laravel), C/C++ 64 % (dotnet), Ruby 67 %
-  (rails). Not investigated; see `.context/DEPENDENCY_RESOLUTION_RESEARCH.md`. In
-  laravel-immutable-model (2026-10-01) 71 of 436 PHP imports resolve: 168 of the
-  package's own `Brighten\…` (`autoload-dev` PSR-4?), 161 `Illuminate\…` classified
-  Internal, 25 `use X as Y` aliases stored as a second row (as in C#).
+- **C/C++ include resolution is 62–64 %** (dotnet, 2026-10-01). Includes are resolved
+  beside the including file, then by a unique whole-segment suffix; there is no
+  include-path search (`-I`, `target_include_directories`, compile_commands.json). PHP
+  (98.9 % on laravel) and Ruby (97.1 % on rails) were fixed on
+  `fix/package-import-resolution`.
 - **`rfx analyze` (summary) takes 2.2 s on Kubernetes** since Go imports resolve (was 0.0 s
   on an almost empty graph). Each of cycles, hotspots, unused and islands loads
   `import_edges` (~420k package-expanded edges) on its own connection; load once.
