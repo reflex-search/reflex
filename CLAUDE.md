@@ -594,6 +594,7 @@ Designed for **codebase structure analysis**:
 
 ### Test
     cargo test
+    scripts/windows-check.sh   # Windows clippy from Linux/macOS (lefthook pre-push; skips without mingw)
 
 ### Refresh Index
     rfx index
