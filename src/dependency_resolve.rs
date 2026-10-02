@@ -1151,7 +1151,8 @@ impl<'a> ResolverContext<'a> {
     /// a unique file ending in the path's whole segments also counts.
     fn lookup(&self, resolver: &PathResolver, path: &str, suffix: bool) -> Option<i64> {
         let path = path.replace('\\', "/");
-        let rel = if path.starts_with('/') {
+        // `/x` on Unix, `C:/x` on Windows
+        let rel = if Path::new(&path).is_absolute() {
             let rel = Path::new(&path).strip_prefix(self.root).ok()?;
             rel.to_string_lossy().replace('\\', "/")
         } else {
