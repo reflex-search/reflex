@@ -1,0 +1,82 @@
+# Releases on merge. Every push to main runs scripts/release-prep.sh:
+# - `## [Unreleased]` in CHANGELOG.md has entries → bump Cargo.toml (minor when a
+#   `feat` commit landed since the last tag, else patch), date the entries, commit
+#   `chore: release vX.Y.Z` to main, push the tag.
+# - Cargo.toml names a version with no tag (bumped by hand in the PR) → tag it.
+# - Otherwise nothing happens.
+# The merged PR's label overrides the level: release:major, release:minor,
+# release:patch, release:skip. "Run workflow" (workflow_dispatch) takes the same level.
+#
+# The tag push starts Release and Publish Packages. A tag pushed with GITHUB_TOKEN
+# triggers no workflow, so pushing needs the RELEASE_TOKEN secret: a fine-grained
+# token with `contents: write` on this repository.
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Release level (auto = minor for feat commits, else patch)"
+        required: true
+        default: auto
+        type: choice
+        options: [auto, patch, minor, major]
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  release:
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore: release v') }}"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Release level
+        id: level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_LEVEL: ${{ inputs.level }}
+        run: |
+          level="${INPUT_LEVEL:-auto}"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            label=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+              -q '[.[0].labels[]?.name | select(startswith("release:"))][0] // ""')
+            if [ -n "$label" ]; then level="${label#release:}"; fi
+          fi
+          echo "level=$level" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Prepare release
+        id: prep
+        run: scripts/release-prep.sh "${{ steps.level.outputs.level }}"
+
+      - name: Commit, tag and push
+        if: steps.prep.outputs.tag != ''
+        env:
+          TAG: ${{ steps.prep.outputs.tag }}
+          HAS_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != true ]; then
+            echo "::error::$TAG is ready, but the RELEASE_TOKEN secret is missing (see the header of this workflow)."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git commit -qam "chore: release $TAG"
+            git push origin HEAD:main
+          fi
+          git tag "$TAG"
+          git push origin "refs/tags/$TAG"
+          echo "Released $TAG" >> "$GITHUB_STEP_SUMMARY"

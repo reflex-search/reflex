@@ -880,4 +880,10 @@ Reflex favors local autonomy, speed, and clarity.
 
 See [RELEASE.md](./RELEASE.md) for full release process, semantic versioning, and changelog format.
 
+Merging to `main` releases automatically when `CHANGELOG.md` has entries under
+`## [Unreleased]` (`.github/workflows/auto-release.yml`): minor if a `feat` commit
+landed since the last tag, else patch; a `release:major|minor|patch|skip` PR label
+overrides. Put a PR's user-visible changes under `[Unreleased]`; do not bump
+`Cargo.toml` or push tags by hand.
+
 ---

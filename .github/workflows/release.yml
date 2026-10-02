@@ -411,8 +411,10 @@ jobs:
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           RELEASE_COMMIT: "${{ github.sha }}"
         run: |
-          # Generate release notes from conventional commits since last tag
-          git-cliff --latest --strip header > $RUNNER_TEMP/notes.txt
+          # Release notes: the tag's CHANGELOG.md section, else commits since the last tag
+          if ! scripts/changelog-section.sh "${{ needs.plan.outputs.tag }}" > $RUNNER_TEMP/notes.txt; then
+            git-cliff --latest --strip header > $RUNNER_TEMP/notes.txt
+          fi
 
           # Upload binaries, installers, and archives (archives needed for npm/homebrew)
           cd artifacts

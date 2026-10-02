@@ -17,36 +17,40 @@ Version format: `MAJOR.MINOR.PATCH` (e.g., `0.2.7`)
 
 ## Creating a Release
 
-**Install `cargo-release` (one-time setup):**
+**Merging a PR is the release.** `.github/workflows/auto-release.yml` runs on every
+push to `main`:
 
-```bash
-cargo install cargo-release
-```
+1. If `## [Unreleased]` in `CHANGELOG.md` has entries, it bumps `Cargo.toml`:
+   - **minor** when a `feat` commit landed since the last tag,
+   - **patch** otherwise.
+2. It moves the entries under `## [X.Y.Z] - <date>`, commits
+   `chore: release vX.Y.Z` to `main` and pushes the `vX.Y.Z` tag.
+3. If `[Unreleased]` is empty, nothing is released. A docs or CI PR adds no entry.
 
-**One command to rule them all:**
+**So, in every PR with a user-visible change:** add its entries under `[Unreleased]`.
 
-```bash
-cargo release patch   # bug fix   (e.g. 1.4.0 → 1.4.1)
-cargo release minor   # new feature (e.g. 1.4.0 → 1.5.0)
-cargo release major   # breaking change (e.g. 1.4.0 → 2.0.0)
-```
+**Choose the level yourself** with a label on the PR:
+`release:major`, `release:minor`, `release:patch` or `release:skip`.
+A major release happens only through `release:major` (or a hand bump).
 
-`cargo-release` automatically:
-1. Bumps the version in `Cargo.toml`
-2. Commits with `chore: bump version to X.Y.Z`
-3. Creates and pushes the `vX.Y.Z` tag
+**Hand bump:** if a PR sets a `Cargo.toml` version that has no tag, that version is
+tagged as it is.
 
-**Alternatively, trigger a release from the GitHub UI** without a local checkout:
-1. Go to **Actions → Bump & Release** in the GitHub repository
-2. Click **Run workflow**, choose `patch`, `minor`, or `major`, and confirm
+**Release without a PR:** Actions → **Auto Release** → **Run workflow**, choose a level.
 
-**That's it!** When you push the tag, GitHub Actions automatically:
+**Never push tags by hand with `git push --tags`.** It pushes every local tag.
+
+The workflow needs the `RELEASE_TOKEN` secret: a fine-grained token with
+`contents: write` on this repository. A tag pushed with the default `GITHUB_TOKEN`
+starts no workflow, so the release build would never run.
+
+**That's it!** When the tag is pushed, GitHub Actions automatically:
 - Builds binaries for all platforms (Linux, macOS, Windows, ARM, x86_64)
 - Extracts raw executables from cargo-dist archives
 - Creates a GitHub Release with:
   - Raw binaries (e.g., `rfx-x86_64-unknown-linux-gnu`, `rfx-x86_64-pc-windows-msvc.exe`)
   - Shell and PowerShell installer scripts
-  - Auto-generated release notes
+  - Release notes: the version's `CHANGELOG.md` section
 
 ## What Gets Released
 
@@ -67,10 +71,9 @@ The GitHub Release will contain:
 ## Workflow Configuration
 
 Releases are configured in:
-- **`release.toml`** - cargo-release configuration (tag format, commit message, publish disabled)
+- **`.github/workflows/auto-release.yml`** - bumps, dates the changelog and tags on merge (`scripts/release-prep.sh`)
 - **`dist-workspace.toml`** - cargo-dist configuration (platforms, installers)
 - **`.github/workflows/release.yml`** - GitHub Actions workflow (builds binaries, extracts archives)
-- **`.github/workflows/bump-and-release.yml`** - workflow_dispatch trigger for UI-initiated releases
 
 **Key settings:**
 ```toml
