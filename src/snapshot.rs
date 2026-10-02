@@ -1267,6 +1267,24 @@ mod tests {
         out
     }
 
+    /// Copy the files under `from` into `to`, without `.reflex`.
+    fn copy_tree(from: &Path, to: &Path) {
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            if name == ".reflex" {
+                continue;
+            }
+            let (src, dst) = (entry.path(), to.join(&name));
+            if entry.file_type().unwrap().is_dir() {
+                std::fs::create_dir_all(&dst).unwrap();
+                copy_tree(&src, &dst);
+            } else {
+                std::fs::copy(&src, &dst).unwrap();
+            }
+        }
+    }
+
     fn index_with(root: &Path, recent: Option<(usize, u64)>) {
         let mut indexer = crate::Indexer::new(
             crate::CacheManager::new(root),
@@ -1286,10 +1304,12 @@ mod tests {
         let cache = root.join(".reflex");
         let updated = IndexSnapshot::open(&cache).unwrap();
         assert!(!updated.base_alone());
-        let aside = root.join(".reflex-updated");
-        std::fs::rename(&cache, &aside).unwrap();
-        index_unlimited(root);
-        let fresh = IndexSnapshot::open(&cache).unwrap();
+        // The fresh build indexes a copy of the tree: Windows cannot rename a
+        // directory whose files are mapped, and `updated` maps `.reflex`.
+        let copy = tempfile::TempDir::new().unwrap();
+        copy_tree(root, copy.path());
+        index_unlimited(copy.path());
+        let fresh = IndexSnapshot::open(&copy.path().join(".reflex")).unwrap();
         assert!(fresh.base_alone());
 
         let mut all: Vec<Trigram> = updated.base().trigrams.trigrams().collect();
@@ -1339,10 +1359,6 @@ mod tests {
             v
         };
         assert_eq!(fold_paths(&updated), fold_paths(&fresh));
-        drop(updated);
-        drop(fresh);
-        std::fs::remove_dir_all(&cache).unwrap();
-        std::fs::rename(&aside, &cache).unwrap();
     }
 
     /// 200 files, so file-id gaps pass 128 (where planning size and on-disk size
