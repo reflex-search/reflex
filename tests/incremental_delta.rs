@@ -313,10 +313,10 @@ fn the_merge_limit_folds_the_delta_into_a_new_base() {
     index_with_limits(root, 1, u64::MAX);
     let m = manifest(root);
     assert!(m.base_only(), "{m:?}");
-    let cache = root.join(".reflex");
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let cache = root.join(".reflex");
         let ino = |name: &str| fs::metadata(cache.join(name)).unwrap().ino();
         assert_eq!(ino("content.bin"), ino(&m.base.content));
         assert_eq!(ino("trigrams.bin"), ino(&m.base.trigrams));

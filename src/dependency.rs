@@ -597,7 +597,7 @@ impl DependencyIndex {
              JOIN file_dependencies d ON d.id = e.dep_id
              JOIN files t ON t.id = e.dst
              WHERE e.src = ?
-             ORDER BY d.id, t.id != COALESCE(d.resolved_file_id, -1), t.walk_seq",
+             ORDER BY d.id, t.id != COALESCE(d.resolved_file_id, -1), t.path",
         )?;
         let mut out: HashMap<(usize, String), Vec<String>> = HashMap::new();
         let rows = stmt.query_map([file_id], |row| {

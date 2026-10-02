@@ -1349,8 +1349,8 @@ fn python_from_import_reaches_submodules() {
         Some(
             &[
                 "app/__init__.py".to_string(),
-                "app/util.py".to_string(),
-                "app/db/__init__.py".to_string()
+                "app/db/__init__.py".to_string(),
+                "app/util.py".to_string()
             ][..]
         ),
         "{info:?}"
