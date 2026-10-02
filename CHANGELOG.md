@@ -1,55 +1,11 @@
 ## [Unreleased]
 
-### Added
+## [2.2.0] - 2026-10-01
 
-- **Every command answers from an up-to-date index; `rfx index` is no longer needed
-  after an edit.** `rfx query`, `rfx deps`, `rfx analyze`, `rfx stats`, `rfx context`,
-  `rfx list-files`, `rfx ask`, `rfx snapshot`, `rfx pulse`, interactive mode, `rfx mcp`
-  tools and `rfx serve` compare the tree with the index (the same check behind
-  `status` / `can_trust_results`) and, when it is stale, update it before they answer:
-  only the changed files for an edit, a full incremental run for many changes or an
-  ignore-file / `.reflex/config.toml` edit. A search runs alongside the check, so a fresh
-  index costs nothing extra; a stale one is updated and searched again, and the answer
-  reports `status: fresh`. A missing index is built. A command waits for another index
-  run rather than answer from a stale index.
-- **`--no-update`** (every command, before or after the subcommand; also
-  `rfx mcp --no-update`, `rfx serve --no-update`) answers from the index as it is, as
-  before, including the "Index not found" error.
-- If an update cannot run (a read-only `.reflex/`, a cache another rfx version wrote in
-  `rfx mcp` / `rfx serve`), the command still answers, from the index it has, marked
-  `stale`, with the reason in `warnings`. The CLI rebuilds another version's cache, as
-  `rfx index` does; the servers do not (two servers of different versions would rebuild
-  it in turns).
-- `--timing` / `REFLEX_MCP_TIMING=1`: `timings.update_us` when an update ran.
-- **MCP: agents are no longer told to call `check_index_status` or `index_project`.** The
-  server instructions and every tool description now say the index is updated before
-  each call; `index_project` is for a forced rebuild. Every JSON-object answer carries
-  `status` and `can_trust_results`: `list_locations`, `count_occurrences`,
-  `find_references`, `mode: "count"` and the structural tools lacked
-  `can_trust_results` (array answers and `get_transitive_deps` still have none).
-- `rfx index` remembers `--languages`; later automatic updates index the same languages.
-  A plain `rfx index` clears it.
-
-### ⚠️ Breaking (MCP)
-
-- **`rfx mcp` lists 10 tools instead of 17, and their schemas are a quarter of the
-  size** (`tools/list` 44 KB → 10.6 KB). Claude Code carries every listed schema on every
-  turn; in long sessions that prefix was the whole token gap between Reflex and Grep.
-  - `count_occurrences` → `search_code` with `mode: "count"` (now also returns `files`).
-  - `get_dependents` → `get_dependencies` with `reverse: true`; `get_transitive_deps` →
-    `get_dependencies` with `depth: N`.
-  - `find_hotspots`, `find_circular`, `find_unused`, `find_islands`, `analyze_summary` →
-    one `analyze` tool with `kind: "hotspots" | "circular" | "unused" | "islands" |
-    "summary"`. `[mcp] enable_structural_tools = false` now hides only `analyze`.
-  - The eight old names still work but are no longer listed; their answers carry a
-    `warnings` entry naming the replacement (except the two that answer bare arrays,
-    `get_dependents` and `get_transitive_deps`). Clients that allow-list tools by name
-    must add `mcp__reflex__analyze`.
-  - The matching, coverage and freshness rules moved from every tool description into
-    the server instructions (said once per session).
-- **`list_locations` takes `preview: true`**: each location also carries its matching line,
-  trimmed and cut to 120 characters. Agents that needed to see the lines used to run the
-  search again with grep.
+The import graph (`rfx deps`, `rfx analyze`, MCP `get_dependencies` / `analyze`) is now
+accurate across languages, and vendored code leaves it. Search results are unchanged.
+The first CLI command after upgrading rebuilds the index once (2.1.0 wrote it); until
+then `rfx mcp` and `rfx serve` answer from it marked `stale`.
 
 ### Fixed
 
@@ -145,6 +101,62 @@
   and lock file was both). Entry points now cover `main.go`, `*_test.go`, `testdata/`,
   `Program.cs`, `*Test(s)`/`*IT` Java, Kotlin and C# files, `__main__.py`, `manage.py`,
   `conftest.py`, `setup.py`, `*_test.py`, and test directories at any depth.
+
+## [2.1.0] - 2026-09-30
+
+### Added
+
+- **Every command answers from an up-to-date index; `rfx index` is no longer needed
+  after an edit.** `rfx query`, `rfx deps`, `rfx analyze`, `rfx stats`, `rfx context`,
+  `rfx list-files`, `rfx ask`, `rfx snapshot`, `rfx pulse`, interactive mode, `rfx mcp`
+  tools and `rfx serve` compare the tree with the index (the same check behind
+  `status` / `can_trust_results`) and, when it is stale, update it before they answer:
+  only the changed files for an edit, a full incremental run for many changes or an
+  ignore-file / `.reflex/config.toml` edit. A search runs alongside the check, so a fresh
+  index costs nothing extra; a stale one is updated and searched again, and the answer
+  reports `status: fresh`. A missing index is built. A command waits for another index
+  run rather than answer from a stale index.
+- **`--no-update`** (every command, before or after the subcommand; also
+  `rfx mcp --no-update`, `rfx serve --no-update`) answers from the index as it is, as
+  before, including the "Index not found" error.
+- If an update cannot run (a read-only `.reflex/`, a cache another rfx version wrote in
+  `rfx mcp` / `rfx serve`), the command still answers, from the index it has, marked
+  `stale`, with the reason in `warnings`. The CLI rebuilds another version's cache, as
+  `rfx index` does; the servers do not (two servers of different versions would rebuild
+  it in turns).
+- `--timing` / `REFLEX_MCP_TIMING=1`: `timings.update_us` when an update ran.
+- **MCP: agents are no longer told to call `check_index_status` or `index_project`.** The
+  server instructions and every tool description now say the index is updated before
+  each call; `index_project` is for a forced rebuild. Every JSON-object answer carries
+  `status` and `can_trust_results`: `list_locations`, `count_occurrences`,
+  `find_references`, `mode: "count"` and the structural tools lacked
+  `can_trust_results` (array answers and `get_transitive_deps` still have none).
+- `rfx index` remembers `--languages`; later automatic updates index the same languages.
+  A plain `rfx index` clears it.
+
+### ⚠️ Breaking (MCP)
+
+- **`rfx mcp` lists 10 tools instead of 17, and their schemas are a quarter of the
+  size** (`tools/list` 44 KB → 10.6 KB). Claude Code carries every listed schema on every
+  turn; in long sessions that prefix was the whole token gap between Reflex and Grep.
+  - `count_occurrences` → `search_code` with `mode: "count"` (now also returns `files`).
+  - `get_dependents` → `get_dependencies` with `reverse: true`; `get_transitive_deps` →
+    `get_dependencies` with `depth: N`.
+  - `find_hotspots`, `find_circular`, `find_unused`, `find_islands`, `analyze_summary` →
+    one `analyze` tool with `kind: "hotspots" | "circular" | "unused" | "islands" |
+    "summary"`. `[mcp] enable_structural_tools = false` now hides only `analyze`.
+  - The eight old names still work but are no longer listed; their answers carry a
+    `warnings` entry naming the replacement (except the two that answer bare arrays,
+    `get_dependents` and `get_transitive_deps`). Clients that allow-list tools by name
+    must add `mcp__reflex__analyze`.
+  - The matching, coverage and freshness rules moved from every tool description into
+    the server instructions (said once per session).
+- **`list_locations` takes `preview: true`**: each location also carries its matching line,
+  trimmed and cut to 120 characters. Agents that needed to see the lines used to run the
+  search again with grep.
+
+### Fixed
+
 - An edit to `.gitignore` (any directory), `.ignore`, `.rgignore` or
   `.reflex/config.toml` now makes the index stale (listed under `files_modified`): it
   changes which files are indexed, and was never reported.
