@@ -612,9 +612,16 @@ fn extract_from_imports(source: &str, root: &tree_sitter::Node) -> Result<Vec<Im
 fn extract_imported_symbols(source: &str, import_node: &tree_sitter::Node) -> Option<Vec<String>> {
     let mut symbols = Vec::new();
 
-    // Walk children to find aliased_import or dotted_name nodes
+    // Walk children to find aliased_import or dotted_name nodes (not the
+    // `module_name`, which is a dotted_name too: `django` of `from django.x import y`)
+    let module = import_node
+        .child_by_field_name("module_name")
+        .map(|m| m.id());
     let mut cursor = import_node.walk();
     for child in import_node.children(&mut cursor) {
+        if Some(child.id()) == module {
+            continue;
+        }
         match child.kind() {
             "aliased_import" | "dotted_name" => {
                 // Get the first identifier
@@ -1076,95 +1083,56 @@ pub fn parse_python_packages_from(
     Ok(packages)
 }
 
-/// Resolve a Python import to a file path
-///
-/// Handles:
-/// - Absolute imports: `from myapp.models import User` → `myapp/models.py` or `myapp/models/__init__.py`
-/// - Relative imports: `from .models import User` (requires current_file_path)
-/// - Package imports: `import myapp.utils` → `myapp/utils.py` or `myapp/utils/__init__.py`
-pub fn resolve_python_import_to_path(
+/// The paths a Python import can name, most specific first: `a/b.py`, then
+/// `a/b/__init__.py` (a package). Absolute imports need a package of the
+/// workspace whose name is the first component; relative ones (`..x`) are taken
+/// from `current_file_path`. No candidate starts with `/`: a package at the index
+/// root has an empty project root.
+pub fn python_import_candidates(
     import_path: &str,
     packages: &[PythonPackage],
     current_file_path: Option<&str>,
-) -> Option<String> {
-    // Handle relative imports (. or ..)
-    if import_path.starts_with('.') {
-        return resolve_relative_python_import(import_path, current_file_path);
-    }
-
-    // Handle absolute imports using package mappings
-    // Extract first component: "django.conf.settings" → "django"
-    let first_component = import_path.split('.').next()?;
-
-    // Find matching package
-    for package in packages {
-        if package.name == first_component {
-            // Convert import path to file path
-            // "django.conf.settings" → "django/conf/settings.py"
-            let module_path = import_path.replace('.', "/");
-
-            // Try both .py file and __init__.py in package
-            let candidates = vec![
-                format!("{}/{}.py", package.project_root, module_path),
-                format!("{}/{}/__init__.py", package.project_root, module_path),
-            ];
-
-            if let Some(candidate) = candidates.into_iter().next() {
-                log::trace!("Checking Python module path: {}", candidate);
-                return Some(candidate);
-            }
+) -> Vec<String> {
+    let (base, module) = if import_path.starts_with('.') {
+        let Some(dir) = relative_python_base(import_path, current_file_path) else {
+            return Vec::new();
+        };
+        (dir, import_path.trim_start_matches('.'))
+    } else {
+        // "django.conf.settings" → package "django"
+        let first_component = import_path.split('.').next().unwrap_or(import_path);
+        let Some(package) = packages.iter().find(|p| p.name == first_component) else {
+            return Vec::new();
+        };
+        (package.project_root.clone(), import_path)
+    };
+    let join = |rel: String| {
+        if base.is_empty() {
+            rel
+        } else {
+            format!("{base}/{rel}")
         }
+    };
+    if module.is_empty() {
+        // `from . import x`: the current package
+        return vec![join("__init__.py".to_string())];
     }
-
-    None
+    let module_path = module.replace('.', "/");
+    vec![
+        join(format!("{module_path}.py")),
+        join(format!("{module_path}/__init__.py")),
+    ]
 }
 
-/// Resolve relative Python imports (. or ..)
-/// Requires the current file path to determine the relative location
-fn resolve_relative_python_import(
-    import_path: &str,
-    current_file_path: Option<&str>,
-) -> Option<String> {
-    let current_file = current_file_path?;
-
-    // Count leading dots to determine how many levels to go up
+/// The directory a relative import starts from: the importing file's directory,
+/// one level up per dot after the first.
+fn relative_python_base(import_path: &str, current_file_path: Option<&str>) -> Option<String> {
     let dots = import_path.chars().take_while(|&c| c == '.').count();
-    if dots == 0 {
-        return None;
-    }
-
-    // Get the directory of the current file
-    let current_dir = std::path::Path::new(current_file).parent()?;
-
-    // Go up (dots - 1) levels (one dot means current directory)
-    let mut target_dir = current_dir.to_path_buf();
+    let mut dir = std::path::Path::new(current_file_path?).parent()?;
     for _ in 1..dots {
-        target_dir = target_dir.parent()?.to_path_buf();
+        dir = dir.parent()?;
     }
-
-    // Get the module path after the dots
-    let module_path = import_path.trim_start_matches('.');
-
-    if module_path.is_empty() {
-        // Just "from ." means import from current package's __init__.py
-        return Some(format!("{}/__init__.py", target_dir.to_string_lossy()));
-    }
-
-    // Convert dots to slashes: "models.user" → "models/user"
-    let file_path = module_path.replace('.', "/");
-
-    // Try both .py file and __init__.py in package
-    let candidates = vec![
-        format!("{}/{}.py", target_dir.to_string_lossy(), file_path),
-        format!("{}/{}/__init__.py", target_dir.to_string_lossy(), file_path),
-    ];
-
-    if let Some(candidate) = candidates.into_iter().next() {
-        log::trace!("Checking relative Python import: {}", candidate);
-        return Some(candidate);
-    }
-
-    None
+    Some(dir.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(test)]
@@ -1682,7 +1650,9 @@ def get_config():
 
         // Test absolute import resolution
         // "myapp.models.user" → "myapp/models/user.py"
-        let resolved = resolve_python_import_to_path("myapp.models.user", &packages, None);
+        let resolved = python_import_candidates("myapp.models.user", &packages, None)
+            .into_iter()
+            .next();
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1697,11 +1667,13 @@ def get_config():
         let current_file = "myapp/views/admin.py";
 
         // Test single dot (current package)
-        let resolved = resolve_python_import_to_path(
+        let resolved = python_import_candidates(
             ".models",
             &[], // Empty packages array - relative imports don't need it
             Some(current_file),
-        );
+        )
+        .into_iter()
+        .next();
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1709,7 +1681,9 @@ def get_config():
         assert!(path.contains("myapp/views/models"));
 
         // Test double dot (parent package)
-        let resolved = resolve_python_import_to_path("..utils", &[], Some(current_file));
+        let resolved = python_import_candidates("..utils", &[], Some(current_file))
+            .into_iter()
+            .next();
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1722,7 +1696,9 @@ def get_config():
         // Test relative imports with module path: from ..models.user import User
         let current_file = "myapp/views/dashboard/index.py";
 
-        let resolved = resolve_python_import_to_path("..models.user", &[], Some(current_file));
+        let resolved = python_import_candidates("..models.user", &[], Some(current_file))
+            .into_iter()
+            .next();
 
         assert!(resolved.is_some());
         let path = resolved.unwrap();
@@ -1749,7 +1725,9 @@ def get_config():
         let packages = parse_all_python_packages(root).unwrap();
 
         // Try to resolve an import for a different package
-        let resolved = resolve_python_import_to_path("other_package.module", &packages, None);
+        let resolved = python_import_candidates("other_package.module", &packages, None)
+            .into_iter()
+            .next();
 
         // Should return None for packages not in the monorepo
         assert!(resolved.is_none());
@@ -1790,5 +1768,50 @@ exec("import dynamic")
                 .any(|d| d.imported_path.contains("package") && d.imported_path != "json")
         );
         assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic")));
+    }
+
+    fn package(name: &str, root: &str) -> PythonPackage {
+        PythonPackage {
+            name: name.to_string(),
+            project_root: root.to_string(),
+            abs_project_root: std::path::PathBuf::from("/ws").join(root),
+        }
+    }
+
+    #[test]
+    fn empty_root_no_leading_slash() {
+        assert_eq!(
+            python_import_candidates("django.db", &[package("django", "")], None),
+            ["django/db.py", "django/db/__init__.py"]
+        );
+        assert_eq!(
+            python_import_candidates("acme.views", &[package("acme", "backend")], None),
+            ["backend/acme/views.py", "backend/acme/views/__init__.py"]
+        );
+        assert!(python_import_candidates("other.x", &[package("acme", "")], None).is_empty());
+    }
+
+    #[test]
+    fn relative_candidates_try_module_then_package() {
+        assert_eq!(
+            python_import_candidates("..db.models", &[], Some("acme/web/views.py")),
+            ["acme/db/models.py", "acme/db/models/__init__.py"]
+        );
+        assert_eq!(
+            python_import_candidates(".", &[], Some("acme/views.py")),
+            ["acme/__init__.py"]
+        );
+    }
+
+    #[test]
+    fn from_import_symbols_exclude_the_module() {
+        let deps = PythonDependencyExtractor::extract_dependencies(
+            "from django.core.management import BaseCommand, call_command as cc\n",
+        )
+        .unwrap();
+        assert_eq!(
+            deps[0].imported_symbols.as_deref(),
+            Some(&["BaseCommand".to_string(), "call_command".to_string()][..])
+        );
     }
 }

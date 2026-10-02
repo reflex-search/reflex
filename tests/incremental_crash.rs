@@ -164,6 +164,7 @@ fn expected() -> (Answers, Answers) {
     indexer(root, false).index(root, false).unwrap();
     let old = answers(root).0;
     change(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     indexer(root, false).index(root, false).unwrap();
     let new = answers(root).0;

@@ -139,10 +139,7 @@ impl Corpus {
             .collect();
 
         let mut edges: BTreeSet<(usize, usize)> = BTreeSet::new();
-        let mut stmt = conn.prepare(
-            "SELECT file_id, resolved_file_id FROM file_dependencies
-             WHERE resolved_file_id IS NOT NULL",
-        )?;
+        let mut stmt = conn.prepare("SELECT src, dst FROM import_edges")?;
         let pairs = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         for pair in pairs {
             let (from, to) = pair?;

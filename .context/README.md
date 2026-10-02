@@ -15,6 +15,7 @@ development sessions (human and AI). Committed to git.
 | `PULSE_RENDERER_SPIKE.md` | Pulse M0a renderer spike (2026-09-26). |
 | `INCREMENTAL_INDEX_RESEARCH.md` | How the index is rebuilt today (facts, file:line) and the staged design for incremental updates. |
 | `AUTO_UPDATE_RESEARCH.md` | Plan for auto-update: every command updates a stale index before it answers (decisions, code survey, steps, gates). |
+| `DEPENDENCY_RESOLUTION_RESEARCH.md` | Import-graph accuracy per language (2026-09-30): why Go/Java/C#/Kotlin/Python barely resolved, the package-key design, before/after numbers. |
 | `EFFICACY-2.0.3.md` | Efficacy A/B on 2.0.3 (Opus 5.5, Sonnet 5): method, all endpoints, per-task tables, limits. |
 
 ## Rules

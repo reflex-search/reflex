@@ -89,10 +89,9 @@ fn generate_repo_map(cache: &CacheManager, format: MapFormat) -> Result<String> 
     // Get all file-level dependency edges
     let mut stmt = conn.prepare(
         "SELECT f1.path, f2.path
-         FROM file_dependencies fd
-         JOIN files f1 ON fd.file_id = f1.id
-         JOIN files f2 ON fd.resolved_file_id = f2.id
-         WHERE fd.resolved_file_id IS NOT NULL",
+         FROM import_edges e
+         JOIN files f1 ON e.src = f1.id
+         JOIN files f2 ON e.dst = f2.id",
     )?;
 
     let file_edges: Vec<(String, String)> = stmt
@@ -174,11 +173,10 @@ fn generate_module_map(
     // Get intra-module edges
     let mut stmt = conn.prepare(
         "SELECT f1.path, f2.path
-         FROM file_dependencies fd
-         JOIN files f1 ON fd.file_id = f1.id
-         JOIN files f2 ON fd.resolved_file_id = f2.id
-         WHERE f1.path LIKE ?1 AND f2.path LIKE ?1
-           AND fd.resolved_file_id IS NOT NULL",
+         FROM import_edges e
+         JOIN files f1 ON e.src = f1.id
+         JOIN files f2 ON e.dst = f2.id
+         WHERE f1.path LIKE ?1 AND f2.path LIKE ?1",
     )?;
     let edges: Vec<(String, String)> = stmt
         .query_map([&pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -268,10 +266,9 @@ pub fn generate_layered_map(cache: &CacheManager, format: MapFormat) -> Result<S
     // Get module-level edges
     let mut stmt = conn.prepare(
         "SELECT f1.path, f2.path
-         FROM file_dependencies fd
-         JOIN files f1 ON fd.file_id = f1.id
-         JOIN files f2 ON fd.resolved_file_id = f2.id
-         WHERE fd.resolved_file_id IS NOT NULL",
+         FROM import_edges e
+         JOIN files f1 ON e.src = f1.id
+         JOIN files f2 ON e.dst = f2.id",
     )?;
     let file_edges: Vec<(String, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

@@ -35,7 +35,7 @@ Reflex uses **trigram-based indexing** to enable instant full-text search across
 
 ### Index Cache Structure (`.reflex/`)
     .reflex/
-      meta.db          # SQLite: files (stable ids, walk_seq) + freshness fingerprints, branches, stats, dependencies, exports, symbol cache
+      meta.db          # SQLite: files (stable ids, walk_seq, vendored) + freshness fingerprints, branches, stats, dependencies (+ package_members, import_edges view), exports, symbol cache
       manifest.json    # The commit point: which store files make up the index (generation, base, delta, recent, tombstones)
       content.<g>.bin  # Base content store (V2) for verification and context, generation g
       trigrams.<g>.bin # Base inverted index (V4): trigram → [file_id, line_no] posting lists
@@ -517,6 +517,34 @@ importlib.import_module(var) # ❌ Dynamic import (variable)
 import(f"./templates/{name}") # ❌ Template literal
 ```
 
+### Resolution
+
+An internal import reaches files in one of two ways:
+- **One file** (`file_dependencies.resolved_file_id`): TS/JS, Rust, Python, PHP, Ruby,
+  C/C++, Zig, Vue/Svelte.
+- **A package key** (`resolved_package`, `resolved_member`): Go `go:<dir>`, Java/Kotlin
+  `jvm:<package>` + class or top-level name, C# `cs:<namespace>`. Each file records the
+  packages it belongs to in `package_members` when it is extracted.
+
+Every graph reader uses the `import_edges` view, which expands package keys to files.
+Do not read `resolved_file_id` directly. `analyze` and `get_dependencies` warn when a
+language resolves under 50 % of 100+ internal imports. Numbers and design:
+`.context/DEPENDENCY_RESOLUTION_RESEARCH.md`.
+
+### Vendored code
+
+Vendored files (`files.vendored`, rules in `src/vendor.rs`) are indexed and searchable,
+but are not graph nodes: `import_edges` drops every edge that touches one, and graph
+node queries use `CODE_FILES`, which leaves them out. A repo that commits `vendor/`
+gets the graph of one that gitignores it. Rules, in order:
+1. `[index.vendored] patterns` (gitignore rules; `!dir/` = project code)
+2. toolchain markers: Go `vendor/modules.txt`, `vendor/composer/installed.json`,
+   `.cargo-checksum.json`, `pyvenv.cfg`, `build.zig.zon` path dependencies
+3. `node_modules`, `bower_components`, `site-packages`, `dist-packages`, installed gems
+4. per-language names (`vendor_dir_names`); none for Go, PHP, Rust and Ruby
+
+Markers are resolver configs, so adding or removing one re-flags every file.
+
 ### Classification
 
 Imports are classified as:
@@ -566,6 +594,7 @@ Designed for **codebase structure analysis**:
 
 ### Test
     cargo test
+    scripts/windows-check.sh   # Windows clippy from Linux/macOS (lefthook pre-push; skips without mingw)
 
 ### Refresh Index
     rfx index
@@ -684,6 +713,7 @@ follow_symlinks = false
 # gitignore rules: a pattern with `/` is anchored at the root, a bare name matches anywhere.
 # include.patterns = ["src/**/*.rs", "docs/**"]   # whitelist (directories are still walked)
 # exclude.patterns = ["vendor/**", "*.generated.rs"]
+# vendored.patterns = ["libs/acme/", "!third_party/ours/"]  # searchable, not in the import graph
 
 [performance]
 parallel_threads = 0  # 0 = auto (80% of cores, max 32)

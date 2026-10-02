@@ -522,7 +522,9 @@ fn make_tool_result(data: Value) -> Value {
 ///
 /// JSON-object data gets a top-level `warnings` array. Prose data
 /// (`Value::String`, e.g. `gather_context`) is emitted verbatim as
-/// `content[text]`, with the warnings appended as trailing lines.
+/// `content[text]`, with the warnings appended as trailing lines. Array data
+/// (`get_dependencies`) keeps its shape; the warnings follow as a second
+/// `content[text]` item.
 fn finish_tool_result(data: Value, warnings: Vec<String>) -> Value {
     match data {
         Value::String(text) => {
@@ -532,6 +534,16 @@ fn finish_tool_result(data: Value, warnings: Vec<String>) -> Value {
                 format!("{}\n\nwarnings: {}", text, warnings.join("; "))
             };
             json!({ "content": [{ "type": "text", "text": text }] })
+        }
+        Value::Array(_) if !warnings.is_empty() => {
+            let mut result = make_tool_result(data);
+            if let Some(content) = result["content"].as_array_mut() {
+                content.push(json!({
+                    "type": "text",
+                    "text": format!("warnings: {}", warnings.join("; ")),
+                }));
+            }
+            result
         }
         mut other => {
             if !warnings.is_empty()
@@ -1282,8 +1294,26 @@ fn handle_call_tool(
     if FRESHNESS_FIELD_TOOLS.contains(&name) {
         add_freshness_fields(&mut data, root);
     }
+    warnings.extend(graph_warnings(handler, &arguments, root));
 
     Ok(finish_tool_result(data, warnings))
+}
+
+/// Low import-resolution warnings for the import-graph handlers: every language's for
+/// the whole-graph `analyze` kinds, the file's own language's for `get_dependencies`.
+/// A failure to compute them never fails the call.
+fn graph_warnings(handler: &str, arguments: &Value, root: &Path) -> Vec<String> {
+    let deps = DependencyIndex::new(CacheManager::new(root));
+    match handler {
+        "find_hotspots" | "find_circular" | "find_unused" | "find_islands" | "analyze_summary" => {
+            deps.low_resolution_warnings().unwrap_or_default()
+        }
+        "get_dependencies" | "get_dependents" | "get_transitive_deps" => arguments["path"]
+            .as_str()
+            .and_then(|path| deps.graph_warnings_for(path).ok())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Every `dispatch_tool` arm (listed tools and the ones merged into them).
@@ -2452,13 +2482,18 @@ fn dispatch_tool(
             let unused = deps_index.find_unused_files()?;
             let all_islands = deps_index.find_islands()?;
 
-            let summary = json!({
+            let mut summary = json!({
                 "circular_dependencies": cycles.len(),
                 "hotspots": hotspots.len(),
                 "unused_files": unused.len(),
                 "islands": all_islands.len(),
                 "min_dependents": min_dependents,
             });
+            // Searchable, but left out of every count above (`crate::vendor`)
+            let vendored = deps_index.vendored_file_count()?;
+            if vendored > 0 {
+                summary["vendored_files"] = json!(vendored);
+            }
 
             Ok(summary)
         }

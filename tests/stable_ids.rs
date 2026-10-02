@@ -185,22 +185,33 @@ fn other_branches_rows_survive_a_reindex() {
 
 #[test]
 fn a_schema_change_forces_a_full_rebuild() {
-    use std::os::unix::fs::MetadataExt;
     let temp = workspace();
     let root = temp.path();
     index(root);
-    let content = root.join(".reflex/content.bin");
-    let inode = fs::metadata(&content).unwrap().ino();
+    // A rewritten content.bin has a new inode (Unix only; Windows has no inodes).
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(root.join(".reflex/content.bin"))
+            .unwrap()
+            .ino()
+    };
 
     // Nothing changed on disk; only the cache's schema stamp is foreign.
     set_stat(root, "schema_hash", "0000000000000000");
     index(root);
 
-    assert_ne!(
-        fs::metadata(&content).unwrap().ino(),
-        inode,
-        "content.bin was rewritten"
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            fs::metadata(root.join(".reflex/content.bin"))
+                .unwrap()
+                .ino(),
+            inode,
+            "content.bin was rewritten"
+        );
+    }
     assert_ne!(
         stat(root, "schema_hash").as_deref(),
         Some("0000000000000000")
@@ -319,9 +330,11 @@ fn graph_outputs(root: &Path) -> Vec<String> {
 /// directory (same readdir order, so the same walk order).
 fn against_fresh(root: &Path) -> (Vec<String>, Vec<String>) {
     let updated = graph_outputs(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::rename(root.join(".reflex"), root.join(".reflex-updated")).unwrap();
     index(root);
     let fresh = graph_outputs(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     fs::rename(root.join(".reflex-updated"), root.join(".reflex")).unwrap();
     (updated, fresh)

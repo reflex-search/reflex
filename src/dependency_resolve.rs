@@ -82,7 +82,59 @@ pub fn is_resolver_config_name(name: &str) -> bool {
             | "composer.json"
             | "tsconfig.json"
             | "Cargo.toml"
+            // Vendoring markers (`crate::vendor`)
+            | "modules.txt"
+            | "installed.json"
+            | "pyvenv.cfg"
+            | ".cargo-checksum.json"
+            | "build.zig.zon"
+            | "build.zig"
     ) || name.ends_with(".gemspec")
+}
+
+/// `dir/rel` with `.` and `..` folded without touching the disk, `/`-separated.
+/// An absolute `dir` (or `rel`) stays absolute. `None` when `..` climbs above the
+/// start or nothing is left.
+///
+/// Resolvers used `canonicalize()`, which reads the disk relative to the process's
+/// working directory: a root-relative path resolved only when the process ran in
+/// the root.
+pub fn fold_path(dir: &str, rel: &str) -> Option<String> {
+    let rel = rel.replace('\\', "/");
+    let dir = dir.replace('\\', "/");
+    let (absolute, joined) = if rel.starts_with('/') {
+        (true, rel)
+    } else {
+        (dir.starts_with('/'), format!("{dir}/{rel}"))
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in joined.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let body = parts.join("/");
+    Some(if absolute { format!("/{body}") } else { body })
+}
+
+/// The directory part of a `/`-separated file path (`""` for a bare name).
+pub fn parent_dir(file: &str) -> &str {
+    file.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+/// `path` relative to `root`, `/`-separated.
+fn rel_slash(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// [`ConfigFiles`] on disk: paths relative to the root, `/`-separated.
@@ -95,6 +147,12 @@ struct ConfigList {
     cargo_tomls: Vec<String>,
     composer: Vec<String>,
     tsconfigs: Vec<String>,
+    #[serde(default)]
+    vendor_markers: Vec<String>,
+    #[serde(default)]
+    zig_zons: Vec<String>,
+    #[serde(default)]
+    zig_builds: Vec<String>,
     walk_error: Option<String>,
 }
 
@@ -108,6 +166,12 @@ struct ConfigFiles {
     cargo_tomls: Vec<PathBuf>,
     composer: Vec<PathBuf>,
     tsconfigs: Vec<PathBuf>,
+    /// Vendoring markers (`crate::vendor::marker_root`): only their paths matter.
+    vendor_markers: Vec<PathBuf>,
+    /// `build.zig.zon` files, whose path dependencies are vendored roots.
+    zig_zons: Vec<PathBuf>,
+    /// `build.zig` files, whose named modules `@import("name")` reaches.
+    zig_builds: Vec<PathBuf>,
     /// The first walk error. Every finder except tsconfig's stopped on its first
     /// error (`entry?`) and returned it, so their kinds fail with it here too.
     walk_error: Option<String>,
@@ -140,12 +204,32 @@ impl ConfigFiles {
                 "go.mod" | "pom.xml" | "build.gradle" | "build.gradle.kts" | "pyproject.toml"
                 | "setup.py" | "setup.cfg" | "composer.json" | "tsconfig.json" | "Cargo.toml" => {}
                 _ if is_gemspec => {}
+                "modules.txt" | "installed.json" | "pyvenv.cfg" => {
+                    let rel = rel_slash(root, path);
+                    if crate::vendor::marker_root(&rel).is_some() {
+                        out.vendor_markers.push(path.to_path_buf());
+                    }
+                    continue;
+                }
+                "build.zig.zon" => {
+                    out.zig_zons.push(path.to_path_buf());
+                    continue;
+                }
+                "build.zig" => {
+                    out.zig_builds.push(path.to_path_buf());
+                    continue;
+                }
                 _ => continue,
             }
 
             // Rust's finder matched the name alone; tsconfig's likewise.
             if filename == "Cargo.toml" {
                 out.cargo_tomls.push(path.to_path_buf());
+                // A `cargo vendor` crate: the walk skips the dotfile itself
+                let checksum = path.with_file_name(".cargo-checksum.json");
+                if checksum.is_file() {
+                    out.vendor_markers.push(checksum);
+                }
             }
             if filename == "tsconfig.json" {
                 out.tsconfigs.push(path.to_path_buf());
@@ -184,7 +268,56 @@ impl ConfigFiles {
                 out.gemspecs.push(path.to_path_buf());
             }
         }
+        out.drop_vendored_configs(root);
         out
+    }
+
+    /// The vendored roots the markers and `build.zig.zon` path dependencies name,
+    /// relative and `/`-terminated.
+    fn vendor_roots(&self, root: &Path) -> Vec<String> {
+        let mut roots: Vec<String> = self
+            .vendor_markers
+            .iter()
+            .filter_map(|p| crate::vendor::marker_root(&rel_slash(root, p)))
+            .collect();
+        for zon in &self.zig_zons {
+            if let Ok(source) = std::fs::read_to_string(zon) {
+                roots.extend(crate::vendor::zig_path_dependencies(
+                    &rel_slash(root, zon),
+                    &source,
+                ));
+            }
+        }
+        roots
+    }
+
+    /// Drop the configs of vendored code: a vendored crate's `Cargo.toml` would make
+    /// its crate Internal, a vendored gemspec its gem.
+    fn drop_vendored_configs(&mut self, root: &Path) {
+        let rules = crate::vendor::VendorRules::new(root, self.vendor_roots(root), &[]);
+        let keep = |p: &PathBuf| !rules.in_vendored_dir(&rel_slash(root, p));
+        for list in [
+            &mut self.go_mods,
+            &mut self.java,
+            &mut self.python,
+            &mut self.gemspecs,
+            &mut self.cargo_tomls,
+            &mut self.composer,
+            &mut self.tsconfigs,
+            &mut self.zig_builds,
+        ] {
+            list.retain(keep);
+        }
+        // A vendored module's own markers and path dependencies are not ours
+        let dirs: Vec<String> = self
+            .vendor_markers
+            .iter()
+            .filter_map(|p| crate::vendor::marker_root(&rel_slash(root, p)))
+            .collect();
+        self.zig_zons.retain(|p| {
+            let rel = rel_slash(root, p);
+            !dirs.iter().any(|d| rel.starts_with(d.as_str())) && !rules.in_vendored_dir(&rel)
+        });
     }
 
     /// A digest of everything the config parsers read: each kind's files in walk
@@ -193,9 +326,9 @@ impl ConfigFiles {
     fn digest(&self, root: &Path) -> String {
         let mut h = blake3::Hasher::new();
         let mut file = |tag: &str, path: &Path| {
-            let rel = path.strip_prefix(root).unwrap_or(path);
+            // `/`-separated: a walk and the saved list spell a path alike on Windows
             h.update(tag.as_bytes());
-            h.update(rel.to_string_lossy().as_bytes());
+            h.update(rel_slash(root, path).as_bytes());
             h.update(b"\0");
             match std::fs::read(path) {
                 Ok(bytes) => {
@@ -220,6 +353,12 @@ impl ConfigFiles {
                 file(tag, path);
             }
         }
+        for path in &self.zig_zons {
+            file("zig", path);
+        }
+        for path in &self.zig_builds {
+            file("zig-build", path);
+        }
         // `find_python_package_name` reads all three names in each project root.
         for path in &self.python {
             if let Some(dir) = path.parent() {
@@ -227,6 +366,12 @@ impl ConfigFiles {
                     file("python-sibling", &dir.join(name));
                 }
             }
+        }
+        // A marker's bytes change on every `go mod vendor`; its root does not.
+        for path in &self.vendor_markers {
+            h.update(b"vendor-marker");
+            h.update(rel_slash(root, path).as_bytes());
+            h.update(b"\0");
         }
         h.update(if root.join("Cargo.toml").exists() {
             b"cargo-gate:1"
@@ -257,6 +402,9 @@ impl ConfigFiles {
             cargo_tomls: rel(&self.cargo_tomls),
             composer: rel(&self.composer),
             tsconfigs: rel(&self.tsconfigs),
+            vendor_markers: rel(&self.vendor_markers),
+            zig_zons: rel(&self.zig_zons),
+            zig_builds: rel(&self.zig_builds),
             walk_error: self.walk_error.clone(),
         }
     }
@@ -272,6 +420,9 @@ impl ConfigFiles {
             cargo_tomls: abs(&list.cargo_tomls),
             composer: abs(&list.composer),
             tsconfigs: abs(&list.tsconfigs),
+            vendor_markers: abs(&list.vendor_markers),
+            zig_zons: abs(&list.zig_zons),
+            zig_builds: abs(&list.zig_builds),
             walk_error: list.walk_error.clone(),
         }
     }
@@ -294,8 +445,13 @@ pub struct ResolverConfigs {
     pub ruby_projects: Vec<RubyProject>,
     pub rust_crates: Vec<RustCrate>,
     pub php_psr4: Vec<Psr4Mapping>,
-    /// Digest of every input above (see `ConfigFiles::digest`). An index run
-    /// whose digest differs from the stored one re-resolves every file.
+    /// Named modules the workspace's `build.zig` files define.
+    pub zig_modules: Vec<crate::parsers::zig::ZigModule>,
+    /// Which files are vendored: the markers found, plus `[index.vendored] patterns`.
+    pub vendor: crate::vendor::VendorRules,
+    /// Digest of every input above (see `ConfigFiles::digest`) and the vendored
+    /// patterns. An index run whose digest differs from the stored one re-resolves
+    /// and re-flags every file.
     pub digest: String,
     /// The config files these were parsed from.
     files: ConfigFiles,
@@ -304,17 +460,22 @@ pub struct ResolverConfigs {
 impl ResolverConfigs {
     /// Find and parse every resolver config under `root`. A kind that fails to parse
     /// is logged and left empty, as before.
-    pub fn discover(root: &Path) -> Self {
-        Self::parse(root, ConfigFiles::walk(root))
+    /// `vendored` is `[index.vendored] patterns`.
+    pub fn discover(root: &Path, vendored: &[String]) -> Self {
+        Self::parse(root, ConfigFiles::walk(root), vendored)
     }
 
     /// Parse the config files listed in `cache_dir` by [`Self::save_list`], without
     /// walking. `None` when there is no list. The caller compares the digest with
     /// the stored one: a listed file that changed shows there.
-    pub fn from_saved_list(root: &Path, cache_dir: &Path) -> Option<Self> {
+    pub fn from_saved_list(root: &Path, cache_dir: &Path, vendored: &[String]) -> Option<Self> {
         let bytes = std::fs::read(cache_dir.join(CONFIG_LIST)).ok()?;
         let list: ConfigList = serde_json::from_slice(&bytes).ok()?;
-        Some(Self::parse(root, ConfigFiles::from_list(root, &list)))
+        Some(Self::parse(
+            root,
+            ConfigFiles::from_list(root, &list),
+            vendored,
+        ))
     }
 
     /// Write the list of config files (atomically) unless it is already there.
@@ -344,6 +505,9 @@ impl ResolverConfigs {
             &list.cargo_tomls,
             &list.composer,
             &list.tsconfigs,
+            &list.vendor_markers,
+            &list.zig_zons,
+            &list.zig_builds,
         ]
         .into_iter()
         .flatten()
@@ -356,8 +520,31 @@ impl ResolverConfigs {
         })
     }
 
-    fn parse(root: &Path, files: ConfigFiles) -> Self {
-        let digest = files.digest(root);
+    fn parse(root: &Path, files: ConfigFiles, vendored: &[String]) -> Self {
+        let digest = {
+            let mut h = blake3::Hasher::new();
+            h.update(files.digest(root).as_bytes());
+            for pattern in vendored {
+                h.update(b"vendored-pattern");
+                h.update(pattern.as_bytes());
+                h.update(b"\0");
+            }
+            h.finalize().to_hex().to_string()
+        };
+        let vendor = crate::vendor::VendorRules::new(root, files.vendor_roots(root), vendored);
+        let mut digest = digest;
+        let zig_modules: Vec<crate::parsers::zig::ZigModule> = files
+            .zig_builds
+            .iter()
+            .filter_map(|p| {
+                let source = std::fs::read_to_string(p).ok()?;
+                Some(crate::parsers::zig::parse_build_zig_modules(
+                    &rel_slash(root, p),
+                    &source,
+                ))
+            })
+            .flatten()
+            .collect();
 
         let tsconfigs = crate::parsers::tsconfig::parse_tsconfigs_from(&files.tsconfigs)
             .unwrap_or_else(|e| {
@@ -429,6 +616,21 @@ impl ResolverConfigs {
                 log::warn!("Failed to parse Ruby project configs: {}", e);
                 Vec::new()
             });
+        // What each gem's lib/ provides decides which requires are Internal: a new
+        // top-level name there must re-resolve every file
+        if !ruby_projects.is_empty() {
+            let mut h = blake3::Hasher::new();
+            h.update(digest.as_bytes());
+            for project in &ruby_projects {
+                h.update(project.project_root.as_bytes());
+                for name in &project.provides {
+                    h.update(b"\0");
+                    h.update(name.as_bytes());
+                }
+                h.update(b"\n");
+            }
+            digest = h.finalize().to_hex().to_string();
+        }
         if !ruby_projects.is_empty() {
             log::info!("Found {} Ruby projects", ruby_projects.len());
             for project in &ruby_projects {
@@ -489,10 +691,41 @@ impl ResolverConfigs {
             ruby_projects,
             rust_crates,
             php_psr4,
+            zig_modules,
+            vendor,
             digest,
             files,
         }
     }
+}
+
+/// What an import resolved to (see [`ResolverContext::resolve`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// One indexed file (`file_dependencies.resolved_file_id`).
+    File(i64),
+    /// A package key (`resolved_package`) and optionally one member of it
+    /// (`resolved_member`); the graph reaches every file in `package_members`.
+    Package {
+        key: String,
+        member: Option<String>,
+    },
+    Unresolved,
+}
+
+/// The `(package key, member)` rows that make the file at `rel_path` reachable
+/// by package imports (`package_members`): a Go file's directory, plus what its
+/// content declares (`declared`: a JVM package and top-level names, C#
+/// namespaces, types and sub-namespaces). Member `""` stands for the whole
+/// package: an import with no member reaches exactly the `""` rows.
+pub fn package_members(rel_path: &str, declared: &[(String, String)]) -> Vec<(String, String)> {
+    let mut members = declared.to_vec();
+    if rel_path.ends_with(".go")
+        && let Some(key) = crate::parsers::go::go_package_member(rel_path)
+    {
+        members.push((key, String::new()));
+    }
+    members
 }
 
 /// The resolution rules for one workspace, over its parsed configs.
@@ -535,6 +768,8 @@ impl<'a> ResolverContext<'a> {
                     file_id,
                     imported_path: import_info.imported_path.clone(),
                     resolved_file_id: None,
+                    resolved_package: None,
+                    resolved_member: None,
                     import_type: import_info.import_type.clone(),
                     line_number: import_info.line_number,
                     imported_symbols: import_info.imported_symbols.clone(),
@@ -542,14 +777,18 @@ impl<'a> ResolverContext<'a> {
                 continue;
             }
 
-            let resolved_file_id = self.resolve_import(file_path, &import_info, resolver);
-
-            // resolved_file_id will be populated using deterministic language-specific resolution
-            // All language resolvers have been implemented!
+            let (resolved_file_id, resolved_package, resolved_member) =
+                match self.resolve(file_path, &import_info, resolver) {
+                    Resolution::File(id) => (Some(id), None, None),
+                    Resolution::Package { key, member } => (None, Some(key), member),
+                    Resolution::Unresolved => (None, None, None),
+                };
             resolved_deps.push(Dependency {
                 file_id,
                 imported_path: import_info.imported_path.clone(),
                 resolved_file_id,
+                resolved_package,
+                resolved_member,
                 import_type: import_info.import_type,
                 line_number: import_info.line_number,
                 imported_symbols: import_info.imported_symbols.clone(),
@@ -654,6 +893,19 @@ impl<'a> ResolverContext<'a> {
                     break;
                 }
             }
+            // A name some workspace gem's lib/ provides (`active_support` is in the
+            // gem `activesupport`)
+            if !reclassified {
+                let first = import_info
+                    .imported_path
+                    .split('/')
+                    .next()
+                    .unwrap_or_default();
+                reclassified = ruby_projects.iter().any(|p| p.serves(first));
+                if reclassified {
+                    import_info.import_type = ImportType::Internal;
+                }
+            }
             // If no project matched, use base classification (will be External or Stdlib)
             if !reclassified {
                 import_info.import_type =
@@ -685,6 +937,40 @@ impl<'a> ResolverContext<'a> {
             }
         }
 
+        // With composer.json, a PHP `use` is Internal exactly when a project
+        // autoload prefix holds it (Illuminate\... in vendor/ is External)
+        if file_path.ends_with(".php")
+            && !self.configs.php_psr4.is_empty()
+            && !import_info.imported_path.contains('/')
+            && !import_info.imported_path.ends_with(".php")
+            && !matches!(import_info.import_type, ImportType::Stdlib)
+        {
+            let internal = self.configs.php_psr4.iter().any(|m| {
+                crate::parsers::php::php_prefix_matches(
+                    &import_info.imported_path,
+                    &m.namespace_prefix,
+                )
+            });
+            import_info.import_type = if internal {
+                ImportType::Internal
+            } else {
+                ImportType::External
+            };
+        }
+
+        // A Zig module name the workspace's build.zig defines
+        if file_path.ends_with(".zig")
+            && matches!(import_info.import_type, ImportType::External)
+            && crate::parsers::zig::find_zig_module(
+                &import_info.imported_path,
+                file_path,
+                &self.configs.zig_modules,
+            )
+            .is_some()
+        {
+            import_info.import_type = ImportType::Internal;
+        }
+
         // Reclassify Rust imports using workspace crates
         if file_path.ends_with(".rs") && !rust_crates.is_empty() {
             let new_type = crate::parsers::rust::reclassify_rust_import(
@@ -697,644 +983,191 @@ impl<'a> ResolverContext<'a> {
         }
     }
 
-    /// The `files.id` an import that is neither External nor Stdlib resolves to.
+    /// Where an import that is neither External nor Stdlib leads: one file, or a
+    /// package the graph expands to its member files ([`package_members`]).
+    pub fn resolve(
+        &self,
+        file_path: &str,
+        import_info: &ImportInfo,
+        resolver: &PathResolver,
+    ) -> Resolution {
+        if file_path.ends_with(".go") {
+            // A Go import names a package (a directory), never one file
+            return crate::parsers::go::go_package_key(
+                &import_info.imported_path,
+                &self.configs.go_modules,
+            )
+            .map_or(Resolution::Unresolved, |key| Resolution::Package {
+                key,
+                member: None,
+            });
+        }
+        if file_path.ends_with(".cs") {
+            // `using A.B` names a namespace: every file that declares it.
+            // `using static A.B.C` / `using X = A.B.C` name member `C` of `A.B`:
+            // the files declaring type `C` there, or namespace `A.B.C`
+            let path = &import_info.imported_path;
+            if let Some([member]) = import_info.imported_symbols.as_deref()
+                && let Some((namespace, last)) = path.rsplit_once('.')
+                && last == member
+            {
+                return Resolution::Package {
+                    key: format!("cs:{namespace}"),
+                    member: Some(member.clone()),
+                };
+            }
+            return Resolution::Package {
+                key: format!("cs:{path}"),
+                member: None,
+            };
+        }
+        if [".java", ".kt", ".kts"]
+            .iter()
+            .any(|ext| file_path.ends_with(ext))
+        {
+            // A JVM import names a package and a class or top-level name in it,
+            // wherever (in whichever module) the file declaring it lives
+            let (key, member) = crate::parsers::java::jvm_import_key(&import_info.imported_path);
+            return Resolution::Package { key, member };
+        }
+        self.resolve_import(file_path, import_info, resolver)
+            .map_or(Resolution::Unresolved, Resolution::File)
+    }
+
+    /// The `files.id` an import that is neither External nor Stdlib resolves to,
+    /// for the languages whose imports name one file (see [`Self::resolve`]): the
+    /// first of the language's candidate paths that is indexed.
     pub fn resolve_import(
         &self,
         file_path: &str,
         import_info: &ImportInfo,
         resolver: &PathResolver,
     ) -> Option<i64> {
-        let root = self.root;
-        let tsconfigs = &self.configs.tsconfigs;
-        let go_modules = &self.configs.go_modules;
-        let java_projects = &self.configs.java_projects;
-        let python_packages = &self.configs.python_packages;
-        let ruby_projects = &self.configs.ruby_projects;
-        let rust_crates = &self.configs.rust_crates;
-        let php_psr4_mappings = &self.configs.php_psr4;
-
-        if file_path.ends_with(".php") && !php_psr4_mappings.is_empty() {
-            // Use PSR-4 to resolve namespace to file path
-            if let Some(resolved_path) = crate::parsers::php::resolve_php_namespace_to_path(
-                &import_info.imported_path,
-                php_psr4_mappings,
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved PHP dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "PHP dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping PHP dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve PHP namespace using PSR-4: {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".py") && !python_packages.is_empty() {
-            // Resolve Python dependencies using package mappings
-            if let Some(resolved_path) = crate::parsers::python::resolve_python_import_to_path(
-                &import_info.imported_path,
-                python_packages,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Python dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Python dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Python dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Python import: {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".go") && !go_modules.is_empty() {
-            // Resolve Go dependencies using module mappings
-            if let Some(resolved_path) = crate::parsers::go::resolve_go_import_to_path(
-                &import_info.imported_path,
-                go_modules,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Go dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Go dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Go dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!("Could not resolve Go import: {}", import_info.imported_path);
-                None
-            }
-        } else if file_path.ends_with(".ts")
-            || file_path.ends_with(".tsx")
-            || file_path.ends_with(".js")
-            || file_path.ends_with(".jsx")
-            || file_path.ends_with(".mts")
-            || file_path.ends_with(".cts")
-            || file_path.ends_with(".mjs")
-            || file_path.ends_with(".cjs")
-        {
-            // Resolve TypeScript/JavaScript dependencies (relative imports and path aliases)
-            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
-            if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-                alias_map,
-            ) {
-                // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
-                let candidates: Vec<&str> = candidates_str.split('|').collect();
-
-                // Try each candidate in order until we find one in the database
-                let mut resolved_id = None;
-                for candidate_path in candidates {
-                    // Normalize path to be relative to project root
-                    // Convert absolute paths to relative (without requiring file to exist)
-                    let normalized_candidate = if let Ok(rel_path) =
-                        std::path::Path::new(candidate_path).strip_prefix(root)
-                    {
-                        rel_path.to_string_lossy().replace('\\', "/")
-                    } else {
-                        // Not an absolute path or not under root - use as-is
-                        // (still normalize separators so DB lookups match).
-                        candidate_path.replace('\\', "/")
-                    };
-
-                    log::debug!(
-                        "Looking up TS/JS candidate: '{}' (from '{}')",
-                        normalized_candidate,
-                        candidate_path
-                    );
-                    match resolver.get_file_id_by_path(&normalized_candidate) {
-                        Ok(Some(id)) => {
-                            log::debug!(
-                                "Resolved TS/JS dependency: {} -> {} (file_id={})",
-                                import_info.imported_path,
-                                normalized_candidate,
-                                id
-                            );
-                            resolved_id = Some(id);
-                            break; // Found a match, stop trying
-                        }
-                        Ok(None) => {
-                            log::trace!("TS/JS candidate not in index: {}", candidate_path);
-                        }
-                        Err(e) => {
-                            log::debug!(
-                                "Skipping TS/JS dependency resolution for '{}': {}",
-                                normalized_candidate,
-                                e
-                            );
-                        }
-                    }
-                }
-
-                if resolved_id.is_none() {
-                    log::trace!(
-                        "TS/JS dependency: no matching file found in database for any candidate: {}",
-                        candidates_str
-                    );
-                }
-
-                resolved_id
-            } else {
-                log::trace!(
-                    "Could not resolve TS/JS import (non-relative or external): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".rs") {
-            // Resolve Rust dependencies (crate::, super::, self::, mod declarations)
-            // Falls back to workspace resolution for cross-crate imports
-            let resolved_path_opt = crate::parsers::rust::resolve_rust_use_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-                Some(root.to_str().unwrap_or("")),
-            )
+        let candidates = self.import_candidates(file_path, &import_info.imported_path);
+        // Candidates are exact paths. Only C/C++ falls back to a suffix match, in
+        // place of the include-path search a compiler does; elsewhere a suffix
+        // finds the wrong file (`django.py` for `from django import forms`).
+        let suffix_ok = matches!(
+            file_path.rsplit_once('.').map_or("", |(_, e)| e),
+            "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h++" | "C" | "H"
+        );
+        let found = candidates
+            .iter()
+            .find_map(|path| self.lookup(resolver, path, false))
             .or_else(|| {
-                crate::parsers::rust::resolve_rust_workspace_path(
-                    &import_info.imported_path,
-                    rust_crates,
-                )
+                suffix_ok
+                    .then(|| {
+                        candidates
+                            .iter()
+                            .find_map(|p| self.lookup(resolver, p, true))
+                    })
+                    .flatten()
             });
+        if found.is_none() {
+            log::trace!(
+                "Could not resolve import '{}' of {}",
+                import_info.imported_path,
+                file_path
+            );
+        }
+        found
+    }
 
-            if let Some(resolved_path) = resolved_path_opt {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Rust dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Rust dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Rust dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Rust import (external or stdlib): {}",
-                    import_info.imported_path
-                );
-                None
+    /// The paths an import of `file_path` may name, most likely first. They may be
+    /// absolute (under the root) or relative to it; [`Self::lookup`] takes either.
+    fn import_candidates(&self, file_path: &str, import: &str) -> Vec<String> {
+        let ext = file_path.rsplit_once('.').map_or("", |(_, e)| e);
+        match ext {
+            // A `require 'x.php'` names a file: beside the requiring file, else
+            // from the root; a `use` names a class the autoload mappings place
+            "php" if import.contains('/') || import.ends_with(".php") => {
+                fold_path(parent_dir(file_path), import)
+                    .into_iter()
+                    .chain(fold_path("", import))
+                    .collect()
             }
-        } else if file_path.ends_with(".java") && !java_projects.is_empty() {
-            // Resolve Java dependencies using project mappings
-            if let Some(resolved_path) = crate::parsers::java::resolve_java_import_to_path(
-                &import_info.imported_path,
-                java_projects,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Java dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Java dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Java dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Java import: {}",
-                    import_info.imported_path
-                );
-                None
+            "php" => crate::parsers::php::php_namespace_candidates(import, &self.configs.php_psr4),
+            "py" if !self.configs.python_packages.is_empty() || import.starts_with('.') => {
+                crate::parsers::python::python_import_candidates(
+                    import,
+                    &self.configs.python_packages,
+                    Some(file_path),
+                )
             }
-        } else if (file_path.ends_with(".kt") || file_path.ends_with(".kts"))
-            && !java_projects.is_empty()
-        {
-            // Resolve Kotlin dependencies using project mappings (same build systems as Java)
-            if let Some(resolved_path) = crate::parsers::java::resolve_kotlin_import_to_path(
-                &import_info.imported_path,
-                java_projects,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Kotlin dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Kotlin dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Kotlin dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Kotlin import: {}",
-                    import_info.imported_path
-                );
-                None
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "vue" | "svelte" => {
+                let alias_map =
+                    find_nearest_tsconfig(file_path, self.root, &self.configs.tsconfigs);
+                crate::parsers::typescript::resolve_ts_import_to_path(
+                    import,
+                    Some(file_path),
+                    alias_map,
+                )
+                .map(|c| c.split('|').map(str::to_string).collect())
+                .unwrap_or_default()
             }
-        } else if (file_path.ends_with(".rb")
-            || file_path.ends_with(".rake")
-            || file_path.ends_with(".gemspec"))
-            && !ruby_projects.is_empty()
-        {
-            // Resolve Ruby dependencies using project mappings
-            if let Some(resolved_path) = crate::parsers::ruby::resolve_ruby_require_to_path(
-                &import_info.imported_path,
-                ruby_projects,
+            // A module of this crate, else another workspace crate (`use b::x`
+            // also reads as a local module `b`)
+            "rs" => crate::parsers::rust::resolve_rust_use_to_path(
+                import,
                 Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Ruby dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Ruby dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Ruby dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Ruby require: {}",
-                    import_info.imported_path
-                );
-                None
+                Some(self.root.to_str().unwrap_or("")),
+            )
+            .into_iter()
+            .chain(crate::parsers::rust::resolve_rust_workspace_path(
+                import,
+                &self.configs.rust_crates,
+            ))
+            .collect(),
+            "rb" | "rake" | "gemspec" if !self.configs.ruby_projects.is_empty() => {
+                crate::parsers::ruby::ruby_require_candidates(
+                    import,
+                    &self.configs.ruby_projects,
+                    Some(file_path),
+                )
             }
-        } else if file_path.ends_with(".c") || file_path.ends_with(".h") {
-            // Resolve C dependencies (relative #include paths)
-            if let Some(resolved_path) = crate::parsers::c::resolve_c_include_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved C dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "C dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping C dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve C include (system header): {}",
-                    import_info.imported_path
-                );
-                None
+            "c" | "h" => crate::parsers::c::resolve_c_include_to_path(import, Some(file_path))
+                .into_iter()
+                .collect(),
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "h++" | "C" | "H" => {
+                crate::parsers::cpp::resolve_cpp_include_to_path(import, Some(file_path))
+                    .into_iter()
+                    .collect()
             }
-        } else if file_path.ends_with(".cpp")
-            || file_path.ends_with(".cc")
-            || file_path.ends_with(".cxx")
-            || file_path.ends_with(".hpp")
-            || file_path.ends_with(".hxx")
-            || file_path.ends_with(".h++")
-            || file_path.ends_with(".C")
-            || file_path.ends_with(".H")
-        {
-            // Resolve C++ dependencies (relative #include paths)
-            if let Some(resolved_path) = crate::parsers::cpp::resolve_cpp_include_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved C++ dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "C++ dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping C++ dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve C++ include (system header): {}",
-                    import_info.imported_path
-                );
-                None
+            "zig" => {
+                crate::parsers::zig::find_zig_module(import, file_path, &self.configs.zig_modules)
+                    .map(|m| m.root.clone())
+                    .or_else(|| {
+                        crate::parsers::zig::resolve_zig_import_to_path(import, Some(file_path))
+                    })
+                    .into_iter()
+                    .collect()
             }
-        } else if file_path.ends_with(".cs") {
-            // Resolve C# dependencies (using namespace-to-path mapping)
-            if let Some(resolved_path) = crate::parsers::csharp::resolve_csharp_using_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved C# dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "C# dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping C# dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve C# using directive: {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".zig") {
-            // Resolve Zig dependencies (relative @import paths)
-            if let Some(resolved_path) = crate::parsers::zig::resolve_zig_import_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-            ) {
-                // Look up file ID in database using exact match
-                match resolver.get_file_id_by_path(&resolved_path) {
-                    Ok(Some(id)) => {
-                        log::trace!(
-                            "Resolved Zig dependency: {} -> {} (file_id={})",
-                            import_info.imported_path,
-                            resolved_path,
-                            id
-                        );
-                        Some(id)
-                    }
-                    Ok(None) => {
-                        log::trace!(
-                            "Zig dependency resolved to path but file not in index: {} -> {}",
-                            import_info.imported_path,
-                            resolved_path
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "Skipping Zig dependency resolution for '{}': {}",
-                            resolved_path,
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                log::trace!(
-                    "Could not resolve Zig import (external or stdlib): {}",
-                    import_info.imported_path
-                );
-                None
-            }
-        } else if file_path.ends_with(".vue") || file_path.ends_with(".svelte") {
-            // Resolve Vue/Svelte dependencies (use TypeScript/JavaScript resolver for imports in <script> blocks)
-            let alias_map = find_nearest_tsconfig(file_path, root, tsconfigs);
-            if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
-                &import_info.imported_path,
-                Some(file_path),
-                alias_map,
-            ) {
-                // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
-                let candidates: Vec<&str> = candidates_str.split('|').collect();
+            _ => Vec::new(),
+        }
+    }
 
-                // Try each candidate in order until we find one in the database
-                let mut resolved_id = None;
-                for candidate_path in candidates {
-                    // Normalize path to be relative to project root
-                    // Convert absolute paths to relative (without requiring file to exist)
-                    let normalized_candidate = if let Ok(rel_path) =
-                        std::path::Path::new(candidate_path).strip_prefix(root)
-                    {
-                        rel_path.to_string_lossy().replace('\\', "/")
-                    } else {
-                        // Not an absolute path or not under root - use as-is
-                        // (still normalize separators so DB lookups match).
-                        candidate_path.replace('\\', "/")
-                    };
-
-                    match resolver.get_file_id_by_path(&normalized_candidate) {
-                        Ok(Some(id)) => {
-                            log::trace!(
-                                "Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
-                                import_info.imported_path,
-                                candidate_path,
-                                id
-                            );
-                            resolved_id = Some(id);
-                            break; // Found a match, stop trying
-                        }
-                        Ok(None) => {
-                            log::trace!("Vue/Svelte candidate not in index: {}", candidate_path);
-                        }
-                        Err(e) => {
-                            log::debug!(
-                                "Skipping Vue/Svelte dependency resolution for '{}': {}",
-                                normalized_candidate,
-                                e
-                            );
-                        }
-                    }
-                }
-
-                if resolved_id.is_none() {
-                    log::trace!(
-                        "Vue/Svelte dependency: no matching file found in database for any candidate: {}",
-                        candidates_str
-                    );
-                }
-
-                resolved_id
-            } else {
-                log::trace!(
-                    "Could not resolve Vue/Svelte import (non-relative or external): {}",
-                    import_info.imported_path
-                );
-                None
-            }
+    /// The `files.id` of `path`: absolute under the root, or relative to it, with
+    /// `.` and `..` folded. A path outside the root is not indexed. With `suffix`,
+    /// a unique file ending in the path's whole segments also counts.
+    fn lookup(&self, resolver: &PathResolver, path: &str, suffix: bool) -> Option<i64> {
+        let path = path.replace('\\', "/");
+        // `/x` on Unix, `C:/x` on Windows
+        let rel = if Path::new(&path).is_absolute() {
+            let rel = Path::new(&path).strip_prefix(self.root).ok()?;
+            rel.to_string_lossy().replace('\\', "/")
         } else {
-            None
+            path
+        };
+        let rel = fold_path("", &rel)?;
+        if !suffix {
+            return resolver.get_exact(&rel);
+        }
+        match resolver.get_file_id_by_path(&rel) {
+            Ok(id) => id,
+            Err(e) => {
+                log::debug!("Skipping dependency resolution for '{}': {}", rel, e);
+                None
+            }
         }
     }
 
@@ -1484,7 +1317,7 @@ mod tests {
     fn one_walk_finds_what_the_seven_finders_found() {
         let temp = workspace();
         let root = temp.path();
-        let one = ResolverConfigs::discover(root);
+        let one = ResolverConfigs::discover(root, &[]);
 
         let mut tsconfigs: Vec<_> = crate::parsers::tsconfig::parse_all_tsconfigs(root)
             .unwrap()
@@ -1540,7 +1373,7 @@ mod tests {
             "crates/a/Cargo.toml",
             "[package]\nname = \"crate_a\"\n",
         );
-        let one = ResolverConfigs::discover(temp.path());
+        let one = ResolverConfigs::discover(temp.path(), &[]);
         assert!(one.rust_crates.is_empty());
     }
 }

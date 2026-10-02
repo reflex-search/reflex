@@ -685,6 +685,16 @@ impl DependencyExtractor for RubyDependencyExtractor {
                                 }
                                 seen.insert(key);
 
+                                // `require_relative "helper"` is relative to this file
+                                let path = if method == "require_relative"
+                                    && !path.starts_with("./")
+                                    && !path.starts_with("../")
+                                    && !path.starts_with('/')
+                                {
+                                    format!("./{path}")
+                                } else {
+                                    path
+                                };
                                 let import_type = classify_ruby_import(&path, &method);
 
                                 imports.push(ImportInfo {
@@ -739,6 +749,44 @@ pub struct RubyProject {
     pub gem_name: String,         // Gem name from gemspec
     pub project_root: String,     // Relative path to project root (gemspec directory)
     pub abs_project_root: String, // Absolute path to project root
+    /// The top-level names the gem's `lib/` provides (`lib/active_support.rb`,
+    /// `lib/active_support/`), sorted: what `require "<name>/..."` reaches. The
+    /// gem `activesupport` provides `active_support`.
+    pub provides: Vec<String>,
+}
+
+impl RubyProject {
+    /// Whether `require "<first>/..."` names this gem or something its `lib/`
+    /// provides.
+    pub fn serves(&self, first: &str) -> bool {
+        gem_name_to_require_paths(&self.gem_name)
+            .iter()
+            .any(|variant| variant == first)
+            || self
+                .provides
+                .binary_search_by(|p| p.as_str().cmp(first))
+                .is_ok()
+    }
+}
+
+/// The top-level names under `<project>/lib`: `.rb` file stems and directories.
+fn lib_provides(project_abs: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(project_abs.join("lib"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if e.file_type().ok()?.is_dir() {
+                Some(name)
+            } else {
+                name.strip_suffix(".rb").map(str::to_string)
+            }
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Find all gemspec files in the project (no depth limit for monorepo support)
@@ -790,6 +838,7 @@ pub fn parse_ruby_projects_from(
                 gem_name: gem_name.clone(),
                 project_root: project_rel,
                 abs_project_root: project_abs.to_string_lossy().to_string(),
+                provides: lib_provides(&project_abs),
             });
         }
     }
@@ -867,57 +916,67 @@ pub fn resolve_ruby_require_to_path(
     projects: &[RubyProject],
     current_file_path: Option<&str>,
 ) -> Option<String> {
-    // Handle require_relative (relative to current file)
+    ruby_require_candidates(require_path, projects, current_file_path)
+        .into_iter()
+        .next()
+}
+
+/// The files a `require` may load, most likely first: a relative path beside the
+/// requiring file; else `lib/<path>.rb` of the gem the first segment names, then
+/// of every other gem in the workspace (Ruby searches every gem's `lib/` on its
+/// load path: `require "rails/command"` is in railties, not in the `rails` gem).
+pub fn ruby_require_candidates(
+    require_path: &str,
+    projects: &[RubyProject],
+    current_file_path: Option<&str>,
+) -> Vec<String> {
+    let with_rb = |p: String| {
+        if p.ends_with(".rb") {
+            p
+        } else {
+            format!("{p}.rb")
+        }
+    };
     if require_path.starts_with("./") || require_path.starts_with("../") {
-        if let Some(current_file) = current_file_path {
-            // Get directory of current file
-            if let Some(current_dir) = std::path::Path::new(current_file).parent() {
-                let resolved = current_dir.join(require_path);
-
-                // Try with .rb extension
-                let candidates = vec![
-                    format!("{}.rb", resolved.display()),
-                    resolved.display().to_string(),
-                ];
-
-                for candidate in candidates {
-                    // Normalize path
-                    if let Ok(normalized) = std::path::Path::new(&candidate).canonicalize() {
-                        return Some(normalized.display().to_string());
-                    }
-                }
-            }
-        }
-        return None;
+        // Relative to the requiring file, folded without reading the disk
+        return current_file_path
+            .and_then(|f| {
+                crate::dependency_resolve::fold_path(
+                    crate::dependency_resolve::parent_dir(f),
+                    require_path,
+                )
+            })
+            .map(with_rb)
+            .into_iter()
+            .collect();
     }
 
-    // Handle gem-based requires
-    // Extract first component: "active_record/base" → "active_record"
+    // "active_record/base" → "active_record" names the gem first tried
     let first_component = require_path.split('/').next().unwrap_or(require_path);
-
-    for project in projects {
-        // Check if this require matches the gem name (or its variants)
-        let gem_variants = gem_name_to_require_paths(&project.gem_name);
-
-        for variant in &gem_variants {
-            if first_component == variant {
-                // Convert require path to file path: "active_record/base" → "lib/active_record/base.rb"
-                let require_file_path = require_path.replace("::", "/");
-
-                // Try common Ruby directory structures
-                let candidates = vec![
-                    format!("{}/lib/{}.rb", project.project_root, require_file_path),
-                    format!("{}/{}.rb", project.project_root, require_file_path),
-                ];
-
-                if let Some(candidate) = candidates.into_iter().next() {
-                    return Some(candidate);
-                }
-            }
+    let names_gem = |project: &RubyProject| project.serves(first_component);
+    let in_lib = |project: &RubyProject| {
+        // `project_root` is "" for a gemspec at the index root
+        crate::dependency_resolve::fold_path(
+            &project.project_root,
+            &with_rb(format!("lib/{}", require_path.replace("::", "/"))),
+        )
+    };
+    let mut out: Vec<String> = projects
+        .iter()
+        .filter(|p| names_gem(p))
+        .filter_map(in_lib)
+        .collect();
+    if out.is_empty() {
+        return out;
+    }
+    for project in projects.iter().filter(|p| !names_gem(p)) {
+        if let Some(path) = in_lib(project)
+            && !out.contains(&path)
+        {
+            out.push(path);
         }
     }
-
-    None
+    out
 }
 
 /// Reclassify a Ruby import using the project's gem names
@@ -1543,6 +1602,7 @@ mod monorepo_tests {
             gem_name: "activerecord".to_string(),
             project_root: "gems/activerecord".to_string(),
             abs_project_root: "/path/to/gems/activerecord".to_string(),
+            provides: vec![],
         }];
 
         // Test gem-based require with lib/ structure
@@ -1560,6 +1620,7 @@ mod monorepo_tests {
             gem_name: "my-gem".to_string(),
             project_root: "gems/my-gem".to_string(),
             abs_project_root: "/path/to/gems/my-gem".to_string(),
+            provides: vec![],
         }];
 
         // Test gem-based require with root structure (no lib/)
@@ -1576,6 +1637,7 @@ mod monorepo_tests {
             gem_name: "activerecord".to_string(),
             project_root: "gems/activerecord".to_string(),
             abs_project_root: "/path/to/gems/activerecord".to_string(),
+            provides: vec![],
         }];
 
         // Test require that doesn't match any gem
@@ -1590,6 +1652,7 @@ mod monorepo_tests {
             gem_name: "active-record".to_string(),
             project_root: "gems/active-record".to_string(),
             abs_project_root: "/path/to/gems/active-record".to_string(),
+            provides: vec![],
         }];
 
         // Test that hyphenated gem name matches underscored require
@@ -1608,16 +1671,19 @@ mod monorepo_tests {
                 gem_name: "activerecord".to_string(),
                 project_root: "gems/activerecord".to_string(),
                 abs_project_root: "/path/to/gems/activerecord".to_string(),
+                provides: vec![],
             },
             RubyProject {
                 gem_name: "activesupport".to_string(),
                 project_root: "gems/activesupport".to_string(),
                 abs_project_root: "/path/to/gems/activesupport".to_string(),
+                provides: vec![],
             },
             RubyProject {
                 gem_name: "actionpack".to_string(),
                 project_root: "gems/actionpack".to_string(),
                 abs_project_root: "/path/to/gems/actionpack".to_string(),
+                provides: vec![],
             },
         ];
 

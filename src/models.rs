@@ -393,6 +393,10 @@ pub struct DependencyInfo {
     /// Imported symbols (for selective imports like `from x import a, b`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbols: Option<Vec<String>>,
+    /// Every file a package import resolved to (a Go package, a C# namespace, a
+    /// JVM wildcard), in walk order; `path` is then the import as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_paths: Option<Vec<String>>,
 }
 
 /// Full dependency record (internal representation with file IDs)
@@ -404,6 +408,13 @@ pub struct Dependency {
     pub imported_path: String,
     /// Resolved file ID (None if external or stdlib)
     pub resolved_file_id: Option<i64>,
+    /// Package key the import resolved to (`go:<dir>`, `jvm:<package>`,
+    /// `cs:<namespace>`), when it names a package rather than one file. The graph
+    /// expands it to the files that declare membership (`package_members`).
+    pub resolved_package: Option<String>,
+    /// The member of `resolved_package` the import names (a JVM class); `None`
+    /// means the whole package.
+    pub resolved_member: Option<String>,
     /// Import type classification
     pub import_type: ImportType,
     /// Line number where import appears
@@ -576,6 +587,11 @@ pub struct IndexConfig {
     /// never walked.
     #[serde(default)]
     pub hidden: bool,
+    /// `[index.vendored] patterns`: gitignore rules that mark directories vendored
+    /// (`!pattern` marks one project code), checked before the built-in rules.
+    /// Vendored files are searchable but not in the import graph (`crate::vendor`).
+    #[serde(default)]
+    pub vendored_patterns: Vec<String>,
 }
 
 /// Serde default for boolean options that are on unless explicitly disabled.
@@ -599,6 +615,7 @@ impl Default for IndexConfig {
             mode: IndexMode::Tracked, // ripgrep defaults: not ignored, not hidden, not binary
             hidden: false,            // dot-directories skipped, like ripgrep
             lock_wait_secs: 0,        // fail fast when another indexer runs
+            vendored_patterns: vec![],
         }
     }
 }

@@ -1306,11 +1306,27 @@ fn extract_php_uses(source: &str, root: &tree_sitter::Node) -> Result<Vec<Import
         for capture in match_.captures {
             let capture_name: &str = query.capture_names()[capture.index as usize];
             if capture_name == "use_path" {
-                let path = capture
-                    .node
-                    .utf8_text(source.as_bytes())
-                    .unwrap_or("")
-                    .to_string();
+                let node = capture.node;
+                let clause = node.parent();
+                // `use A\B as C`: `C` is the alias, not an import
+                if clause.and_then(|c| c.child_by_field_name("alias")) == Some(node) {
+                    continue;
+                }
+                let mut path = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                // `use A\B\{C, D}`: the group's clauses are relative to `A\B`
+                if let Some(group) = clause.and_then(|c| c.parent())
+                    && group.kind() == "namespace_use_group"
+                    && let Some(decl) = group.parent()
+                {
+                    let mut cursor = decl.walk();
+                    let prefix = decl
+                        .named_children(&mut cursor)
+                        .find(|n| n.kind() == "namespace_name")
+                        .and_then(|n| n.utf8_text(source.as_bytes()).ok());
+                    if let Some(prefix) = prefix {
+                        path = format!("{}\\{}", prefix.trim_end_matches('\\'), path);
+                    }
+                }
                 let import_type = classify_php_use(&path);
                 let line_number = capture.node.start_position().row + 1;
 
@@ -1543,6 +1559,9 @@ pub struct Psr4Mapping {
     pub namespace_prefix: String, // e.g., "App\\"
     pub directory: String,        // e.g., "app/"
     pub project_root: String,     // e.g., "services/php/rcm-backend/" (relative to index root)
+    /// A PSR-0 mapping: the whole namespace (not the rest after the prefix) is
+    /// the path under `directory`.
+    pub psr0: bool,
 }
 
 /// Parse composer.json and extract PSR-4 autoload mappings
@@ -1570,28 +1589,35 @@ pub fn parse_composer_psr4(project_root: &Path) -> Result<Vec<Psr4Mapping>> {
 
     let mut mappings = Vec::new();
 
-    // Extract PSR-4 mappings from autoload section
-    if let Some(autoload) = json.get("autoload")
-        && let Some(psr4) = autoload.get("psr-4")
-        && let Some(psr4_obj) = psr4.as_object()
-    {
-        for (namespace, path) in psr4_obj {
-            // path can be a string or array of strings
-            let directories = match path {
-                serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(arr) => arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect(),
-                _ => continue,
+    // PSR-4 and PSR-0 mappings of `autoload` and `autoload-dev` (tests are
+    // project code too)
+    for section in ["autoload", "autoload-dev"] {
+        for (kind, psr0) in [("psr-4", false), ("psr-0", true)] {
+            let Some(map) = json
+                .get(section)
+                .and_then(|a| a.get(kind))
+                .and_then(|m| m.as_object())
+            else {
+                continue;
             };
-
-            for dir in directories {
-                mappings.push(Psr4Mapping {
-                    namespace_prefix: namespace.clone(),
-                    directory: dir,
-                    project_root: String::new(), // Empty for single-project use
-                });
+            for (namespace, path) in map {
+                // path can be a string or array of strings
+                let directories = match path {
+                    serde_json::Value::String(s) => vec![s.clone()],
+                    serde_json::Value::Array(arr) => arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect(),
+                    _ => continue,
+                };
+                for dir in directories {
+                    mappings.push(Psr4Mapping {
+                        namespace_prefix: namespace.clone(),
+                        directory: dir,
+                        project_root: String::new(), // Empty for single-project use
+                        psr0,
+                    });
+                }
             }
         }
     }
@@ -1745,43 +1771,37 @@ pub fn resolve_php_namespace_to_path(
     namespace: &str,
     psr4_mappings: &[Psr4Mapping],
 ) -> Option<String> {
-    // Find the longest matching PSR-4 prefix
-    for mapping in psr4_mappings {
-        if namespace.starts_with(&mapping.namespace_prefix) {
-            // Strip the namespace prefix
-            let relative_namespace = &namespace[mapping.namespace_prefix.len()..];
+    php_namespace_candidates(namespace, psr4_mappings)
+        .into_iter()
+        .next()
+}
 
-            // Convert namespace to path (replace \\ with /)
-            let relative_path = relative_namespace.replace('\\', "/");
-
-            // Combine directory + relative_path + .php
-            let file_path = if relative_path.is_empty() {
-                // Namespace exactly matches prefix (e.g., "App\\") → "app/.php" (invalid)
-                // This shouldn't happen for valid class imports
-                return None;
+/// Every file a class name may live in under the autoload mappings, longest
+/// prefix first (a prefix can map to several directories).
+pub fn php_namespace_candidates(namespace: &str, mappings: &[Psr4Mapping]) -> Vec<String> {
+    let namespace = namespace.trim_start_matches('\\');
+    mappings
+        .iter()
+        .filter(|m| php_prefix_matches(namespace, &m.namespace_prefix))
+        .filter_map(|m| {
+            let rest = if m.psr0 {
+                namespace
             } else {
-                // Build full path: project_root + directory + relative_path + .php
-                let base_path = if mapping.project_root.is_empty() {
-                    // Single-project mode: just directory + file
-                    format!("{}{}.php", mapping.directory, relative_path)
-                } else {
-                    // Monorepo mode: project_root + directory + file
-                    format!(
-                        "{}/{}{}.php",
-                        mapping.project_root, mapping.directory, relative_path
-                    )
-                };
-
-                // Normalize path separators (replace // with /)
-                base_path.replace("//", "/")
+                &namespace[m.namespace_prefix.len().min(namespace.len())..]
             };
+            if rest.is_empty() {
+                return None;
+            }
+            let file = format!("{}/{}.php", m.directory, rest.replace('\\', "/"));
+            crate::dependency_resolve::fold_path(&m.project_root, &file)
+        })
+        .collect()
+}
 
-            log::trace!("Resolved namespace '{}' to path '{}'", namespace, file_path);
-            return Some(file_path);
-        }
-    }
-
-    // No matching PSR-4 prefix found
-    log::trace!("No PSR-4 mapping found for namespace '{}'", namespace);
-    None
+/// Whether `namespace` is under the autoload `prefix` (`App\\` holds
+/// `App\\Models\\User`; the empty prefix holds everything).
+pub fn php_prefix_matches(namespace: &str, prefix: &str) -> bool {
+    let namespace = namespace.trim_start_matches('\\');
+    namespace.starts_with(prefix)
+        || (!prefix.is_empty() && prefix.trim_end_matches('\\') == namespace)
 }

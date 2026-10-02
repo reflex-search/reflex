@@ -49,8 +49,9 @@ struct FileProcessingResult {
     /// between the two is caught by the next status check, not hidden by it.
     size: u64,
     mtime_ns: i64,
-    /// Imports and re-exports, when they were extracted this run.
-    imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
+    /// Imports, re-exports and package memberships, when they were extracted
+    /// this run.
+    imports: Option<Extracted>,
     /// The file's trigram postings, extracted in the pool (no file id yet).
     trigram_run: TrigramRun,
 }
@@ -88,8 +89,9 @@ struct IndexedFile {
     line_count: usize,
     size: u64,
     mtime_ns: i64,
-    /// Imports and re-exports, when they were extracted this run.
-    imports: Option<(Vec<ImportInfo>, Vec<ExportInfo>)>,
+    /// Imports, re-exports and package memberships, when they were extracted
+    /// this run.
+    imports: Option<Extracted>,
 }
 
 /// One added or modified file a delta update reads.
@@ -247,8 +249,57 @@ fn breakdown<'a>(
     (new, modified, unchanged)
 }
 
+/// Set `files.vendored` from `rules` for the rows in `ids`, or for every row
+/// (`None`: the rules may have changed). Returns how many rows changed.
+fn refresh_vendored(
+    tx: &rusqlite::Connection,
+    rules: &crate::vendor::VendorRules,
+    ids: Option<&[i64]>,
+) -> Result<usize> {
+    let mut changed: Vec<(i64, bool)> = Vec::new();
+    {
+        let mut visit = |id: i64, path: &str, old: bool| {
+            let new = rules.is_vendored(path, crate::models::Language::from_path(Path::new(path)));
+            if new != old {
+                changed.push((id, new));
+            }
+        };
+        match ids {
+            None => {
+                let mut stmt = tx.prepare("SELECT id, path, vendored FROM files")?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, bool>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, path, old) = row?;
+                    visit(id, &path, old);
+                }
+            }
+            Some(ids) => {
+                let mut stmt = tx.prepare("SELECT path, vendored FROM files WHERE id = ?")?;
+                for &id in ids {
+                    let (path, old): (String, bool) =
+                        stmt.query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                    visit(id, &path, old);
+                }
+            }
+        }
+    }
+    let mut stmt = tx.prepare("UPDATE files SET vendored = ? WHERE id = ?")?;
+    for (id, vendored) in &changed {
+        stmt.execute(rusqlite::params![vendored, id])?;
+    }
+    Ok(changed.len())
+}
+
 /// Resolve again every stored import (other than External/Stdlib) and every
 /// export of the files not in `skip`, updating the rows whose target changed.
+/// Package-keyed rows are skipped: their key depends on the import and the
+/// module config only, and which files a package holds is `package_members`.
 /// Returns how many rows changed.
 fn reresolve(
     tx: &rusqlite::Connection,
@@ -261,7 +312,8 @@ fn reresolve(
         let mut stmt = tx.prepare(
             "SELECT d.id, d.file_id, f.path, d.imported_path, d.resolved_file_id
              FROM file_dependencies d JOIN files f ON f.id = d.file_id
-             WHERE d.import_type NOT IN ('external', 'stdlib')",
+             WHERE d.import_type NOT IN ('external', 'stdlib')
+               AND d.resolved_package IS NULL",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -336,17 +388,22 @@ fn reresolve(
     Ok(total)
 }
 
-/// Imports and re-exports of one file, by language. `path_str` is the path as
-/// walked (for the nearest tsconfig).
+/// What import extraction yields for one file: its imports, its re-exports, and
+/// the `(package key, member)` rows its content declares (`package_members`).
+type Extracted = (Vec<ImportInfo>, Vec<ExportInfo>, Vec<(String, String)>);
+
+/// Imports, re-exports and declared package memberships of one file, by
+/// language. `path_str` is the path as walked (for the nearest tsconfig).
 fn extract_imports(
     language: Language,
     content: &str,
     path_str: &str,
     root: &Path,
     tsconfigs: &HashMap<PathBuf, crate::parsers::tsconfig::PathAliasMap>,
-) -> (Vec<ImportInfo>, Vec<ExportInfo>) {
+) -> Extracted {
     // Extract dependencies and exports for supported languages
     let mut parsed_exports: Vec<ExportInfo> = Vec::new();
+    let mut declared_namespaces: Vec<(String, String)> = Vec::new();
     let dependencies = match language {
         Language::Rust => match RustDependencyExtractor::extract_dependencies(content) {
             Ok(deps) => deps,
@@ -408,13 +465,18 @@ fn extract_imports(
                 Vec::new()
             }
         },
-        Language::CSharp => match CSharpDependencyExtractor::extract_dependencies(content) {
-            Ok(deps) => deps,
-            Err(e) => {
-                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
-                Vec::new()
+        Language::CSharp => {
+            match CSharpDependencyExtractor::extract_dependencies_and_members(content) {
+                Ok((deps, members)) => {
+                    declared_namespaces = members;
+                    deps
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                    Vec::new()
+                }
             }
-        },
+        }
         Language::PHP => match PhpDependencyExtractor::extract_dependencies(content) {
             Ok(deps) => deps,
             Err(e) => {
@@ -472,7 +534,14 @@ fn extract_imports(
 
     // Exports (barrel re-export tracking) came out of the same parse as the
     // dependencies above; only TypeScript/JavaScript/Vue have them.
-    (dependencies, parsed_exports)
+    let members = match language {
+        Language::Java | Language::Kotlin => {
+            crate::parsers::java::jvm_package_members(path_str, content)
+        }
+        Language::CSharp => declared_namespaces,
+        _ => Vec::new(),
+    };
+    (dependencies, parsed_exports, members)
 }
 
 /// Manages the indexing process
@@ -1281,9 +1350,11 @@ impl Indexer {
         laps.lap("snapshot");
 
         // The resolver configs the last walk found, unchanged since.
-        let Some(resolver_configs) =
-            crate::dependency_resolve::ResolverConfigs::from_saved_list(root, &cache_dir)
-        else {
+        let Some(resolver_configs) = crate::dependency_resolve::ResolverConfigs::from_saved_list(
+            root,
+            &cache_dir,
+            &self.config.vendored_patterns,
+        ) else {
             return Ok(None);
         };
         if stored_digest.as_deref() != Some(resolver_configs.digest.as_str()) {
@@ -1761,7 +1832,10 @@ impl Indexer {
             });
             let configs = scope.spawn(|| {
                 let t = Instant::now();
-                let r = crate::dependency_resolve::ResolverConfigs::discover(root);
+                let r = crate::dependency_resolve::ResolverConfigs::discover(
+                    root,
+                    &self.config.vendored_patterns,
+                );
                 (r, t.elapsed().as_millis())
             });
             // Available disk space (a `df` subprocess), now that the cache exists.
@@ -2961,13 +3035,19 @@ impl Indexer {
         let mut writer = crate::dependency::DependencyWriter::new(&tx);
         let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
         for (&k, &file_id) in row_k.iter().zip(&ids) {
-            let Some((imports, exports)) = read[k].as_ref().and_then(|f| f.imports.as_ref()) else {
+            let Some((imports, exports, declared)) =
+                read[k].as_ref().and_then(|f| f.imports.as_ref())
+            else {
                 continue;
             };
             let rel = &rels[k];
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
+            writer.replace_members(
+                file_id,
+                &crate::dependency_resolve::package_members(rel, declared),
+            )?;
             writer.clear_exports(file_id)?;
             for export in exports {
                 let resolved = ctx.resolve_export(rel, export, &resolver);
@@ -2988,6 +3068,7 @@ impl Indexer {
         } else {
             0
         };
+        refresh_vendored(&tx, &c.resolver_configs.vendor, Some(&ids))?;
         laps.lap("deps");
 
         crate::meta_update::set_statistic(
@@ -3526,7 +3607,7 @@ impl Indexer {
         // In walk order: the row order a full build produces.
         let mut resolved_here: std::collections::HashSet<i64> = std::collections::HashSet::new();
         for f in w.written {
-            let Some((imports, exports)) = &f.imports else {
+            let Some((imports, exports, declared)) = &f.imports else {
                 continue;
             };
             let rel = &w.rels[f.index];
@@ -3534,6 +3615,10 @@ impl Indexer {
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
+            writer.replace_members(
+                file_id,
+                &crate::dependency_resolve::package_members(rel, declared),
+            )?;
             if !w.full_deps {
                 writer.clear_exports(file_id)?;
             }
@@ -3557,6 +3642,12 @@ impl Indexer {
         if !w.full_deps && paths_changed {
             reresolved = reresolve(&tx, &ctx, &resolver, &resolved_here)?;
         }
+        let written_ids: Vec<i64> = ids.values().copied().collect();
+        refresh_vendored(
+            &tx,
+            &w.resolver_configs.vendor,
+            (!w.full_deps).then_some(written_ids.as_slice()),
+        )?;
 
         crate::meta_update::set_statistic(
             &tx,

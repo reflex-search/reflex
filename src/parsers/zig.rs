@@ -260,14 +260,117 @@ fn classify_zig_import(import_path: &str) -> ImportType {
         return ImportType::Stdlib;
     }
 
-    // Relative imports (start with ./ or ../)
-    if import_path.starts_with("./") || import_path.starts_with("../") {
+    // A file path, relative to the importer with or without `./`
+    if is_zig_file_import(import_path) {
         return ImportType::Internal;
     }
 
-    // External package imports (anything else that's not stdlib)
-    // Zig package manager uses package names directly
+    // A module name: a package-manager dependency, or a module the workspace's
+    // build.zig defines (reclassified with `ZigModule`s)
     ImportType::External
+}
+
+/// Whether `@import("…")` names a file (Zig imports `*.zig` and `*.zon` files by
+/// path, relative to the importer) rather than a module.
+pub fn is_zig_file_import(import_path: &str) -> bool {
+    import_path.starts_with("./")
+        || import_path.starts_with("../")
+        || import_path.ends_with(".zig")
+        || import_path.ends_with(".zon")
+}
+
+/// A named module a `build.zig` defines: `@import(name)` in the workspace under
+/// `dir` reaches `root` (both relative to the index root).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZigModule {
+    pub dir: String,
+    pub name: String,
+    pub root: String,
+}
+
+/// The named modules of the `build.zig` at `rel` (relative to the index root):
+/// `b.addModule("name", .{ .root_source_file = b.path("p") })`, and modules made
+/// by `b.createModule(…)` into a variable that `.addImport("name", var)` names
+/// (`options.var` counts as `var`). A text scan, statement by statement.
+pub fn parse_build_zig_modules(rel: &str, source: &str) -> Vec<ZigModule> {
+    let dir = crate::dependency_resolve::parent_dir(rel);
+    let quoted = |s: &str| -> Option<String> {
+        let s = s.trim_start().strip_prefix('"')?;
+        Some(s[..s.find('"')?].to_string())
+    };
+    let root_file = |stmt: &str| -> Option<String> {
+        let at = stmt.find(".root_source_file")?;
+        let rest = &stmt[at..];
+        let call = rest.find("path(")?;
+        quoted(&rest[call + "path(".len()..])
+    };
+    let mut named: Vec<(String, String)> = Vec::new();
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut imports: Vec<(String, String)> = Vec::new();
+    for stmt in source.split(';') {
+        let trimmed = stmt.trim_start();
+        let var = trimmed
+            .strip_prefix("const ")
+            .or_else(|| trimmed.strip_prefix("var "))
+            .and_then(|r| r.split_once('='))
+            .map(|(name, _)| name.trim().to_string());
+        if let Some(path) = root_file(stmt) {
+            if let Some(at) = stmt.find("addModule(")
+                && let Some(name) = quoted(&stmt[at + "addModule(".len()..])
+            {
+                named.push((name, path.clone()));
+            }
+            if let Some(var) = &var
+                && (stmt.contains("addModule(") || stmt.contains("createModule("))
+            {
+                vars.insert(var.clone(), path);
+            }
+        }
+        let mut rest = stmt;
+        while let Some(at) = rest.find(".addImport(") {
+            rest = &rest[at + ".addImport(".len()..];
+            let Some(name) = quoted(rest) else { continue };
+            let after = &rest[rest.find(',').map_or(rest.len(), |i| i + 1)..];
+            let expr: String = after
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            if let Some(var) = expr.rsplit('.').next().filter(|v| !v.is_empty()) {
+                imports.push((name, var.to_string()));
+            }
+        }
+    }
+    for (name, var) in imports {
+        if let Some(path) = vars.get(&var)
+            && !named.iter().any(|(n, _)| *n == name)
+        {
+            named.push((name, path.clone()));
+        }
+    }
+    named
+        .into_iter()
+        .filter_map(|(name, path)| {
+            Some(ZigModule {
+                dir: dir.to_string(),
+                root: crate::dependency_resolve::fold_path(dir, &path)?,
+                name,
+            })
+        })
+        .collect()
+}
+
+/// The module `name` means in the file at `rel`: the nearest `build.zig` above it
+/// that defines `name`.
+pub fn find_zig_module<'a>(
+    name: &str,
+    rel: &str,
+    modules: &'a [ZigModule],
+) -> Option<&'a ZigModule> {
+    modules
+        .iter()
+        .filter(|m| m.name == name && (m.dir.is_empty() || rel.starts_with(&format!("{}/", m.dir))))
+        .max_by_key(|m| m.dir.len())
 }
 
 /// Resolve a Zig @import("...") path to an absolute file path
@@ -286,23 +389,17 @@ pub fn resolve_zig_import_to_path(
     import_path: &str,
     current_file_path: Option<&str>,
 ) -> Option<String> {
-    // Only resolve Internal imports (relative paths)
-    if !import_path.starts_with("./") && !import_path.starts_with("../") {
+    // Only file imports; module names go through `find_zig_module`
+    if !is_zig_file_import(import_path) {
         return None;
     }
 
+    // Relative to the importing file, folded without reading the disk
     let current_file = current_file_path?;
-    let current_dir = std::path::Path::new(current_file).parent()?;
-    let resolved = current_dir.join(import_path);
-
-    // Try to canonicalize (normalize) the path
-    match resolved.canonicalize() {
-        Ok(normalized) => Some(normalized.display().to_string()),
-        Err(_) => {
-            // If canonicalization fails (file doesn't exist), return the raw path
-            Some(resolved.display().to_string())
-        }
-    }
+    crate::dependency_resolve::fold_path(
+        crate::dependency_resolve::parent_dir(current_file),
+        import_path,
+    )
 }
 
 #[cfg(test)]

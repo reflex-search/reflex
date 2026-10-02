@@ -204,10 +204,12 @@ fn shape(root: &Path) -> (BTreeSet<String>, usize, usize) {
 fn assert_matches_fresh(root: &Path, step: &str) {
     let updated = battery(root);
     let updated_shape = shape(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::rename(root.join(".reflex"), root.join(".reflex-updated")).unwrap();
     index(root);
     let fresh = battery(root);
     let fresh_shape = shape(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     fs::rename(root.join(".reflex-updated"), root.join(".reflex")).unwrap();
 
@@ -313,10 +315,10 @@ fn the_merge_limit_folds_the_delta_into_a_new_base() {
     index_with_limits(root, 1, u64::MAX);
     let m = manifest(root);
     assert!(m.base_only(), "{m:?}");
-    let cache = root.join(".reflex");
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let cache = root.join(".reflex");
         let ino = |name: &str| fs::metadata(cache.join(name)).unwrap().ino();
         assert_eq!(ino("content.bin"), ino(&m.base.content));
         assert_eq!(ino("trigrams.bin"), ino(&m.base.trigrams));
@@ -407,9 +409,11 @@ fn a_merge_is_byte_identical_to_a_fresh_build() {
     };
     let merged_bytes = read(&cache, &merged);
 
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::rename(&cache, root.join(".reflex-merged")).unwrap();
     index(root);
     let fresh_bytes = read(&cache, &manifest(root));
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(&cache).unwrap();
     fs::rename(root.join(".reflex-merged"), &cache).unwrap();
 

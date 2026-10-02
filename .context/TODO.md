@@ -116,6 +116,24 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
+- **`rfx snapshot diff` hotspots and islands are silently empty** (found 2026-09-30). The
+  snapshot DB's `files` (`src/pulse/snapshot.rs`) has no `walk_seq`, but
+  `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
+  (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
+  `unwrap_or_default()`.
+- **C# usings that do not resolve: 11.4 % of dotnet/runtime's** (2026-10-01, after
+  aliases and `using static` were fixed). Mostly NuGet namespaces whose root a repo file
+  also declares (`Microsoft.CodeAnalysis.Testing`, `Xunit.Abstractions`), so the NuGet
+  exclusion (root namespace declared by no file) keeps them. Telling them apart needs
+  `.csproj` `PackageReference`s.
+- **C/C++ include resolution is 62–64 %** (dotnet, 2026-10-01). Includes are resolved
+  beside the including file, then by a unique whole-segment suffix; there is no
+  include-path search (`-I`, `target_include_directories`, compile_commands.json). PHP
+  (98.9 % on laravel) and Ruby (97.1 % on rails) were fixed on
+  `fix/package-import-resolution`.
+- **`rfx analyze` (summary) takes 2.2 s on Kubernetes** since Go imports resolve (was 0.0 s
+  on an almost empty graph). Each of cycles, hotspots, unused and islands loads
+  `import_edges` (~420k package-expanded edges) on its own connection; load once.
 - **Stale index, but no `can_trust_results: false`** — MCP fixed on `feature/auto-update`
   (every JSON-object answer carries it). Left: `check_index_status` with no index returns
   only `{status, action_required}`; `rfx query --count --json` returns `{count,

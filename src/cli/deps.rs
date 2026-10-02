@@ -45,6 +45,11 @@ pub(super) fn handle_analyze(
 
     let deps_index = DependencyIndex::new(cache);
 
+    // On stderr, so stdout stays parseable in every format
+    for warning in deps_index.low_resolution_warnings().unwrap_or_default() {
+        eprintln!("Warning: {warning}");
+    }
+
     // JSON mode overrides format
     let format = if as_json { "json" } else { &format };
 
@@ -143,6 +148,7 @@ fn handle_analyze_summary(
     // Split islands into meaningful clusters (2+ files) vs isolated singletons.
     // This matches what `--islands` shows by default (min_island_size=1 but with a
     // max_island_size cap that trims the dominant cluster).
+    let vendored = deps_index.vendored_file_count()?;
     let multi_file_islands = all_islands.iter().filter(|i| i.len() >= 2).count();
     let singleton_islands = all_islands.len() - multi_file_islands;
 
@@ -158,6 +164,8 @@ fn handle_analyze_summary(
                 "singletons": singleton_islands,
             },
             "min_dependents": min_dependents,
+            "vendored_files": vendored,
+            "warnings": deps_index.low_resolution_warnings().unwrap_or_default(),
         });
 
         let json_str = if pretty_json {
@@ -181,6 +189,9 @@ fn handle_analyze_summary(
             multi_file_islands,
             singleton_islands
         );
+        if vendored > 0 {
+            println!("{} vendored files (not in the graph)", vendored);
+        }
     } else {
         // Full summary with headers and suggestions
         println!("Dependency Analysis Summary\n");
@@ -208,6 +219,12 @@ fn handle_analyze_summary(
             );
         } else {
             println!("Islands: {} disconnected component(s)", all_islands.len());
+        }
+        if vendored > 0 {
+            println!(
+                "Vendored: {} file(s), searchable but not in the import graph",
+                vendored
+            );
         }
 
         println!("\nUse specific flags for detailed results:");
@@ -276,6 +293,9 @@ pub(super) fn handle_deps(
     let file_id = deps_index
         .get_file_id_by_path(&file_str)?
         .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", file_str))?;
+    for warning in deps_index.graph_warnings_for(&file_str).unwrap_or_default() {
+        eprintln!("Warning: {warning}");
+    }
 
     if reverse {
         // Show dependents (who imports this file)

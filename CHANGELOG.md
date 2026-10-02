@@ -53,6 +53,98 @@
 
 ### Fixed
 
+- **`analyze` and `get_dependencies` say when the import graph is incomplete.** When a
+  language has 100+ internal imports and under half of them resolve to an indexed file,
+  the answer carries a warning such as `Go: 135 of 52472 internal imports (0.3%) resolve
+  to indexed files; …` (MCP `analyze`: `warnings[]`; MCP `get_dependencies`: a second
+  `content` text item, the array is unchanged; CLI: `Warning:` on stderr, and
+  `warnings` in `rfx analyze --json`). On 2.1.0 Go, Java, C# and Kotlin resolved 0.3–7 %
+  of internal imports, so islands, unused files and hotspots for them were mostly noise.
+- **Go imports resolve to their package.** A Go import names a directory, so it now
+  reaches every non-`_test.go` file of that directory (`get_dependencies` lists them as
+  `resolved_paths`). Modules match on a path boundary, longest first (`k8s.io/apiserver`
+  is no longer read as `k8s.io/api` + `server`), and an import in no module of the
+  workspace is External (`k8s.io/klog` beside `k8s.io/kubernetes` was Internal and
+  unresolved). Files of one package count as one unit for islands and unused files.
+  Kubernetes: 84 of 52,472 internal imports resolved (0.2 %) → 48,997 of 48,997;
+  islands 27,303 → 1,368; unused files 27,371 → 4,802; `rfx analyze` 0.0 → 2.2 s.
+- **Java and Kotlin imports resolve by the package a file declares.** `import a.b.C`
+  reaches the file whose `package a.b` line declares `C` (as a file name or a top-level
+  type, function, property, object or type alias), in whichever Maven/Gradle module it
+  lives; `a.b.*` reaches the whole package. Kotlin can import Java and the reverse. The
+  old resolver bound every import to the first module whose groupId matched and guessed
+  one `src/main/java` path. Wildcard imports now keep their `.*` in `imported_path`
+  (Kotlin dropped it, Java too). neo4j: 356 of 59,658 internal imports resolved (0.6 %)
+  → 58,926 (98.8 %); islands 11,423 → 655; unused files 11,753 → 1,682.
+- **C# `using` directives resolve to every file that declares the namespace** (block,
+  nested and file-scoped declarations). A using whose root namespace no file declares
+  (a NuGet package) is left out of the resolution rate. Whole-namespace edges are not
+  used for cycles: a `using` is no evidence that one file uses another, and as file
+  edges they made 11,130 cycles of dotnet/runtime. dotnet/runtime: 281 of 23,051
+  internal usings resolved (1.2 %) → 18,911 (82.0 %); islands 55,938 → 16,346; unused
+  files 57,759 → 14,989; cycles 89 → 82.
+- **Python imports resolve to packages and from the repo root.** An import tries
+  `a/b.py`, then `a/b/__init__.py` (only the first was ever tried), with no leading `/`
+  when the package is at the index root (that path fell to a fuzzy filename match,
+  usually ambiguous). Relative imports resolve without a `pyproject.toml` / `setup.py`.
+  `from x.y import a, b` no longer lists `x` among the imported symbols. Django: 1,662
+  of 8,673 internal imports resolved (19.2 %) → 8,672 (100 %); islands 4,327 → 789;
+  unused files 2,919 → 416.
+- **Vendored code stays searchable but leaves the import graph.** A repository that
+  commits its dependencies now gets the graph a repository that gitignores them gets:
+  vendored files are not islands, unused files, hotspots, cycle members or `deps`
+  targets, and imports of them stay External. Reflex recognises Go `vendor/` (with
+  `vendor/modules.txt`), Composer `vendor/` (`vendor/composer/installed.json`),
+  `cargo vendor` crates (`.cargo-checksum.json`), virtualenvs (`pyvenv.cfg`),
+  `node_modules`, `bower_components`, `site-packages`, installed gems
+  (`ruby/<version>/gems`), `build.zig.zon` path dependencies, and per-language
+  directory names (`third_party/` everywhere but Go, PHP, Rust and Ruby; also
+  `vendor/`, `external/`, `extern/`, `deps/` for C/C++, `vendor/` for JS/TS, `_vendor/`
+  for Python). `[index.vendored] patterns` (gitignore rules) adds a directory, and
+  `!dir/` marks one as project code. `analyze` reports `vendored_files`, and `deps` on
+  a vendored file says it is not in the graph. A vendored `Cargo.toml` or gemspec no
+  longer makes its crate or gem Internal. Kubernetes (4,241 vendored files): islands
+  1,368 → 530, unused files 4,802 → 579. tokio after `cargo vendor` (7,982 vendored
+  files) answers exactly as tokio without it. A Composer project with `vendor/`
+  committed: islands 7,907 → 47, unused files 7,860 → 1.
+- **Paths resolve the same from any working directory.** The C, C++, Zig and Ruby
+  resolvers called `canonicalize()`, which reads the disk relative to the process's
+  working directory: in-process indexing lost every relative include, and under
+  `rfx index` the absolute result was cut at the first `src`/`app`/`lib` or reduced
+  to its file name. Paths are now folded lexically and looked up relative to the
+  root. Candidates are exact paths; only C/C++ fall back to a suffix match, which now
+  matches whole path segments (`a.h` is no longer `lib/xa.h`).
+- **Rust workspace crates.** A cross-crate `use b::thing` falls back to shorter
+  module paths and the crate root (`thing` in `b/src/lib.rs`), and a crate `b-core`
+  is imported as `b_core`. tokio: 86.5 % → 90.4 % of 1,593 internal imports,
+  islands 110 → 68.
+- **Zig sibling imports and build modules.** `@import("tree.zig")` (no `./`) is a
+  file import, and a module a `build.zig` defines (`b.addModule("stdx", …)`, or
+  `b.createModule` named by `.addImport("vsr", …)`) resolves to its root file.
+  tigerbeetle: Zig internal imports 489 → 1,118 (all resolved), islands 107 → 48.
+- **Python `from pkg import submodule`** reaches `pkg/submodule.py` as well as
+  `pkg/__init__.py` (`from django.db import models`). django: edges 8,684 → 10,145,
+  unused files 355 → 330.
+- **Ruby requires search every workspace gem's `lib/`** (`require "rails/command"` is
+  in railties), a require whose first segment a gem's `lib/` provides is Internal
+  (`active_support` is in the gem `activesupport`), and `require_relative "x"` is no
+  longer External. rails: internal requires 555 → 2,883 (97.1 % resolved), islands
+  3,115 → 1,689, unused files 1,435 → 712.
+- **PHP uses follow `composer.json`.** `autoload-dev` and PSR-0 are read, every
+  directory of a prefix is tried, and with `composer.json` a `use` is Internal
+  exactly when a project autoload prefix holds it (`Illuminate\…` is External).
+  `use A\B as C` no longer stores `C`; `use A\{B, C}` stores `A\B` and `A\C`.
+  laravel: 57.8 % → 98.9 % resolved, islands 630 → 427.
+- **C# `using static A.B.C` and `using X = A.B.C`** reach the files declaring `C` in
+  `A.B` (a type or a namespace); the alias `X` is no longer stored as a using, and
+  usings and namespaces inside `#if` blocks count. dotnet/runtime: C# 82.0 % →
+  88.6 % resolved.
+- Hotspots count distinct importers (a file with two imports of one target counted
+  twice), and one cycle is no longer reported twice when a file imports a target twice.
+- Text, lock and generated files are no longer islands or unused files (every README
+  and lock file was both). Entry points now cover `main.go`, `*_test.go`, `testdata/`,
+  `Program.cs`, `*Test(s)`/`*IT` Java, Kotlin and C# files, `__main__.py`, `manage.py`,
+  `conftest.py`, `setup.py`, `*_test.py`, and test directories at any depth.
 - An edit to `.gitignore` (any directory), `.ignore`, `.rgignore` or
   `.reflex/config.toml` now makes the index stale (listed under `files_modified`): it
   changes which files are indexed, and was never reported.

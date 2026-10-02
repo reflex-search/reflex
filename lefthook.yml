@@ -5,3 +5,8 @@ pre-commit:
       glob: "*.rs"
       run: cargo fmt --all
       stage_fixed: true
+
+pre-push:
+  commands:
+    windows-clippy:
+      run: scripts/windows-check.sh

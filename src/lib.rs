@@ -54,6 +54,7 @@ pub mod snapshot;
 pub mod symbol_cache;
 pub mod trigram;
 pub mod trigram_build;
+pub mod vendor;
 pub mod walk_order;
 pub mod watcher;
 
