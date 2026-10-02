@@ -326,9 +326,9 @@ impl ConfigFiles {
     fn digest(&self, root: &Path) -> String {
         let mut h = blake3::Hasher::new();
         let mut file = |tag: &str, path: &Path| {
-            let rel = path.strip_prefix(root).unwrap_or(path);
+            // `/`-separated: a walk and the saved list spell a path alike on Windows
             h.update(tag.as_bytes());
-            h.update(rel.to_string_lossy().as_bytes());
+            h.update(rel_slash(root, path).as_bytes());
             h.update(b"\0");
             match std::fs::read(path) {
                 Ok(bytes) => {
