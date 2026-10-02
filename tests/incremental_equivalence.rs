@@ -609,6 +609,7 @@ fn shape(root: &Path) -> (Vec<String>, usize, usize) {
 fn assert_matches_fresh(root: &Path, context: &str) {
     let updated = (battery(root), structure(root), shape(root));
     let aside = root.join(".reflex-updated");
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::rename(root.join(".reflex"), &aside).unwrap();
     indexer(
         root,
@@ -620,6 +621,7 @@ fn assert_matches_fresh(root: &Path, context: &str) {
     .index(root, false)
     .expect("fresh index");
     let fresh = (battery(root), structure(root), shape(root));
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     fs::rename(&aside, root.join(".reflex")).unwrap();
 

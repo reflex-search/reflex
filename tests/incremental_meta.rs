@@ -83,9 +83,11 @@ fn dump(root: &Path) -> String {
 /// The dump of the index as it stands, and of a fresh build of the same directory.
 fn against_fresh(root: &Path) -> (String, String) {
     let updated = dump(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::rename(root.join(".reflex"), root.join(".reflex-updated")).unwrap();
     index(root);
     let fresh = dump(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     fs::rename(root.join(".reflex-updated"), root.join(".reflex")).unwrap();
     (updated, fresh)

@@ -70,6 +70,7 @@ fn many_small_batches_produce_identical_index_files() {
     .map(|p| results(root, p))
     .collect();
 
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(&reflex_dir).unwrap();
     index_with(root, Some((50, u64::MAX)));
     assert!(
@@ -86,6 +87,7 @@ fn many_small_batches_produce_identical_index_files() {
         one_content
     );
 
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(&reflex_dir).unwrap();
     index_with(root, Some((usize::MAX, 2_000)));
     assert_eq!(

@@ -330,9 +330,11 @@ fn graph_outputs(root: &Path) -> Vec<String> {
 /// directory (same readdir order, so the same walk order).
 fn against_fresh(root: &Path) -> (Vec<String>, Vec<String>) {
     let updated = graph_outputs(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::rename(root.join(".reflex"), root.join(".reflex-updated")).unwrap();
     index(root);
     let fresh = graph_outputs(root);
+    reflex::query::invalidate_caches(root); // Windows: release the shared handle first
     fs::remove_dir_all(root.join(".reflex")).unwrap();
     fs::rename(root.join(".reflex-updated"), root.join(".reflex")).unwrap();
     (updated, fresh)
