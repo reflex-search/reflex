@@ -132,6 +132,9 @@ pub struct ProviderCaps {
 }
 
 /// Trait for LLM providers that generate structured query responses
+// `#[async_trait]` puts `#[must_use]` on the boxed future of a default method, and
+// clippy 1.99 reports that as `double_must_use`. The code is fine.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Send a prompt and get response
