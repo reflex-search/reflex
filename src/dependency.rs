@@ -696,6 +696,24 @@ impl DependencyIndex {
         Ok(visited)
     }
 
+    /// [`get_transitive_deps`](Self::get_transitive_deps) as a list ordered by depth,
+    /// then walk order (the id order of a full build), so the same index always
+    /// prints the same list. The start file is the first entry, at depth 0.
+    pub fn get_transitive_deps_ordered(
+        &self,
+        file_id: i64,
+        max_depth: usize,
+    ) -> Result<Vec<(i64, usize)>> {
+        let transitive = self.get_transitive_deps(file_id, max_depth)?;
+        let ids: Vec<i64> = transitive.keys().copied().collect();
+        let ranks = self.walk_ranks(&ids)?;
+        let mut ordered: Vec<(i64, usize)> = transitive.into_iter().collect();
+        ordered.sort_unstable_by_key(|&(id, depth)| {
+            (depth, ranks.get(&id).copied().unwrap_or(i64::MAX), id)
+        });
+        Ok(ordered)
+    }
+
     /// Detect circular dependencies in the entire codebase
     ///
     /// Uses depth-first search to find cycles in the dependency graph.
@@ -2165,6 +2183,38 @@ mod tests {
         assert_eq!(transitive.get(&file1), Some(&0));
         assert_eq!(transitive.get(&file2), Some(&1));
         assert_eq!(transitive.get(&file3), Some(&2));
+    }
+
+    /// Every transitive-deps output (CLI json/tree/table, MCP) printed `HashMap`
+    /// order through 2.2.0. Within a depth the order is walk order, not id order.
+    #[test]
+    fn transitive_deps_ordered_by_depth_then_walk_order() {
+        let (_temp, cache) = setup_test_cache();
+        let deps_index = DependencyIndex::new(cache);
+        let id = |p: &str| deps_index.get_file_id_by_path(p).unwrap().unwrap();
+        let (main, lib, utils) = (id("src/main.rs"), id("src/lib.rs"), id("src/utils.rs"));
+        {
+            let conn = deps_index.open_conn().unwrap();
+            for (file, seq) in [(main, 1), (lib, 3), (utils, 2)] {
+                conn.execute("UPDATE files SET walk_seq = ? WHERE id = ?", [seq, file])
+                    .unwrap();
+            }
+        }
+        for target in [lib, utils] {
+            deps_index
+                .insert_dependency(
+                    main,
+                    "x".to_string(),
+                    Some(target),
+                    ImportType::Internal,
+                    1,
+                    None,
+                )
+                .unwrap();
+        }
+
+        let ordered = deps_index.get_transitive_deps_ordered(main, 2).unwrap();
+        assert_eq!(ordered, vec![(main, 0), (utils, 1), (lib, 1)]);
     }
 
     #[test]

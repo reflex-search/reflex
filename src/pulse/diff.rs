@@ -442,11 +442,11 @@ fn compute_hotspot_changes(
         }
     }
 
-    // Sort by fan-in change magnitude
+    // Sort by fan-in change magnitude, then path (`current_map` is a HashMap)
     changes.sort_by(|a, b| {
         let a_delta = (a.new_fan_in as i64 - a.old_fan_in as i64).unsigned_abs();
         let b_delta = (b.new_fan_in as i64 - b.old_fan_in as i64).unsigned_abs();
-        b_delta.cmp(&a_delta)
+        b_delta.cmp(&a_delta).then_with(|| a.path.cmp(&b.path))
     });
 
     changes
@@ -490,9 +490,12 @@ fn compute_cycle_changes(
         })
         .collect();
 
-    let new_cycles: Vec<Vec<String>> = current_set.difference(&baseline_set).cloned().collect();
-    let resolved_cycles: Vec<Vec<String>> =
+    // Sorted: a HashSet difference comes out in a different order every run
+    let mut new_cycles: Vec<Vec<String>> = current_set.difference(&baseline_set).cloned().collect();
+    let mut resolved_cycles: Vec<Vec<String>> =
         baseline_set.difference(&current_set).cloned().collect();
+    new_cycles.sort();
+    resolved_cycles.sort();
 
     (new_cycles, resolved_cycles)
 }
