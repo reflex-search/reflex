@@ -23,9 +23,9 @@ All four fixed with tests; recorded in CHANGELOG.md `[Unreleased]`:
 4. Qt Linguist `.ts` XML parsed as TypeScript (issue #39; leave the issue open until the
    reporter sends Unreal numbers).
 
-Left: `cargo clippy --all-targets -- -D warnings` fails on rustc 1.99.0 in
-`src/semantic/providers/mod.rs:135` (`clippy::double_must_use`, from `#[async_trait]`);
-the same on `main`, not from this branch.
+Also on the branch: rustc 1.99.0 clippy reported `clippy::double_must_use` on the
+`#[async_trait]` trait in `src/semantic/providers/mod.rs` (also on `main`); allowed there,
+because the pre-push hook refused every push.
 
 ---
 
