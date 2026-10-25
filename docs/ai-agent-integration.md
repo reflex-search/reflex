@@ -175,7 +175,7 @@ uses most:
 | `search_code` | Every occurrence of a name, with previews. `symbols: true` for definitions only. `mode: "count"` for how many matches, in how many files. |
 | `search_regex` | Regular expressions, and patterns with `->`, `::`, `(`, `[`. |
 | `find_references` | A symbol's definition plus every usage, in one call. Skips strings and comments by default. Code files only. |
-| `list_locations` | Every `{path, line}` for a pattern, without previews. |
+| `list_locations` | Every matching line for a pattern, grouped by file (`{path: [line, ...]}`), without previews. A line with two matches appears once, like `grep -n`. |
 | `get_dependencies` | What a file imports. `reverse: true` for the files that import it; `depth: N` to follow imports N levels. |
 | `gather_context` | Project structure, frameworks, entry points. Useful at the start of a session. |
 | `check_index_status` | Whether the index matches the files on disk. Rarely needed: every tool updates the index first. |
@@ -266,7 +266,9 @@ substring count.
   `claude mcp add --scope user -e REFLEX_MCP_COLUMNAR=0 reflex -- rfx mcp`.
 
 Other tools use their own shapes. `list_locations` returns
-`{locations: [{path, line}], total_locations, status, can_trust_results}`. `find_references` returns
+`{locations: {path: [line, ...]}, total_locations, status, can_trust_results}` (with
+`preview: true`, each line is `[line, text]`; `REFLEX_MCP_GROUPED=0` restores the flat
+`[{path, line}]` array of 2.2.0 and earlier). `find_references` returns
 `{definition, references, total_references, returned_count, filtered_out, pagination, status, can_trust_results}`.
 `search_code` with `mode: "count"` returns `{count, files, pattern, status, can_trust_results}`.
 

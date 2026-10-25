@@ -319,7 +319,7 @@ fn tool_list(enable_structural: bool) -> Vec<Value> {
         }),
         json!({
             "name": "list_locations",
-            "description": "Where does X occur? Every match as {path, line}: the cheapest search, no limit. preview:true adds each matching line (trimmed, 120 chars). Same matching as search_code.",
+            "description": "Where does X occur? Every matching line, by file: {path: [line, ...]}; a line with two matches appears once, like grep -n. The cheapest search, no limit. preview:true gives [line, text] pairs (text trimmed, 120 chars). Same matching as search_code.",
             "inputSchema": search_params(json!({
                 "contains": contains,
                 "preview": {"type": "boolean", "description": "Add each matching line (120 chars)"},
@@ -1037,6 +1037,75 @@ fn columnar_enabled() -> bool {
     }
 }
 
+/// `list_locations` groups its matches by file (`{path: [line, ...]}`). Default ON;
+/// `REFLEX_MCP_GROUPED=0` (`false`/`off`/`no`) restores the flat `[{path, line}]`
+/// array. Each flat match repeated its path and two key names: replayed on the
+/// 2026-09-30 session transcripts (eager arms), grouping removes 51–64 % of the
+/// weighted size of Reflex replies (cache write ×1.25, then ×0.1 per later turn).
+fn grouped_locations_enabled() -> bool {
+    match std::env::var("REFLEX_MCP_GROUPED") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// `list_locations` matches as JSON. Grouped: `{path: [line, ...]}`, or
+/// `{path: [[line, text], ...]}` with `preview`; the engine sorts files by path, which
+/// is also the order of a `serde_json` object. Flat: `[{path, line[, preview]}]`.
+fn locations_json(
+    groups: &[crate::models::FileGroupedResult],
+    with_preview: bool,
+    grouped: bool,
+) -> Value {
+    // The matching line, trimmed and cut short: enough to tell a definition from a
+    // call without a second search (agents that could not see the line re-ran the
+    // search with grep).
+    let preview = |m: &crate::models::MatchResult| {
+        let line = m.preview.lines().next().unwrap_or("").trim();
+        let mut short: String = line.chars().take(LOCATION_PREVIEW_CHARS).collect();
+        if line.chars().count() > LOCATION_PREVIEW_CHARS {
+            short.push('…');
+        }
+        short
+    };
+    if grouped {
+        let files: serde_json::Map<String, Value> = groups
+            .iter()
+            .map(|group| {
+                let lines: Vec<Value> = group
+                    .matches
+                    .iter()
+                    .map(|m| {
+                        if with_preview {
+                            json!([m.span.start_line, preview(m)])
+                        } else {
+                            json!(m.span.start_line)
+                        }
+                    })
+                    .collect();
+                (group.path.clone(), Value::Array(lines))
+            })
+            .collect();
+        return Value::Object(files);
+    }
+    let locations: Vec<Value> = groups
+        .iter()
+        .flat_map(|group| {
+            group.matches.iter().map(move |m| {
+                let mut loc = json!({"path": group.path, "line": m.span.start_line});
+                if with_preview {
+                    loc["preview"] = json!(preview(m));
+                }
+                loc
+            })
+        })
+        .collect();
+    Value::Array(locations)
+}
+
 /// REF-212: render a bool as a compact on/off token for the startup diagnostic.
 fn onoff(v: bool) -> &'static str {
     if v { "on" } else { "off" }
@@ -1059,13 +1128,14 @@ fn onoff(v: bool) -> &'static str {
 ///
 /// REF-215 removed the `structuredContent` / `sc_stage2` flags along with the
 /// env vars that drove them.
-fn startup_flags_line(columnar: bool, structural: bool) -> String {
+fn startup_flags_line(columnar: bool, structural: bool, grouped: bool) -> String {
     format!(
-        "reflex-mcp startup: version={} build={} columnar={} structural_tools={}",
+        "reflex-mcp startup: version={} build={} columnar={} structural_tools={} grouped={}",
         env!("CARGO_PKG_VERSION"),
         option_env!("REFLEX_GIT_SHA").unwrap_or("unknown"),
         onoff(columnar),
         onoff(structural),
+        onoff(grouped),
     )
 }
 
@@ -1455,38 +1525,16 @@ fn dispatch_tool(
             let engine = engine_in(cache, update);
             let response = engine.search_with_metadata(&pattern, filter.clone())?;
 
-            // Extract locations (path + line) for each match
-            let locations: Vec<serde_json::Value> = response
-                .results
-                .iter()
-                .flat_map(|file_group| {
-                    file_group.matches.iter().map(move |m| {
-                        let mut loc = json!({
-                            "path": file_group.path.clone(),
-                            "line": m.span.start_line
-                        });
-                        // The matching line, trimmed and cut short: enough to tell a
-                        // definition from a call without a second search (agents that
-                        // could not see the line re-ran the search with grep).
-                        if with_preview {
-                            let line = m.preview.lines().next().unwrap_or("").trim();
-                            let mut short: String =
-                                line.chars().take(LOCATION_PREVIEW_CHARS).collect();
-                            if line.chars().count() > LOCATION_PREVIEW_CHARS {
-                                short.push('…');
-                            }
-                            loc["preview"] = json!(short);
-                        }
-                        loc
-                    })
-                })
-                .collect();
-
             // Return compact response (just locations + count)
+            let total: usize = response.results.iter().map(|g| g.matches.len()).sum();
             let mut compact_response = json!({
                 "status": response.status,
-                "total_locations": locations.len(),
-                "locations": locations
+                "total_locations": total,
+                "locations": locations_json(
+                    &response.results,
+                    with_preview,
+                    grouped_locations_enabled(),
+                ),
             });
             annotate_literal_result(&mut compact_response, &response);
 
@@ -3000,7 +3048,11 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     // running binary actually honoured and pins the exact build it came from.
     eprintln!(
         "{}",
-        startup_flags_line(columnar_enabled(), enable_structural)
+        startup_flags_line(
+            columnar_enabled(),
+            enable_structural,
+            grouped_locations_enabled()
+        )
     );
 
     for line in reader.lines() {
@@ -3546,10 +3598,11 @@ mod tests {
     fn test_startup_flags_line_reports_resolved_flags() {
         // REF-215: only columnar + structural_tools remain (structuredContent /
         // sc_stage2 were removed along with the env vars that drove them).
-        let line = super::startup_flags_line(false, true);
+        let line = super::startup_flags_line(false, true, false);
         assert!(line.starts_with("reflex-mcp startup:"), "line: {line}");
         assert!(line.contains("columnar=off"), "line: {line}");
         assert!(line.contains("structural_tools=on"), "line: {line}");
+        assert!(line.contains("grouped=off"), "line: {line}");
         // Build provenance present so an out-of-date rfx is identifiable.
         assert!(line.contains("build="), "line: {line}");
         // The removed flags must not reappear in the diagnostic.
@@ -3557,9 +3610,72 @@ mod tests {
         assert!(!line.contains("sc_stage2"), "line: {line}");
 
         // Inverting every flag flips exactly the on/off tokens.
-        let off = super::startup_flags_line(true, false);
+        let off = super::startup_flags_line(true, false, true);
         assert!(off.contains("columnar=on"), "line: {off}");
         assert!(off.contains("structural_tools=off"), "line: {off}");
+        assert!(off.contains("grouped=on"), "line: {off}");
+    }
+
+    #[test]
+    fn grouped_locations_enabled_default_on() {
+        // Relies on REFLEX_MCP_GROUPED being unset in the harness environment.
+        assert!(super::grouped_locations_enabled());
+    }
+
+    fn location_groups() -> Vec<crate::models::FileGroupedResult> {
+        let m = |line: usize, preview: &str| crate::models::MatchResult {
+            kind: crate::models::SymbolKind::Unknown(String::new()),
+            symbol: None,
+            span: crate::models::Span {
+                start_line: line,
+                end_line: line,
+            },
+            preview: preview.to_string(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+        };
+        let g = |path: &str, matches| crate::models::FileGroupedResult {
+            path: path.to_string(),
+            language: crate::models::Language::Rust,
+            dependencies: None,
+            matches,
+        };
+        vec![
+            g("src/a.rs", vec![m(3, "  fn a() {\n}"), m(40, "a();")]),
+            g("src/b/c.rs", vec![m(7, &format!("x{}", "y".repeat(130)))]),
+        ]
+    }
+
+    #[test]
+    fn locations_are_grouped_by_file() {
+        let groups = location_groups();
+        assert_eq!(
+            super::locations_json(&groups, false, true),
+            json!({"src/a.rs": [3, 40], "src/b/c.rs": [7]})
+        );
+        let with = super::locations_json(&groups, true, true);
+        assert_eq!(with["src/a.rs"], json!([[3, "fn a() {"], [40, "a();"]]));
+        let long = with["src/b/c.rs"][0][1].as_str().unwrap();
+        assert_eq!(long.chars().count(), super::LOCATION_PREVIEW_CHARS + 1);
+        assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn flat_locations_keep_the_old_shape() {
+        let groups = location_groups();
+        assert_eq!(
+            super::locations_json(&groups, false, false),
+            json!([
+                {"path": "src/a.rs", "line": 3},
+                {"path": "src/a.rs", "line": 40},
+                {"path": "src/b/c.rs", "line": 7}
+            ])
+        );
+        let with = super::locations_json(&groups, true, false);
+        assert_eq!(
+            with[1],
+            json!({"path": "src/a.rs", "line": 40, "preview": "a();"})
+        );
     }
 
     /// A representative two-file list-mode search response (post-flattening),

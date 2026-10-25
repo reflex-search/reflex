@@ -168,11 +168,12 @@ fn mcp_glob_and_exclude_are_anchored_too() {
         "list_locations",
         json!({"pattern": NEEDLE, "exclude": ["src/**"]}),
     );
+    // `{path: [line, ...]}`, one match per file here
     let got: Vec<&str> = excluded["locations"]
-        .as_array()
+        .as_object()
         .unwrap()
-        .iter()
-        .map(|l| l["path"].as_str().unwrap())
+        .keys()
+        .map(String::as_str)
         .collect();
     assert_eq!(got, ["Makefile", "vendor/src/b.rs"], "{excluded}");
 }

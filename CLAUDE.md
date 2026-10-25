@@ -244,7 +244,7 @@ the shared matching / coverage / freshness rules live in `MCP_INSTRUCTIONS`, sai
 |------|---------|
 | `search_code` | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
 | `search_regex` | Regex search (use for `->`, `::`, alternation, etc.) |
-| `list_locations` | Path+line only — cheapest; `preview: true` adds the matching line (120 chars) |
+| `list_locations` | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
 | `find_references` | Definition + all usages in one atomic call (default limit: 200) |
 | `search_ast` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
 | `get_dependencies` | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
@@ -389,6 +389,10 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   Sonnet 1.05× (12 questions), 1.11× (50); Opus 1.15× (12; it drifts back to grep after
   one preview-less `list_locations`), **0.89×** (50). Keep "where does X occur → list_locations"
   in the instructions: without it agents return 1.3–1.9K-char previews per lookup.
+- **Grouped `list_locations` (2026-10-25, `.context/GREP_PARITY_RESEARCH.md`):** `{path: [line, ...]}`
+  replies are 45–54 % smaller than the flat array; Sonnet 5 investigate sessions cost 0.91–0.97×
+  flat, answers exact. The description must say "every matching line": with "every match"
+  agents read files to check lines with two matches (+16 % on tokio).
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`

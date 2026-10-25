@@ -12,23 +12,6 @@
 
 ---
 
-## 🛠️ Silent wrong answers (2026-10-24) — DONE on `fix/silent-wrong-answers`, in review
-
-All four fixed with tests; recorded in CHANGELOG.md `[Unreleased]`:
-1. Line filter reads comment markers inside strings as comments (`find_references`,
-   `--symbols` pre-filter). One scanner per language replaces 15 copied filters.
-2. `rfx snapshot diff` hotspots, cycles and islands always empty (snapshot schema 2).
-3. `HashMap` / `HashSet` order in stats JSON, `deps --reverse`, transitive deps, pulse
-   map edges, snapshot diff hotspots and cycles.
-4. Qt Linguist `.ts` XML parsed as TypeScript (issue #39; leave the issue open until the
-   reporter sends Unreal numbers).
-
-Also on the branch: rustc 1.99.0 clippy reported `clippy::double_must_use` on the
-`#[async_trait]` trait in `src/semantic/providers/mod.rs` (also on `main`); allowed there,
-because the pre-push hook refused every push.
-
----
-
 ## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — MERGED, items left
 
 Plan: `~/.claude/plans/i-want-to-revamp-purrfect-stonebraker.md` (copy lands in
@@ -140,6 +123,9 @@ From 2.0.0 (2026-09-23):
 
 ## 🔭 Open follow-ups
 
+Issue #39 (Qt Linguist `.ts` parsed as TypeScript; fixed in #55): leave it open until
+the reporter sends Unreal numbers.
+
 Indexing and freshness:
 - The 1 s verdict memo: in `rfx mcp` / `rfx serve`, an edit made within 1 s of the
   previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
@@ -220,9 +206,15 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   cost vs Grep. Open: Opus drifted to grep after one preview-less `list_locations` in
   short sessions; `list_locations` `preview: true` shipped in 2.1.0 but the drift has not
   been re-measured.
-- **D. Close the gap left at equal turns (1.03–1.09×).** Strip duplicate reply metadata
-  (flat `has_more` / `total_count` / `returned_count` beside `pagination`); try
-  file-grouped columnar rows (REF-219) so rows do not repeat `path` / `language`.
+- **D. Close the gap left at equal turns (1.03–1.09×).** IN PROGRESS on
+  `feat/grep-parity` (2026-10-25, `.context/GREP_PARITY_RESEARCH.md`): `list_locations`
+  grouped by file (`{path: [line, ...]}`, `REFLEX_MCP_GROUPED=0` = flat). Measured
+  (Sonnet 5, investigate sessions): replies −45–54 %, cost 0.91–0.97× flat, 160/160 list
+  answers exact after the "every matching line" wording fix. Not worth it: duplicate
+  reply metadata (6–8 % of reply weight, <1 % of a session). Open: file-grouped rows for
+  `search_code` / `search_regex` (REF-219); fixed text = fewer listed tools (user
+  decision); Opus 12-question re-measure; `list_locations` `dependencies: true` is
+  accepted but never reaches the reply.
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 

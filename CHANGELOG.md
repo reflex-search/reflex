@@ -4,6 +4,22 @@ Four answers that were wrong without a warning are fixed. The first CLI command 
 upgrading rebuilds the index once (2.2.0 wrote it); until then `rfx mcp` and `rfx serve`
 answer from it marked `stale`.
 
+### ⚠️ Breaking (MCP)
+
+- **`list_locations` groups its matches by file.** `locations` is now
+  `{path: [line, ...]}` instead of `[{path, line}, ...]`; with `preview: true` each line
+  is `[line, text]`. Each flat match repeated its path and two key names: replayed on
+  the 2026-09-30 benchmark sessions, grouping removes 51–64 % of the weighted size of
+  Reflex's replies. `total_locations`, `status` and `can_trust_results` are unchanged.
+  `REFLEX_MCP_GROUPED=0` restores the flat array; the `rfx mcp` startup line on stderr
+  reports `grouped=on|off`.
+
+### Changed
+
+- **The `list_locations` description says "every matching line", not "every match".**
+  A line with two matches was always listed once, like `grep -n`. Agents that read
+  "every match" counted occurrences on doubled lines and read files to check.
+
 ### Fixed
 
 - **`find_references` no longer drops call sites after a comment marker inside a

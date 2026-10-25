@@ -132,6 +132,16 @@ ARMS = {
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
         "append_system_prompt": None,
     },
+    "Beager_flat": {
+        "description": "Arm Beager with list_locations as the flat [{path, line}] array (REFLEX_MCP_GROUPED=0), the shape before file grouping",
+        "mcp_command": "TARGET_RELEASE_RFX",
+        "mcp_always_load": True,
+        "mcp_env": {"REFLEX_MCP_GROUPED": "0"},
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
+        "append_system_prompt": None,
+    },
     "C": {
         "description": "Reflex-forced: Reflex MCP enabled; Grep/Glob disallowed; Read/Bash allowed",
         "mcp_command": "TARGET_RELEASE_RFX",
@@ -339,6 +349,8 @@ def _expected_flag_value(var: str, val: str) -> tuple[str, str] | None:
         return ("structuredContent", "off" if v in _FALSEY else "on")
     if var == "REFLEX_MCP_COLUMNAR":
         return ("columnar", "off" if v in _FALSEY else "on")
+    if var == "REFLEX_MCP_GROUPED":
+        return ("grouped", "off" if v in _FALSEY else "on")
     if var == "REFLEX_MCP_SC_STAGE2":
         return ("sc_stage2", "on" if v in _TRUTHY else "off")
     return None
@@ -400,7 +412,8 @@ def verify_mcp_arm_flags(
         )
     print(f"  [PROBE] {arm_name} resolved MCP flags: build={flags.get('build','?')} "
           f"structuredContent={flags.get('structuredContent','?')} "
-          f"sc_stage2={flags.get('sc_stage2','?')} columnar={flags.get('columnar','?')}")
+          f"sc_stage2={flags.get('sc_stage2','?')} columnar={flags.get('columnar','?')} "
+          f"grouped={flags.get('grouped','?')}")
     for var, val in (mcp_env or {}).items():
         expected = _expected_flag_value(var, val)
         if expected is None:

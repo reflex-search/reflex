@@ -17,6 +17,7 @@ development sessions (human and AI). Committed to git.
 | `AUTO_UPDATE_RESEARCH.md` | Plan for auto-update: every command updates a stale index before it answers (decisions, code survey, steps, gates). |
 | `DEPENDENCY_RESOLUTION_RESEARCH.md` | Import-graph accuracy per language (2026-09-30): why Go/Java/C#/Kotlin/Python barely resolved, the package-key design, before/after numbers. |
 | `EFFICACY-2.0.3.md` | Efficacy A/B on 2.0.3 (Opus 5.5, Sonnet 5): method, all endpoints, per-task tables, limits. |
+| `GREP_PARITY_RESEARCH.md` | Where Reflex still costs more than Grep (fixed text, reply weight, rename style); grouped `list_locations` A/B (2026-10-25). |
 
 ## Rules
 

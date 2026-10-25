@@ -336,6 +336,12 @@ def run(args) -> None:
     else:
         jobs = [(a, s, t) for t in range(1, args.n + 1) for s in sessions for a in args.arms]
     print(f"{len(jobs)} sessions on {args.jobs} workers, model {args.model}, rfx {rfx}")
+    # REF-212: a binary that ignores an arm's env toggle would silently run the
+    # other arm. Probe each MCP arm once, before any trial is paid for.
+    for arm in args.arms:
+        cfg = runner.ARMS[arm]
+        if cfg["mcp_command"] == "TARGET_RELEASE_RFX":
+            runner.verify_mcp_arm_flags(arm, rfx, cfg.get("mcp_env"))
     with tempfile.TemporaryDirectory() as tmp, cf.ThreadPoolExecutor(args.jobs) as pool:
         futs = [pool.submit(run_one, a, s, t, args.model, rfx, Path(tmp)) for a, s, t in jobs]
         for fut in cf.as_completed(futs):
