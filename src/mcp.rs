@@ -319,7 +319,7 @@ fn tool_list(enable_structural: bool) -> Vec<Value> {
         }),
         json!({
             "name": "list_locations",
-            "description": "Where does X occur? Every match, by file: {path: [line, ...]}; the cheapest search, no limit. preview:true gives [line, text] pairs (text trimmed, 120 chars). Same matching as search_code.",
+            "description": "Where does X occur? Every matching line, by file: {path: [line, ...]}; a line with two matches appears once, like grep -n. The cheapest search, no limit. preview:true gives [line, text] pairs (text trimmed, 120 chars). Same matching as search_code.",
             "inputSchema": search_params(json!({
                 "contains": contains,
                 "preview": {"type": "boolean", "description": "Add each matching line (120 chars)"},

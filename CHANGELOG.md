@@ -10,6 +10,12 @@
   `REFLEX_MCP_GROUPED=0` restores the flat array; the `rfx mcp` startup line on stderr
   reports `grouped=on|off`.
 
+### Changed
+
+- **The `list_locations` description says "every matching line", not "every match".**
+  A line with two matches was always listed once, like `grep -n`. Agents that read
+  "every match" counted occurrences on doubled lines and read files to check.
+
 ## [2.2.0] - 2026-10-01
 
 The import graph (`rfx deps`, `rfx analyze`, MCP `get_dependencies` / `analyze`) is now
