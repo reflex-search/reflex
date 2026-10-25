@@ -316,10 +316,9 @@ pub(super) fn handle_deps(
             }
             "tree" => {
                 println!("Files that import {}:", file_str);
-                for (id, path) in &paths {
-                    if dependents.contains(id) {
-                        println!("  └─ {}", path);
-                    }
+                // `dependents` is in walk order; `paths` is a HashMap.
+                for path in dependents.iter().filter_map(|id| paths.get(id)) {
+                    println!("  └─ {}", path);
                 }
                 eprintln!("\nFound {} dependents", dependents.len());
             }
@@ -408,8 +407,9 @@ pub(super) fn handle_deps(
             }
         } else {
             // Transitive dependencies (depth > 1)
-            let transitive = deps_index.get_transitive_deps(file_id, depth)?;
-            let file_ids: Vec<_> = transitive.keys().copied().collect();
+            // By depth, then walk order: the id order of a full build.
+            let transitive = deps_index.get_transitive_deps_ordered(file_id, depth)?;
+            let file_ids: Vec<_> = transitive.iter().map(|&(id, _)| id).collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
             match format {
@@ -435,26 +435,10 @@ pub(super) fn handle_deps(
                 }
                 "tree" => {
                     println!("Dependencies of {} (depth {}):", file_str, depth);
-                    // Group by depth for tree display; skip depth 0 (the file itself)
-                    let mut by_depth: std::collections::BTreeMap<usize, Vec<i64>> =
-                        std::collections::BTreeMap::new();
-                    for (id, d) in &transitive {
-                        if *d > 0 {
-                            by_depth.entry(*d).or_default().push(*id);
-                        }
-                    }
-
-                    // Within a depth, walk order: the id order of a full build.
-                    let ranks = deps_index.walk_ranks(&file_ids)?;
-                    for (depth_level, ids) in &by_depth {
-                        let indent = "  ".repeat(*depth_level - 1);
-                        let mut sorted_ids = ids.clone();
-                        sorted_ids
-                            .sort_unstable_by_key(|id| ranks.get(id).copied().unwrap_or(i64::MAX));
-                        for id in sorted_ids {
-                            if let Some(path) = paths.get(&id) {
-                                println!("{}└─ {}", indent, path);
-                            }
+                    // Skip depth 0 (the file itself)
+                    for (id, d) in transitive.iter().filter(|(_, d)| *d > 0) {
+                        if let Some(path) = paths.get(id) {
+                            println!("{}└─ {}", "  ".repeat(*d - 1), path);
                         }
                     }
                     eprintln!("\nFound {} transitive dependencies", transitive.len());
@@ -465,9 +449,7 @@ pub(super) fn handle_deps(
                     // "File ID" is the id a full build gives the file (its 1-based
                     // walk position), not the stable internal id.
                     let ranks = deps_index.walk_ranks(&file_ids)?;
-                    let mut sorted: Vec<_> = transitive.iter().collect();
-                    sorted.sort_by_key(|(_, d)| *d);
-                    for (id, d) in sorted {
+                    for (id, d) in &transitive {
                         if let Some(path) = paths.get(id) {
                             let shown = ranks.get(id).copied().unwrap_or(*id);
                             println!("{:<5}  {:<7}  {}", d, shown, path);

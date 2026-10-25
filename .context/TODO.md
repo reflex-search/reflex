@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-09-28 (Reflex 2.0.3)
+**Last Updated:** 2026-10-24 (Reflex 2.2.0)
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md`.
 > Update this file as you work. Keep it to LIVE work: open tasks, current policy, open
@@ -12,74 +12,28 @@
 
 ---
 
-## 🔄 Auto-update (2026-09-29) — IN PROGRESS on `feature/auto-update` (not pushed)
+## 🛠️ Silent wrong answers (2026-10-24) — DONE on `fix/silent-wrong-answers`, in review
 
-Every command that reads the index brings it up to date first; no watcher, no manual
-`rfx index`. Plan, code survey, steps and gates: `.context/AUTO_UPDATE_RESEARCH.md`.
-Builds on the incremental index branch below. Steps 1–9 and docs done; fidelity 15/15,
-golden 0 diffs, `latency_budget` +1.6 %, MCP edit-then-search 138–161 ms (as built:
-`AUTO_UPDATE_RESEARCH.md`). Step 9 (user, 2026-09-30): the MCP text no longer sends
-agents to `check_index_status` / `index_project`; every JSON-object answer carries
-`can_trust_results`. Efficacy re-run (Opus 5.5): 1.675×, unchanged — Opus never made the
-status calls. Sonnet 5: 1.603× (was 1.646×); status calls 33 → 0, arm-B median turns
-4 → 3, tokens 148k → 101k. `alwaysLoad` (now in the docs' example configs) removes the
-ToolSearch turn: cost 1.20× (Sonnet) / 0.98× (Opus) Grep, tokens 1.53× / 1.82× — the
-44 KB `tools/list` rides on every turn. Long sessions (`session_bench.py`): eager Reflex
-1.10× Grep's cost over 50 questions (1.18–1.36× over 12); per query it equals Grep.
-Next: shrink the schemas (backlog §1 B), re-measure with `session_bench.py`.
+All four fixed with tests; recorded in CHANGELOG.md `[Unreleased]`:
+1. Line filter reads comment markers inside strings as comments (`find_references`,
+   `--symbols` pre-filter). One scanner per language replaces 15 copied filters.
+2. `rfx snapshot diff` hotspots, cycles and islands always empty (snapshot schema 2).
+3. `HashMap` / `HashSet` order in stats JSON, `deps --reverse`, transitive deps, pulse
+   map edges, snapshot diff hotspots and cycles.
+4. Qt Linguist `.ts` XML parsed as TypeScript (issue #39; leave the issue open until the
+   reporter sends Unreal numbers).
 
-Known limit: the 1 s verdict memo — in `rfx mcp` / `rfx serve`, an edit made within 1 s
-of the previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
-
-Decisions (user, 2026-09-29): update inside the command when the check says stale;
-default on for every command, `--no-update` opt-out on all; always wait; no index →
-build it (no directory guard); remove the MCP `check_index_status` / `index_project` text
-only after the fidelity test shows 95–100 % fresh answers.
+Also on the branch: rustc 1.99.0 clippy reported `clippy::double_must_use` on the
+`#[async_trait]` trait in `src/semantic/providers/mod.rs` (also on `main`); allowed there,
+because the pre-push hook refused every push.
 
 ---
 
-## ⚡ Incremental index updates (2026-09-29) — DONE on the branch, awaiting review
-
-Branch `feature/incremental-index` (not pushed). Design, what changed from the plan and
-why: `.context/INCREMENTAL_INDEX_RESEARCH.md` ("As built"); numbers:
-`.context/PERFORMANCE_RESEARCH.md` ("Incremental index round"). Hard rule held: golden
-battery identical to 2.0.3 on four corpora, fresh and after scripted updates.
-
-Decisions (with the user, 2026-09-29):
-1. The early-stop planner uses an id-free planning size (sidecar), so an updated index
-   answers exactly like a fresh build (golden diff vs 2.0.3: 0).
-2. While a delta is live, `content.bin` / `trigrams.bin` are absent, so an older binary
-   stops (`CacheCorrupted`) instead of serving the base.
-3. A schema-hash change forces one full rebuild (the fast-path check was dead).
-4. `files.walk_seq` keeps walk order for every db-id-ordered output.
-5. `Indexer::update_paths` asks `git status` about the named paths only (a whole-tree
-   status costs 0.3–0.7 s on Kubernetes). So `branches.is_dirty` can stay `true` after
-   every edit is reverted, until the next `rfx index`; meanwhile `rfx stats` can miss its
-   "Uncommitted changes not indexed" line. Search results and freshness stay exact.
-
-Open follow-ups:
-- **Nothing-changed gate not fully met**: 0.19 s against a 0.15 s walk (+30 %; +21–30 %
-  against the whole discovery phase). Left: the meta.db commit (8 ms, `synchronous=FULL`,
-  it writes "Last updated" and the branch row), fixed process costs, classify.
-- Decide whether the first update after an `rfx index` should wait for the symbol pass
-  that run spawned (~76 ms today; auto-update restarts a cancelled pass).
-- `latency_budget`: four shapes read +6 … +12 % over 12 runs (`rare_ident`, `ci_regex`,
-  `mcp/regex_getset`; 10–325 µs), ranges overlapping; re-measure on an idle machine.
-- An add or a delete through `update_paths` re-resolves every internal import (~90 ms on
-  Kubernetes); a reverse index of unresolved/suffix-matched imports would make it local.
-- `symbol_cache::ensure_schema` treats a failed `pragma_table_info` read as an old
-  schema (`unwrap_or(0)`): a query racing the background symbol pass right after
-  `rfx index` can warn "Symbol cache schema outdated", drop the symbol cache and
-  rebuild it. Unchanged since 2.0.3; seen once in 7 golden captures (2026-09-29).
-- A one-shot `rfx query` peaks 1–2.5 % above 2.0.3 (larger binary, planning-size
-  pages), 3–8 % with a large delta live; the long-running `rfx mcp` is level.
-
----
-
-## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — IN PROGRESS
+## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — MERGED, items left
 
 Plan: `~/.claude/plans/i-want-to-revamp-purrfect-stonebraker.md` (copy lands in
-`docs/features/PULSE.md` at M7). Branch `feat/pulse-revamp`.
+`docs/features/PULSE.md` at M7). Merged to `main` in PR #50; the **Left** items below
+are still open.
 
 Decisions (with the user, 2026-09-25):
 - Two tabs: **Docs** (users: overview, get started, guides, CLI + API reference,
@@ -116,11 +70,6 @@ failed Zola build still exits 0.
 
 ## 🐛 Open bugs
 
-- **`rfx snapshot diff` hotspots and islands are silently empty** (found 2026-09-30). The
-  snapshot DB's `files` (`src/pulse/snapshot.rs`) has no `walk_seq`, but
-  `DependencyIndex::find_hotspots` / `find_islands` order by it since stable ids
-  (`cc920df`); `src/pulse/diff.rs:211`/`:237` turn the SQL error into an empty list with
-  `unwrap_or_default()`.
 - **C# usings that do not resolve: 11.4 % of dotnet/runtime's** (2026-10-01, after
   aliases and `using static` were fixed). Mostly NuGet namespaces whose root a repo file
   also declares (`Microsoft.CodeAnalysis.Testing`, `Xunit.Abstractions`), so the NuGet
@@ -139,26 +88,9 @@ failed Zola build still exits 0.
   only `{status, action_required}`; `rfx query --count --json` returns `{count,
   timing_ms}`; array answers (`get_dependencies`, `get_dependents`, `search_ast`) and
   `get_transitive_deps` (a path-keyed map) have no place for it.
-- **`find_references` silently drops call sites on any line containing a URL.**
-  `src/line_filter.rs:83` does `line.find("//")` and treats anything after it as a
-  comment. `https://` contains `//`, so:
-
-  ```rust
-  let url = "https://example.com/api"; call_the_target();
-  //                  ^ first "//" at byte 21      ^ pattern at byte 41
-  // 21 <= 41  =>  treated as commented  =>  dropped
-  ```
-
-  A silently wrong answer. Affects every language filter using the `//` rule, and is far
-  worse on minified JS, where one early URL hides every later match on that line.
-  Found 2026-09-22; still present in 2.0.3.
 - **MCP `index_project` never spawns the symbol pass** (`rebuild_index`, `src/mcp.rs`
-  ~L1287); only `rfx index` does (`src/cli/index.rs`). Symbol queries then parse on demand.
-- **Readers can open a mismatched pair between the two renames** (`trigrams.bin`, then
-  `content.bin`): a count mismatch gives `CacheCorrupted`, which MCP answers with a forced
-  rebuild. A manifest publish point fixes it (incremental design, stage 1).
+  ~L903); only `rfx index` and auto-update do. Symbol queries then parse on demand.
 - **`src/watcher.rs` ignores `.gitignore` and reports only the first path of a rename.**
-- **`src/trigram_build.rs` is missing from `build.rs`'s schema-hash list.**
 - **`rfx serve` defects** (found 2026-09-28 while rewriting `docs/API.md`; listed there
   under "Known limitations"):
   1. `glob` / `exclude` are unusable: declared as lists, the query-string parser cannot
@@ -173,8 +105,6 @@ failed Zola build still exits 0.
   6. Missing `q` / bad integer / bad boolean → 400 `text/plain`, not JSON.
   7. `kind=bogus` → zero results with a misleading `contains:true` hint.
   8. `/stats` language keys are capitalized, unlike the lowercase `language` field.
-- **Qt Linguist `.ts` XML files are parsed as TypeScript.** On O3DE, one such file took
-  19 s of a 21 s symbol pass (issue #39). Needs a content sniff (`<!DOCTYPE TS>`).
 
 ---
 
@@ -186,7 +116,7 @@ From the 1.7.2 MCP correctness release (2026-09-22):
    auto-refresh" from 1.7.2 and the earlier in-process watcher plan).** Every command that
    reads the index updates it first when the freshness check says stale, and always waits
    for the update. No index → build it. Opt-out: `--no-update` on every command. Plan and
-   decisions: `.context/AUTO_UPDATE_RESEARCH.md`. Not built yet.
+   decisions: `.context/AUTO_UPDATE_RESEARCH.md`. Shipped in 2.1.0.
 2. **Stale always means `can_trust_results: false`**, including a zero-result search.
    Scope (did a changed file appear in the results?) only sharpens the warning text.
 3. **Readers degrade, writers refuse.** Refuse only when a different released version
@@ -211,8 +141,24 @@ From 2.0.0 (2026-09-23):
 ## 🔭 Open follow-ups
 
 Indexing and freshness:
-- **Incremental index path.** In progress on `feature/incremental-index` (see the
-  section at the top): a change now publishes a delta segment instead of rewriting the stores.
+- The 1 s verdict memo: in `rfx mcp` / `rfx serve`, an edit made within 1 s of the
+  previous check can be missed by the next call (`REFLEX_FRESHNESS_TTL_MS`).
+- **Nothing-changed gate not fully met** (incremental index, 2026-09-29): 0.19 s against a
+  0.15 s walk (+30 %). Left: the meta.db commit (8 ms, `synchronous=FULL`, it writes
+  "Last updated" and the branch row), fixed process costs, classify.
+- Decide whether the first update after an `rfx index` should wait for the symbol pass
+  that run spawned (~76 ms today; auto-update restarts a cancelled pass).
+- An add or a delete through `update_paths` re-resolves every internal import (~90 ms on
+  Kubernetes); a reverse index of unresolved/suffix-matched imports would make it local.
+- `Indexer::update_paths` asks `git status` about the named paths only, so
+  `branches.is_dirty` can stay `true` after every edit is reverted, until the next
+  `rfx index`; meanwhile `rfx stats` can miss "Uncommitted changes not indexed".
+- `symbol_cache::ensure_schema` treats a failed `pragma_table_info` read as an old
+  schema (`unwrap_or(0)`): a query racing the background symbol pass right after
+  `rfx index` can warn "Symbol cache schema outdated", drop the symbol cache and
+  rebuild it. Seen once in 7 golden captures (2026-09-29).
+- `latency_budget`: four shapes read +6 … +12 % over 12 runs (`rare_ident`, `ci_regex`,
+  `mcp/regex_getset`; 10–325 µs), ranges overlapping; re-measure on an idle machine.
 - The read pool is the indexing floor (3.4 s on Kubernetes, tree-sitter parsing every
   file for imports). A line-scan `#include`/`import` extractor needs an equivalence test first.
 - Lexical `..` resolution instead of `canonicalize()` in `c.rs`/`cpp.rs` (resolves more
@@ -226,17 +172,15 @@ Indexing and freshness:
     `c.rs`/`cpp.rs`/`zig.rs`/`ruby.rs`) can change without any indexed path changing; an
     update only sees it when a named path changes.
 - `cleanup_stale` tail: instrumented, not yet measured on a large repo.
-- `@generated` content marker (needs language persisted in the index).
+- `@generated` content marker (needs language persisted in the index). The same would let
+  a Qt Linguist `.ts` file report `language: text` instead of `typescript`.
 - Bytes-per-line minified guard (deferred; V4 per-line postings bound the cost).
 
-Output determinism (found 2026-09-29 by `benches/incremental/golden.sh`; all in 2.0.3):
-- `rfx stats --json` and every `IndexStats` JSON print `files_by_language` /
-  `lines_by_language` in `HashMap` order.
-- `rfx deps <file> --reverse` (text) lists dependents in random order.
-- `rfx deps --depth N --json` / `--format table` and MCP `get_transitive_deps` list files
-  in random order (`transitive.keys()` of a `HashMap`).
-- `rfx pulse map` (mermaid and d2) prints edges of equal weight in random order.
-- The golden harness compares these as sets; making them sorted is a separate change.
+Line filter (`src/line_filter.rs`, rewritten 2026-10-24) — what one line cannot tell:
+- A block comment or a multi-line string that began on an earlier line: its inside
+  counts as code (the match is kept). Fixing it needs the file, not the line.
+- Not modelled: Ruby `%q{}` / heredocs, PHP heredocs, `$"…"` raw C# strings with `$$`,
+  Rust format-string captures (`"{name}"`), HTML comments in Vue/Svelte templates.
 
 Query latency:
 - First symbol query after a re-index fills the symbol cache (Hearth `RealmId --symbols`:
@@ -268,21 +212,14 @@ Baseline (`.context/EFFICACY-2.0.3.md`): using Reflex costs 1.55–1.7× Grep's 
 extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref222.sh`
 (~$6, 35 min on Opus 5.5); pass = token CI includes 1.0 or sits below it.
 
-- **A. Keep the index fresh automatically.** Planned: `.context/AUTO_UPDATE_RESEARCH.md`
-  (section "Auto-update" at the top). Removes both the status-check and the
-  `index_project` turns once the fidelity test passes.
-- **B. Shrink the tool surface, then load it eagerly.** DONE on `feature/auto-update`
-  (2026-09-30): 17 → 10 tools, `tools/list` 44 KB → 10.6 KB, old names callable; measure
-  with `session_bench.py` (see `AUTO_UPDATE_RESEARCH.md`). Measured: Sonnet 1.05× (12 q) /
-  1.11× (50 q), Opus 1.15× / 0.89× cost vs Grep. Open: Opus drifts to grep after one
-  preview-less `list_locations` in short sessions (preview option for list_locations?). Eager loading is measured
-  (2026-09-30, `AUTO_UPDATE_RESEARCH.md` "Eager schemas"): turns = Grep, cost ≤ 1.2×, tokens
-  1.5–1.8× from the 44 KB schemas (search_code 7.6 KB, find_references 5.2 KB,
-  search_regex 4.9 KB, list_locations 4.8 KB, count_occurrences 4.6 KB). Merge `count_occurrences` into
-  `mode: "count"` and `get_dependents` into `get_dependencies`; structural tools off by
-  default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B
-  `"alwaysLoad": true` in the MCP config: it removes the ToolSearch turn but loads the
-  schemas every turn (~17K tokens for the 17 tools today, measured 2026-09-28).
+- **A. Keep the index fresh automatically.** Shipped in 2.1.0 (auto-update). Sonnet 5
+  status calls 33 → 0; Opus 5.5 never made them.
+- **B. Shrink the tool surface, then load it eagerly.** Shipped in 2.1.0: 17 → 10 tools,
+  `tools/list` 44 KB → 10.6 KB, old names callable. Measured with `session_bench.py`
+  (`AUTO_UPDATE_RESEARCH.md`): Sonnet 1.05× (12 q) / 1.11× (50 q), Opus 1.15× / 0.89×
+  cost vs Grep. Open: Opus drifted to grep after one preview-less `list_locations` in
+  short sessions; `list_locations` `preview: true` shipped in 2.1.0 but the drift has not
+  been re-measured.
 - **D. Close the gap left at equal turns (1.03–1.09×).** Strip duplicate reply metadata
   (flat `has_more` / `total_count` / `returned_count` beside `pagination`); try
   file-grouped columnar rows (REF-219) so rows do not repeat `path` / `language`.

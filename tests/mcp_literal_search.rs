@@ -354,6 +354,52 @@ fn find_references_count_mode_is_zero_for_unreferenced_symbol() {
     assert_eq!(list["total_references"], 0, "{list}");
 }
 
+/// A comment marker inside a string is not a comment. Through 2.2.0 the first `//` or
+/// `#` on a line started a comment wherever it was, so every call after a URL or a
+/// colour literal was dropped without a warning.
+#[test]
+fn find_references_keeps_calls_after_a_comment_marker_in_a_string() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn url_target() {}\n\
+         pub fn user() {\n\
+         \x20   let url = \"https://example.com/api\"; url_target();\n\
+         \x20   let _ = url;\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("src/app.py"),
+        "def paint():\n\
+         \x20   color = \"#fff\"; url_target(color)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("src/app.js"),
+        "const u = \"https://example.com\"; url_target(u);\n\
+         const re = /^https?:\\/\\//; url_target(re);\n",
+    )
+    .unwrap();
+    let cache = CacheManager::new(temp.path());
+    Indexer::new(cache, IndexConfig::default())
+        .index(temp.path(), false)
+        .unwrap();
+    let root = temp.path();
+
+    let list = call_tool(root, "find_references", json!({"pattern": "url_target"}));
+    assert_eq!(list["total_references"], 5, "{list}");
+    assert_eq!(list["filtered_out"], 0, "no hit is in a comment: {list}");
+
+    let count = call_tool(
+        root,
+        "find_references",
+        json!({"pattern": "url_target", "mode": "count"}),
+    );
+    assert_eq!(count["count"], 5, "{count}");
+}
+
 #[test]
 fn contains_is_accepted_by_the_argument_validator() {
     let temp = workspace();
