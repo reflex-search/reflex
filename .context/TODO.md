@@ -12,23 +12,6 @@
 
 ---
 
-## 🛠️ Silent wrong answers (2026-10-24) — DONE on `fix/silent-wrong-answers`, in review
-
-All four fixed with tests; recorded in CHANGELOG.md `[Unreleased]`:
-1. Line filter reads comment markers inside strings as comments (`find_references`,
-   `--symbols` pre-filter). One scanner per language replaces 15 copied filters.
-2. `rfx snapshot diff` hotspots, cycles and islands always empty (snapshot schema 2).
-3. `HashMap` / `HashSet` order in stats JSON, `deps --reverse`, transitive deps, pulse
-   map edges, snapshot diff hotspots and cycles.
-4. Qt Linguist `.ts` XML parsed as TypeScript (issue #39; leave the issue open until the
-   reporter sends Unreal numbers).
-
-Also on the branch: rustc 1.99.0 clippy reported `clippy::double_must_use` on the
-`#[async_trait]` trait in `src/semantic/providers/mod.rs` (also on `main`); allowed there,
-because the pre-push hook refused every push.
-
----
-
 ## 📚 Pulse revamp: grounded, Stripe-grade docs site on Starlight (2026-09-25) — MERGED, items left
 
 Plan: `~/.claude/plans/i-want-to-revamp-purrfect-stonebraker.md` (copy lands in
@@ -139,6 +122,9 @@ From 2.0.0 (2026-09-23):
 ---
 
 ## 🔭 Open follow-ups
+
+Issue #39 (Qt Linguist `.ts` parsed as TypeScript; fixed in #55): leave it open until
+the reporter sends Unreal numbers.
 
 Indexing and freshness:
 - The 1 s verdict memo: in `rfx mcp` / `rfx serve`, an edit made within 1 s of the
