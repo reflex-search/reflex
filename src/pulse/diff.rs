@@ -126,6 +126,10 @@ pub fn compute_diff(
     current_path: &Path,
     thresholds: &super::config::ThresholdConfig,
 ) -> Result<SnapshotDiff> {
+    // A snapshot from 2.2.0 or older lacks what the graph queries read
+    super::snapshot::upgrade_graph_schema(baseline_path)?;
+    super::snapshot::upgrade_graph_schema(current_path)?;
+
     // Open in-memory connection and attach both snapshots
     let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
 
@@ -208,8 +212,14 @@ pub fn compute_diff(
     let baseline_deps = DependencyIndex::from_db_path(baseline_path);
     let current_deps = DependencyIndex::from_db_path(current_path);
 
-    let baseline_hotspots = baseline_deps.find_hotspots(None, 1).unwrap_or_default();
-    let current_hotspots = current_deps.find_hotspots(None, 1).unwrap_or_default();
+    // Errors propagate: an empty list here reads as "no hotspots", which is a
+    // wrong answer, not a missing one (through 2.2.0 every one of these failed).
+    let baseline_hotspots = baseline_deps
+        .find_hotspots(None, 1)
+        .context("Failed to find baseline hotspots")?;
+    let current_hotspots = current_deps
+        .find_hotspots(None, 1)
+        .context("Failed to find current hotspots")?;
 
     let hotspot_changes = compute_hotspot_changes(
         &baseline_deps,
@@ -221,10 +231,10 @@ pub fn compute_diff(
     // Cycle analysis
     let baseline_cycles = baseline_deps
         .detect_circular_dependencies()
-        .unwrap_or_default();
+        .context("Failed to find baseline cycles")?;
     let current_cycles = current_deps
         .detect_circular_dependencies()
-        .unwrap_or_default();
+        .context("Failed to find current cycles")?;
 
     let (new_cycles, resolved_cycles) = compute_cycle_changes(
         &baseline_deps,
@@ -234,8 +244,12 @@ pub fn compute_diff(
     );
 
     // Island analysis
-    let baseline_islands = baseline_deps.find_islands().unwrap_or_default();
-    let current_islands = current_deps.find_islands().unwrap_or_default();
+    let baseline_islands = baseline_deps
+        .find_islands()
+        .context("Failed to find baseline islands")?;
+    let current_islands = current_deps
+        .find_islands()
+        .context("Failed to find current islands")?;
 
     let island_changes = IslandDelta {
         old_count: baseline_islands.len(),

@@ -148,20 +148,39 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
     // Enable WAL mode for better concurrent access
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
-    // Create snapshot schema
+    // Create snapshot schema. `walk_seq`, `vendored`, `dep_id`, `package`,
+    // `package_members` and `import_edges` are what the `DependencyIndex` graph
+    // queries read (hotspots, cycles, islands); see `upgrade_graph_schema`.
     conn.execute_batch(
         "CREATE TABLE files (
             id INTEGER PRIMARY KEY,
             path TEXT NOT NULL,
             language TEXT,
-            line_count INTEGER DEFAULT 0
+            line_count INTEGER DEFAULT 0,
+            walk_seq INTEGER NOT NULL DEFAULT 0,
+            vendored INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE dependency_edges (
             source_file_id INTEGER NOT NULL,
             target_file_id INTEGER NOT NULL,
-            import_type TEXT NOT NULL
+            import_type TEXT NOT NULL,
+            dep_id INTEGER,
+            package TEXT
         );
+
+        CREATE TABLE package_members (
+            package TEXT NOT NULL,
+            member TEXT NOT NULL,
+            file_id INTEGER NOT NULL,
+            PRIMARY KEY (package, member, file_id)
+        ) WITHOUT ROWID;
+
+        -- The edges as meta.db's `import_edges` view names them (already package-
+        -- expanded and free of vendored files when copied)
+        CREATE VIEW import_edges AS
+        SELECT dep_id, source_file_id AS src, target_file_id AS dst, import_type, package
+        FROM dependency_edges;
 
         CREATE TABLE metrics (
             module_path TEXT PRIMARY KEY,
@@ -203,16 +222,23 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
 
     // Copy files
     conn.execute(
-        "INSERT INTO files (id, path, language, line_count)
-         SELECT id, path, language, line_count FROM source.files",
+        "INSERT INTO files (id, path, language, line_count, walk_seq, vendored)
+         SELECT id, path, language, line_count, walk_seq, vendored FROM source.files",
         [],
     )?;
 
     // Copy dependency edges (file-resolved and package-expanded, `import_edges`)
     conn.execute(
-        "INSERT INTO dependency_edges (source_file_id, target_file_id, import_type)
-         SELECT src, dst, import_type
+        "INSERT INTO dependency_edges (source_file_id, target_file_id, import_type, dep_id, package)
+         SELECT src, dst, import_type, dep_id, package
          FROM source.import_edges",
+        [],
+    )?;
+
+    // Package members: islands group the files of one Go package
+    conn.execute(
+        "INSERT INTO package_members (package, member, file_id)
+         SELECT package, member, file_id FROM source.package_members",
         [],
     )?;
 
@@ -240,7 +266,7 @@ pub fn create_snapshot(cache: &CacheManager) -> Result<SnapshotInfo> {
     let metadata = vec![
         ("timestamp", now.to_rfc3339()),
         ("reflex_version", env!("CARGO_PKG_VERSION").to_string()),
-        ("schema_version", "1".to_string()),
+        ("schema_version", SCHEMA_VERSION.to_string()),
     ];
 
     for (key, value) in &metadata {
@@ -345,6 +371,47 @@ pub fn delete_snapshot(cache: &CacheManager, id: &str) -> Result<()> {
     if snapshot_path.exists() {
         std::fs::remove_file(&snapshot_path).context("Failed to delete snapshot")?;
     }
+    Ok(())
+}
+
+/// The snapshot schema `create_snapshot` writes. Version 1 (through 2.2.0) had no
+/// `walk_seq`, `vendored`, `package_members` or `import_edges`, so every graph query
+/// on it failed, and `rfx snapshot diff` showed no hotspots, cycles or islands.
+const SCHEMA_VERSION: u32 = 2;
+
+/// Bring a version 1 snapshot up to the schema the graph queries read, in place.
+/// What version 1 did not record is filled in: walk order is id order, no file is
+/// vendored, and there are no package groups. A version 2 snapshot is left as it is.
+pub fn upgrade_graph_schema(path: &Path) -> Result<()> {
+    // The pragma helper, as `DependencyIndex::from_db_path` uses on the same file
+    let conn = crate::cache::open_meta_db(path).context("Failed to open snapshot database")?;
+    let has_walk_seq: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'walk_seq'",
+        [],
+        |row| row.get::<_, i64>(0).map(|n| n > 0),
+    )?;
+    if has_walk_seq {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "BEGIN;
+         ALTER TABLE files ADD COLUMN walk_seq INTEGER NOT NULL DEFAULT 0;
+         UPDATE files SET walk_seq = id;
+         ALTER TABLE files ADD COLUMN vendored INTEGER NOT NULL DEFAULT 0;
+         CREATE TABLE IF NOT EXISTS package_members (
+             package TEXT NOT NULL,
+             member TEXT NOT NULL,
+             file_id INTEGER NOT NULL,
+             PRIMARY KEY (package, member, file_id)
+         ) WITHOUT ROWID;
+         CREATE VIEW IF NOT EXISTS import_edges AS
+         SELECT rowid AS dep_id, source_file_id AS src, target_file_id AS dst, import_type,
+                NULL AS package
+         FROM dependency_edges;
+         INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '{SCHEMA_VERSION}');
+         COMMIT;"
+    ))
+    .with_context(|| format!("Failed to upgrade snapshot {}", path.display()))?;
     Ok(())
 }
 
