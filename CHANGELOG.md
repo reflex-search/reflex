@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### ⚠️ Breaking (MCP)
+
+- **`list_locations` groups its matches by file.** `locations` is now
+  `{path: [line, ...]}` instead of `[{path, line}, ...]`; with `preview: true` each line
+  is `[line, text]`. Each flat match repeated its path and two key names: replayed on
+  the 2026-09-30 benchmark sessions, grouping removes 51–64 % of the weighted size of
+  Reflex's replies. `total_locations`, `status` and `can_trust_results` are unchanged.
+  `REFLEX_MCP_GROUPED=0` restores the flat array; the `rfx mcp` startup line on stderr
+  reports `grouped=on|off`.
+
 ## [2.2.0] - 2026-10-01
 
 The import graph (`rfx deps`, `rfx analyze`, MCP `get_dependencies` / `analyze`) is now

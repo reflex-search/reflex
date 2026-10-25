@@ -279,6 +279,16 @@ fn call_tool(root: &Path, tool: &str, args: Value) -> Value {
     serde_json::from_str(payload).unwrap()
 }
 
+/// Matches in a `list_locations` reply (`{path: [line, ...]}`).
+fn location_count(reply: &Value) -> u64 {
+    reply["locations"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|lines| lines.as_array().unwrap().len() as u64)
+        .sum()
+}
+
 #[test]
 fn mcp_count_mode_matches_list_locations_and_a_full_page() {
     let root = setup_corpus();
@@ -297,11 +307,7 @@ fn mcp_count_mode_matches_list_locations_and_a_full_page() {
             n,
             "{pattern}: list_locations"
         );
-        assert_eq!(
-            locations["locations"].as_array().unwrap().len() as u64,
-            n,
-            "{pattern}"
-        );
+        assert_eq!(location_count(&locations), n, "{pattern}");
 
         // The one-result page reports exactness honestly.
         assert_eq!(
@@ -428,7 +434,7 @@ fn count_mode_equals_no_limit_list_total_and_list_locations() {
 
         let locations = call_tool(root, "list_locations", json!({"pattern": pattern}));
         assert_eq!(
-            locations["locations"].as_array().unwrap().len() as u64,
+            location_count(&locations),
             n,
             "{pattern}: list_locations must stay exhaustive"
         );

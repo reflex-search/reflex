@@ -183,19 +183,23 @@ fn list_locations_returns_one_entry_per_match_not_per_file() {
         json!({"pattern": "verify_csrf_form_field"}),
     );
 
-    let locations = res["locations"].as_array().unwrap();
+    // Grouped by file: `{path: [line, ...]}`.
+    let files = res["locations"].as_object().unwrap();
+    assert_eq!(files.len(), 1, "both matches are in one file: {res}");
+    let lines: Vec<u64> = files["src/auth.rs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_u64().unwrap())
+        .collect();
     assert_eq!(
-        locations.len(),
+        lines.len(),
         2,
         "expected one entry per MATCH (2), not per file (1): {res}"
     );
     assert_eq!(res["total_locations"], 2);
 
     // Both entries are in the same file, on different lines.
-    let lines: Vec<u64> = locations
-        .iter()
-        .map(|l| l["line"].as_u64().unwrap())
-        .collect();
     assert_ne!(lines[0], lines[1], "the two matches are on distinct lines");
 }
 

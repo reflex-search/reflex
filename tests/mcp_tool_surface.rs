@@ -222,27 +222,30 @@ fn list_locations_adds_the_line_on_request() {
         "list_locations",
         json!({"pattern": "surface_token"}),
     );
-    assert!(plain["locations"][0].get("preview").is_none(), "{plain}");
+    // `{path: [line, ...]}`: a bare line number per match.
+    assert!(plain["locations"]["src/lib.rs"][0].is_u64(), "{plain}");
 
     let v = call(
         temp.path(),
         "list_locations",
         json!({"pattern": "surface_token", "preview": true}),
     );
-    let locs = v["locations"].as_array().unwrap();
-    assert_eq!(locs.len(), 3, "{v}");
-    let def = locs
-        .iter()
-        .find(|l| l["path"] == "src/lib.rs")
-        .expect("the definition");
-    assert_eq!(def["preview"], "pub fn surface_token() {}", "{v}");
+    // `{path: [[line, text], ...]}`
+    let files = v["locations"].as_object().unwrap();
+    let total: usize = files.values().map(|l| l.as_array().unwrap().len()).sum();
+    assert_eq!(total, 3, "{v}");
+    let def = &files["src/lib.rs"][0];
+    assert_eq!(def[1], "pub fn surface_token() {}", "{v}");
     // A string "true" is coerced like every other flag.
     let coerced = call(
         temp.path(),
         "list_locations",
         json!({"pattern": "surface_token", "preview": "true"}),
     );
-    assert!(coerced["locations"][0]["preview"].is_string(), "{coerced}");
+    assert!(
+        coerced["locations"]["src/lib.rs"][0][1].is_string(),
+        "{coerced}"
+    );
 }
 
 /// 120 Go files importing a missing package of their own module: a Go graph with
