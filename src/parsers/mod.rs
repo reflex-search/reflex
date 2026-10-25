@@ -255,6 +255,14 @@ impl ParserFactory {
             );
             return Ok(Vec::new());
         }
+        if language == Language::TypeScript && is_qt_linguist_ts(source) {
+            log::debug!(
+                "Skipping symbol extraction for {} — a Qt Linguist translation file (XML), \
+                 not TypeScript. The file is still searchable.",
+                path
+            );
+            return Ok(Vec::new());
+        }
 
         match language {
             Language::Rust => rust::parse(path, source),
@@ -351,6 +359,54 @@ pub fn is_minified(source: &str) -> bool {
         }
     }
     true
+}
+
+/// Whether a `.ts` file is a Qt Linguist translation file (XML), not TypeScript.
+///
+/// Both use the `.ts` extension. Parsed as TypeScript, one 5.8 MB translation file of
+/// O3DE took 19 s of a 21 s symbol pass, for no symbols (issue #39). TypeScript cannot
+/// start with `<?xml` or `<!DOCTYPE`, so the first bytes decide. The file keeps
+/// `language: typescript` in results: the query engine derives language from the path.
+pub fn is_qt_linguist_ts(source: &str) -> bool {
+    let head = source.trim_start_matches('\u{feff}').trim_start();
+    head.starts_with("<?xml") || head.starts_with("<!DOCTYPE")
+}
+
+#[cfg(test)]
+mod qt_linguist_tests {
+    use super::*;
+
+    const QT_TS: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE TS>\n\
+        <TS version=\"2.1\" language=\"de_DE\">\n<context>\n    <name>MainWindow</name>\n\
+        <message>\n        <source>Open</source>\n        <translation>Öffnen</translation>\n\
+        </message>\n</context>\n</TS>\n";
+
+    #[test]
+    fn qt_linguist_files_are_recognised() {
+        assert!(is_qt_linguist_ts(QT_TS));
+        assert!(is_qt_linguist_ts(&format!("\u{feff}{QT_TS}")));
+        assert!(is_qt_linguist_ts(
+            "\n  <!DOCTYPE TS>\n<TS version=\"2.0\">\n</TS>\n"
+        ));
+    }
+
+    #[test]
+    fn typescript_is_not_mistaken_for_xml() {
+        for src in [
+            "export const a = 1;\n",
+            "// <?xml version=\"1.0\"?>\nexport const a = 1;\n",
+            "const xml = `<?xml version=\"1.0\"?>`;\n",
+            "",
+        ] {
+            assert!(!is_qt_linguist_ts(src), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_qt_linguist_file_yields_no_symbols() {
+        let out = ParserFactory::parse("app_de.ts", QT_TS, Language::TypeScript).unwrap();
+        assert!(out.is_empty(), "got {} symbols", out.len());
+    }
 }
 
 #[cfg(test)]

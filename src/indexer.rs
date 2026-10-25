@@ -419,6 +419,8 @@ fn extract_imports(
                 Vec::new()
             }
         },
+        // A Qt Linguist translation file (XML) shares the `.ts` extension
+        Language::TypeScript if crate::parsers::is_qt_linguist_ts(content) => Vec::new(),
         Language::TypeScript | Language::JavaScript => {
             // Find nearest tsconfig for path alias resolution. One parse
             // yields both the imports and the re-exports.

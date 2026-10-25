@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+Four answers that were wrong without a warning are fixed. The first CLI command after
+upgrading rebuilds the index once (2.2.0 wrote it); until then `rfx mcp` and `rfx serve`
+answer from it marked `stale`.
+
 ### ⚠️ Breaking (MCP)
 
 - **`list_locations` groups its matches by file.** `locations` is now
@@ -15,6 +19,48 @@
 - **The `list_locations` description says "every matching line", not "every match".**
   A line with two matches was always listed once, like `grep -n`. Agents that read
   "every match" counted occurrences on doubled lines and read files to check.
+
+### Fixed
+
+- **`find_references` no longer drops call sites after a comment marker inside a
+  string.** Each language filter took the first `//`, `#` or `/*` on a line as the start
+  of a comment, wherever it was. So every match after `"https://…"`, `"#fff"` or
+  `"src/*"` was dropped from MCP `find_references` and from the `--symbols` candidates.
+  On a minified JS line, one early URL hid every later match. The filter now reads each
+  line left to right and knows each language's strings, raw strings, char literals,
+  comments, JS regex literals and PHP 8 `#[Attribute]`s. Code inside string
+  interpolation is code: `${…}`, `#{…}`, `f"{…}"`, `$"{…}"`, Kotlin `$name`, PHP `{$…}`
+  and `$name`. A string that does not close on its line now counts as code (the match is
+  kept), because one line cannot tell the start of a string from its end. So
+  `find_references` can return more references than 2.2.0 did.
+- **`rfx snapshot diff` reports hotspots, cycles and islands.** The snapshot database
+  had none of the columns the graph queries read, and each failed query read as an
+  empty list: no hotspot changes, no new cycles, 0 islands. Snapshots now record them
+  (snapshot `schema_version` 2). The first diff that reads a snapshot from 2.2.0 or
+  older upgrades it in place. That snapshot has no walk order (id order is used), no
+  vendored flags and no Go package groups, so its island count can include vendored
+  files. A graph query that fails now fails the diff.
+- **The same index prints the same output.** These lists came out in a random order:
+  - `files_by_language` / `lines_by_language` in `rfx stats --json` and every
+    `IndexStats` JSON: now by language name.
+  - `rfx deps <file> --reverse` (tree format): now walk order, like `--format table`.
+  - `rfx deps <file> --depth N` (every format) and MCP `get_dependencies` with `depth`:
+    now by depth, then walk order.
+  - `rfx pulse map` edges of equal weight: now by module name.
+  - `rfx snapshot diff` hotspot changes of equal size, new cycles and resolved cycles:
+    now by path.
+- **Qt Linguist translation files are no longer parsed as TypeScript** (issue #39). They
+  use the `.ts` extension too; on O3DE one 5.8 MB file took 19 s of a 21 s symbol pass.
+  A `.ts` file that starts with `<?xml` or `<!DOCTYPE` is not parsed for symbols or
+  imports. It stays searchable, and still reports `language: typescript`.
+
+### Library
+
+- `LineFilter::is_in_comment_or_string`: both questions with one scan of the line.
+- `DependencyIndex::get_transitive_deps_ordered`: transitive dependencies by depth, then
+  walk order.
+- `pulse::snapshot::upgrade_graph_schema`: brings a version 1 snapshot up to version 2.
+- `parsers::is_qt_linguist_ts`.
 
 ## [2.2.0] - 2026-10-01
 

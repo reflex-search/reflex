@@ -627,6 +627,16 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+/// A `HashMap` serialized with its keys in order, so the same index prints the same JSON.
+fn serialize_sorted<S: serde::Serializer>(
+    map: &std::collections::HashMap<String, usize>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    map.iter()
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .serialize(serializer)
+}
+
 /// Resolve `[performance] symbol_threads` (the background symbol pass) to a
 /// concrete thread count.
 ///
@@ -726,8 +736,10 @@ pub struct IndexStats {
     /// Last update timestamp
     pub last_updated: String,
     /// File count breakdown by language
+    #[serde(serialize_with = "serialize_sorted")]
     pub files_by_language: std::collections::HashMap<String, usize>,
     /// Line count breakdown by language
+    #[serde(serialize_with = "serialize_sorted")]
     pub lines_by_language: std::collections::HashMap<String, usize>,
     /// New files added since last index run (0 if not an incremental run)
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -999,6 +1011,29 @@ pub struct CompactionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rfx stats --json` printed the language maps in `HashMap` order through 2.2.0.
+    #[test]
+    fn index_stats_json_lists_languages_in_order() {
+        let names = ["Zig", "Rust", "Text", "Go", "Python", "C", "Kotlin", "Ruby"];
+        let stats = IndexStats {
+            files_by_language: names.iter().map(|n| (n.to_string(), 1)).collect(),
+            lines_by_language: names.iter().map(|n| (n.to_string(), 10)).collect(),
+            ..Default::default()
+        };
+        // A string, not a `Value`: serde_json's `Map` would sort the keys itself.
+        let json = serde_json::to_string(&stats).unwrap();
+        for field in ["files_by_language", "lines_by_language"] {
+            let section = &json[json.find(field).unwrap()..];
+            let section = &section[..section.find('}').unwrap()];
+            let positions: Vec<usize> =
+                ["C", "Go", "Kotlin", "Python", "Ruby", "Rust", "Text", "Zig"]
+                    .iter()
+                    .map(|n| section.find(&format!("\"{n}\"")).unwrap())
+                    .collect();
+            assert!(positions.is_sorted(), "{field}: {section}");
+        }
+    }
 
     #[test]
     fn test_symbol_ref_json_shape() {

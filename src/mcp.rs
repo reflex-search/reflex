@@ -56,7 +56,7 @@ fn is_in_string_or_comment(lang: Language, preview: &str, pattern: &str) -> bool
         };
         let abs = pos + rel;
         found = true;
-        if !filter.is_in_comment(preview, abs) && !filter.is_in_string(preview, abs) {
+        if !filter.is_in_comment_or_string(preview, abs) {
             return false; // at least one occurrence is in real code — keep the match
         }
         pos = abs + 1;
@@ -2194,13 +2194,13 @@ fn dispatch_tool(
                 .get_file_id_by_path(&path)?
                 .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
 
-            let transitive = deps_index.get_transitive_deps(file_id, depth)?;
+            let transitive = deps_index.get_transitive_deps_ordered(file_id, depth)?;
 
             // Get paths for all file IDs
-            let file_ids: Vec<i64> = transitive.keys().copied().collect();
+            let file_ids: Vec<i64> = transitive.iter().map(|&(id, _)| id).collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
-            // Build result with path → depth mapping
+            // Build result with path → depth mapping, by depth then walk order
             let result: Vec<serde_json::Value> = transitive
                 .iter()
                 .filter_map(|(id, depth)| {
