@@ -56,7 +56,7 @@ fn is_in_string_or_comment(lang: Language, preview: &str, pattern: &str) -> bool
         };
         let abs = pos + rel;
         found = true;
-        if !filter.is_in_comment(preview, abs) && !filter.is_in_string(preview, abs) {
+        if !filter.is_in_comment_or_string(preview, abs) {
             return false; // at least one occurrence is in real code — keep the match
         }
         pos = abs + 1;

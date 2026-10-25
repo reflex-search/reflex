@@ -2239,9 +2239,7 @@ impl QueryEngine {
                             while let Some(pos) = line[search_start..].find(pattern) {
                                 saw_occurrence = true;
                                 let at = search_start + pos;
-                                if !line_filter.is_in_comment(line, at)
-                                    && !line_filter.is_in_string(line, at)
-                                {
+                                if !line_filter.is_in_comment_or_string(line, at) {
                                     // In code: this file must be parsed.
                                     return None;
                                 }
