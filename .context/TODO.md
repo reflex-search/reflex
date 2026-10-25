@@ -283,9 +283,15 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   default or one `analyze` tool; trim descriptions (~40 KB of text). Then A/B
   `"alwaysLoad": true` in the MCP config: it removes the ToolSearch turn but loads the
   schemas every turn (~17K tokens for the 17 tools today, measured 2026-09-28).
-- **D. Close the gap left at equal turns (1.03–1.09×).** Strip duplicate reply metadata
-  (flat `has_more` / `total_count` / `returned_count` beside `pagination`); try
-  file-grouped columnar rows (REF-219) so rows do not repeat `path` / `language`.
+- **D. Close the gap left at equal turns (1.03–1.09×).** IN PROGRESS on
+  `feat/grep-parity` (2026-10-25, `.context/GREP_PARITY_RESEARCH.md`): `list_locations`
+  grouped by file (`{path: [line, ...]}`, `REFLEX_MCP_GROUPED=0` = flat). Measured
+  (Sonnet 5, investigate sessions): replies −45–54 %, cost 0.91–0.97× flat, 160/160 list
+  answers exact after the "every matching line" wording fix. Not worth it: duplicate
+  reply metadata (6–8 % of reply weight, <1 % of a session). Open: file-grouped rows for
+  `search_code` / `search_regex` (REF-219); fixed text = fewer listed tools (user
+  decision); Opus 12-question re-measure; `list_locations` `dependencies: true` is
+  accepted but never reaches the reply.
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 

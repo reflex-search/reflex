@@ -389,6 +389,10 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   Sonnet 1.05× (12 questions), 1.11× (50); Opus 1.15× (12; it drifts back to grep after
   one preview-less `list_locations`), **0.89×** (50). Keep "where does X occur → list_locations"
   in the instructions: without it agents return 1.3–1.9K-char previews per lookup.
+- **Grouped `list_locations` (2026-10-25, `.context/GREP_PARITY_RESEARCH.md`):** `{path: [line, ...]}`
+  replies are 45–54 % smaller than the flat array; Sonnet 5 investigate sessions cost 0.91–0.97×
+  flat, answers exact. The description must say "every matching line": with "every match"
+  agents read files to check lines with two matches (+16 % on tokio).
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
