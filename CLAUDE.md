@@ -393,6 +393,10 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   replies are 45–54 % smaller than the flat array; Sonnet 5 investigate sessions cost 0.91–0.97×
   flat, answers exact. The description must say "every matching line": with "every match"
   agents read files to check lines with two matches (+16 % on tokio).
+- **Opus re-measure (2026-10-25, 12-question investigate sessions):** 1.02× Grep's cost
+  (was 1.17× on the same sessions), 1.10× its weighted tokens. Opus no longer drifts to
+  Bash grep (11.1 → 1.1 per session; Reflex calls 2.5 → 11.3). The rest is the fixed
+  text: +5K tokens of instructions and schemas on every call.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
