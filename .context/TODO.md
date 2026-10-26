@@ -74,6 +74,13 @@ failed Zola build still exits 0.
 - **MCP `index_project` never spawns the symbol pass** (`rebuild_index`, `src/mcp.rs`
   ~L903); only `rfx index` and auto-update do. Symbol queries then parse on demand.
 - **`src/watcher.rs` ignores `.gitignore` and reports only the first path of a rename.**
+- **MCP ignores an unknown `lang` without a word** (found 2026-10-25). `parse_language`
+  (`src/mcp.rs`) maps an unknown name to `None`, so `search_code` with `lang: "swift"`
+  searched every language and returned a Python match, with no `warnings`. The CLI
+  rejects the same name ("Unknown language").
+- **`--lang swift` is an error, not the documented warning.** `Language::from_name` has
+  no `swift`, so the CLI's Swift warning in `src/cli/query.rs` never runs, and CLAUDE.md
+  ("emits a warning") is wrong. Swift also has no import extractor (`src/indexer.rs`).
 - **`rfx serve` defects** (found 2026-09-28 while rewriting `docs/API.md`; listed there
   under "Known limitations"):
   1. `glob` / `exclude` are unusable: declared as lists, the query-string parser cannot
@@ -212,8 +219,7 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   answers exact after the "every matching line" wording fix. Not worth it: duplicate
   reply metadata (6–8 % of reply weight, <1 % of a session). Open: file-grouped rows for
   `search_code` / `search_regex` (REF-219); fixed text = fewer listed tools (user
-  decision); `list_locations` `dependencies: true` is accepted but never reaches the
-  reply. Opus 12-question investigate sessions (2026-10-25, `main`): 1.02× Grep's cost,
+  decision). Opus 12-question investigate sessions (2026-10-25, `main`): 1.02× Grep's cost,
   1.10× its weighted tokens, Bash greps 11.1 → 1.1 per session; the rest is the fixed
   text (+5K tokens on every call).
 

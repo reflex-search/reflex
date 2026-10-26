@@ -268,7 +268,8 @@ substring count.
 Other tools use their own shapes. `list_locations` returns
 `{locations: {path: [line, ...]}, total_locations, status, can_trust_results}` (with
 `preview: true`, each line is `[line, text]`; `REFLEX_MCP_GROUPED=0` restores the flat
-`[{path, line}]` array of 2.2.0 and earlier). `find_references` returns
+`[{path, line}]` array of 2.2.0 and earlier; `dependencies: true` adds
+`dependencies: {path: [import, ...]}` for the matching files that have imports). `find_references` returns
 `{definition, references, total_references, returned_count, filtered_out, pagination, status, can_trust_results}`.
 `search_code` with `mode: "count"` returns `{count, files, pattern, status, can_trust_results}`.
 

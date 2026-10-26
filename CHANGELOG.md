@@ -22,6 +22,15 @@ answer from it marked `stale`.
 
 ### Fixed
 
+- **`list_locations` with `dependencies: true` returns the imports.** The flag was
+  accepted and the imports were loaded, but the reply never carried them. The reply now
+  has `dependencies: {path: [import, ...]}` beside `locations`, in the grouped and the
+  flat shape. Each list is the `get_dependencies` answer for that file. A matching file
+  with no imports is left out.
+- **No false "only supported for Rust files" warning with `dependencies`.** `search_code`
+  (in `ai_instruction`) and `rfx query --dependencies --lang <not rust>` (on stderr) said
+  no dependency data would be included, while the same reply carried it. Every language
+  `lang` accepts has an import extractor, or (the text tiers) no imports at all.
 - **`find_references` no longer drops call sites after a comment marker inside a
   string.** Each language filter took the first `//`, `#` or `/*` on a line as the start
   of a comment, wherever it was. So every match after `"https://…"`, `"#fff"` or

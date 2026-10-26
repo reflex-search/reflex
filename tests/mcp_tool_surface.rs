@@ -248,6 +248,59 @@ fn list_locations_adds_the_line_on_request() {
     );
 }
 
+#[test]
+fn list_locations_attaches_imports_on_request() {
+    let temp = indexed();
+    let plain = call(
+        temp.path(),
+        "list_locations",
+        json!({"pattern": "surface_token"}),
+    );
+    assert!(plain.get("dependencies").is_none(), "{plain}");
+
+    let v = call(
+        temp.path(),
+        "list_locations",
+        json!({"pattern": "surface_token", "dependencies": true}),
+    );
+    // `{path: [import, ...]}` beside `locations`, which keeps its shape.
+    assert!(v["locations"]["src/lib.rs"][0].is_u64(), "{v}");
+    let deps = v["dependencies"].as_object().expect("dependencies map");
+    let own = call(
+        temp.path(),
+        "get_dependencies",
+        json!({"path": "src/lib.rs"}),
+    );
+    assert_eq!(deps["src/lib.rs"], own, "{v}");
+    // A matching file with no imports is left out.
+    assert!(!deps.contains_key("src/b.rs"), "{v}");
+}
+
+/// Every language `lang` accepts has an import extractor or, in the text tiers, no
+/// imports. The warning said "only Rust" and was false: the imports were in the
+/// same reply.
+#[test]
+fn search_code_returns_imports_for_python_without_a_warning() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("main.py"),
+        "import os\n\ndef dep_probe():\n    pass\n",
+    )
+    .unwrap();
+    Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .index(root, false)
+        .unwrap();
+
+    let v = call(
+        root,
+        "search_code",
+        json!({"pattern": "dep_probe", "lang": "python", "dependencies": true}),
+    );
+    assert!(v.to_string().contains("\"os\""), "{v}");
+    assert!(!v.to_string().contains("only supported"), "{v}");
+}
+
 /// 120 Go files importing a missing package of their own module: a Go graph with
 /// 0 % of its internal imports resolved.
 fn unresolved_go() -> TempDir {

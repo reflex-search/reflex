@@ -1536,6 +1536,19 @@ fn dispatch_tool(
                     grouped_locations_enabled(),
                 ),
             });
+            // `{path: [import, ...]}` beside `locations`, so both shapes keep theirs.
+            // The engine loaded them per file; a file with no imports has none.
+            if dependencies {
+                let imports: serde_json::Map<String, Value> = response
+                    .results
+                    .iter()
+                    .filter_map(|group| {
+                        let deps = group.dependencies.as_ref()?;
+                        Some((group.path.clone(), serde_json::to_value(deps).ok()?))
+                    })
+                    .collect();
+                compact_response["dependencies"] = Value::Object(imports);
+            }
             annotate_literal_result(&mut compact_response, &response);
 
             Ok(compact_response)
@@ -1669,18 +1682,6 @@ fn dispatch_tool(
 
             let language = parse_language(lang.clone());
 
-            // Build warning for unsupported language + dependencies combination (REF-171)
-            let deps_lang_warning: Option<String> =
-                if dependencies && matches!(language, Some(l) if l != Language::Rust) {
-                    Some(format!(
-                        "Warning: dependencies is currently only supported for Rust files. \
-                         No dependency data will be included for {} files.",
-                        lang.as_deref().unwrap_or("non-Rust")
-                    ))
-                } else {
-                    None
-                };
-
             let parsed_kind = parse_symbol_kind(kind);
             let symbols_mode = symbols.unwrap_or(false) || parsed_kind.is_some();
 
@@ -1798,14 +1799,6 @@ fn dispatch_tool(
                 !glob_patterns.is_empty(),
                 exact.unwrap_or(false),
             );
-
-            // Prepend language limitation warning to AI instruction (REF-171)
-            if let Some(warn) = deps_lang_warning {
-                response.ai_instruction = Some(match response.ai_instruction.take() {
-                    Some(existing) => format!("{warn}\n\n{existing}"),
-                    None => warn,
-                });
-            }
 
             // Extract pagination scalars before consuming response (REF-185)
             let has_more = response.pagination.has_more;

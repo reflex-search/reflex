@@ -108,5 +108,5 @@ arm (`results-sessions/opus-investigate-grouped`). Compared with the same 3 sess
 
 - Fewer listed tools (`search_ast`, `gather_context`, `check_index_status`, …) for the
   fixed text: needs a user decision and a deferred-mode adoption check.
-- `list_locations` `dependencies: true` is accepted but its imports never reach the
-  reply (either shape); unchanged.
+- `list_locations` `dependencies: true` is accepted but its imports never reached the
+  reply (either shape). Fixed 2026-10-25: a `dependencies` map beside `locations`.
