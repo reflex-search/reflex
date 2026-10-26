@@ -102,16 +102,6 @@ Full-text search will still work, but --symbols queries will return no results."
         );
     }
 
-    // Warn when --dependencies is used with a non-Rust language filter (REF-171)
-    if include_dependencies && matches!(language, Some(l) if l != Language::Rust) {
-        eprintln!(
-            "{}: --dependencies is currently only supported for Rust files. \
-No dependency data will be included for {} files.",
-            "Warning".yellow().bold(),
-            lang.as_deref().unwrap_or("non-Rust")
-        );
-    }
-
     // Parse and validate symbol kind — error on unrecognised values (REF-60)
     let kind = if let Some(s) = kind_str.as_deref() {
         let capitalized = {
