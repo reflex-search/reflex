@@ -203,18 +203,19 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
 - **B. Shrink the tool surface, then load it eagerly.** Shipped in 2.1.0: 17 → 10 tools,
   `tools/list` 44 KB → 10.6 KB, old names callable. Measured with `session_bench.py`
   (`AUTO_UPDATE_RESEARCH.md`): Sonnet 1.05× (12 q) / 1.11× (50 q), Opus 1.15× / 0.89×
-  cost vs Grep. Open: Opus drifted to grep after one preview-less `list_locations` in
-  short sessions; `list_locations` `preview: true` shipped in 2.1.0 but the drift has not
-  been re-measured.
-- **D. Close the gap left at equal turns (1.03–1.09×).** IN PROGRESS on
-  `feat/grep-parity` (2026-10-25, `.context/GREP_PARITY_RESEARCH.md`): `list_locations`
+  cost vs Grep. Opus drifted to grep after one preview-less `list_locations` in short
+  sessions; re-measured 2026-10-25 (`GREP_PARITY_RESEARCH.md`): the drift is gone.
+- **D. Close the gap left at equal turns (1.03–1.09×).** IN PROGRESS
+  (`.context/GREP_PARITY_RESEARCH.md`). Merged in #56 (2026-10-25): `list_locations`
   grouped by file (`{path: [line, ...]}`, `REFLEX_MCP_GROUPED=0` = flat). Measured
   (Sonnet 5, investigate sessions): replies −45–54 %, cost 0.91–0.97× flat, 160/160 list
   answers exact after the "every matching line" wording fix. Not worth it: duplicate
   reply metadata (6–8 % of reply weight, <1 % of a session). Open: file-grouped rows for
   `search_code` / `search_regex` (REF-219); fixed text = fewer listed tools (user
-  decision); Opus 12-question re-measure; `list_locations` `dependencies: true` is
-  accepted but never reaches the reply.
+  decision); `list_locations` `dependencies: true` is accepted but never reaches the
+  reply. Opus 12-question investigate sessions (2026-10-25, `main`): 1.02× Grep's cost,
+  1.10× its weighted tokens, Bash greps 11.1 → 1.1 per session; the rest is the fixed
+  text (+5K tokens on every call).
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 

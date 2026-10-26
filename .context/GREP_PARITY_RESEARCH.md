@@ -79,10 +79,33 @@ same binary; `session_bench.py` now checks each arm's flags before the first tri
   description or schema makes the first wave after it pay ~32K weighted per session
   extra. Check the first call's `cache_creation_input_tokens` before reading a cost.
 
+## Opus 5.5 re-measure, 12-question investigate sessions (2026-10-25, `main` `2526848`)
+
+Grep arm `A` vs eager Reflex `Beager`, one wave, 3 investigate sessions × 5 trials per
+arm (`results-sessions/opus-investigate-grouped`). Compared with the same 3 sessions of
+`steer-opus` (2026-09-30, 2.1.0 before `list_locations` `preview`):
+
+| | 2026-09-30 | 2026-10-25 |
+| --- | --- | --- |
+| cost ($) Reflex / Grep | 1.167 | **1.019** |
+| weighted tokens Reflex / Grep | 1.234 | **1.097** |
+| Reflex calls per Reflex-arm session | 2.5 | 11.3 (`list_locations` 8.9, 4.9 of them with `preview`) |
+| Bash `grep` / `rg` per Reflex-arm session | 11.1 | 1.1 |
+| accuracy | 1.000 | 1.000 |
+
+- **The drift is gone.** Opus now answers "where does X occur" with `list_locations`,
+  adding `preview: true` when it wants the line text, instead of `grep -rnw` through Bash.
+- **What is left is the fixed text.** Both arms make 24 API calls. Reflex's tool replies
+  are smaller than Grep's (9,406 vs 10,147 chars per session) and Opus writes less
+  (5,632 vs 6,482 output tokens). But each call carries 24,668 tokens of context at the
+  start against 19,684 (+4,984: instructions + `tools/list`). Over 24 calls that is ~12K
+  weighted, more than the whole ~10K weighted gap.
+- No cold cache: first-call writes were 3,116 (Grep) and 4,000 (Reflex).
+- The Grep arm itself cost more than on 2026-09-30 (105.8K vs 87.1K weighted, same
+  tool mix). Compare ratios within one wave only.
+
 ## Not done / next levers
 
-- Opus drift to grep in 12-question sessions (1.15×): `list_locations` `preview: true`
-  shipped in 2.1.0 after the last Opus measurement; not re-measured.
 - Fewer listed tools (`search_ast`, `gather_context`, `check_index_status`, …) for the
   fixed text: needs a user decision and a deferred-mode adoption check.
 - `list_locations` `dependencies: true` is accepted but its imports never reach the
