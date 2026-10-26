@@ -514,7 +514,7 @@ Text, lock and generated files never enter the graph.
   prints per-phase timings, including `index_path` (`trigram` or `scan`).
 - **MCP** (`src/mcp.rs`, `run_mcp_server`): JSON-RPC over stdio. Tool arguments are
   normalised (known aliases accepted with a warning, unknown keys rejected with a
-  did-you-mean). `search_code` and `search_regex` return a columnar
+  did-you-mean, unknown language names rejected). `search_code` and `search_regex` return a columnar
   `{columns, rows}` shape (`to_columnar`; `REFLEX_MCP_COLUMNAR=0` restores
   `results[]`). A tool that fails with `CacheCorrupted` triggers one forced rebuild
   and one retry (`with_corruption_recovery`). Ten tools are listed (`tool_list`); the

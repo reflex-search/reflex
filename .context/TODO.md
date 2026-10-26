@@ -74,10 +74,6 @@ failed Zola build still exits 0.
 - **MCP `index_project` never spawns the symbol pass** (`rebuild_index`, `src/mcp.rs`
   ~L903); only `rfx index` and auto-update do. Symbol queries then parse on demand.
 - **`src/watcher.rs` ignores `.gitignore` and reports only the first path of a rename.**
-- **MCP ignores an unknown `lang` without a word** (found 2026-10-25). `parse_language`
-  (`src/mcp.rs`) maps an unknown name to `None`, so `search_code` with `lang: "swift"`
-  searched every language and returned a Python match, with no `warnings`. The CLI
-  rejects the same name ("Unknown language").
 - **`--lang swift` is an error, not the documented warning.** `Language::from_name` has
   no `swift`, so the CLI's Swift warning in `src/cli/query.rs` never runs, and CLAUDE.md
   ("emits a warning") is wrong. Swift also has no import extractor (`src/indexer.rs`).
