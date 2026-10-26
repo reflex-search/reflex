@@ -276,6 +276,51 @@ fn list_locations_attaches_imports_on_request() {
     assert!(!deps.contains_key("src/b.rs"), "{v}");
 }
 
+/// An unknown `lang` was dropped, so the search ran on every language: `swift`
+/// returned a Python match. It is now an invalid-params error, like the CLI's.
+#[test]
+fn unknown_lang_is_an_error_not_a_search_of_everything() {
+    let temp = indexed();
+    for (tool, args) in [
+        (
+            "search_code",
+            json!({"pattern": "surface_token", "lang": "swift"}),
+        ),
+        (
+            "search_regex",
+            json!({"pattern": "surface_token", "lang": "pyhton"}),
+        ),
+        (
+            "list_locations",
+            json!({"pattern": "surface_token", "lang": "rustt"}),
+        ),
+        (
+            "find_references",
+            json!({"pattern": "surface_token", "lang": "go lang"}),
+        ),
+        ("index_project", json!({"languages": ["rust", "nope"]})),
+    ] {
+        let v = rpc(
+            temp.path(),
+            "tools/call",
+            json!({"name": tool, "arguments": args}),
+        );
+        assert_eq!(v["error"]["code"], -32602, "{tool}: {v}");
+        let msg = v["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("Unknown language"), "{tool}: {msg}");
+        assert!(msg.contains("python (py)"), "{tool}: {msg}");
+    }
+    // Names are matched without case; an empty `lang` is no filter.
+    for lang in ["RUST", "rs", ""] {
+        let v = call(
+            temp.path(),
+            "list_locations",
+            json!({"pattern": "surface_token", "lang": lang}),
+        );
+        assert_eq!(v["total_locations"], 3, "{lang:?}: {v}");
+    }
+}
+
 /// Every language `lang` accepts has an import extractor or, in the text tiers, no
 /// imports. The warning said "only Rust" and was false: the imports were in the
 /// same reply.

@@ -891,6 +891,33 @@ fn normalize_arguments(tool: &str, spec: &ToolSpec, args: Value) -> Result<(Valu
         }
     }
 
+    // Pass 5: language names. The tools turned an unknown name into no filter, so
+    // `lang: "swift"` searched every language and returned Python matches; the CLI
+    // and `rfx serve` reject the name. An empty `lang` stays "no filter".
+    let unknown_language = |name: &str| {
+        invalid_params(format!(
+            "Unknown language \"{}\" for {}. Supported: {}",
+            name,
+            tool,
+            Language::supported_names_help()
+        ))
+    };
+    if let Some(name) = obj.get("lang").and_then(Value::as_str) {
+        if name.is_empty() {
+            obj.remove("lang");
+        } else if Language::from_name(name).is_none() {
+            return Err(unknown_language(name));
+        }
+    }
+    if let Some(names) = obj.get("languages").and_then(Value::as_array)
+        && let Some(name) = names
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|name| Language::from_name(name).is_none())
+    {
+        return Err(unknown_language(name));
+    }
+
     Ok((Value::Object(obj), warnings))
 }
 

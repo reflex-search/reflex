@@ -22,6 +22,12 @@ answer from it marked `stale`.
 
 ### Fixed
 
+- **An unknown `lang` is an MCP error, not a search of every language.** Each tool
+  turned a name it did not know into no filter: `search_code` with `lang: "swift"`
+  returned matches in every language, with no warning. Now it is JSON-RPC `-32602`,
+  `Unknown language "swift" for search_code. Supported: …`, like `rfx query --lang` and
+  `rfx serve`. The same holds for each name in `index_project`'s `languages`, which were
+  dropped. Names still match without case, and an empty `lang` still means no filter.
 - **`list_locations` with `dependencies: true` returns the imports.** The flag was
   accepted and the imports were loaded, but the reply never carried them. The reply now
   has `dependencies: {path: [import, ...]}` beside `locations`, in the grouped and the

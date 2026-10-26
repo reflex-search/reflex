@@ -168,7 +168,8 @@ If Reflex tools appear in a deferred-tools list, load them first with
 The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`
 (never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. The
 server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a
-did-you-mean error, and numeric strings like `"40"` are coerced.
+did-you-mean error, an unknown `lang` is rejected (it used to search every language), and numeric strings
+like `"40"` are coerced.
 
 ### Matching semantics
 
