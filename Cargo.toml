@@ -83,7 +83,7 @@ num_cpus = "1.16"
 regex = "1.10"
 
 # Compression
-zstd = "0.13"
+zstd = "0.14.3"
 
 # File watching
 notify = "6.1"

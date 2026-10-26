@@ -69,6 +69,13 @@ answer from it marked `stale`.
   A `.ts` file that starts with `<?xml` or `<!DOCTYPE` is not parsed for symbols or
   imports. It stays searchable, and still reports `language: typescript`.
 
+### Security
+
+- **`zstd` 0.13 → 0.14.3** (`zstd-safe` 7 → 8.2.0) for RUSTSEC-2026-0391 (data from an
+  abandoned stream leaks into the next stream on a reused context), RUSTSEC-2026-0398
+  and RUSTSEC-2026-0403 (`zstd-safe` memory errors). The bundled zstd library stays
+  1.5.7, so symbol cache blobs are unchanged and no index is rebuilt.
+
 ### Library
 
 - `LineFilter::is_in_comment_or_string`: both questions with one scan of the line.
