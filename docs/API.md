@@ -551,6 +551,7 @@ Clients should check the status code before parsing the body as JSON.
 | C# | `csharp` | `cs`, `c#` |
 | Ruby | `ruby` | `rb` |
 | Kotlin | `kotlin` | `kt` |
+| Swift | `swift` | |
 | Zig | `zig` | |
 | Plain-text tier | `text` | `txt`, `plaintext`, `plain` |
 | Lock files | `lock` | `lockfile`, `lockfiles` |
@@ -561,8 +562,9 @@ The `language` field in results is lowercase: `rust`, `python`, `javascript`,
 `kotlin`, `swift`, `zig`, `text`, `lock`, `generated` or `unknown`. New values may
 appear in minor releases. Treat any value you do not recognize like `unknown`.
 
-Swift files are indexed and searchable as text (`language: "swift"`), but `lang`
-does not accept `swift` and symbol searches return nothing for them.
+Swift files are indexed and searchable as text (`language: "swift"`). Swift has no
+symbol parser, so a symbol search with `lang=swift` returns nothing and says why in
+`warnings`.
 
 ---
 

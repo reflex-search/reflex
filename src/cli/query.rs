@@ -93,15 +93,6 @@ pub(super) fn handle_query(
         None
     };
 
-    // Warn when Swift is requested — symbol queries will return no results
-    if language == Some(Language::Swift) {
-        eprintln!(
-            "{}: Swift symbol extraction is temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). \
-Full-text search will still work, but --symbols queries will return no results.",
-            "Warning".yellow().bold()
-        );
-    }
-
     // Parse and validate symbol kind — error on unrecognised values (REF-60)
     let kind = if let Some(s) = kind_str.as_deref() {
         let capitalized = {

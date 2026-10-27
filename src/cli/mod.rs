@@ -139,7 +139,7 @@ pub enum Command {
         symbols: bool,
 
         /// Filter by language
-        /// Supported: rust, python, javascript, typescript, vue, svelte, go, java, php, c, c++, c#, ruby, kotlin, zig
+        /// Supported: rust, python, javascript, typescript, vue, svelte, go, java, php, c, c++, c#, ruby, kotlin, swift, zig
         #[arg(short, long)]
         lang: Option<String>,
 

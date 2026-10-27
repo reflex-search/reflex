@@ -1130,6 +1130,7 @@ impl QueryEngine {
             warnings: prepared
                 .warning
                 .into_iter()
+                .chain(filter::no_symbol_parser_warning(&filter))
                 .chain(engine_warnings)
                 .collect(),
             hint,

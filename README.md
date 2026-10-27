@@ -268,7 +268,7 @@ Full symbol extraction (functions, classes, methods, types, etc.) for 15 languag
 **Backend:** Python, Go, Java, C#, PHP, Ruby, Kotlin  
 **Frontend:** TypeScript, JavaScript, Vue, Svelte
 
-> **Swift** is temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). `rfx query --lang swift` emits a warning; full-text search still works.
+> **Swift** symbols are temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). `--lang swift` selects Swift files for full-text search; a `--symbols` or `--kind` search on Swift finds nothing and prints a warning that says why.
 
 ### Coverage
 

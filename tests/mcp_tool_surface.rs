@@ -276,15 +276,15 @@ fn list_locations_attaches_imports_on_request() {
     assert!(!deps.contains_key("src/b.rs"), "{v}");
 }
 
-/// An unknown `lang` was dropped, so the search ran on every language: `swift`
-/// returned a Python match. It is now an invalid-params error, like the CLI's.
+/// An unknown `lang` was dropped, so the search ran on every language. It is now an
+/// invalid-params error, like the CLI's.
 #[test]
 fn unknown_lang_is_an_error_not_a_search_of_everything() {
     let temp = indexed();
     for (tool, args) in [
         (
             "search_code",
-            json!({"pattern": "surface_token", "lang": "swift"}),
+            json!({"pattern": "surface_token", "lang": "cobol"}),
         ),
         (
             "search_regex",
@@ -321,8 +321,63 @@ fn unknown_lang_is_an_error_not_a_search_of_everything() {
     }
 }
 
-/// Every language `lang` accepts has an import extractor or, in the text tiers, no
-/// imports. The warning said "only Rust" and was false: the imports were in the
+/// `swift` was not a language name, so `lang: "swift"` was an error (and the CLI's
+/// Swift warning never ran). Swift files are indexed as text with no symbol parser:
+/// a full-text search finds them, and a symbol search says why it finds nothing.
+#[test]
+fn swift_is_a_language_and_a_symbol_search_says_it_has_no_parser() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("App.swift"),
+        "func swiftProbe() {}
+let x = swiftProbe()
+",
+    )
+    .unwrap();
+    fs::write(root.join("app.py"), "def swiftProbe():\n    pass\n").unwrap();
+    Indexer::new(CacheManager::new(root), IndexConfig::default())
+        .index(root, false)
+        .unwrap();
+
+    let v = call(
+        root,
+        "list_locations",
+        json!({"pattern": "swiftProbe", "lang": "swift"}),
+    );
+    assert_eq!(v["locations"], json!({"App.swift": [1, 2]}), "{v}");
+    assert!(v.get("warnings").is_none(), "{v}");
+
+    let v = call(
+        root,
+        "search_code",
+        json!({"pattern": "swiftProbe", "lang": "Swift", "symbols": true}),
+    );
+    assert_eq!(v["total_count"], 0, "{v}");
+    assert!(warnings(&v).contains("Swift has no symbol parser"), "{v}");
+
+    // The definition search is the symbol search; its note reaches the answer.
+    let v = call(
+        root,
+        "find_references",
+        json!({"pattern": "swiftProbe", "lang": "swift"}),
+    );
+    assert_eq!(v["total_references"], 2, "{v}");
+    assert!(v["definition"].is_null(), "{v}");
+    assert!(warnings(&v).contains("Swift has no symbol parser"), "{v}");
+
+    // A language with a parser carries no such note.
+    let v = call(
+        root,
+        "search_code",
+        json!({"pattern": "swiftProbe", "lang": "python", "symbols": true}),
+    );
+    assert_eq!(v["total_count"], 1, "{v}");
+    assert!(!warnings(&v).contains("no symbol parser"), "{v}");
+}
+
+/// Every language `lang` accepts has an import extractor or, in the text tiers and
+/// Swift, no imports. The warning said "only Rust" and was false: the imports were in the
 /// same reply.
 #[test]
 fn search_code_returns_imports_for_python_without_a_warning() {

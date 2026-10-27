@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-Four answers that were wrong without a warning are fixed. The first CLI command after
+Several answers that were wrong without a warning are fixed. The first CLI command after
 upgrading rebuilds the index once (2.2.0 wrote it); until then `rfx mcp` and `rfx serve`
 answer from it marked `stale`.
 
@@ -22,10 +22,17 @@ answer from it marked `stale`.
 
 ### Fixed
 
+- **`swift` is a language name.** Swift files are indexed as text with
+  `language: "swift"`, but `--lang swift` (`rfx query`, `rfx list-files`, `rfx index
+  --languages`), `rfx serve` and MCP `lang` rejected the name as unknown, so no search
+  could select them. Now `swift` selects them. Swift has no symbol parser, so a symbol
+  search on Swift (`--symbols`, `--kind`, `symbols: true`, the `find_references`
+  definition) finds nothing; it now says why in `warnings` (on stderr in the CLI), not
+  with a silent zero. A full-text search carries no warning.
 - **An unknown `lang` is an MCP error, not a search of every language.** Each tool
-  turned a name it did not know into no filter: `search_code` with `lang: "swift"`
+  turned a name it did not know into no filter: `search_code` with `lang: "pyhton"`
   returned matches in every language, with no warning. Now it is JSON-RPC `-32602`,
-  `Unknown language "swift" for search_code. Supported: …`, like `rfx query --lang` and
+  `Unknown language "pyhton" for search_code. Supported: …`, like `rfx query --lang` and
   `rfx serve`. The same holds for each name in `index_project`'s `languages`, which were
   dropped. Names still match without case, and an empty `lang` still means no filter.
 - **`list_locations` with `dependencies: true` returns the imports.** The flag was
@@ -36,7 +43,8 @@ answer from it marked `stale`.
 - **No false "only supported for Rust files" warning with `dependencies`.** `search_code`
   (in `ai_instruction`) and `rfx query --dependencies --lang <not rust>` (on stderr) said
   no dependency data would be included, while the same reply carried it. Every language
-  `lang` accepts has an import extractor, or (the text tiers) no imports at all.
+  `lang` accepts, except Swift, has an import extractor, or (the text tiers) no imports
+  at all.
 - **`find_references` no longer drops call sites after a comment marker inside a
   string.** Each language filter took the first `//`, `#` or `/*` on a line as the start
   of a comment, wherever it was. So every match after `"https://…"`, `"#fff"` or
