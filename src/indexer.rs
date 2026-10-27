@@ -29,6 +29,7 @@ use crate::parsers::python::PythonDependencyExtractor;
 use crate::parsers::ruby::RubyDependencyExtractor;
 use crate::parsers::rust::RustDependencyExtractor;
 use crate::parsers::svelte::SvelteDependencyExtractor;
+use crate::parsers::swift_imports::SwiftDependencyExtractor;
 use crate::parsers::typescript::TypeScriptDependencyExtractor;
 use crate::parsers::vue::VueDependencyExtractor;
 use crate::parsers::zig::ZigDependencyExtractor;
@@ -501,6 +502,14 @@ fn extract_imports(
             }
         },
         Language::Zig => match ZigDependencyExtractor::extract_dependencies(content) {
+            Ok(deps) => deps,
+            Err(e) => {
+                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                Vec::new()
+            }
+        },
+        // Read from the text: Swift has no tree-sitter grammar in this build
+        Language::Swift => match SwiftDependencyExtractor::extract_dependencies(content) {
             Ok(deps) => deps,
             Err(e) => {
                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
@@ -3046,10 +3055,7 @@ impl Indexer {
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
-            writer.replace_members(
-                file_id,
-                &crate::dependency_resolve::package_members(rel, declared),
-            )?;
+            writer.replace_members(file_id, &ctx.package_members(rel, declared))?;
             writer.clear_exports(file_id)?;
             for export in exports {
                 let resolved = ctx.resolve_export(rel, export, &resolver);
@@ -3617,10 +3623,7 @@ impl Indexer {
             resolved_here.insert(file_id);
             let deps = ctx.resolve_file_imports(file_id, rel, imports.clone(), &resolver);
             writer.replace_dependencies(file_id, &deps)?;
-            writer.replace_members(
-                file_id,
-                &crate::dependency_resolve::package_members(rel, declared),
-            )?;
+            writer.replace_members(file_id, &ctx.package_members(rel, declared))?;
             if !w.full_deps {
                 writer.clear_exports(file_id)?;
             }

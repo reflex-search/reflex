@@ -434,7 +434,7 @@ rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 - **Systems**: Rust, C, C++, Zig
 - **Backend**: Python, Go, Java, C#, PHP, Ruby, Kotlin
 - **Frontend**: TypeScript, JavaScript, Vue, Svelte
-- **Swift**: Symbols temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). `--lang swift` / `lang: "swift"` selects Swift files for full-text search; a symbol search on Swift (`--symbols`, `--kind`, the `find_references` definition) returns nothing and says why in `warnings`. No import extraction either.
+- **Swift**: Symbols temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). `--lang swift` / `lang: "swift"` selects Swift files for full-text search; a symbol search on Swift (`--symbols`, `--kind`, the `find_references` definition) returns nothing and says why in `warnings`. Imports are read from the text (`src/parsers/swift_imports.rs`) and resolve to SwiftPM targets.
 
 **Symbol extraction**: Functions, classes, methods, variables (global + local), interfaces, traits, enums, attributes/annotations, and more.
 
@@ -532,8 +532,9 @@ An internal import reaches files in one of two ways:
 - **One file** (`file_dependencies.resolved_file_id`): TS/JS, Rust, Python, PHP, Ruby,
   C/C++, Zig, Vue/Svelte.
 - **A package key** (`resolved_package`, `resolved_member`): Go `go:<dir>`, Java/Kotlin
-  `jvm:<package>` + class or top-level name, C# `cs:<namespace>`. Each file records the
-  packages it belongs to in `package_members` when it is extracted.
+  `jvm:<package>` + class or top-level name, C# `cs:<namespace>`, Swift
+  `swift:<target dir>` (targets from `Package.swift`). Each file records the packages it
+  belongs to in `package_members` when it is extracted.
 
 Every graph reader uses the `import_edges` view, which expands package keys to files.
 Do not read `resolved_file_id` directly. `analyze` and `get_dependencies` warn when a

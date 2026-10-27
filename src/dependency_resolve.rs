@@ -24,6 +24,7 @@ use crate::parsers::php::Psr4Mapping;
 use crate::parsers::python::PythonPackage;
 use crate::parsers::ruby::RubyProject;
 use crate::parsers::rust::RustCrate;
+use crate::parsers::swift_imports::SwiftModule;
 use crate::parsers::tsconfig::PathAliasMap;
 use crate::parsers::{ExportInfo, ImportInfo};
 
@@ -89,6 +90,7 @@ pub fn is_resolver_config_name(name: &str) -> bool {
             | ".cargo-checksum.json"
             | "build.zig.zon"
             | "build.zig"
+            | "Package.swift"
     ) || name.ends_with(".gemspec")
 }
 
@@ -153,6 +155,8 @@ struct ConfigList {
     zig_zons: Vec<String>,
     #[serde(default)]
     zig_builds: Vec<String>,
+    #[serde(default)]
+    swift_packages: Vec<String>,
     walk_error: Option<String>,
 }
 
@@ -172,6 +176,8 @@ struct ConfigFiles {
     zig_zons: Vec<PathBuf>,
     /// `build.zig` files, whose named modules `@import("name")` reaches.
     zig_builds: Vec<PathBuf>,
+    /// `Package.swift` files, whose targets are the modules `import Name` reaches.
+    swift_packages: Vec<PathBuf>,
     /// The first walk error. Every finder except tsconfig's stopped on its first
     /// error (`entry?`) and returned it, so their kinds fail with it here too.
     walk_error: Option<String>,
@@ -217,6 +223,10 @@ impl ConfigFiles {
                 }
                 "build.zig" => {
                     out.zig_builds.push(path.to_path_buf());
+                    continue;
+                }
+                "Package.swift" => {
+                    out.swift_packages.push(path.to_path_buf());
                     continue;
                 }
                 _ => continue,
@@ -318,6 +328,9 @@ impl ConfigFiles {
             let rel = rel_slash(root, p);
             !dirs.iter().any(|d| rel.starts_with(d.as_str())) && !rules.in_vendored_dir(&rel)
         });
+        // A package checked out under `Pods/` or `Carthage/` is a dependency
+        self.swift_packages
+            .retain(|p| !rules.is_vendored(&rel_slash(root, p), crate::models::Language::Swift));
     }
 
     /// A digest of everything the config parsers read: each kind's files in walk
@@ -358,6 +371,9 @@ impl ConfigFiles {
         }
         for path in &self.zig_builds {
             file("zig-build", path);
+        }
+        for path in &self.swift_packages {
+            file("swift-package", path);
         }
         // `find_python_package_name` reads all three names in each project root.
         for path in &self.python {
@@ -405,6 +421,7 @@ impl ConfigFiles {
             vendor_markers: rel(&self.vendor_markers),
             zig_zons: rel(&self.zig_zons),
             zig_builds: rel(&self.zig_builds),
+            swift_packages: rel(&self.swift_packages),
             walk_error: self.walk_error.clone(),
         }
     }
@@ -423,6 +440,7 @@ impl ConfigFiles {
             vendor_markers: abs(&list.vendor_markers),
             zig_zons: abs(&list.zig_zons),
             zig_builds: abs(&list.zig_builds),
+            swift_packages: abs(&list.swift_packages),
             walk_error: list.walk_error.clone(),
         }
     }
@@ -447,6 +465,8 @@ pub struct ResolverConfigs {
     pub php_psr4: Vec<Psr4Mapping>,
     /// Named modules the workspace's `build.zig` files define.
     pub zig_modules: Vec<crate::parsers::zig::ZigModule>,
+    /// Targets the workspace's `Package.swift` files define, in walk order.
+    pub swift_modules: Vec<SwiftModule>,
     /// Which files are vendored: the markers found, plus `[index.vendored] patterns`.
     pub vendor: crate::vendor::VendorRules,
     /// Digest of every input above (see `ConfigFiles::digest`) and the vendored
@@ -508,6 +528,7 @@ impl ResolverConfigs {
             &list.vendor_markers,
             &list.zig_zons,
             &list.zig_builds,
+            &list.swift_packages,
         ]
         .into_iter()
         .flatten()
@@ -539,6 +560,18 @@ impl ResolverConfigs {
             .filter_map(|p| {
                 let source = std::fs::read_to_string(p).ok()?;
                 Some(crate::parsers::zig::parse_build_zig_modules(
+                    &rel_slash(root, p),
+                    &source,
+                ))
+            })
+            .flatten()
+            .collect();
+        let swift_modules: Vec<SwiftModule> = files
+            .swift_packages
+            .iter()
+            .filter_map(|p| {
+                let source = std::fs::read_to_string(p).ok()?;
+                Some(crate::parsers::swift_imports::parse_package_swift(
                     &rel_slash(root, p),
                     &source,
                 ))
@@ -692,6 +725,7 @@ impl ResolverConfigs {
             rust_crates,
             php_psr4,
             zig_modules,
+            swift_modules,
             vendor,
             digest,
             files,
@@ -713,21 +747,6 @@ pub enum Resolution {
     Unresolved,
 }
 
-/// The `(package key, member)` rows that make the file at `rel_path` reachable
-/// by package imports (`package_members`): a Go file's directory, plus what its
-/// content declares (`declared`: a JVM package and top-level names, C#
-/// namespaces, types and sub-namespaces). Member `""` stands for the whole
-/// package: an import with no member reaches exactly the `""` rows.
-pub fn package_members(rel_path: &str, declared: &[(String, String)]) -> Vec<(String, String)> {
-    let mut members = declared.to_vec();
-    if rel_path.ends_with(".go")
-        && let Some(key) = crate::parsers::go::go_package_member(rel_path)
-    {
-        members.push((key, String::new()));
-    }
-    members
-}
-
 /// The resolution rules for one workspace, over its parsed configs.
 pub struct ResolverContext<'a> {
     pub root: &'a Path,
@@ -737,6 +756,41 @@ pub struct ResolverContext<'a> {
 impl<'a> ResolverContext<'a> {
     pub fn new(root: &'a Path, configs: &'a ResolverConfigs) -> Self {
         Self { root, configs }
+    }
+
+    /// The `(package key, member)` rows that make the file at `rel_path` reachable
+    /// by package imports (`package_members`): a Go file's directory, a Swift
+    /// file's SwiftPM target, plus what its content declares (`declared`: a JVM
+    /// package and top-level names, C# namespaces, types and sub-namespaces).
+    /// Member `""` stands for the whole package: an import with no member reaches
+    /// exactly the `""` rows. A target comes from `Package.swift`, a resolver
+    /// config: a change to one rewrites every file's rows (`full_deps`).
+    pub fn package_members(
+        &self,
+        rel_path: &str,
+        declared: &[(String, String)],
+    ) -> Vec<(String, String)> {
+        let mut members = declared.to_vec();
+        if rel_path.ends_with(".go")
+            && let Some(key) = crate::parsers::go::go_package_member(rel_path)
+        {
+            members.push((key, String::new()));
+        }
+        if rel_path.ends_with(".swift")
+            && let Some(target) = crate::parsers::swift_imports::swift_target_of(
+                rel_path,
+                &self.configs.swift_modules,
+            )
+        {
+            members.push((target.package_key(), String::new()));
+            if target.entry {
+                members.push((
+                    target.package_key(),
+                    crate::parsers::swift_imports::ENTRY_MEMBER.to_string(),
+                ));
+            }
+        }
+        members
     }
 
     /// The alias map a TS/JS/Vue file is extracted and resolved with.
@@ -958,6 +1012,19 @@ impl<'a> ResolverContext<'a> {
             };
         }
 
+        // A target of the workspace's Package.swift files, even one named like an
+        // SDK framework
+        if file_path.ends_with(".swift")
+            && crate::parsers::swift_imports::find_swift_module(
+                crate::parsers::swift_imports::swift_module_name(&import_info.imported_path),
+                file_path,
+                &self.configs.swift_modules,
+            )
+            .is_some()
+        {
+            import_info.import_type = ImportType::Internal;
+        }
+
         // A Zig module name the workspace's build.zig defines
         if file_path.ends_with(".zig")
             && matches!(import_info.import_type, ImportType::External)
@@ -984,7 +1051,7 @@ impl<'a> ResolverContext<'a> {
     }
 
     /// Where an import that is neither External nor Stdlib leads: one file, or a
-    /// package the graph expands to its member files ([`package_members`]).
+    /// package the graph expands to its member files ([`Self::package_members`]).
     pub fn resolve(
         &self,
         file_path: &str,
@@ -1020,6 +1087,18 @@ impl<'a> ResolverContext<'a> {
                 key: format!("cs:{path}"),
                 member: None,
             };
+        }
+        if file_path.ends_with(".swift") {
+            // `import Core` names a SwiftPM target: every file of its directory
+            return crate::parsers::swift_imports::find_swift_module(
+                crate::parsers::swift_imports::swift_module_name(&import_info.imported_path),
+                file_path,
+                &self.configs.swift_modules,
+            )
+            .map_or(Resolution::Unresolved, |module| Resolution::Package {
+                key: module.package_key(),
+                member: None,
+            });
         }
         if [".java", ".kt", ".kts"]
             .iter()

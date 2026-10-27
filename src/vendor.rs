@@ -61,6 +61,14 @@ pub fn vendor_dir_names(language: Language) -> &'static [&'static str] {
             "_vendored",
         ],
         Language::Java | Language::Kotlin | Language::CSharp | Language::Zig => &THIRD_PARTY,
+        // CocoaPods and Carthage check dependencies out into the project
+        Language::Swift => &[
+            "third_party",
+            "third-party",
+            "thirdparty",
+            "Pods",
+            "Carthage",
+        ],
         _ => &[],
     }
 }

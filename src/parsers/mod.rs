@@ -23,6 +23,7 @@ pub mod tsconfig;
 pub mod typescript;
 pub mod vue;
 // pub mod swift;  // Temporarily disabled - tree-sitter-swift 0.7.2 grammar node types diverged from this parser's queries
+pub mod swift_imports;
 pub mod zig;
 
 use crate::models::{Language, SearchResult};

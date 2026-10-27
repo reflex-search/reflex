@@ -232,6 +232,67 @@ What each was:
   `imported_symbols` of a row that resolved to `__init__.py`), so a submodule added
   later needs no re-extraction.
 
+## Swift (2026-10-26, 2.2.0 + main)
+
+Swift had no import extraction: `extract_imports` fell to `_ => Vec::new()`, so
+`get_dependencies` on a `.swift` file returned `[]`, and `analyze --unused` listed every
+Swift file. This build has no tree-sitter grammar for Swift (the symbol parser is
+disabled), so `src/parsers/swift_imports.rs` reads the text.
+
+- **Extraction.** A byte lexer marks comments (nested `/* */`), string literals
+  (`"…"`, `"""…"""`, raw `#"…"#`, interpolations with nested strings) as non-code. Each
+  line of what is left is split on `;` and matched against
+  `attributes? access-level? import kind? Module(.Name)*`. `#if canImport(X)` is not an
+  import; the `import X` inside the `#if` is (static, like the other languages).
+- **Classification.** A toolchain module, Apple SDK framework or SDK C module
+  (`zlib`, `C.os.lock`) is Stdlib. `@testable import` is Internal: only a module the
+  workspace builds can be one. Everything else is External until `reclassify` finds a
+  workspace target of that name (which wins over the SDK list).
+- **Targets.** `Package.swift` is a resolver config. `parse_package_swift` finds each
+  `.target` / `.executableTarget` / `.testTarget` / `.macro` / `.plugin` /
+  `.systemLibrary` whose first argument is `name:`, with its own `path:` (at depth 1 of
+  the call) or SwiftPM's default directory. A target call inside another call is a
+  dependency (`dependencies: [.target(name: "Core")]`), not a definition. A
+  `Package.swift` under a vendored directory (`Pods/`, `Carthage/`, now in
+  `vendor_dir_names(Swift)`) is dropped, so a Carthage checkout of Alamofire does not
+  make `import Alamofire` Internal.
+- **Resolution.** `import Core` → the target named `Core` in the nearest
+  `Package.swift` above the importer, else the first one found (a local package
+  dependency) → package key `swift:<target dir>`. Membership: a `.swift` file is a
+  member of the deepest target directory above it (`ResolverContext::package_members`
+  now reads the configs; a `Package.swift` change already forces `full_deps`).
+- **Graph rules.** A target compiles as one unit, so `sibling_groups` covers
+  `swift:%` keys like Go packages. Files of executable, test, plugin and macro targets
+  get a second member row `@entry`, which no import names (the view joins on
+  `member = COALESCE(resolved_member, '')`); `find_unused_files` treats them as entry
+  points, because the `@main` file need not be `main.swift`. `main.swift`,
+  `Package.swift`, `Package@swift-*.swift`, `Tests/` and `*Tests.swift` are entry points
+  by path.
+
+| repo (shallow clone, 2026-10-26) | Swift files | internal resolved | stdlib | external | unused Swift files, main → this |
+| --- | --- | --- | --- | --- | --- |
+| Alamofire | 101 | 45/45 | 144 | 0 | 101 → 7 (Xcode example apps) |
+| swift-argument-parser | 171 | 161/161 | 110 | 0 | 171 → 3 (`Plugins/GenerateCommon`, no target) |
+
+On main (`b5963c1`) neither repo has a single Swift dependency row.
+
+Alamofire's target uses `path: "Source"`; its Xcode example app's `import Alamofire`
+resolves to the root package's target.
+
+### Rejected
+
+- **A member row for every directory above a Swift file** (`swift:<d>` for each `d`),
+  so that membership would not need the configs. Resolution worked, but grouping by key
+  for unused files and islands merged every target under `Sources/` into one unit.
+
+### Not done
+
+- **Xcode projects** (`.xcodeproj`, no `Package.swift`) have no targets: their module
+  imports stay External, and `@testable import App` is Internal but unresolved.
+- **`Package@swift-X.Y.swift`** manifests are not parsed; `Package.swift` is.
+- **SwiftPM's other default source directories** (`Source/`, `src/`, `srcs/`) are not
+  tried; `path:` covers them.
+
 ## Open (see TODO.md)
 
 - **C#:** 18 % of dotnet's internal usings do not resolve. Causes: `using static A.B.C`

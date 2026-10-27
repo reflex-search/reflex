@@ -956,11 +956,19 @@ impl DependencyIndex {
 
         // A package whose member is used or an entry point is used as a whole
         // (`cmd/x/flags.go` beside `cmd/x/main.go`)
-        let entry_points: HashSet<i64> = all_files
+        let mut entry_points: HashSet<i64> = all_files
             .iter()
             .filter(|(_, path)| is_entry_point(path))
             .map(|(id, _)| *id)
             .collect();
+        // A SwiftPM executable, test, plugin or macro target: its `@main` file can
+        // have any name
+        let mut stmt = conn.prepare("SELECT file_id FROM package_members WHERE member = ?1")?;
+        for id in stmt.query_map([crate::parsers::swift_imports::ENTRY_MEMBER], |row| {
+            row.get::<_, i64>(0)
+        })? {
+            entry_points.insert(id?);
+        }
         for group in sibling_groups(&conn)? {
             if group
                 .iter()
@@ -1505,15 +1513,16 @@ fn load_edges(conn: &Connection, order: EdgeOrder, every_edge: bool) -> Result<V
     Ok(edges.into_iter().filter(|e| seen.insert(*e)).collect())
 }
 
-/// The member files of each Go package, in walk order. They compile as one unit
-/// and use each other with no import, so islands and unused files treat each
-/// group as connected. (JVM and C# packages are not: a namespace can span
-/// unrelated projects.)
+/// The member files of each Go package and SwiftPM target, in walk order. They
+/// compile as one unit and use each other with no import, so islands and unused
+/// files treat each group as connected. (JVM and C# packages are not: a
+/// namespace can span unrelated projects.)
 fn sibling_groups(conn: &Connection) -> Result<Vec<Vec<i64>>> {
     let mut stmt = conn.prepare(
         "SELECT m.package, m.file_id FROM package_members m
          JOIN files f ON f.id = m.file_id
-         WHERE m.package LIKE 'go:%' AND f.vendored = 0
+         WHERE (m.package LIKE 'go:%' OR m.package LIKE 'swift:%') AND m.member = ''
+           AND f.vendored = 0
          ORDER BY m.package, f.walk_seq",
     )?;
     let mut groups: Vec<Vec<i64>> = Vec::new();
@@ -1563,7 +1572,7 @@ fn is_entry_point(path: &str) -> bool {
     if dirs.split('/').any(|d| {
         matches!(
             d,
-            "tests" | "test" | "benches" | "examples" | "testdata" | "__tests__"
+            "tests" | "Tests" | "test" | "benches" | "examples" | "testdata" | "__tests__"
         ) || d.ends_with(".Tests")
             || d.ends_with(".UnitTests")
     }) {
@@ -1573,8 +1582,16 @@ fn is_entry_point(path: &str) -> bool {
     // Program entry points by language convention
     if matches!(
         filename,
-        "main.go" | "Program.cs" | "__main__.py" | "manage.py" | "conftest.py" | "setup.py"
-    ) {
+        "main.go"
+            | "Program.cs"
+            | "__main__.py"
+            | "manage.py"
+            | "conftest.py"
+            | "setup.py"
+            | "main.swift"
+            | "Package.swift"
+    ) || (filename.starts_with("Package@swift-") && filename.ends_with(".swift"))
+    {
         return true;
     }
 
@@ -1585,7 +1602,10 @@ fn is_entry_point(path: &str) -> bool {
         || filename.ends_with("_spec.rs")
         || filename.ends_with("_test.go")
         || filename.ends_with("_test.py")
-        || ((filename.ends_with(".java") || filename.ends_with(".kt") || filename.ends_with(".cs"))
+        || ((filename.ends_with(".java")
+            || filename.ends_with(".kt")
+            || filename.ends_with(".cs")
+            || filename.ends_with(".swift"))
             && (stem.ends_with("Test")
                 || stem.ends_with("Tests")
                 // Maven Failsafe integration tests: `FooIT`, not `EXIT`
