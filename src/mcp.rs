@@ -892,7 +892,7 @@ fn normalize_arguments(tool: &str, spec: &ToolSpec, args: Value) -> Result<(Valu
     }
 
     // Pass 5: language names. The tools turned an unknown name into no filter, so
-    // `lang: "swift"` searched every language and returned Python matches; the CLI
+    // `lang: "pyhton"` searched every language, Rust and Go included; the CLI
     // and `rfx serve` reject the name. An empty `lang` stays "no filter".
     let unknown_language = |name: &str| {
         invalid_params(format!(
@@ -2894,7 +2894,13 @@ fn dispatch_tool(
             let filtered_out = page_matches.saturating_sub(returned_count);
             let total_references = ref_response.pagination.total;
             let has_more = ref_response.pagination.has_more;
-            let engine_warnings = ref_response.warnings.clone();
+            // Plus what only the definition search knows (Swift has no symbols), once.
+            let mut engine_warnings = ref_response.warnings.clone();
+            for w in &def_response.warnings {
+                if !engine_warnings.contains(w) {
+                    engine_warnings.push(w.clone());
+                }
+            }
             let engine_hint = ref_response.hint.clone();
             let engine_reason = ref_response.excluded_reason;
             let engine_excluded = ref_response.excluded_by_default;

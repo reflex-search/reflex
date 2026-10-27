@@ -434,7 +434,7 @@ rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 - **Systems**: Rust, C, C++, Zig
 - **Backend**: Python, Go, Java, C#, PHP, Ruby, Kotlin
 - **Frontend**: TypeScript, JavaScript, Vue, Svelte
-- **Swift**: Temporarily disabled — `rfx query --lang swift` emits a warning; full-text search still works but symbol queries return no results (tree-sitter-swift 0.7.x grammar incompatibility)
+- **Swift**: Symbols temporarily disabled (tree-sitter-swift 0.7.x grammar incompatibility). `--lang swift` / `lang: "swift"` selects Swift files for full-text search; a symbol search on Swift (`--symbols`, `--kind`, the `find_references` definition) returns nothing and says why in `warnings`. No import extraction either.
 
 **Symbol extraction**: Functions, classes, methods, variables (global + local), interfaces, traits, enums, attributes/annotations, and more.
 

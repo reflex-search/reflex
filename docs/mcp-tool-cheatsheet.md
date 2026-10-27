@@ -220,7 +220,7 @@ Behaviour:
 - A missing required key is `-32602`:
   `Missing required argument "pattern" for search_code. Received: [...]. Valid: [...]`.
 - A `lang` (or a `languages` entry on `index_project`) that names no language is `-32602`:
-  `Unknown language "swift" for search_code. Supported: rust (rs), python (py), ...`. Names
+  `Unknown language "pyhton" for search_code. Supported: rust (rs), python (py), ...`. Names
   match without case; an empty `lang` means no filter.
 - Numeric strings are coerced (`"40"` → `40`); `"true"`/`"false"` strings become booleans; a bare
   string for `glob`/`exclude` becomes a one-element array. Anything else of the wrong type is a

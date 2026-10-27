@@ -322,6 +322,23 @@ pub fn substring_hint_text(count: usize, pattern: &str) -> String {
     )
 }
 
+/// Explain a symbol search that can find nothing: `language` is code with no
+/// symbol parser (Swift), so a confident zero would read as "no definitions".
+pub fn no_symbol_parser_warning(filter: &QueryFilter) -> Option<String> {
+    let language = filter.language?;
+    let symbol_search = filter.symbols_mode || filter.kind.is_some();
+    (symbol_search
+        && language.is_code()
+        && !crate::parsers::ParserFactory::has_symbol_parser(language))
+    .then(|| {
+        format!(
+            "{0:?} has no symbol parser, so a symbol search finds no {0:?} definitions. \
+             Full-text search (without symbols / kind) still finds them.",
+            language
+        )
+    })
+}
+
 #[cfg(test)]
 mod literal_pattern_tests {
     use super::*;

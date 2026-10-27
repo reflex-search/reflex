@@ -262,6 +262,7 @@ impl Language {
             "csharp" | "cs" | "c#" => Some(Language::CSharp),
             "ruby" | "rb" => Some(Language::Ruby),
             "kotlin" | "kt" => Some(Language::Kotlin),
+            "swift" => Some(Language::Swift),
             "zig" => Some(Language::Zig),
             "text" | "txt" | "plaintext" | "plain" => Some(Language::Text),
             "lock" | "lockfile" | "lockfiles" => Some(Language::Lock),
@@ -273,7 +274,8 @@ impl Language {
     /// Human-readable list of all supported language names (for error messages)
     pub fn supported_names_help() -> &'static str {
         "rust (rs), python (py), javascript (js), typescript (ts), vue, svelte, \
-         go, java, php, c, cpp (c++), csharp (cs, c#), ruby (rb), kotlin (kt), zig, \
+         go, java, php, c, cpp (c++), csharp (cs, c#), ruby (rb), kotlin (kt), \
+         swift (full-text search only: no symbols), zig, \
          text (every other non-binary file: docs, config, templates, extensionless), \
          lock (lock files, excluded by default), generated (*.pb.go, *.min.js, *.map, \
          *_generated.*, excluded by default)"
