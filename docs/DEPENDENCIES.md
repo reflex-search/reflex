@@ -188,7 +188,7 @@ See `docs/mcp-tool-cheatsheet.md`.
 
 ## Language Support
 
-Reflex extracts static imports for the 15 supported code languages with Tree-sitter. Text, lock and generated files have no import extraction.
+Reflex extracts static imports for the 15 supported code languages with Tree-sitter, and for Swift from the text. Text, lock and generated files have no import extraction.
 
 ### Import/Dependency Syntax by Language
 
@@ -331,6 +331,20 @@ const lib = @import("external_lib");      // external
 
 // Tree-sitter patterns:
 // - call_expression (@import)
+```
+
+#### Swift
+```swift
+import Foundation                         // stdlib (toolchain or Apple SDK)
+import Alamofire                          // external
+import Core                               // internal: a target of the workspace's Package.swift
+@testable import MyApp                    // internal (only a workspace module is testable)
+internal import os                        // stdlib (access-level import)
+import struct Foundation.URL              // stdlib, symbol URL
+
+// No tree-sitter grammar: read line by line after comments and strings are blanked.
+// `import Core` resolves to every file of the target's directory: its `path:`,
+// else Sources/Core (Tests/<name> for a test target, Plugins/<name> for a plugin).
 ```
 
 #### Vue

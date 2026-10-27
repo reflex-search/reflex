@@ -1613,3 +1613,183 @@ fn csharp_usings_and_namespaces_inside_preprocessor_blocks() {
     index(r);
     assert_eq!(edges(r), vec![edge("src/A.cs", "src/Core.cs")]);
 }
+
+/// A SwiftPM package: a library target with a subdirectory, one at a custom
+/// `path:`, an executable and a test target, plus a Carthage checkout whose own
+/// `Package.swift` must not make its module ours.
+fn swift_package(r: &Path) {
+    write(
+        r,
+        "Package.swift",
+        "// swift-tools-version:5.9\nimport PackageDescription\n\nlet package = Package(\n    name: \"Demo\",\n    targets: [\n        .target(name: \"Core\"),\n        .target(name: \"Util\", path: \"Lib/Util\"),\n        .executableTarget(name: \"App\", dependencies: [\"Core\", .target(name: \"Util\")]),\n        .testTarget(name: \"CoreTests\", dependencies: [\"Core\"]),\n        .executableTarget(name: \"Tool\"),\n    ]\n)\n",
+    );
+    write(
+        r,
+        "Sources/Core/Model.swift",
+        "import Foundation\n\npublic struct Model {}\n",
+    );
+    write(
+        r,
+        "Sources/Core/Sub/Store.swift",
+        "public final class Store {}\n",
+    );
+    write(r, "Lib/Util/Log.swift", "public func log() {}\n");
+    write(
+        r,
+        "Sources/App/main.swift",
+        "import Foundation\nimport Core\nimport struct Util.Log\nimport Alamofire\n\nlet m = Model()\n",
+    );
+    write(
+        r,
+        "Tests/CoreTests/ModelTests.swift",
+        "import XCTest\n@testable import Core\n\nfinal class ModelTests: XCTestCase {}\n",
+    );
+    write(
+        r,
+        "Carthage/Checkouts/Alamofire/Package.swift",
+        "import PackageDescription\nlet package = Package(name: \"Alamofire\", targets: [.target(name: \"Alamofire\", path: \"Source\")])\n",
+    );
+    write(
+        r,
+        "Carthage/Checkouts/Alamofire/Source/Session.swift",
+        "import Foundation\nopen class Session {}\n",
+    );
+}
+
+#[test]
+fn swift_imports_resolve_to_the_target_directory() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    swift_package(r);
+    index(r);
+
+    assert_eq!(
+        edges(r),
+        vec![
+            edge("Sources/App/main.swift", "Lib/Util/Log.swift"),
+            edge("Sources/App/main.swift", "Sources/Core/Model.swift"),
+            edge("Sources/App/main.swift", "Sources/Core/Sub/Store.swift"),
+            edge(
+                "Tests/CoreTests/ModelTests.swift",
+                "Sources/Core/Model.swift"
+            ),
+            edge(
+                "Tests/CoreTests/ModelTests.swift",
+                "Sources/Core/Sub/Store.swift"
+            ),
+        ]
+    );
+    let d = deps(r);
+    let main = d
+        .get_file_id_by_path("Sources/App/main.swift")
+        .unwrap()
+        .unwrap();
+    let kinds: Vec<(String, reflex::models::ImportType)> = d
+        .get_dependencies(main)
+        .unwrap()
+        .into_iter()
+        .map(|dep| (dep.imported_path, dep.import_type))
+        .collect();
+    use reflex::models::ImportType::{External, Internal, Stdlib};
+    assert_eq!(
+        kinds,
+        vec![
+            ("Foundation".to_string(), Stdlib),
+            ("Core".to_string(), Internal),
+            ("Util.Log".to_string(), Internal),
+            // Carthage's checkout is vendored: its Package.swift is not ours
+            ("Alamofire".to_string(), External),
+        ]
+    );
+    let info = d.get_dependencies_info(main).unwrap();
+    let core = info.iter().find(|i| i.path == "Core").expect("{info:?}");
+    assert_eq!(
+        core.resolved_paths.as_deref(),
+        Some(
+            &[
+                "Sources/Core/Model.swift".to_string(),
+                "Sources/Core/Sub/Store.swift".to_string()
+            ][..]
+        )
+    );
+    let swift = d
+        .internal_resolution_by_language()
+        .unwrap()
+        .into_iter()
+        .find(|l| l.language == "Swift")
+        .unwrap();
+    assert_eq!((swift.internal, swift.resolved), (3, 3));
+}
+
+/// The files of a target use each other with no import, like a Go package: an
+/// executable's other files are used because `main.swift` is, and they share its
+/// island. An executable whose `@main` file has another name is a root too, and
+/// so is a manifest for one Swift version.
+#[test]
+fn swift_target_files_are_one_unit() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    swift_package(r);
+    write(r, "Sources/App/Commands.swift", "struct Commands {}\n");
+    write(
+        r,
+        "Sources/Tool/Tool.swift",
+        "@main\nstruct Tool {\n    static func main() { Flags.parse() }\n}\n",
+    );
+    write(
+        r,
+        "Sources/Tool/Flags.swift",
+        "enum Flags { static func parse() {} }\n",
+    );
+    write(
+        r,
+        "Package@swift-6.0.swift",
+        "// swift-tools-version:6.0\nimport PackageDescription\n",
+    );
+    index(r);
+
+    let d = deps(r);
+    let unused = paths(&d, &d.find_unused_files().unwrap());
+    assert!(unused.is_empty(), "{unused:?}");
+    let islands: Vec<HashSet<String>> = d
+        .find_islands()
+        .unwrap()
+        .iter()
+        .map(|i| paths(&d, i))
+        .collect();
+    let app = islands
+        .iter()
+        .find(|i| i.contains("Sources/App/main.swift"))
+        .unwrap();
+    assert!(app.contains("Sources/App/Commands.swift"), "{islands:?}");
+    assert!(app.contains("Sources/Core/Model.swift"), "{islands:?}");
+}
+
+#[test]
+fn new_swift_file_in_a_target_is_reached_incrementally() {
+    let t = TempDir::new().unwrap();
+    let r = t.path();
+    swift_package(r);
+    index(r);
+
+    write(r, "Sources/Core/New.swift", "public enum New {}\n");
+    Indexer::new(CacheManager::new(r), IndexConfig::default())
+        .update_paths(r, &[r.join("Sources/Core/New.swift")])
+        .expect("update_paths");
+    let incremental = edges(r);
+
+    let fresh = TempDir::new().unwrap();
+    swift_package(fresh.path());
+    write(
+        fresh.path(),
+        "Sources/Core/New.swift",
+        "public enum New {}\n",
+    );
+    index(fresh.path());
+
+    assert_eq!(incremental, edges(fresh.path()));
+    assert!(
+        incremental.contains(&edge("Sources/App/main.swift", "Sources/Core/New.swift")),
+        "{incremental:?}"
+    );
+}

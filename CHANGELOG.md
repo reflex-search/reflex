@@ -14,6 +14,22 @@ answer from it marked `stale`.
   `REFLEX_MCP_GROUPED=0` restores the flat array; the `rfx mcp` startup line on stderr
   reports `grouped=on|off`.
 
+### Added
+
+- **Swift imports.** `get_dependencies`, `rfx deps` and `analyze` returned nothing for a
+  `.swift` file, the same answer as a file with no imports. Swift has no tree-sitter
+  grammar here, so imports are read from the text after comments and strings are
+  blanked: every attribute, access level and kind (`@testable import`,
+  `internal import os`, `import struct Foundation.URL`). Apple SDK and toolchain modules
+  are stdlib. A target of the workspace's `Package.swift` (now a resolver config) is
+  internal and resolves to every file of the target's directory (its `path:`, else
+  `Sources/<name>`, `Tests/<name>`, `Plugins/<name>`). The files of a target are one
+  unit for unused files and islands, like a Go package; executable, test, plugin and
+  macro targets are entry points. `Pods/` and `Carthage/` are vendored for Swift.
+  Alamofire and swift-argument-parser resolve 45/45 and 161/161 internal imports;
+  swift-argument-parser's unused files fall from 171 (every Swift file) to 3. Xcode
+  projects without a `Package.swift` have no targets to resolve to.
+
 ### Changed
 
 - **The `list_locations` description says "every matching line", not "every match".**

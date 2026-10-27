@@ -74,9 +74,6 @@ failed Zola build still exits 0.
 - **MCP `index_project` never spawns the symbol pass** (`rebuild_index`, `src/mcp.rs`
   ~L903); only `rfx index` and auto-update do. Symbol queries then parse on demand.
 - **`src/watcher.rs` ignores `.gitignore` and reports only the first path of a rename.**
-- **Swift has no import extractor** (`src/indexer.rs` falls to `_ => Vec::new()`), so
-  `get_dependencies` on a `.swift` file returns `[]`, like a file with no imports, with
-  no warning. Symbol searches on Swift do warn (`no_symbol_parser_warning`).
 - **`rfx serve` defects** (found 2026-09-28 while rewriting `docs/API.md`; listed there
   under "Known limitations"):
   1. `glob` / `exclude` are unusable: declared as lists, the query-string parser cannot
