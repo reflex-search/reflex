@@ -104,9 +104,77 @@ arm (`results-sessions/opus-investigate-grouped`). Compared with the same 3 sess
 - The Grep arm itself cost more than on 2026-09-30 (105.8K vs 87.1K weighted, same
   tool mix). Compare ratios within one wave only.
 
+## REF-219: file-grouped rows for `search_code` / `search_regex` (offline, 2026-10-27) — dropped
+
+Replayed every `search_code` / `search_regex` list reply of the eager Reflex arms: rows
+regrouped as `{path: [[start, end, preview, …], …]}` with `path` and `language` dropped
+from the columns (scratch script, not kept).
+
+| run | replies / session | rows / file | saved of these replies | saved of all replies |
+| --- | --- | --- | --- | --- |
+| opus-investigate-grouped (2026-10-25) | 1.9 | 1.2 | 4.0 % | 0.9 % |
+| grouped-investigate-sonnet5 | 0.7 | 1.0 | 3.0 % | 0.2 % |
+| grouped-wording-tokio-sonnet5 | 1.6 | 1.0 | 3.0 % | 0.7 % |
+| grouped-smoke-sonnet5 | 0.7 | 1.0 | 3.1 % | 0.1 % |
+| steer-long-opus (2026-09-30) | 2.4 | 1.0 | 3.4 % | 0.2 % |
+| slim-long-sonnet5 (2026-09-30, before grouped `list_locations`) | 19.0 | 3.3 | 18.9 % | 7.8 % |
+
+Since `list_locations` answers "where does X occur", agents call `search_code` about twice
+a session, mostly with one row per file: nothing repeats. Replies are a small part of a
+session next to the fixed text. Dropped by the user on 2026-10-27; a third reply shape is
+not worth under 1 %.
+
+## Fewer listed tools (2026-10-27, branch `feat/fewer-listed-tools`)
+
+User decision: `search_ast`, `gather_context`, `index_project` and `check_index_status`
+leave the default `tools/list`; `[mcp] extra_tools` lists them; `rfx mcp --no-update` lists
+the two index tools (the only way to refresh then). Claude Code can call only listed tools,
+so with `index_project` unlisted, `action_required` and error advice name `rfx index`, and
+the instructions' freshness paragraph drops the "never call index_project or
+check_index_status after edits" clause (`instructions()`).
+
+| tool | chars in `tools/list` | calls in 508 Reflex-arm benchmark sessions |
+| --- | --- | --- |
+| `search_ast` | 1,060 | 0 |
+| `gather_context` | 563 | 0 |
+| `index_project` | 357 | 10 |
+| `check_index_status` | 223 | 4 |
+| `analyze` (kept) | 859 | 0 |
+
+The benchmark questions are Grep-like, so 0 calls says little about structural work;
+`analyze` stays listed (the import graph is a feature). Fixed text: instructions 2,367 →
+2,307 chars, `tools/list` 10,286 → 8,079 (6 tools), together 12,653 → 10,386 (−18 %);
+at ~2.5 chars per token, ~900 fewer tokens on every API call. Expected: about 2K of the
+~10K weighted-token gap in the Opus 12-question sessions above.
+
+### Measured (2026-10-27, Sonnet 5.5, `results-sessions/sonnet55-fewer-tools`)
+
+One wave: 3 investigate sessions × 2 trials × arms A / B (deferred) / Beager, 6 workers.
+Binary: branch `feat/fewer-listed-tools` uncommitted on `843ec7c` (startup line
+`unlisted=search_ast,gather_context,index_project,check_index_status`). Sonnet 5.5 instead
+of Opus (user: plan usage); so no earlier wave is comparable, only the ratios in this one.
+
+| arm | weighted (median) | cost $ | turns | Reflex calls / session | accuracy |
+| --- | --- | --- | --- | --- | --- |
+| A (Grep) | 97.0K | 0.215 | 24 | 0 | 18/18 sessions 1.000 (all arms) |
+| B (deferred) | 105.7K (1.07×) | 0.234 (1.06×) | 25 | 12 in 4 of 6, 0 in 2 | |
+| Beager | 108.4K (1.12×) | 0.231 (1.06×) | 24 | 12 | |
+
+- **Fixed text:** first call reads + writes 23,806 tokens (Beager) vs 19,757 (A): +4,049 per
+  call, against +4,984 with 10 tools on Opus 5.5 (2026-10-25; another model, so the
+  tokenizer may differ). Over 24 calls that is still ~10K weighted, about the whole
+  Beager−A gap (11.4K): the fixed text remains the gap.
+- **Cache warmth equal:** in every arm 2 of 6 sessions wrote the prefix cold (the first
+  round), the other 4 read it.
+- **Adoption (deferred):** 4 of 6 B sessions loaded the schemas with one ToolSearch and
+  answered all 12 questions with Reflex; 2 used Grep only. No session tried a hidden tool
+  (0 "No such tool" replies). n = 6: no change in adoption can be read from it.
+- Beager answered every question with `list_locations` (54) or `search_code` (18).
+
 ## Not done / next levers
 
-- Fewer listed tools (`search_ast`, `gather_context`, `check_index_status`, …) for the
-  fixed text: needs a user decision and a deferred-mode adoption check.
+- The fixed text is still the gap (+4K tokens per call, ~1.06× Grep's cost on Sonnet 5.5).
+  What is left is the 6 schemas (8,079 chars, mostly the shared search parameters) and
+  the instructions (2,307 chars, the adoption-critical text).
 - `list_locations` `dependencies: true` is accepted but its imports never reached the
   reply (either shape). Fixed 2026-10-25: a `dependencies` map beside `locations`.

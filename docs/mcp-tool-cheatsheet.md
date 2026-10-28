@@ -2,6 +2,9 @@
 
 > **Quick rule:** Start cheap, escalate only when needed.
 > `list_locations` → `search_code` → `search_regex` → `search_ast` (last resort)
+>
+> `search_ast`, `gather_context`, `index_project` and `check_index_status` are not in
+> `tools/list` by default. See [Listed tools](#listed-tools).
 
 ---
 
@@ -76,7 +79,7 @@
 
 | Goal | Tool | Why |
 |------|------|-----|
-| Project type, entry points, frameworks | `gather_context` (no params) | One-shot codebase overview |
+| Project type, entry points, frameworks | `gather_context` (no params; listed with `extra_tools`) | One-shot codebase overview |
 | Dependency health at a glance | `analyze(kind: "summary")` | Returns counts: circular, hotspots, unused, islands |
 | Most-imported (critical) files | `analyze(kind: "hotspots")` | Files ranked by import count — the load-bearing modules |
 | Unused / orphaned files | `analyze(kind: "unused")` | Candidates for deletion (verify entry points aren't included) |
@@ -108,7 +111,7 @@ and builds it when there is none; after an edit, a checkout or a rebase, just se
 | Goal | Tool | Why |
 |------|------|-----|
 | A response has `can_trust_results: false` | read its `warnings` | The automatic update could not run (read-only `.reflex/`, a cache another rfx version owns) |
-| The index appears corrupted | `index_project` with `force: true` | Full rebuild |
+| The index appears corrupted | `rfx index --force`, or `index_project` with `force: true` when it is listed | Full rebuild |
 
 ---
 
@@ -127,13 +130,22 @@ and builds it when there is none; after an edit, a checkout or a rebase, just se
 | `index_project` | 🔴 Slow (write) | Status + stats | — |
 | `search_ast` | 🔴 Slowest | Structural matches | `pattern`, `lang` + glob |
 
-> **Structural analysis** (`analyze`) is shown by default. To hide it and reduce the tool
-> surface for AI agents, add to `~/.reflex/config.toml`:
->
-> ```toml
-> [mcp]
-> enable_structural_tools = false  # hides analyze
-> ```
+### Listed tools
+
+Claude Code sends every listed schema on every API call, so `tools/list` shows six tools:
+`list_locations`, `search_code`, `search_regex`, `find_references`, `get_dependencies` and
+`analyze`. The other four answer when a client calls them by name, but Claude Code can call
+only listed tools. Configure the list in `~/.reflex/config.toml`:
+
+```toml
+[mcp]
+extra_tools = ["search_ast", "gather_context"]  # also list these
+enable_structural_tools = false                 # hide analyze
+```
+
+`rfx mcp --no-update` lists `index_project` and `check_index_status`: without the automatic
+update they are the only way to refresh the index. When `index_project` is not listed,
+`action_required` and error advice name `rfx index` instead.
 
 ### Removed tool names
 
@@ -230,13 +242,15 @@ Behaviour:
 
 **Corrupted or missing index:** on `CacheCorrupted` the server rebuilds once (force) and retries
 the call automatically. If that cannot work (lock held, read-only cache), the error names the
-`index_project` tool rather than the CLI. A missing index is built by the first tool call.
+`index_project` tool when it is listed, else `rfx index --force`. A missing index is built by
+the first tool call.
 
 ---
 
 ## When to Use `search_ast` (Rare)
 
-`search_ast` is a **last resort**. Use it only when:
+`search_ast` is a **last resort**, listed only with `[mcp] extra_tools = ["search_ast"]`.
+Use it only when:
 1. Text search (`search_code` / `search_regex`) cannot express the pattern
 2. You need structural matching (e.g., "all async functions that contain a `match` expression")
 3. You **must** add `glob` to limit scope

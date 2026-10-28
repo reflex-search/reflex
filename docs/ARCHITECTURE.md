@@ -517,9 +517,12 @@ Text, lock and generated files never enter the graph.
   did-you-mean, unknown language names rejected). `search_code` and `search_regex` return a columnar
   `{columns, rows}` shape (`to_columnar`; `REFLEX_MCP_COLUMNAR=0` restores
   `results[]`). A tool that fails with `CacheCorrupted` triggers one forced rebuild
-  and one retry (`with_corruption_recovery`). Ten tools are listed (`tool_list`); the
-  structural analyses are one `analyze` tool (hidden with `[mcp]
-  enable_structural_tools = false` in `~/.reflex/config.toml`), and the reverse and
+  and one retry (`with_corruption_recovery`). `tool_list` holds ten tools and
+  `ToolListing` picks the six `tools/list` shows: `search_ast`, `gather_context`,
+  `index_project` and `check_index_status` (`HIDDEN_TOOLS`) are listed only with
+  `[mcp] extra_tools` in `~/.reflex/config.toml` (the two index tools also under
+  `--no-update`), and stay callable by name. The structural analyses are one `analyze`
+  tool (hidden with `[mcp] enable_structural_tools = false`), and the reverse and
   transitive lookups are options of `get_dependencies` (`handler_for` routes them). The
   eight names merged on 2026-09-30 stay callable, unlisted, with a deprecation warning
   (`LEGACY_TOOLS`). Shared rules live in `MCP_INSTRUCTIONS`, so descriptions stay short:

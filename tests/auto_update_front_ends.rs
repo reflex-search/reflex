@@ -354,8 +354,19 @@ fn mcp_text_does_not_ask_for_manual_reindexing() {
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     ];
     let input: String = reqs.iter().map(|r| format!("{r}\n")).collect();
-    run_mcp_server_io_with(root, Cursor::new(input.into_bytes()), &mut out, true, None).unwrap();
+    let update = Some(UpdateOptions::library());
+    run_mcp_server_io_with(
+        root,
+        Cursor::new(input.into_bytes()),
+        &mut out,
+        true,
+        update,
+    )
+    .unwrap();
     let text = String::from_utf8(out).unwrap();
+    // Neither index tool is listed beside the automatic update (2026-10-27).
+    assert!(!text.contains("index_project"), "{text}");
+    assert!(!text.contains("check_index_status"), "{text}");
     for stale_advice in [
         "Call `index_project` and retry",
         "call `index_project`, then retry",

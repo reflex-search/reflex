@@ -113,6 +113,8 @@ reflex-mcp startup: version=2.0.3 build=d455c04 columnar=on structural_tools=on
 - `columnar` is `on` unless `REFLEX_MCP_COLUMNAR=0` is set (see [Reading results](#reading-results)).
 - `structural_tools` is `on` unless `~/.reflex/config.toml` sets
   `[mcp] enable_structural_tools = false`. When off, the `analyze` tool is hidden.
+- `unlisted` names the tools `tools/list` leaves out (by default `search_ast`,
+  `gather_context`, `index_project`, `check_index_status`), or `none`.
 
 Claude Code also records this line in its MCP logs. Check it there to confirm which
 binary Claude Code actually started.
@@ -132,8 +134,7 @@ The index lives in `.reflex/` at the project root. A later run with no changed f
 returns quickly; any change rebuilds the index from every file, and the background
 symbol pass parses every file again. `rfx index --force` rebuilds even when nothing changed.
 
-You can also skip this step. When a tool reports `Index not found`, Claude calls the
-`index_project` tool and retries.
+You can also skip this step. The first tool call builds a missing index.
 
 > **Tip:** keep the index out of git:
 > ```bash
@@ -177,14 +178,22 @@ uses most:
 | `find_references` | A symbol's definition plus every usage, in one call. Skips strings and comments by default. Code files only. |
 | `list_locations` | Every matching line for a pattern, grouped by file (`{path: [line, ...]}`), without previews. A line with two matches appears once, like `grep -n`. |
 | `get_dependencies` | What a file imports. `reverse: true` for the files that import it; `depth: N` to follow imports N levels. |
-| `gather_context` | Project structure, frameworks, entry points. Useful at the start of a session. |
-| `check_index_status` | Whether the index matches the files on disk. Rarely needed: every tool updates the index first. |
+| `analyze` | Import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or `islands`. |
+
+Four more tools are not listed by default. Claude Code sends every listed schema on every
+API call, and agents almost never called these:
+
+| Tool | Use it for |
+|------|------------|
+| `search_ast` | Slow Tree-sitter structural queries; always pass `glob`. |
+| `gather_context` | Project structure, frameworks, entry points. |
+| `check_index_status` | Whether the index matches the files on disk. Every tool updates the index first. |
 | `index_project` | Force an index run. `force: true` rebuilds from scratch. |
 
-The rest are `search_ast` (slow Tree-sitter structural queries; always pass `glob`) and
-`analyze` (import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or
-`islands`). See [`mcp-tool-cheatsheet.md`](./mcp-tool-cheatsheet.md) for a decision
-tree by intent.
+To list them, add `[mcp] extra_tools = ["search_ast", "gather_context"]` (any of the four)
+to `~/.reflex/config.toml`. `rfx mcp --no-update` lists `index_project` and
+`check_index_status`, because they are then the only way to refresh the index. See
+[`mcp-tool-cheatsheet.md`](./mcp-tool-cheatsheet.md) for a decision tree by intent.
 
 Older tool names still work but are deprecated: `count_occurrences`, `get_dependents`,
 `get_transitive_deps`, `find_hotspots`, `find_circular`, `find_unused`, `find_islands`
@@ -294,10 +303,11 @@ content does not make it stale. Inside a git repository, candidates come from
 
 `status` is `fresh` or `stale`. `check_index_status` also returns
 `{"status": "missing", "action_required": "index_project"}` when there is no index. A stale index always has `can_trust_results: false`, even when a search finds
-nothing. A search tool with no index fails with
-`Index not found. Call the index_project tool, then retry.`
+nothing. Every tool builds a missing index first; under `rfx mcp --no-update`, a search
+tool with no index fails with `Index not found. Call the index_project tool, then retry.`
 
-A stale `check_index_status` response, captured after editing one file:
+A stale `check_index_status` response under `rfx mcp --no-update`, captured after editing
+one file:
 
 ```json
 {
@@ -320,15 +330,18 @@ A stale `check_index_status` response, captured after editing one file:
 
 - `files_modified`, `files_added` and `files_deleted` list paths, up to 100 each.
   `truncated` is set when a list was cut short. `changed_count` is the total.
-- `action_required` names the MCP tool to call: `index_project`.
+- `action_required` names the MCP tool to call, `index_project`, when `tools/list`
+  shows it. Otherwise it is `rfx index`: Claude Code can call only listed tools. Error
+  advice follows the same rule.
 - In `search_code` / `search_regex` responses the same fields sit inside `warning`.
 
 ### What to do
 
-Stale results are still real matches. They may miss new code, and a deleted file can
-still produce hits at its old lines. When completeness matters (find all callers,
-rename planning, impact analysis), call `index_project` and search again. The tool
-descriptions tell Claude to do this.
+Nothing, normally: every tool updates a stale index before it answers. A response says
+`stale` only when that update could not run, and its `warnings` say why. Stale results are
+still real matches. They may miss new code, and a deleted file can still produce hits at
+its old lines. When completeness matters (find all callers, rename planning, impact
+analysis), do what `action_required` says and search again.
 
 To keep the index current while you work, run the watcher in a terminal:
 
@@ -345,14 +358,14 @@ last second may not show up as a change yet. `check_index_status` always checks 
 
 ### "Index not found"
 
-There is no `.reflex/` in the directory the server runs in. Run `rfx index` in the
-project root, or let Claude call `index_project`. Make sure you launched Claude Code
-from the same directory you indexed.
+There is no `.reflex/` in the directory the server runs in, and the server runs with
+`--no-update`. Run `rfx index` in the project root, or let Claude call `index_project`.
+Make sure you launched Claude Code from the same directory you indexed.
 
 ### Stale results or missing new files
 
-Run `rfx index` (or ask Claude to call `index_project`). If results still look wrong,
-rebuild with `rfx index --force` (or `index_project` with `force: true`).
+Run `rfx index`. If results still look wrong, rebuild with `rfx index --force` (or
+`index_project` with `force: true`, when it is listed).
 
 ### A search returns 0 but the text is there
 

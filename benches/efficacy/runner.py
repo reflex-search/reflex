@@ -60,8 +60,9 @@ SEARCH_TOOLS = frozenset([
 # Listing these in --allowedTools forces the Claude Code SDK to eagerly load
 # their schemas at session start, eliminating the "deferred schema" ToolSearch
 # calls that otherwise add 1-2 wasted turns to every arm B/C trial.
-# The tools `rfx mcp` lists (10 since 2026-09-30), plus the names merged into them
-# (still callable, unlisted) so a binary from before the merge also runs.
+# Every tool `rfx mcp` can list (6 by default since 2026-10-27, 10 from 2026-09-30;
+# `[mcp] extra_tools` lists the rest), plus the names merged into them (still
+# callable, unlisted) so a binary from before the merge also runs.
 REFLEX_MCP_TOOLS = [
     "mcp__reflex__analyze",
     "mcp__reflex__check_index_status",
@@ -413,7 +414,7 @@ def verify_mcp_arm_flags(
     print(f"  [PROBE] {arm_name} resolved MCP flags: build={flags.get('build','?')} "
           f"structuredContent={flags.get('structuredContent','?')} "
           f"sc_stage2={flags.get('sc_stage2','?')} columnar={flags.get('columnar','?')} "
-          f"grouped={flags.get('grouped','?')}")
+          f"grouped={flags.get('grouped','?')} unlisted={flags.get('unlisted','?')}")
     for var, val in (mcp_env or {}).items():
         expected = _expected_flag_value(var, val)
         if expected is None:

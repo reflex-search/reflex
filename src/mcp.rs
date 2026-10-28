@@ -233,12 +233,31 @@ Matching: search_code, list_locations and find_references match WHOLE identifier
 
 Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated. glob and exclude follow gitignore rules: "src/**/*.rs" is anchored at the root, "*.rs" matches at any depth.
 
-The index updates itself before every call and is built on first use: never call index_project or check_index_status after edits. can_trust_results: false means the update could not run; warnings say why.
+The index updates itself before every call and is built on first use. can_trust_results: false means the update could not run; warnings say why.
 
 To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. Use search_code for context or symbols, find_references for a definition plus every call site without string/comment noise, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
+/// The freshness paragraph of [`MCP_INSTRUCTIONS`]: the index updates itself and
+/// the index tools are not listed.
+const FRESHNESS_TEXT: &str = "The index updates itself before every call and is built on first use. can_trust_results: false means the update could not run; warnings say why.";
+
+/// The instructions for this server. The freshness paragraph names the index tools
+/// only when `tools/list` shows them: listed beside the automatic update, agents
+/// must be told not to call them after edits (Sonnet 5 made 33 such calls before
+/// that sentence, 0 after); under `--no-update` they are how the index is refreshed.
+fn instructions(listing: &ToolListing) -> std::borrow::Cow<'static, str> {
+    let freshness = if !listing.auto_update {
+        "This server does not update the index (--no-update): after edits, call index_project before you search. can_trust_results: false means the index is stale."
+    } else if listing.lists("index_project") || listing.lists("check_index_status") {
+        "The index updates itself before every call and is built on first use: never call index_project or check_index_status after edits. can_trust_results: false means the update could not run; warnings say why."
+    } else {
+        return std::borrow::Cow::Borrowed(MCP_INSTRUCTIONS);
+    };
+    std::borrow::Cow::Owned(MCP_INSTRUCTIONS.replace(FRESHNESS_TEXT, freshness))
+}
+
 /// Handle initialize request
-fn handle_initialize(_params: Option<Value>) -> Result<Value> {
+fn handle_initialize(_params: Option<Value>, listing: &ToolListing) -> Result<Value> {
     Ok(json!({
         "protocolVersion": "2025-11-25",
         "capabilities": {
@@ -248,7 +267,7 @@ fn handle_initialize(_params: Option<Value>) -> Result<Value> {
             "name": "reflex",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": MCP_INSTRUCTIONS
+        "instructions": instructions(listing)
     }))
 }
 
@@ -275,20 +294,78 @@ fn search_params(extra: Value) -> Value {
     json!({"type": "object", "properties": props, "required": ["pattern"]})
 }
 
-/// The tools `tools/list` returns. `analyze` is left out when
-/// `[mcp] enable_structural_tools = false` (`~/.reflex/config.toml`).
+/// Tools `tools/list` leaves out unless `[mcp] extra_tools` names them (2026-10-27).
+/// Claude Code sends every listed schema on every API call; these four were 2,203 of
+/// its 10,286 characters, and agents made 14 calls to them in 508 benchmark sessions
+/// (`.context/GREP_PARITY_RESEARCH.md`). They stay callable by name, but Claude Code
+/// can call only listed tools.
+const HIDDEN_TOOLS: [&str; 4] = [
+    "search_ast",
+    "gather_context",
+    "index_project",
+    "check_index_status",
+];
+
+/// Which tools `tools/list` shows. Every tool stays callable by name.
+#[derive(Debug, Clone)]
+struct ToolListing {
+    /// `[mcp] enable_structural_tools`: list `analyze`.
+    structural: bool,
+    /// `[mcp] extra_tools`: hidden tools to list anyway.
+    extra: Vec<String>,
+    /// The server updates the index before each call (not `--no-update`). Without
+    /// it, `index_project` and `check_index_status` are the only way to refresh the
+    /// index, so they are listed.
+    auto_update: bool,
+}
+
+impl ToolListing {
+    /// The listing for `[mcp]` settings. An `extra_tools` name that is no tool is
+    /// reported on stderr and ignored.
+    fn from_config(config: &crate::semantic::config::McpConfig, auto_update: bool) -> Self {
+        let tools = tool_list();
+        for name in &config.extra_tools {
+            if !tools.iter().any(|t| t["name"] == name.as_str()) {
+                eprintln!(
+                    "[warn] ~/.reflex/config.toml: '[mcp].extra_tools' names no tool '{}' — ignored",
+                    name
+                );
+            }
+        }
+        Self {
+            structural: config.enable_structural_tools,
+            extra: config.extra_tools.clone(),
+            auto_update,
+        }
+    }
+
+    /// Whether `tools/list` shows the tool `name`.
+    fn lists(&self, name: &str) -> bool {
+        if self.extra.iter().any(|t| t == name) {
+            return true;
+        }
+        match name {
+            "analyze" => self.structural,
+            "index_project" | "check_index_status" if !self.auto_update => true,
+            _ => !HIDDEN_TOOLS.contains(&name),
+        }
+    }
+}
+
+/// Every tool `tools/list` can return, in listing order; [`ToolListing`] picks the
+/// ones it shows.
 ///
-/// 2026-09-30: 17 tools with ~44 KB of schemas became these 9 (~13 KB). Claude Code
+/// 2026-09-30: 17 tools with ~44 KB of schemas became these 10 (~10.6 KB). Claude Code
 /// carries every listed schema on every turn, and that prefix was the whole token
 /// gap to Grep in long sessions (`.context/AUTO_UPDATE_RESEARCH.md`). The removed
 /// names still work, unlisted ([`LEGACY_TOOLS`]).
-fn tool_list(enable_structural: bool) -> Vec<Value> {
+fn tool_list() -> Vec<Value> {
     let contains = json!({"type": "boolean", "description": "Substring match (grep -F) instead of whole identifiers"});
     let limit = json!({"type": "integer", "description": "Max results (default 200, at most 500)"});
     let offset = json!({"type": "integer", "description": "Skip this many results (next page)"});
     let mode = json!({"type": "string", "enum": ["list", "count"], "description": "count: {count, files} only"});
     let paths = json!({"type": "boolean", "description": "Return file paths only"});
-    let mut tools = vec![
+    vec![
         json!({
             "name": "search_code",
             "description": "Search code for a literal pattern: every match with path, line and preview (for path and line only, list_locations is cheaper). Whole identifiers by default; contains:true for substrings; symbols:true for definitions only (kind narrows them). Answer: {columns, rows} (each row aligns with columns) plus pagination; when has_more, fetch the next page with offset. total_count is exact only when total_is_exact.",
@@ -422,11 +499,7 @@ fn tool_list(enable_structural: bool) -> Vec<Value> {
             "description": "Report whether the index matches the files on disk, without updating it. Rarely needed: every other tool updates the index first.",
             "inputSchema": {"type": "object", "properties": {}}
         }),
-    ];
-    if !enable_structural {
-        tools.retain(|t| t["name"] != "analyze");
-    }
-    tools
+    ]
 }
 
 /// Tool names removed from `tools/list` on 2026-09-30 that still work: each call
@@ -492,8 +565,10 @@ fn legacy_schemas() -> Vec<(&'static str, Value)> {
 }
 
 /// Handle tools/list request
-fn handle_list_tools(_params: Option<Value>, enable_structural: bool) -> Result<Value> {
-    Ok(json!({ "tools": tool_list(enable_structural) }))
+fn handle_list_tools(_params: Option<Value>, listing: &ToolListing) -> Result<Value> {
+    let mut tools = tool_list();
+    tools.retain(|t| t["name"].as_str().is_some_and(|name| listing.lists(name)));
+    Ok(json!({ "tools": tools }))
 }
 
 /// Handle tools/call request
@@ -652,14 +727,14 @@ struct ToolSpec {
     required: Vec<String>,
 }
 
-/// All tool specs, built once from `handle_list_tools` with structural tools
-/// included so hidden tools still validate when called directly.
+/// All tool specs, built once from every tool (listed or not) and the removed
+/// names, so hidden tools still validate when called directly.
 fn tool_specs() -> &'static std::collections::HashMap<String, ToolSpec> {
     static SPECS: std::sync::OnceLock<std::collections::HashMap<String, ToolSpec>> =
         std::sync::OnceLock::new();
     SPECS.get_or_init(|| {
         let mut map = std::collections::HashMap::new();
-        let mut listing = tool_list(true);
+        let mut listing = tool_list();
         listing.extend(
             legacy_schemas()
                 .into_iter()
@@ -953,10 +1028,12 @@ fn is_cache_corrupted(e: &anyhow::Error) -> bool {
 
 /// Run a tool; if it fails because the on-disk cache is corrupted, rebuild
 /// the index once (force) and retry once. `index_project` itself is never
-/// wrapped, so recovery cannot recurse.
+/// wrapped, so recovery cannot recurse. `index_tool`: `tools/list` shows
+/// `index_project` (see [`force_rebuild_advice`]).
 fn with_corruption_recovery(
     name: &str,
     root: &Path,
+    index_tool: bool,
     mut run: impl FnMut() -> Result<Value>,
 ) -> Result<Value> {
     let first = match run() {
@@ -981,33 +1058,48 @@ fn with_corruption_recovery(
             return Err(rebuild_err);
         }
         return Err(anyhow::anyhow!(
-            "Index is corrupted and automatic rebuild failed: {}. \
-             Call the index_project tool with {{\"force\": true}}.",
-            rebuild_err
+            "Index is corrupted and automatic rebuild failed: {}. {}.",
+            rebuild_err,
+            force_rebuild_advice(index_tool)
         ));
     }
     run().map_err(|e| {
         anyhow::anyhow!(
-            "Index was rebuilt after corruption but {} still failed: {}. \
-             Call the index_project tool with {{\"force\": true}}.",
+            "Index was rebuilt after corruption but {} still failed: {}. {}.",
             name,
-            e
+            e,
+            force_rebuild_advice(index_tool)
         )
     })
 }
 
-/// Error text as an MCP client should read it: an agent cannot run the CLI,
-/// so `rfx index` advice becomes `index_project` advice. CLI/HTTP output is
-/// untouched (they format the error themselves).
-fn mcp_facing_message(e: &anyhow::Error) -> String {
+/// How MCP text tells an agent to rebuild the index: the `index_project` tool when
+/// `tools/list` shows it (`index_tool`), else the CLI. Claude Code cannot call an
+/// unlisted tool, and an agent without a shell cannot run the CLI.
+fn force_rebuild_advice(index_tool: bool) -> &'static str {
+    if index_tool {
+        "Call the index_project tool with {\"force\": true}"
+    } else {
+        "Run `rfx index --force`"
+    }
+}
+
+/// Error text as an MCP client should read it: `rfx index` advice names the
+/// `index_project` tool when `tools/list` shows it (`index_tool`). CLI/HTTP output
+/// is untouched (they format the error themselves).
+fn mcp_facing_message(e: &anyhow::Error, index_tool: bool) -> String {
     use crate::errors::ReflexError;
     match e.downcast_ref::<ReflexError>() {
-        Some(ReflexError::IndexNotFound) => {
+        Some(ReflexError::IndexNotFound) if index_tool => {
             "Index not found. Call the index_project tool, then retry.".to_string()
         }
+        Some(ReflexError::IndexNotFound) => {
+            "Index not found. Run `rfx index`, then retry.".to_string()
+        }
         Some(ReflexError::CacheCorrupted(inner)) => format!(
-            "Cache appears to be corrupted: {}. Call the index_project tool with {{\"force\": true}}, then retry.",
-            inner
+            "Cache appears to be corrupted: {}. {}, then retry.",
+            inner,
+            force_rebuild_advice(index_tool)
         ),
         // Never surface SQLite's "database is locked" for this. Name the process, its
         // progress, and the fact that waiting is the right move.
@@ -1021,15 +1113,21 @@ fn mcp_facing_message(e: &anyhow::Error) -> String {
             } else {
                 String::new()
             };
+            let again = if index_tool {
+                "call index_project again"
+            } else {
+                "retry"
+            };
             format!(
-                "{}{}. It holds the index database. Wait a few seconds and call index_project again; \
+                "{}{}. It holds the index database. Wait a few seconds and {}; \
                  searches keep working from the existing index meanwhile.",
-                err, pct
+                err, pct, again
             )
         }
         Some(err @ ReflexError::CacheVersionMismatch { .. }) => format!(
-            "{} Call the index_project tool with {{\"force\": true}} to rebuild it for this version.",
-            err
+            "{} {} to rebuild it for this version.",
+            err,
+            force_rebuild_advice(index_tool)
         ),
         _ => e.to_string(),
     }
@@ -1155,14 +1253,25 @@ fn onoff(v: bool) -> &'static str {
 ///
 /// REF-215 removed the `structuredContent` / `sc_stage2` flags along with the
 /// env vars that drove them.
-fn startup_flags_line(columnar: bool, structural: bool, grouped: bool) -> String {
+fn startup_flags_line(columnar: bool, listing: &ToolListing, grouped: bool) -> String {
+    let unlisted: Vec<String> = tool_list()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .filter(|name| !listing.lists(name))
+        .map(str::to_string)
+        .collect();
     format!(
-        "reflex-mcp startup: version={} build={} columnar={} structural_tools={} grouped={}",
+        "reflex-mcp startup: version={} build={} columnar={} structural_tools={} grouped={} unlisted={}",
         env!("CARGO_PKG_VERSION"),
         option_env!("REFLEX_GIT_SHA").unwrap_or("unknown"),
         onoff(columnar),
-        onoff(structural),
+        onoff(listing.structural),
         onoff(grouped),
+        if unlisted.is_empty() {
+            "none".to_string()
+        } else {
+            unlisted.join(",")
+        },
     )
 }
 
@@ -1358,6 +1467,7 @@ fn handle_call_tool(
     params: Option<Value>,
     root: &Path,
     update: Option<UpdateOptions>,
+    listing: &ToolListing,
 ) -> Result<Value> {
     let params = params.ok_or_else(|| anyhow::anyhow!("Missing params for tools/call"))?;
 
@@ -1368,13 +1478,14 @@ fn handle_call_tool(
     let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
     let (arguments, warnings) = normalize_arguments(name, spec, params["arguments"].clone())?;
 
+    let index_tool = listing.lists("index_project");
     // Tools that read the index without the engine bring it up to date here.
     let mut warnings = warnings;
     if let Some(opts) = update
         && !ENGINE_UPDATED_TOOLS.contains(&name)
         && !NO_UPDATE_TOOLS.contains(&name)
         && let Updated::Skipped(reason) = update_if_stale(&CacheManager::new(root), &opts)
-            .map_err(|e| anyhow::anyhow!("{}", mcp_facing_message(&e)))?
+            .map_err(|e| anyhow::anyhow!("{}", mcp_facing_message(&e, index_tool)))?
     {
         warnings.push(format!("Index not updated: {reason}"));
     }
@@ -1385,15 +1496,30 @@ fn handle_call_tool(
         warnings.push(format!("`{name}` is deprecated; use {instead}"));
     }
 
-    let mut data = with_corruption_recovery(name, root, || {
+    let mut data = with_corruption_recovery(name, root, index_tool, || {
         dispatch_tool(handler, &arguments, root, update)
     })?;
     if FRESHNESS_FIELD_TOOLS.contains(&name) {
         add_freshness_fields(&mut data, root);
     }
+    if !index_tool {
+        cli_index_action(&mut data);
+    }
     warnings.extend(graph_warnings(handler, &arguments, root));
 
     Ok(finish_tool_result(data, warnings))
+}
+
+/// Point `action_required` (top level, or in the stale `warning`) at `rfx index`
+/// when `tools/list` does not show `index_project`: Claude Code cannot call it.
+fn cli_index_action(data: &mut Value) {
+    for pointer in ["/action_required", "/warning/action_required"] {
+        if let Some(action) = data.pointer_mut(pointer)
+            && action == "index_project"
+        {
+            *action = json!("rfx index");
+        }
+    }
 }
 
 /// Low import-resolution warnings for the import-graph handlers: every language's for
@@ -2933,16 +3059,16 @@ fn dispatch_tool(
 /// Process a single JSON-RPC request
 fn process_request(
     request: JsonRpcRequest,
-    enable_structural: bool,
+    listing: &ToolListing,
     root: &Path,
     update: Option<UpdateOptions>,
 ) -> JsonRpcResponse {
     log::debug!("MCP request: method={}", request.method);
 
     let result = match request.method.as_str() {
-        "initialize" => handle_initialize(request.params),
-        "tools/list" => handle_list_tools(request.params, enable_structural),
-        "tools/call" => handle_call_tool(request.params, root, update),
+        "initialize" => handle_initialize(request.params, listing),
+        "tools/list" => handle_list_tools(request.params, listing),
+        "tools/call" => handle_call_tool(request.params, root, update, listing),
         _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
     };
 
@@ -2964,8 +3090,13 @@ fn process_request(
                         | crate::errors::ReflexError::InvalidParams(_) => -32602, // Invalid params
                         _ => -32603, // Internal error
                     };
-                    // Agents cannot run the CLI: point them at index_project instead.
-                    (code, re.kind().to_string(), mcp_facing_message(&e))
+                    // Name index_project when it is listed, else the CLI.
+                    let index_tool = listing.lists("index_project");
+                    (
+                        code,
+                        re.kind().to_string(),
+                        mcp_facing_message(&e, index_tool),
+                    )
                 } else if msg.starts_with("Unknown method:") {
                     (-32601, "MethodNotFound".to_string(), msg)
                 } else if msg.starts_with("Missing")
@@ -3008,11 +3139,11 @@ fn handle_notification(method: &str, _params: Option<Value>) {
 pub fn run_mcp_server(no_update: bool) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let mcp_config = load_mcp_config();
+    let listing = ToolListing::from_config(&load_mcp_config(), !no_update);
     run_mcp_server_io_impl(
         stdin.lock(),
         stdout.lock(),
-        mcp_config.enable_structural_tools,
+        listing,
         Path::new("."),
         (!no_update).then(UpdateOptions::server),
     )
@@ -3021,14 +3152,17 @@ pub fn run_mcp_server(no_update: bool) -> Result<()> {
 /// Run the MCP server reading JSON-RPC messages from `reader` and writing
 /// responses to `writer`. Exposed at crate-level for integration tests.
 pub fn run_mcp_server_io<R: BufRead, W: Write>(reader: R, writer: W) -> Result<()> {
-    let mcp_config = load_mcp_config();
-    run_mcp_server_io_impl(
-        reader,
-        writer,
-        mcp_config.enable_structural_tools,
-        Path::new("."),
-        None,
-    )
+    let listing = ToolListing::from_config(&load_mcp_config(), false);
+    run_mcp_server_io_impl(reader, writer, listing, Path::new("."), None)
+}
+
+/// The listing of a server with no `[mcp] extra_tools` (the test entry points).
+fn listing_for(enable_structural: bool, update: Option<UpdateOptions>) -> ToolListing {
+    ToolListing {
+        structural: enable_structural,
+        extra: Vec::new(),
+        auto_update: update.is_some(),
+    }
 }
 
 /// Like [`run_mcp_server_io`] but every tool operates on `root` instead of the
@@ -3041,7 +3175,8 @@ pub fn run_mcp_server_io_in<R: BufRead, W: Write>(
     writer: W,
     enable_structural: bool,
 ) -> Result<()> {
-    run_mcp_server_io_impl(reader, writer, enable_structural, root, None)
+    let listing = listing_for(enable_structural, None);
+    run_mcp_server_io_impl(reader, writer, listing, root, None)
 }
 
 /// Like [`run_mcp_server_io_in`], with the automatic update `rfx mcp` runs
@@ -3053,16 +3188,17 @@ pub fn run_mcp_server_io_with<R: BufRead, W: Write>(
     enable_structural: bool,
     update: Option<UpdateOptions>,
 ) -> Result<()> {
-    run_mcp_server_io_impl(reader, writer, enable_structural, root, update)
+    let listing = listing_for(enable_structural, update);
+    run_mcp_server_io_impl(reader, writer, listing, root, update)
 }
 
-/// Inner server loop. Accepts `enable_structural` so tests can drive the flag
-/// without touching the filesystem, and `root` so tools resolve `.reflex/`
-/// relative to a chosen workspace.
+/// Inner server loop. Accepts the `listing` so tests can drive it without
+/// touching the filesystem, and `root` so tools resolve `.reflex/` relative to a
+/// chosen workspace.
 fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     reader: R,
     mut writer: W,
-    enable_structural: bool,
+    listing: ToolListing,
     root: &Path,
     update: Option<UpdateOptions>,
 ) -> Result<()> {
@@ -3074,11 +3210,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     // running binary actually honoured and pins the exact build it came from.
     eprintln!(
         "{}",
-        startup_flags_line(
-            columnar_enabled(),
-            enable_structural,
-            grouped_locations_enabled()
-        )
+        startup_flags_line(columnar_enabled(), &listing, grouped_locations_enabled())
     );
 
     for line in reader.lines() {
@@ -3122,7 +3254,7 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
         }
 
         // Process request and write response
-        let response = process_request(request, enable_structural, root, update);
+        let response = process_request(request, &listing, root, update);
         let response_json = serde_json::to_string(&response)?;
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
@@ -3146,8 +3278,8 @@ mod tests {
     fn call_server_with_structural(input: &str, enable_structural: bool) -> String {
         let reader = Cursor::new(input.as_bytes());
         let mut output = Vec::new();
-        run_mcp_server_io_impl(reader, &mut output, enable_structural, Path::new("."), None)
-            .unwrap();
+        let listing = listing_for(enable_structural, None);
+        run_mcp_server_io_impl(reader, &mut output, listing, Path::new("."), None).unwrap();
         String::from_utf8(output).unwrap()
     }
 
@@ -3260,9 +3392,8 @@ mod tests {
         // The coverage rule is stated once, in the instructions (2026-09-30); no tool
         // description may contradict it.
         assert!(MCP_INSTRUCTIONS.contains("dot-director"));
-        let tools = handle_list_tools(None, true).unwrap();
         let mut texts: Vec<String> = vec![MCP_INSTRUCTIONS.to_string()];
-        for t in tools["tools"].as_array().unwrap() {
+        for t in &tool_list() {
             texts.push(t["description"].as_str().unwrap().to_string());
         }
         for text in &texts {
@@ -3329,17 +3460,14 @@ mod tests {
 
     #[test]
     fn test_every_listed_tool_has_spec() {
-        for structural in [true, false] {
-            let listing = handle_list_tools(None, structural).unwrap();
-            for tool in listing["tools"].as_array().unwrap() {
-                let name = tool["name"].as_str().unwrap();
-                let s = tool_spec(name).unwrap_or_else(|| panic!("no spec for {name}"));
-                for req in &s.required {
-                    assert!(
-                        s.valid.contains(req),
-                        "{name}: required {req} not in properties"
-                    );
-                }
+        for tool in &tool_list() {
+            let name = tool["name"].as_str().unwrap();
+            let s = tool_spec(name).unwrap_or_else(|| panic!("no spec for {name}"));
+            for req in &s.required {
+                assert!(
+                    s.valid.contains(req),
+                    "{name}: required {req} not in properties"
+                );
             }
         }
         assert!(tool_spec("no_such_tool").is_none());
@@ -3554,15 +3682,141 @@ mod tests {
     #[test]
     fn test_index_not_found_message_names_index_project() {
         let e: anyhow::Error = crate::errors::ReflexError::IndexNotFound.into();
-        let msg = mcp_facing_message(&e);
+        let msg = mcp_facing_message(&e, true);
         assert!(msg.contains("index_project"), "{msg}");
         assert!(!msg.contains("rfx index"), "{msg}");
         let e: anyhow::Error =
             crate::errors::ReflexError::CacheCorrupted("content.bin is too small".into()).into();
-        let msg = mcp_facing_message(&e);
+        let msg = mcp_facing_message(&e, true);
         assert!(msg.contains("content.bin is too small"), "{msg}");
         assert!(msg.contains("index_project"), "{msg}");
         assert!(!msg.contains("rfx "), "{msg}");
+    }
+
+    /// Claude Code cannot call a tool `tools/list` does not show: with
+    /// `index_project` unlisted, the advice and `action_required` name the CLI.
+    #[test]
+    fn test_unlisted_index_tool_advice_names_the_cli() {
+        let e: anyhow::Error = crate::errors::ReflexError::IndexNotFound.into();
+        let msg = mcp_facing_message(&e, false);
+        assert!(msg.contains("Run `rfx index`"), "{msg}");
+        assert!(!msg.contains("index_project"), "{msg}");
+        let e: anyhow::Error =
+            crate::errors::ReflexError::CacheCorrupted("content.bin is too small".into()).into();
+        let msg = mcp_facing_message(&e, false);
+        assert!(msg.contains("Run `rfx index --force`"), "{msg}");
+        assert!(!msg.contains("index_project"), "{msg}");
+
+        let mut data = json!({"status": "stale", "warning": {"action_required": "index_project"}});
+        cli_index_action(&mut data);
+        assert_eq!(data["warning"]["action_required"], "rfx index");
+        let mut data = json!({"status": "missing", "action_required": "index_project"});
+        cli_index_action(&mut data);
+        assert_eq!(data["action_required"], "rfx index");
+        let mut data = json!("gather_context prose");
+        cli_index_action(&mut data);
+        assert_eq!(data, "gather_context prose");
+    }
+
+    fn listed_names(listing: &ToolListing) -> Vec<String> {
+        handle_list_tools(None, listing).unwrap()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// 2026-10-27: four tools are unlisted by default; `[mcp] extra_tools` lists them,
+    /// and `--no-update` lists the two index tools (the only way to refresh then).
+    #[test]
+    fn test_hidden_tools_are_listed_on_request() {
+        let default = ToolListing {
+            structural: true,
+            extra: Vec::new(),
+            auto_update: true,
+        };
+        assert_eq!(
+            listed_names(&default),
+            [
+                "search_code",
+                "search_regex",
+                "list_locations",
+                "find_references",
+                "get_dependencies",
+                "analyze",
+            ]
+        );
+        let extra = ToolListing {
+            extra: vec!["search_ast".into(), "check_index_status".into()],
+            ..default.clone()
+        };
+        let names = listed_names(&extra);
+        assert!(names.contains(&"search_ast".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"check_index_status".to_string()),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"index_project".to_string()), "{names:?}");
+        assert!(!names.contains(&"gather_context".to_string()), "{names:?}");
+
+        let no_update = ToolListing {
+            auto_update: false,
+            ..default.clone()
+        };
+        let names = listed_names(&no_update);
+        assert!(names.contains(&"index_project".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"check_index_status".to_string()),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"search_ast".to_string()), "{names:?}");
+        assert_eq!(names.len(), 8, "{names:?}");
+
+        let config = crate::semantic::config::McpConfig {
+            enable_structural_tools: false,
+            extra_tools: vec!["gather_context".into(), "no_such_tool".into()],
+        };
+        let names = listed_names(&ToolListing::from_config(&config, true));
+        assert!(names.contains(&"gather_context".to_string()), "{names:?}");
+        assert!(!names.contains(&"analyze".to_string()), "{names:?}");
+        assert_eq!(names.len(), 6, "{names:?}");
+    }
+
+    /// The freshness paragraph names the index tools only when they are listed.
+    #[test]
+    fn test_instructions_follow_the_listing() {
+        assert!(MCP_INSTRUCTIONS.contains(FRESHNESS_TEXT));
+        let default = ToolListing {
+            structural: true,
+            extra: Vec::new(),
+            auto_update: true,
+        };
+        let text = instructions(&default);
+        assert!(!text.contains("index_project"), "{text}");
+        assert!(!text.contains("check_index_status"), "{text}");
+
+        let listed = ToolListing {
+            extra: vec!["index_project".into()],
+            ..default.clone()
+        };
+        let text = instructions(&listed);
+        assert!(
+            text.contains("never call index_project or check_index_status after edits"),
+            "{text}"
+        );
+
+        let no_update = ToolListing {
+            auto_update: false,
+            ..default
+        };
+        let text = instructions(&no_update);
+        assert!(
+            text.contains("after edits, call index_project before you search"),
+            "{text}"
+        );
+        assert!(!text.contains("updates itself"), "{text}");
+        assert!(text.len() <= 2400, "{}", text.len());
     }
 
     #[test]
@@ -3624,7 +3878,7 @@ mod tests {
     fn test_startup_flags_line_reports_resolved_flags() {
         // REF-215: only columnar + structural_tools remain (structuredContent /
         // sc_stage2 were removed along with the env vars that drove them).
-        let line = super::startup_flags_line(false, true, false);
+        let line = super::startup_flags_line(false, &listing_for(true, None), false);
         assert!(line.starts_with("reflex-mcp startup:"), "line: {line}");
         assert!(line.contains("columnar=off"), "line: {line}");
         assert!(line.contains("structural_tools=on"), "line: {line}");
@@ -3636,10 +3890,24 @@ mod tests {
         assert!(!line.contains("sc_stage2"), "line: {line}");
 
         // Inverting every flag flips exactly the on/off tokens.
-        let off = super::startup_flags_line(true, false, true);
+        let off = super::startup_flags_line(true, &listing_for(false, None), true);
         assert!(off.contains("columnar=on"), "line: {off}");
         assert!(off.contains("structural_tools=off"), "line: {off}");
         assert!(off.contains("grouped=on"), "line: {off}");
+
+        // The tools the listing leaves out, so a benchmark arm shows its surface.
+        let listing = listing_for(true, Some(UpdateOptions::library()));
+        let line = super::startup_flags_line(true, &listing, true);
+        assert!(
+            line.contains("unlisted=search_ast,gather_context,index_project,check_index_status"),
+            "line: {line}"
+        );
+        let all = ToolListing {
+            extra: HIDDEN_TOOLS.iter().map(|t| t.to_string()).collect(),
+            ..listing
+        };
+        let line = super::startup_flags_line(true, &all, true);
+        assert!(line.contains("unlisted=none"), "line: {line}");
     }
 
     #[test]
