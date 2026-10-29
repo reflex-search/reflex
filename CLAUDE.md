@@ -422,8 +422,9 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   (exact, cheap). Reflex wins only when the instructions route these to
   `find_references` and say not to re-check: 0.68–0.79× Grep's weighted tokens on names
   with 100–400 grep lines (1.05–1.26× before), accuracy 1.000; plain searches unchanged.
-  Keep that sentence. The harness `warm_up` does not warm in real runs: compare eager
-  arms with the cold prefix at the read price.
+  Keep that sentence. Runs before 2026-10-29 started every arm cold (the warm-up used
+  text input, trials stream-json: different prefixes); compare those with the cold
+  prefix at the read price.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`

@@ -235,9 +235,6 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
     With routing text (code-only questions → `find_references`, trusted): Reflex
     0.69–0.75× Grep's cost on `aware-large`, accuracy 1.000 (1 trial); `investigate`
     unchanged (0 `find_references` calls, accuracy 1.000).
-  - Harness: `warm_up` does not warm in real runs (every first session of an arm reads
-    0 from the cache; a scripted warm-up + call does hit). Find the cause, or score with
-    the cold prefix at the read price (GREP_PARITY_RESEARCH.md, regression check).
   - Import-graph questions for `aware` (who imports a file, transitive deps): need an
     answer key written apart from Reflex's resolver. Prototype on `tokio/src`: Reflex
     finds 304 of 417 edges (73 %); misses: `use` inside `cfg_*!` macro bodies, items

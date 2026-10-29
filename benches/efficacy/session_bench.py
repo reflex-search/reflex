@@ -380,9 +380,7 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
         rfx_bin, tmp, f"{arm}-{session['id']}-{trial}",
         mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
     )
-    cmd = runner.build_claude_cmd(arm, cfg, "PLACEHOLDER", mcp_cfg, model)
-    assert cmd[-2:] == ["--", "PLACEHOLDER"], cmd[-3:]
-    cmd = cmd[:-2] + ["--input-format", "stream-json", "--verbose"]
+    cmd = session_cmd(arm, cfg, mcp_cfg, model)
     out.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     with out.open("w") as f:
@@ -397,8 +395,7 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
         proc = subprocess.Popen(cmd, cwd=tree, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, bufsize=1)
         for step in session["steps"]:
-            proc.stdin.write(json.dumps(
-                {"type": "user", "message": {"role": "user", "content": step["prompt"]}}) + "\n")
+            proc.stdin.write(user_message(step["prompt"]))
             proc.stdin.flush()
             for line in proc.stdout:
                 f.write(line)
@@ -432,10 +429,34 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
         rfx_bin, tmp, f"warm-{arm}",
         mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
     )
-    cmd = runner.build_claude_cmd(arm, cfg, "Reply with the word OK and nothing else.", mcp_cfg, model)
-    cmd = cmd[:-2] + ["--verbose"] + cmd[-2:]  # stream-json output needs --verbose
-    proc = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, timeout=300)
-    return f"warm-up {arm} exit={proc.returncode}"
+    proc = subprocess.run(session_cmd(arm, cfg, mcp_cfg, model), cwd=tree, text=True,
+                          input=user_message("Reply with the word OK and nothing else."),
+                          capture_output=True, timeout=300)
+    usage = {}
+    for line in proc.stdout.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("type") == "result":
+            usage = e.get("usage") or {}
+    return (f"warm-up {arm} exit={proc.returncode} cache write={usage.get('cache_creation_input_tokens')}"
+            f" read={usage.get('cache_read_input_tokens')}")
+
+
+def session_cmd(arm: str, cfg: dict, mcp_cfg, model: str) -> list[str]:
+    """The claude command line of a trial, which reads user messages as stream-json on
+    stdin. The warm-up must use the same one: a `--print -- PROMPT` call (text input)
+    sends a different prompt prefix, and its cache entry is never read by a trial
+    (2026-10-29: a text warm-up left the next trial at 0 cache reads; a stream-json
+    one at 19,602)."""
+    cmd = runner.build_claude_cmd(arm, cfg, "PLACEHOLDER", mcp_cfg, model)
+    assert cmd[-2:] == ["--", "PLACEHOLDER"], cmd[-3:]
+    return cmd[:-2] + ["--input-format", "stream-json", "--verbose"]
+
+
+def user_message(text: str) -> str:
+    return json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n"
 
 
 def run(args) -> None:

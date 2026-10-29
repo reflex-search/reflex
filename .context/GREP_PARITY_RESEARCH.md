@@ -344,10 +344,17 @@ a session's first call reads 0 unless an earlier session of the same arm already
 (trial 02 reads 19,541 for Beager). A and B mostly read 16,848 anyway: that is Claude
 Code's own prefix, cached by any recent session; Beager's prefix (Reflex schemas in
 the tool block) is not, so every first Beager session paid ~19.5K cache-write tokens
-(23.4K written, 0 read). A scripted warm-up followed by one trial-shaped call does hit
-(read 19,578 / 21,319), so the cause is still open (concurrent warm-ups? the burst of
-9 trials?). Until it is fixed, compare runs with the cold prefix moved from the
-write to the read price (cold = first call read < 16,848 for A/B, < 19,541 for Beager):
+(23.4K written, 0 read).
+
+**Cause (fixed 2026-10-29):** `warm_up` called `claude --print -- PROMPT` (text input);
+trials send stream-json on stdin (`--input-format stream-json`). The two send different
+prompt prefixes, so a trial never read the warm-up's entry. Clean test with a renamed
+MCP server (`mcp__rfxx…__*`, a prefix nobody had cached): text warm-up → trial read 0;
+stream-json warm-up → trial read 19,602. `warm_up` now uses the trial's command line
+(`session_cmd`, `user_message`) and prints its cache write/read; through `run()` on
+the never-run `Beager_allparams` arm: warm-up write 23,747 / read 0, then the trial's
+first call read 20,065. Runs before the fix: compare with the cold prefix moved from
+the write to the read price (cold = first call read < 16,848 for A/B, < 19,541 for Beager):
 
 | run | B raw → warm | Beager raw → warm |
 | --- | --- | --- |
