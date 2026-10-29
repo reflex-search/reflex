@@ -29,6 +29,9 @@
 //! A line is read without the lines around it, so two cases count as code (the match
 //! is kept): a string that does not close on this line (it may be the end of a string
 //! that began earlier), and the inside of a block comment that began on an earlier line.
+//!
+//! [`FileRegions`] reads a whole file with the same steps, so it also knows those two
+//! cases. It refuses a file whose scan does not end in code; callers then use the line.
 
 use crate::models::Language;
 
@@ -63,6 +66,11 @@ pub trait LineFilter {
 
 /// Get a LineFilter for a specific language
 pub fn get_filter(lang: Language) -> Option<Box<dyn LineFilter>> {
+    Some(Box::new(SyntaxFilter(syntax_of(lang)?)))
+}
+
+/// The comment and string rules for `lang`, `None` when it has none.
+fn syntax_of(lang: Language) -> Option<Syntax> {
     let syntax = match lang {
         Language::Rust => Syntax::Rust,
         Language::C | Language::Cpp => Syntax::C,
@@ -86,7 +94,184 @@ pub fn get_filter(lang: Language) -> Option<Box<dyn LineFilter>> {
         | Language::Swift
         | Language::Unknown => return None,
     };
-    Some(Box::new(SyntaxFilter(syntax)))
+    Some(syntax)
+}
+
+/// The comments and string literals of one whole file, so a block comment or a string
+/// that spans lines is known (the line filter reads each line alone).
+pub struct FileRegions {
+    text: String,
+    /// Sorted, disjoint byte ranges of `text` that are comment or string.
+    non_code: Vec<std::ops::Range<usize>>,
+    /// Byte offset of the start of each line.
+    line_starts: Vec<usize>,
+}
+
+impl FileRegions {
+    /// Scan `text`. `None` when `lang` has no rules, or when the scan does not end in
+    /// code: an unclosed string or block comment, or a newline in a string that cannot
+    /// hold one. A wrong scan would hide the rest of the file, so such a file is left
+    /// to the line filter.
+    pub fn new(lang: Language, text: String) -> Option<Self> {
+        let non_code = non_code_ranges(syntax_of(lang)?, text.as_bytes())?;
+        let line_starts = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        Some(FileRegions {
+            text,
+            non_code,
+            line_starts,
+        })
+    }
+
+    /// Whether every occurrence of `pattern` on line `line` (1-based) is in a comment
+    /// or a string; with `whole_word`, only occurrences that are a whole identifier
+    /// count (`async_op` in `async_op_span` is not one). `Some(false)` when one is in
+    /// code or none is found (keep the match); `None` when the line's text is not
+    /// `expected` (the file changed), or no such line.
+    pub fn line_is_non_code(
+        &self,
+        line: usize,
+        expected: &str,
+        pattern: &str,
+        whole_word: bool,
+    ) -> Option<bool> {
+        let start = *self.line_starts.get(line.checked_sub(1)?)?;
+        let end = self
+            .line_starts
+            .get(line)
+            .map_or(self.text.len(), |&next| next - 1);
+        let text = &self.text[start..end];
+        // The engine shortens a long line's preview around the match, with `…` at a
+        // cut end, so the line need only contain what is left.
+        let expected = expected.trim().trim_matches('…').trim();
+        if expected.is_empty() || !text.contains(expected) {
+            return None;
+        }
+        let mut found = false;
+        let b = text.as_bytes();
+        for (at, _) in text.match_indices(pattern) {
+            let end = at + pattern.len();
+            if whole_word
+                && (at > 0 && is_ident(b[at - 1]) || b.get(end).is_some_and(|&c| is_ident(c)))
+            {
+                continue;
+            }
+            found = true;
+            if !self.is_non_code(start + at) {
+                return Some(false);
+            }
+        }
+        Some(found)
+    }
+
+    fn is_non_code(&self, pos: usize) -> bool {
+        let i = self.non_code.partition_point(|r| r.end <= pos);
+        self.non_code.get(i).is_some_and(|r| r.start <= pos)
+    }
+}
+
+/// Whether a string of `kind` may hold a newline. Where the language forbids it, a
+/// newline means the scan went wrong.
+fn multiline_string(syntax: Syntax, kind: StrKind) -> bool {
+    match kind.close {
+        Close::Triple(_) | Close::RustRaw(_) | Close::CppRaw(..) => true,
+        Close::Byte(b'`') => true,
+        Close::Byte(_) => {
+            kind.doubled_quote || matches!(syntax, Syntax::Rust | Syntax::Ruby | Syntax::Php)
+        }
+    }
+}
+
+/// The comment and string ranges of a whole file (see [`FileRegions::new`]), with the
+/// steps [`region_at`] takes on one line.
+fn non_code_ranges(syntax: Syntax, b: &[u8]) -> Option<Vec<std::ops::Range<usize>>> {
+    let line_end = |i: usize| {
+        b[i..]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(b.len(), |n| i + n)
+    };
+    let mut out = Vec::new();
+    let mut stack: Vec<Frame> = Vec::new();
+    // Start of the string text since its opener or the last interpolation.
+    let mut seg = 0;
+    let mut i = 0;
+    while i < b.len() {
+        match stack.last().copied() {
+            Some(Frame::Str(kind)) => {
+                if b[i] == b'\n' && !multiline_string(syntax, kind) {
+                    return None;
+                }
+                match string_step(b, i, kind) {
+                    StrStep::Skip(n) => i += n,
+                    StrStep::Close(n) => {
+                        i += n;
+                        out.push(seg..i);
+                        stack.pop();
+                    }
+                    StrStep::Interp(n) => {
+                        i += n;
+                        out.push(seg..i);
+                        stack.push(Frame::Interp(0));
+                    }
+                    StrStep::CodeSpan(end) => {
+                        out.push(seg..i);
+                        i = end;
+                        seg = i;
+                    }
+                }
+            }
+            top => match code_step(syntax, b, i) {
+                CodeStep::LineComment => {
+                    let end = line_end(i);
+                    out.push(i..end);
+                    i = end;
+                }
+                CodeStep::Span(end, region) => {
+                    let end = if syntax == Syntax::Zig && b[i] == b'\\' {
+                        line_end(i) // a Zig `\\` string is the rest of the line
+                    } else {
+                        end
+                    };
+                    let text = &b[i..end];
+                    if b[i] == b'/' && region == Region::Str && text.contains(&b'\n') {
+                        i += 1; // a "regex" across lines is a division
+                        continue;
+                    }
+                    if region == Region::Comment && !text.ends_with(b"*/") {
+                        return None; // unclosed block comment
+                    }
+                    if region != Region::Code {
+                        out.push(i..end);
+                    }
+                    i = end;
+                }
+                CodeStep::Open(n, kind) => {
+                    seg = i;
+                    stack.push(Frame::Str(kind));
+                    i += n;
+                }
+                CodeStep::Byte => {
+                    if let Some(Frame::Interp(depth)) = top {
+                        match b[i] {
+                            b'{' => *stack.last_mut().unwrap() = Frame::Interp(depth + 1),
+                            b'}' if depth == 0 => {
+                                stack.pop();
+                                i += 1;
+                                seg = i;
+                                continue;
+                            }
+                            b'}' => *stack.last_mut().unwrap() = Frame::Interp(depth - 1),
+                            _ => {}
+                        }
+                    }
+                    i += 1;
+                }
+            },
+        }
+    }
+    stack.is_empty().then_some(out)
 }
 
 /// The comment and string rules of one language family.
@@ -1169,5 +1354,93 @@ mod tests {
         ] {
             assert!(get_filter(lang).is_none(), "{lang:?}");
         }
+    }
+
+    /// Line `n` (1-based) of `text`, for `line_is_non_code`'s check.
+    fn nth(text: &str, n: usize) -> &str {
+        text.lines().nth(n - 1).unwrap()
+    }
+
+    fn non_code(lang: Language, text: &str, line: usize) -> Option<bool> {
+        let regions = FileRegions::new(lang, text.to_string())?;
+        regions.line_is_non_code(line, nth(text, line), "target", true)
+    }
+
+    #[test]
+    fn file_regions_know_comments_and_strings_across_lines() {
+        let rust = "/*! Docs:\n * the target here\n */\nfn f() {\n    let s = \"one\n    target two\";\n    let r = r#\"\n target\n\"#;\n    target(s, '\\'', 'x');\n}\n";
+        assert_eq!(
+            non_code(Language::Rust, rust, 2),
+            Some(true),
+            "block comment"
+        );
+        assert_eq!(
+            non_code(Language::Rust, rust, 6),
+            Some(true),
+            "multi-line string"
+        );
+        assert_eq!(non_code(Language::Rust, rust, 8), Some(true), "raw string");
+        assert_eq!(non_code(Language::Rust, rust, 10), Some(false), "code");
+
+        let py = "x = \"\"\"\ntarget\n\"\"\"\ntarget()  # target\n";
+        assert_eq!(non_code(Language::Python, py, 2), Some(true));
+        assert_eq!(non_code(Language::Python, py, 4), Some(false));
+
+        let js = "const a = `\n${target()} target\n`;\nconst b = `\ntarget\n`;\n";
+        assert_eq!(
+            non_code(Language::JavaScript, js, 2),
+            Some(false),
+            "interpolation is code"
+        );
+        assert_eq!(non_code(Language::JavaScript, js, 5), Some(true));
+    }
+
+    #[test]
+    fn file_regions_refuse_a_scan_that_does_not_end_in_code() {
+        // Unclosed block comment and string: the rest of the file would be hidden.
+        assert!(FileRegions::new(Language::Rust, "fn f() {}\n/* target\n".into()).is_none());
+        assert!(FileRegions::new(Language::Rust, "let s = \"target\n".into()).is_none());
+        // A newline inside a Python '…' string means the scan went wrong.
+        assert!(FileRegions::new(Language::Python, "s = 'a\ntarget = 1\n'\n".into()).is_none());
+        // No rules for the text tier.
+        assert!(FileRegions::new(Language::Text, "target\n".into()).is_none());
+    }
+
+    #[test]
+    fn file_regions_check_the_line_text() {
+        let regions = FileRegions::new(Language::Rust, "fn target() {}\n".into()).unwrap();
+        assert_eq!(
+            regions.line_is_non_code(1, "fn target() {}", "target", true),
+            Some(false)
+        );
+        assert_eq!(
+            regions.line_is_non_code(1, "something else", "target", true),
+            None
+        );
+        assert_eq!(
+            regions.line_is_non_code(1, "fn target(…", "target", true),
+            Some(false)
+        );
+        assert_eq!(
+            regions.line_is_non_code(9, "fn target() {}", "target", true),
+            None
+        );
+        assert_eq!(
+            regions.line_is_non_code(1, "fn target() {}", "absent", true),
+            Some(false)
+        );
+
+        // Whole identifiers: the code hit `target_span` does not keep a comment-only line.
+        let text = "let target_span = 1; // target\n";
+        let regions = FileRegions::new(Language::Rust, text.into()).unwrap();
+        let line = text.trim_end();
+        assert_eq!(
+            regions.line_is_non_code(1, line, "target", true),
+            Some(true)
+        );
+        assert_eq!(
+            regions.line_is_non_code(1, line, "target", false),
+            Some(false)
+        );
     }
 }

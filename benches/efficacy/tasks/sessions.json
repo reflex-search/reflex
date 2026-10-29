@@ -2200,6 +2200,408 @@
      ]
     }
    ]
+  },
+  {
+   "id": "reflex-session-aware",
+   "repo": "reflex",
+   "kind": "aware",
+   "steps": [
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `from_db_path` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "from_db_path"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `Changelog` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "Changelog"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `extract_trigrams_from_regex` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "extract_trigrams_from_regex"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `compact` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "compact"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `capabilities` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "capabilities"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `Message` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "Message"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `is_running` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "is_running"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `select` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "select"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `search_ast_all_files` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "search_ast_all_files"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `get_dependencies` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "get_dependencies"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `record_branch_file` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "record_branch_file"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `get_dependents` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "get_dependents"
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-aware",
+   "repo": "ripgrep",
+   "kind": "aware",
+   "steps": [
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `Summary` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "Summary"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `pretty` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "pretty"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `unicode` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "unicode"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `stdout_buffered_block` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "stdout_buffered_block"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `preceding` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "preceding"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `defaults` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "defaults"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `UserColorSpec` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "UserColorSpec"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `generic` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "generic"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `consume` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "consume"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `stdout_buffered_line` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "stdout_buffered_line"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `capacity` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "capacity"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `select` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "select"
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-aware",
+   "repo": "tokio",
+   "kind": "aware",
+   "steps": [
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `ctrl_shutdown` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "ctrl_shutdown"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `is_cancelled` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "is_cancelled"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `LocalOwnedTasks` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "LocalOwnedTasks"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `RawSocket` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "RawSocket"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `unbounded_channel` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "unbounded_channel"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `SignalKind` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "SignalKind"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `LogHistogramBuilder` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "LogHistogramBuilder"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `sync_all` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "sync_all"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `read_to_string` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "read_to_string"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `IdleNotifiedSet` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "IdleNotifiedSet"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `OwnedHandle` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "OwnedHandle"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `DuplexStream` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "DuplexStream"
+    }
+   ]
+  },
+  {
+   "id": "reflex-session-aware-large",
+   "repo": "reflex",
+   "kind": "aware",
+   "steps": [
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `languages` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "languages"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `resolved` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "resolved"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `trigrams` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "trigrams"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `response` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "response"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `candidates` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "candidates"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `src/` where the identifier `branch` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "branch"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `command` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "command"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `background` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "background"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `answer` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "answer"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `candidate` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "candidate"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `indexing` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "indexing"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `src/` use the identifier `structure` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "structure"
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-aware-large",
+   "repo": "ripgrep",
+   "kind": "aware",
+   "steps": [
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `output` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "output"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `terminator` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "terminator"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `search` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "search"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `result` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "result"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `enabled` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "enabled"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `crates/` where the identifier `stdout` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "stdout"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `separator` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "separator"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `before` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "before"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `offset` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "offset"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `patterns` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "patterns"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `always` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "always"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `crates/` use the identifier `gitignore` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "gitignore"
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-aware-large",
+   "repo": "tokio",
+   "kind": "aware",
+   "steps": [
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `blocking` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "blocking"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `release` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "release"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `reference` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "reference"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `values` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "values"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `complete` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "complete"
+    },
+    {
+     "kind": "refs",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` where the identifier `access` is used in code, its definition included. Leave out lines where it appears only in comments (doc comments too) or inside string literals. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "name": "access"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `output` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "output"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `branch` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "branch"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `Duration` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "Duration"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `scheduler` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "scheduler"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `caller` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "caller"
+    },
+    {
+     "kind": "refs_count",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` use the identifier `option` in code, not only in comments or string literals? End your answer with a JSON code block {\"answer\": <number>}.",
+     "name": "option"
+    }
+   ]
   }
  ]
 }
