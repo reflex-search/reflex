@@ -18,6 +18,13 @@ Session kinds (one of each per corpus):
   edit         two renames across the corpus's source tree, each followed by
                lookups of the new name, the old name and unrelated identifiers;
                graded on the edited tree (auto-update must show the edits)
+  aware        12 questions grep answers badly: every use of a name in code, with
+               the lines where it is only in a comment or a string left out (10),
+               and how many such lines there are (2). Names are picked where at
+               least 30 % of grep's lines are comments or strings. Answer key:
+               rust_code.py (a Rust lexer written apart from Reflex)
+  aware-large  `aware` on names with 100-400 grep lines, where grep over-fetches:
+               6 lists, 6 counts
 
 Every trial runs in its own copy of the corpus (a fresh git repository, so
 .gitignore applies); Reflex arms index it before the trial, outside the token
@@ -42,6 +49,7 @@ import time
 from pathlib import Path
 
 import runner
+import rust_code
 
 HERE = Path(__file__).resolve().parent
 SESSIONS_JSON = HERE / "tasks" / "sessions.json"
@@ -177,6 +185,8 @@ def generate() -> None:
         sessions.append({"id": f"{repo}-session-edit", "repo": repo, "kind": "edit", "steps": steps})
 
     sessions += [long_session(repo, scope, candidates(repo)) for repo, scope in SCOPES.items()]
+    sessions += [aware_session(repo, scope, candidates(repo)) for repo, scope in SCOPES.items()]
+    sessions += [aware_large_session(repo, scope) for repo, scope in SCOPES.items()]
     SESSIONS_JSON.write_text(json.dumps(
         {"generated_by": "session_bench.py generate (pinned corpora); do not edit by hand",
          "sessions": sessions}, indent=1) + "\n")
@@ -243,6 +253,88 @@ def long_session(repo: str, scope: str, c: list) -> dict:
              + rename_block(n2, r2) + plain[20:30] + locates[2:] + counts[2:] + plain[30:] + [files])
     assert len(steps) == 50, len(steps)
     return {"id": f"{repo}-session-long", "repo": repo, "kind": "long", "steps": steps}
+
+
+def code_refs(tree: Path, name: str, scope: str) -> list[str]:
+    """`path:line` of every line of a `.rs` file under `scope` that uses `name` in code."""
+    files = sorted({h.split(":")[0] for h in rg(tree, "-w", "-g", "*.rs", name, scope)})
+    return sorted(f"{f}:{n}" for f in files
+                  for n in rust_code.code_lines((tree / f).read_text(errors="replace"), name))
+
+
+def aware_session(repo: str, scope: str, c: list) -> dict:
+    """12 questions on names grep over-reports: uses in code only (10), and a count (2)."""
+    repo_dir = runner.CORPUS_REPOS[repo]
+    picked = []
+    for name, *_ in c:
+        lines = rg(repo_dir, "-w", "-g", "*.rs", name, scope)
+        code = code_refs(repo_dir, name, scope)
+        noise = len(lines) - len(code)
+        if noise >= 2 and noise >= 0.3 * len(lines) and len(code) >= 3:
+            picked.append(name)
+        if len(picked) == 12:
+            break
+    else:
+        raise SystemExit(f"{repo}: not enough names for an aware session")
+    return {"id": f"{repo}-session-aware", "repo": repo, "kind": "aware",
+            "steps": aware_steps(scope, picked[:10], picked[10:])}
+
+
+def aware_steps(scope: str, lists: list[str], counts: list[str]) -> list[dict]:
+    steps = [{
+        "kind": "refs",
+        "prompt": f"List every line of the `.rs` files under `{scope}/` where the identifier `{n}` is "
+                  f"used in code, its definition included. Leave out lines where it appears only in "
+                  f"comments (doc comments too) or inside string literals. {FORMAT_LIST}",
+        "name": n,
+    } for n in lists]
+    steps += [{
+        "kind": "refs_count",
+        "prompt": f"How many lines of the `.rs` files under `{scope}/` use the identifier `{n}` in code, "
+                  f"not only in comments or string literals? {FORMAT_NUMBER}",
+        "name": n,
+    } for n in counts]
+    return steps
+
+
+RUST_KEYWORDS = set("""as async await break const continue crate dyn else enum extern false fn for
+    if impl in let loop match mod move mut pub ref return self Self static struct super trait true
+    type unsafe use where while""".split())
+
+
+def large_names(repo: str, scope: str) -> list[str]:
+    """Identifiers (6+ chars, not keywords) on 100-400 lines of the `.rs` files under
+    `scope`, in a stable (hash) order. A first filter only: `aware_large_session`
+    re-counts each pick with ripgrep."""
+    root = runner.CORPUS_REPOS[repo]
+    lines: collections.Counter = collections.Counter()
+    files = subprocess.run(["rg", "--files", "-g", "*.rs", scope], cwd=root,
+                           capture_output=True, text=True).stdout.split()
+    for f in files:
+        for line in (root / f).read_text(errors="replace").splitlines():
+            lines.update(set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{5,}\b", line)))
+    names = [n for n, k in lines.items() if 100 <= k <= 400 and n not in RUST_KEYWORDS]
+    return sorted(names, key=lambda n: hashlib.sha1(n.encode()).hexdigest())
+
+
+def aware_large_session(repo: str, scope: str) -> dict:
+    """`aware` on names grep returns 100-400 lines for: the agent must read every line
+    to drop comments and strings. 6 list questions, 6 counts."""
+    repo_dir = runner.CORPUS_REPOS[repo]
+    picked = []
+    for name in large_names(repo, scope):
+        lines = rg(repo_dir, "-w", "-g", "*.rs", name, scope)
+        if not 100 <= len(lines) <= 400:
+            continue
+        code = code_refs(repo_dir, name, scope)
+        if len(lines) - len(code) >= 0.3 * len(lines) and len(code) >= 3:
+            picked.append(name)
+        if len(picked) == 12:
+            break
+    else:
+        raise SystemExit(f"{repo}: not enough names for an aware-large session")
+    return {"id": f"{repo}-session-aware-large", "repo": repo, "kind": "aware",
+            "steps": aware_steps(scope, picked[:6], picked[6:])}
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +417,27 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
     return f"{arm}/{session['id']}/{trial:02d} exit={proc.returncode} {time.monotonic() - start:.0f}s"
 
 
+def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
+    """One short call with the arm's tools and model, so that the arm's first trials read
+    the shared prompt prefix (tool schemas, system prompt) from the cache like the rest.
+    Without it the arms started cold in different numbers of sessions, and a cold start
+    (~20K tokens at the cache-write price) swamped the cost ratio (2026-10-28,
+    .context/GREP_PARITY_RESEARCH.md)."""
+    cfg = runner.ARMS[arm]
+    rfx_bin = rfx if cfg["mcp_command"] == "TARGET_RELEASE_RFX" else None
+    tree = tmp / f"warm-{arm}"
+    tree.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=tree, check=True)
+    mcp_cfg = runner.make_mcp_config(
+        rfx_bin, tmp, f"warm-{arm}",
+        mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
+    )
+    cmd = runner.build_claude_cmd(arm, cfg, "Reply with the word OK and nothing else.", mcp_cfg, model)
+    cmd = cmd[:-2] + ["--verbose"] + cmd[-2:]  # stream-json output needs --verbose
+    proc = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, timeout=300)
+    return f"warm-up {arm} exit={proc.returncode}"
+
+
 def run(args) -> None:
     rfx = Path(os.environ.get("CARGO_TARGET_DIR", runner.REPO_ROOT / "target")) / "release" / "rfx"
     sessions = [s for s in load_sessions() if not args.sessions or s["id"] in args.sessions]
@@ -343,6 +456,9 @@ def run(args) -> None:
         if cfg["mcp_command"] == "TARGET_RELEASE_RFX":
             runner.verify_mcp_arm_flags(arm, rfx, cfg.get("mcp_env"))
     with tempfile.TemporaryDirectory() as tmp, cf.ThreadPoolExecutor(args.jobs) as pool:
+        if not args.no_warm_up:
+            for line in pool.map(lambda a: warm_up(a, args.model, rfx, Path(tmp)), args.arms):
+                print(line, flush=True)
         futs = [pool.submit(run_one, a, s, t, args.model, rfx, Path(tmp)) for a, s, t in jobs]
         for fut in cf.as_completed(futs):
             try:
@@ -394,9 +510,14 @@ def grade(step: dict, ans, tree: Path, scope: str) -> float:
         return 1.0 if isinstance(ans, list) and ans and norm_loc(ans[0]) in defs else 0.0
     if kind == "count_files":
         return 1.0 if ans == len(rg_files(tree, step["oracle"])) else 0.0
+    if kind == "refs_count":
+        return 1.0 if ans == len(code_refs(tree, step["name"], scope)) else 0.0
     if kind == "files":
         want = rg_files(tree, step["oracle"])
         got = {str(a).strip().lstrip("./") for a in ans} if isinstance(ans, list) else set()
+    elif kind == "refs":
+        want = set(code_refs(tree, step["name"], scope))
+        got = {norm_loc(a) for a in ans} if isinstance(ans, list) else set()
     else:
         want = set(step["expected"]) if "expected" in step else set(rg(tree, *step["oracle"]))
         got = {norm_loc(a) for a in ans} if isinstance(ans, list) else set()
@@ -494,6 +615,7 @@ def main() -> None:
     r.add_argument("--plan", nargs="*", help="session:trials pairs instead of --sessions/--n")
     r.add_argument("--model", default="claude-sonnet-5")
     r.add_argument("--jobs", type=int, default=24)
+    r.add_argument("--no-warm-up", action="store_true", help="skip the per-arm cache warm-up call")
     s = sub.add_parser("score")
     s.add_argument("--results", default=str(runner.RESULTS_DIR))
     args = p.parse_args()

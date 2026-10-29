@@ -101,10 +101,10 @@ fn six_tools_are_listed_in_a_small_schema() {
             "analyze",
         ]
     );
-    // Was 44 KB with 17 tools, 10.3 KB with 10; every byte here is carried on every
+    // Was 44 KB with 17 tools, 10.3 KB with 10, 8.1 KB before HIDDEN_PARAMS; every byte here is carried on every
     // agent turn.
     let bytes = serde_json::to_string(&tools).unwrap().len();
-    assert!(bytes <= 8_500, "tools/list is {bytes} bytes");
+    assert!(bytes <= 7_000, "tools/list is {bytes} bytes");
 }
 
 /// Without the automatic update, the index tools are the only way to refresh the

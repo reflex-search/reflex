@@ -65,6 +65,34 @@ fn is_in_string_or_comment(lang: Language, preview: &str, pattern: &str) -> bool
     found
 }
 
+/// Whether a `find_references` match is only in comments or strings. The whole file
+/// is read ([`line_filter::FileRegions`]), so a block comment or a string that spans
+/// lines counts (2026-10-28: the line alone kept `* … generic …` inside a `/*! */`
+/// block and the lines of multi-line strings). The matching line alone is the
+/// fallback: a language with no rules, an unreadable or changed file, a scan that
+/// does not end in code.
+fn reference_is_non_code(
+    file: Option<&line_filter::FileRegions>,
+    lang: Language,
+    m: &crate::models::MatchResult,
+    pattern: &str,
+    whole_word: bool,
+) -> bool {
+    file.and_then(|f| f.line_is_non_code(m.span.start_line, &m.preview, pattern, whole_word))
+        .unwrap_or_else(|| is_in_string_or_comment(lang, &m.preview, pattern))
+}
+
+/// The comment and string ranges of one result file, read from disk (the index was
+/// updated before the search, and [`line_filter::FileRegions::line_is_non_code`]
+/// checks each line against the match).
+fn file_regions(
+    root: &Path,
+    fg: &crate::models::FileGroupedResult,
+) -> Option<line_filter::FileRegions> {
+    let text = std::fs::read_to_string(root.join(&fg.path)).ok()?;
+    line_filter::FileRegions::new(fg.language, text)
+}
+
 /// JSON-RPC 2.0 request
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -235,7 +263,7 @@ Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot
 
 The index updates itself before every call and is built on first use. can_trust_results: false means the update could not run; warnings say why.
 
-To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. Use search_code for context or symbols, find_references for a definition plus every call site without string/comment noise, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
+To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. For uses in code only (no comments or strings), use find_references; it drops those lines exactly, so do not re-check.Use search_code for context or symbols, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
 /// The freshness paragraph of [`MCP_INSTRUCTIONS`]: the index updates itself and
 /// the index tools are not listed.
@@ -306,6 +334,29 @@ const HIDDEN_TOOLS: [&str; 4] = [
     "check_index_status",
 ];
 
+/// Search-tool parameters `tools/list` leaves out (2026-10-28). Agents passed none of
+/// them in 5,914 Reflex calls over 520 benchmark sessions (`exact` twice); together they
+/// were ~1.2K of the 8,054 characters of the six listed schemas. The server still
+/// accepts them: [`tool_specs`] validates against the full schemas in [`tool_list`].
+/// `offset` stays listed, because the `search_code` description pages with it.
+const HIDDEN_PARAMS: [&str; 6] = [
+    "exclude",
+    "force",
+    "dependencies",
+    "preview_length",
+    "expand",
+    "exact",
+];
+
+/// The tools whose listed schemas drop [`HIDDEN_PARAMS`]. `search_ast` and
+/// `index_project` keep `force`: there it is their main switch.
+const SEARCH_TOOLS: [&str; 4] = [
+    "search_code",
+    "search_regex",
+    "list_locations",
+    "find_references",
+];
+
 /// Which tools `tools/list` shows. Every tool stays callable by name.
 #[derive(Debug, Clone)]
 struct ToolListing {
@@ -317,6 +368,9 @@ struct ToolListing {
     /// it, `index_project` and `check_index_status` are the only way to refresh the
     /// index, so they are listed.
     auto_update: bool,
+    /// Leave [`HIDDEN_PARAMS`] out of the search schemas. Default on;
+    /// `REFLEX_MCP_HIDDEN_PARAMS=0` lists them (the benchmark's A/B arm).
+    hidden_params: bool,
 }
 
 impl ToolListing {
@@ -336,6 +390,7 @@ impl ToolListing {
             structural: config.enable_structural_tools,
             extra: config.extra_tools.clone(),
             auto_update,
+            hidden_params: hidden_params_enabled(),
         }
     }
 
@@ -405,7 +460,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "find_references",
-            "description": "A symbol's definition and every usage in one call, in code files only; matches in strings and comments are left out (include_strings:true keeps them). Answer: {definition, references, total_references, returned_count, filtered_out, pagination}; mode:\"count\" returns the count after filtering.",
+            "description": "Every line where a name (any identifier, not only a symbol) is used in code, plus its definition, in code files only. Lines where it is only in a comment or string are left out by a whole-file scan, so no re-check is needed (include_strings:true keeps them). Answer: {definition, references, total_references, returned_count, filtered_out, pagination}; mode:\"count\" returns the count after filtering.",
             "inputSchema": search_params(json!({
                 "contains": contains,
                 "kind": {"type": "string", "description": "Symbol kind of the definition"},
@@ -568,6 +623,22 @@ fn legacy_schemas() -> Vec<(&'static str, Value)> {
 fn handle_list_tools(_params: Option<Value>, listing: &ToolListing) -> Result<Value> {
     let mut tools = tool_list();
     tools.retain(|t| t["name"].as_str().is_some_and(|name| listing.lists(name)));
+    for tool in &mut tools {
+        if !listing.hidden_params {
+            break;
+        }
+        if !tool["name"]
+            .as_str()
+            .is_some_and(|n| SEARCH_TOOLS.contains(&n))
+        {
+            continue;
+        }
+        if let Some(props) = tool["inputSchema"]["properties"].as_object_mut() {
+            for param in HIDDEN_PARAMS {
+                props.remove(param);
+            }
+        }
+    }
     Ok(json!({ "tools": tools }))
 }
 
@@ -1129,7 +1200,15 @@ fn mcp_facing_message(e: &anyhow::Error, index_tool: bool) -> String {
             err,
             force_rebuild_advice(index_tool)
         ),
-        _ => e.to_string(),
+        // The engine's text names the CLI flag; `force` is not in the listed schemas.
+        _ => {
+            let msg = e.to_string();
+            if msg.starts_with("Query too broad") {
+                format!("{msg}\n\nOver MCP, pass \"force\": true to run it anyway.")
+            } else {
+                msg
+            }
+        }
     }
 }
 
@@ -1154,6 +1233,19 @@ fn timing_enabled() -> bool {
 
 fn columnar_enabled() -> bool {
     match std::env::var("REFLEX_MCP_COLUMNAR") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// [`HIDDEN_PARAMS`] stay out of the listed schemas. Default ON;
+/// `REFLEX_MCP_HIDDEN_PARAMS=0` (`false`/`off`/`no`) lists them, for the benchmark's
+/// same-wave A/B arm (`Beager_allparams`).
+fn hidden_params_enabled() -> bool {
+    match std::env::var("REFLEX_MCP_HIDDEN_PARAMS") {
         Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "off" | "no"
@@ -1261,12 +1353,13 @@ fn startup_flags_line(columnar: bool, listing: &ToolListing, grouped: bool) -> S
         .map(str::to_string)
         .collect();
     format!(
-        "reflex-mcp startup: version={} build={} columnar={} structural_tools={} grouped={} unlisted={}",
+        "reflex-mcp startup: version={} build={} columnar={} structural_tools={} grouped={} hidden_params={} unlisted={}",
         env!("CARGO_PKG_VERSION"),
         option_env!("REFLEX_GIT_SHA").unwrap_or("unknown"),
         onoff(columnar),
         onoff(listing.structural),
         onoff(grouped),
+        onoff(listing.hidden_params),
         if unlisted.is_empty() {
             "none".to_string()
         } else {
@@ -2882,12 +2975,22 @@ fn dispatch_tool(
                     response
                         .results
                         .iter()
-                        .flat_map(|fg| {
-                            fg.matches.iter().filter(move |m| {
-                                !is_in_string_or_comment(fg.language, &m.preview, pat)
-                            })
+                        .map(|fg| {
+                            let file = file_regions(root, fg);
+                            fg.matches
+                                .iter()
+                                .filter(|m| {
+                                    !reference_is_non_code(
+                                        file.as_ref(),
+                                        fg.language,
+                                        m,
+                                        pat,
+                                        !contains,
+                                    )
+                                })
+                                .count()
                         })
-                        .count()
+                        .sum()
                 };
 
                 let mut result = json!({"count": count, "pattern": pattern});
@@ -2988,10 +3091,18 @@ fn dispatch_tool(
             // excluding matches inside string literals or comments (unless include_strings).
             let references: Vec<serde_json::Value> = ref_response.results.iter()
                 .flat_map(|fg| {
+                    let file = if include_strings { None } else { file_regions(root, fg) };
+                    let pattern = &pattern;
                     fg.matches.iter()
-                        .filter(|m| {
+                        .filter(move |m| {
                             include_strings
-                                || !is_in_string_or_comment(fg.language, &m.preview, &pattern)
+                                || !reference_is_non_code(
+                                    file.as_ref(),
+                                    fg.language,
+                                    m,
+                                    pattern,
+                                    !contains,
+                                )
                         })
                         .map(move |m| {
                             json!({
@@ -3162,6 +3273,7 @@ fn listing_for(enable_structural: bool, update: Option<UpdateOptions>) -> ToolLi
         structural: enable_structural,
         extra: Vec::new(),
         auto_update: update.is_some(),
+        hidden_params: true,
     }
 }
 
@@ -3735,6 +3847,7 @@ mod tests {
             structural: true,
             extra: Vec::new(),
             auto_update: true,
+            hidden_params: true,
         };
         assert_eq!(
             listed_names(&default),
@@ -3783,6 +3896,53 @@ mod tests {
         assert_eq!(names.len(), 6, "{names:?}");
     }
 
+    /// 2026-10-28: the listed search schemas drop `HIDDEN_PARAMS`, the server still
+    /// accepts them, and `search_ast` keeps its `force`.
+    #[test]
+    fn test_hidden_params_are_unlisted_but_accepted() {
+        let listing = ToolListing {
+            structural: true,
+            extra: vec!["search_ast".into()],
+            auto_update: true,
+            hidden_params: true,
+        };
+        let listed = handle_list_tools(None, &listing).unwrap();
+        for tool in listed["tools"].as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let props = tool["inputSchema"]["properties"].as_object().unwrap();
+            if SEARCH_TOOLS.contains(&name) {
+                for param in HIDDEN_PARAMS {
+                    assert!(!props.contains_key(param), "{name} lists {param}");
+                }
+                assert!(props.contains_key("glob"), "{name}");
+            }
+            if name == "search_ast" {
+                assert!(props.contains_key("force"));
+            }
+        }
+        let (args, warnings) = normalize_arguments(
+            "search_code",
+            spec("search_code"),
+            json!({"pattern": "x", "exclude": ["vendor/"], "force": true, "expand": true,
+                   "exact": true, "dependencies": true, "preview_length": 40}),
+        )
+        .expect("hidden parameters are accepted");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(args["exclude"], json!(["vendor/"]));
+
+        // REFLEX_MCP_HIDDEN_PARAMS=0 lists them again (the benchmark's A/B arm).
+        let all = ToolListing {
+            hidden_params: false,
+            ..listing
+        };
+        let listed = handle_list_tools(None, &all).unwrap();
+        let search_code = &listed["tools"][0]["inputSchema"]["properties"];
+        assert!(search_code.get("exclude").is_some(), "{search_code}");
+
+        let e = anyhow::anyhow!("Query too broad - would be expensive to execute");
+        assert!(mcp_facing_message(&e, false).contains("\"force\": true"));
+    }
+
     /// The freshness paragraph names the index tools only when they are listed.
     #[test]
     fn test_instructions_follow_the_listing() {
@@ -3791,6 +3951,7 @@ mod tests {
             structural: true,
             extra: Vec::new(),
             auto_update: true,
+            hidden_params: true,
         };
         let text = instructions(&default);
         assert!(!text.contains("index_project"), "{text}");
@@ -3883,6 +4044,7 @@ mod tests {
         assert!(line.contains("columnar=off"), "line: {line}");
         assert!(line.contains("structural_tools=on"), "line: {line}");
         assert!(line.contains("grouped=off"), "line: {line}");
+        assert!(line.contains("hidden_params=on"), "line: {line}");
         // Build provenance present so an out-of-date rfx is identifiable.
         assert!(line.contains("build="), "line: {line}");
         // The removed flags must not reappear in the diagnostic.

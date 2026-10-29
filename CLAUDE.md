@@ -240,8 +240,10 @@ edited, added or deleted, committed or not.
   disables). `check_index_status` always bypasses the memo.
 
 Six listed tools (since 2026-10-27; 10 from 2026-09-30, 17 before). Claude Code carries
-every listed schema on every turn, so `tools/list` is kept small (~8.1 KB, guarded by
-`tests/mcp_tool_surface.rs`); the shared matching / coverage / freshness rules live in
+every listed schema on every turn, so `tools/list` is kept small (~6.8 KB, guarded by
+`tests/mcp_tool_surface.rs`). The search schemas leave out `HIDDEN_PARAMS` (`exclude`,
+`force`, `dependencies`, `preview_length`, `expand`, `exact`: no agent passed them in
+5,914 calls); the server still accepts them; the shared matching / coverage / freshness rules live in
 `MCP_INSTRUCTIONS`, said once. Four more tools (`HIDDEN_TOOLS`) are callable by name but
 listed only on request: `[mcp] extra_tools = ["search_ast", ...]` in
 `~/.reflex/config.toml`. `rfx mcp --no-update` lists `index_project` and
@@ -410,6 +412,18 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   12,653 → 10,386 chars (−18 %). Sonnet 5.5, 12-question investigate sessions (6 per arm):
   eager 1.06× Grep's cost, 1.12× its weighted tokens; deferred 1.06× (4 of 6 sessions
   used Reflex); accuracy 1.000. The fixed text (+4K tokens per call) is still the gap.
+- **Hidden parameters (2026-10-28):** `tools/list` 8,054 → 6,847 chars, −487 tokens per
+  call; accuracy 1.000, no tool errors. The session-level saving (~1 %) is below the
+  run-to-run noise: arms started with different prompt-cache warmth. Cuts alone cannot
+  reach parity (Grep stays listed, so Reflex text is pure extra); `aware` sessions
+  (`session_bench.py`) measure questions grep answers badly. See GREP_PARITY_RESEARCH.md.
+- **Code-only questions (`aware` / `aware-large`, 2026-10-28):** "every use of X in code,
+  not in comments or strings". On Rust, Grep agents filter with `rg … | rg -v '^…\s*//'`
+  (exact, cheap). Reflex wins only when the instructions route these to
+  `find_references` and say not to re-check: 0.68–0.79× Grep's weighted tokens on names
+  with 100–400 grep lines (1.05–1.26× before), accuracy 1.000; plain searches unchanged.
+  Keep that sentence. The harness `warm_up` does not warm in real runs: compare eager
+  arms with the cold prefix at the read price.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`

@@ -225,7 +225,26 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   (+5K tokens on every call). **Fewer listed tools** (2026-10-27, branch
   `feat/fewer-listed-tools`): 10 → 6 listed, fixed text 12,653 → 10,386 chars (−18 %).
   Measured (Sonnet 5.5, 18 sessions): eager 1.06× Grep's cost, deferred 1.06×, accuracy
-  1.000; the fixed text (+4K tokens per call) is still the gap.
+  1.000; the fixed text (+4K tokens per call) is still the gap. **Hidden parameters**
+  (2026-10-28, branch `feat/hidden-params`): `tools/list` 8,054 → 6,847 chars, −487
+  tokens per call; the session effect is below the noise. Open:
+  - `aware` / `aware-large` sessions (uses in code only, comments and strings left
+    out; `session_bench.py`, warm-up on): Grep was exact and cheaper in both. On Rust,
+    agents drop comment lines with `rg … | rg -v '^…\s*//'`; Reflex agents used
+    `list_locations preview:true`, not `find_references` (GREP_PARITY_RESEARCH.md).
+    With routing text (code-only questions → `find_references`, trusted): Reflex
+    0.69–0.75× Grep's cost on `aware-large`, accuracy 1.000 (1 trial); `investigate`
+    unchanged (0 `find_references` calls, accuracy 1.000).
+  - Harness: `warm_up` does not warm in real runs (every first session of an arm reads
+    0 from the cache; a scripted warm-up + call does hit). Find the cause, or score with
+    the cold prefix at the read price (GREP_PARITY_RESEARCH.md, regression check).
+  - Import-graph questions for `aware` (who imports a file, transitive deps): need an
+    answer key written apart from Reflex's resolver. Prototype on `tokio/src`: Reflex
+    finds 304 of 417 edges (73 %); misses: `use` inside `cfg_*!` macro bodies, items
+    imported from `lib.rs` / parent `mod.rs`, one module of a `{…}` group
+    (GREP_PARITY_RESEARCH.md). Fix those first.
+  - Next cuts: fold `search_regex` into `search_code` (−1.4K), trim "Exact call shapes" /
+    "Rules" in the instructions (−550).
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 

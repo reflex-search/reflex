@@ -171,10 +171,200 @@ of Opus (user: plan usage); so no earlier wave is comparable, only the ratios in
   (0 "No such tool" replies). n = 6: no change in adoption can be read from it.
 - Beager answered every question with `list_locations` (54) or `search_code` (18).
 
+## Where the rest of the fixed text goes (offline, 2026-10-28)
+
+`tools/list` 8,054 chars (compact JSON) + instructions 2,307. Arguments agents passed in
+5,914 Reflex calls over the 520 saved Reflex-arm sessions (`results-sessions/*/B*`):
+
+| parameter | uses | chars over the 4 search tools |
+| --- | --- | --- |
+| `exclude` | 0 | 424 |
+| `force` | 0 | 336 |
+| `offset` | 0 | 312 |
+| `dependencies` | 0 | 228 |
+| `preview_length`, `expand` | 0 | 145 |
+| `exact` | 2 | 60 |
+| `kind`, `lang`, `ignore_case` | 1–4 each | ~900 |
+| `glob` | 4,482 | 412 |
+
+Options weighed: hide the unused parameters (−1.2K, low risk: done); fold `search_regex`
+into `search_code` as `regex: true` (−1.4K, 163 calls); drop "Exact call shapes" and
+"Rules" from the instructions (−550); drop every parameter description (−3.3K: names
+such as `file` and `force` are unclear without them; not done). `offset` stays listed:
+the `search_code` description pages with it.
+
+**Parity cannot come from cuts alone.** The Reflex arms keep Grep in the tool list, so
+Reflex's fixed text is pure extra: 24 calls × ~10K chars ≈ 250K chars per session,
+against ~10K chars of replies (Grep's: 8.8K). Equal cost needs fewer turns than Grep, or
+questions where Grep needs more turns or larger replies (see "aware" sessions below).
+
+## Hidden parameters (2026-10-28, branch `feat/hidden-params`)
+
+`HIDDEN_PARAMS` (`exclude`, `force`, `dependencies`, `preview_length`, `expand`, `exact`)
+are dropped from the four listed search schemas; `tool_specs` still validates against
+the full schemas, so they are accepted. `search_ast` and `index_project` keep `force`.
+`tools/list` 8,054 → 6,847 chars.
+
+### Measured (Sonnet 5.5, `results-sessions/sonnet55-hidden-params`, same shape as above)
+
+- First-call prefix (eager): 23,805 → 23,318 tokens (−487 per call, ~−11.7K raw per
+  24-call session). Grep arm: 19,749–19,761.
+- Accuracy 1.000 in every arm; 0 tool errors; eager answered 72/72 with Reflex.
+  Deferred: 3 of 6 sessions used Reflex (was 4 of 6; n = 6).
+- Cost ratios **cannot be compared with the run before**: cache warmth differed. The Grep
+  arm started warm in 6/6 sessions (cache writes 11–22K per session), the eager arm cold
+  in 2/6 (32K and 35K written). A cold start adds ~20K tokens at the write price, which is
+  the eager arm's 1.27× (deferred: 1.02×). Warm sessions only, eager vs Grep: 1.04–1.14×,
+  as in the run before. The saving (~1 % of a session) is below this noise.
+- **Harness fix needed:** warm every arm's prefix before its trials (one short call per
+  arm), so the first trials of each arm start alike.
+
+## `aware` sessions: questions grep should answer badly (2026-10-28)
+
+The investigate sessions ask grep-shaped questions (every whole-word line, a
+definition, a file count), where Grep is at home. `session_bench.py generate` now also
+writes `{repo}-session-aware`: 10 "every line where `X` is used in code, the
+definition included, not lines where it is only in a comment or a string" and 2 counts
+of such lines. Names are picked where ≥ 30 % of grep's `.rs` lines are comments or
+strings. Answer key: `benches/efficacy/rust_code.py`, a Rust lexer written apart from
+`src/line_filter.rs`. On the 137 names that qualify, grep returns 2,261 lines, 1,113 of
+them code, so a Grep agent must read context to drop half its lines; `find_references`
+answers in one call.
+
+Building the key found a Reflex bug: `find_references` read each line alone and kept
+lines inside multi-line block comments (`/*! … */`, ` * …`) and multi-line strings.
+`main` (`843ec7c`): exact on 109 of 137 names, 59 noise lines kept, none missed. Fixed on
+`feat/hidden-params` (`line_filter::FileRegions`, a whole-file scan with the same rules,
+falling back to the line when the scan does not end in code): 137 of 137 exact, 1–4 ms
+per call. Two smaller causes on the way: a comment-only line kept because the pattern
+occurred inside a longer code identifier (`async_op_span`), and the line check against
+the engine's preview, which centres a long line on the match with `…` at both ends.
+
+### Measured (Sonnet 5.5, `results-sessions/sonnet55-aware`, 3 sessions × 2 trials × 3 arms, warm-up on)
+
+| arm | weighted | cost $ | turns | accuracy | tools |
+| --- | --- | --- | --- | --- | --- |
+| A (Grep) | 101.3K | 0.216 | 24 | 1.000 | Grep 72 |
+| B (deferred) | 105.8K (1.04×) | 0.227 (0.98×) | 24 | 0.986 | Grep 48, list_locations 24 (2 of 6 sessions used Reflex) |
+| Beager | 110.8K (1.10×) | 0.235 (1.04×) | 24 | 0.986 | list_locations 57, find_references 16 |
+
+**Not a Grep weakness at this size.** With 5–30 grep lines per name, every line is in
+Grep's reply, and the agent drops `//`, `///` and string lines by reading them: Grep
+was exact on all 72 questions without a single Read. Reflex agents mostly did the same
+with `list_locations preview:true` (57 calls) rather than `find_references` (16). Both
+misses (B, Beager) are one count question, `OwnedHandle`, where the agent listed the 7
+right lines and wrote "Eight": arithmetic, not search. Warm-up worked: cache writes per
+session were alike in all arms (A 22–43K, Beager 19–46K). Where grep should lose:
+names with hundreds of lines (the agent must read every line to drop the comments, or
+answer a count with comment lines included), and cases inside multi-line comments or
+strings, which a line preview cannot show.
+
+Not yet in `aware`: import-graph questions (who imports a file, transitive deps). The
+corpus is locked to three Rust repos (`benches/efficacy/repos.md`), so a TypeScript
+corpus with an exact relative-import key is out. A prototype Rust resolver
+(`use crate::` / `self::` / `super::` paths, `{…}` groups expanded, `as` aliases, the
+longest module prefix that is a file) on `tokio/src`, 56 files with 3–25 importers,
+compared with `get_dependencies reverse:true`:
+
+| | edges |
+| --- | --- |
+| prototype key | 417 |
+| both | 304 (73 %) |
+| key only | 113 |
+| Reflex only | 23 (mostly `mod x;` declarations: the parent "imports" the child) |
+
+The 113 Reflex misses, sampled: imports inside `cfg_*! { … }` macro bodies (tree-sitter
+does not parse macro bodies); `use crate::Item` / `use super::Item` where the item lives
+in `lib.rs` or the parent `mod.rs`; one module of a group (`use crate::sync::{oneshot,
+watch}` missed `oneshot.rs`). So on Rust the import graph is not yet a proven
+strength: fix these before asking agents graph questions graded against a key. Open
+question for the key: does `mod x;` count as an import, and does `use crate::Item`
+import `lib.rs`?
+
+### `aware-large` (Sonnet 5.5, `results-sessions/sonnet55-aware-large`, 1 trial × 3 corpora × 3 arms, warm-up on)
+
+The same questions on names with 100–400 grep lines in `.rs` files, ≥ 30 % of them
+comments or strings, ≥ 3 in code (`aware_large_session`: 6 lists, 6 counts). Extreme
+picks: ripgrep `search` 358 grep lines / 9 in code, tokio `access` 254 / 7. Offline,
+`find_references` (binary with the `FileRegions` fix) is exact on all 36 names, list
+and count mode.
+
+| session | A weighted / $ | B weighted / $ | Beager weighted / $ |
+| --- | --- | --- | --- |
+| reflex | 282.4K / 0.694 | 256.7K / 0.657 | 249.5K / 0.619 |
+| ripgrep | 230.2K / 0.539 | 277.0K / 0.626 | 256.5K / 0.539 |
+| tokio | 141.9K / 0.330 | 151.9K / 0.351 (Grep/Bash only) | 300.2K / 0.698 |
+| sum | 654.5K / 1.563 | 685.6K (1.05×) / 1.634 (1.05×) | 806.2K (1.23×) / 1.856 (1.19×) |
+
+Accuracy 1.000 in every arm (A reflex 0.9995). **Grep did not over-fetch:** after one
+Grep call per session, A agents switched to Bash `rg -nw NAME | rg -v '^[^:]+:[0-9]+:\s*//'`,
+which drops `//` / `///` / `//!` lines before they reach the context (tokio: 23K chars
+of tool results for 12 questions). That filter is exact here: in these Rust trees the
+noise is almost all whole-line comments; trailing comments, strings and `/* */` blocks
+are rare. **Reflex agents did not use the strength:** 5 of 6 Reflex sessions answered
+with `list_locations preview:true` (every grep line, comments included, read by the
+agent: Beager tokio 182K chars of results, 2.1× A's cost). The one session that called
+`find_references` (Beager ripgrep, 13 calls) re-checked each answer with Bash rg.
+The instructions route "where does X occur" to `list_locations` first, and
+`find_references` reads as a symbol tool ("A symbol's definition and every usage"),
+so a plain word like `blocking` never goes there.
+
+Conclusion: on Rust, comment noise is cheap for grep (a one-line pipe), so this is not
+a strong grep weakness. The loss was routing; see the next run.
+
+### `aware-large` with routing text (Sonnet 5.5, `results-sessions/sonnet55-aware-large-route`, same shape)
+
+Two text changes: the instructions' last paragraph says "For uses in code only (no
+comments or strings), use find_references; it drops those lines exactly, so do not
+re-check." (it replaced "find_references for a definition plus every call site without
+string/comment noise"); the `find_references` description says any identifier, not only
+a symbol, and that a whole-file scan drops comment and string lines, so no re-check is
+needed. Instructions stay under the 2,400-char budget.
+
+| session | A weighted / $ | B weighted / $ | Beager weighted / $ |
+| --- | --- | --- | --- |
+| reflex | 252.9K / 0.606 | 187.2K / 0.404 | 198.6K / 0.456 |
+| ripgrep | 231.1K / 0.526 | 153.0K / 0.301 | 136.7K / 0.295 |
+| tokio | 128.3K / 0.271 | 130.8K / 0.265 | 140.8K / 0.308 |
+| sum | 612.4K / 1.403 | 471.0K (0.77×) / 0.970 (0.69×) | 476.1K (0.78×) / 1.059 (0.75×) |
+
+Accuracy 1.000 in every Reflex session (A reflex 0.9992). Every Reflex session used
+`find_references` on all 12 questions (count mode on the 5–6 count questions); one B
+session ran 4 Bash checks, none of the Beager sessions re-checked. Tool-result chars per
+session fell from 108–182K to 23–75K. The A arm repeated its pipe habit (cost within
+10 % of the previous wave). One trial per cell: the direction is clear, the size is not.
+### Regression check: `investigate` with routing text (`results-sessions/sonnet55-investigate-route`, 1 trial)
+
+Plain "every occurrence" questions did not move: 0 `find_references` calls in 6 Reflex
+sessions (`list_locations` 28, `search_code` / `search_regex` 8), accuracy 1.000 in
+every arm. Weighted vs A: B 1.04×, Beager 1.39× raw.
+
+**The warm-up does not warm in real runs.** First-call cache usage, every warm-up run:
+a session's first call reads 0 unless an earlier session of the same arm already ran
+(trial 02 reads 19,541 for Beager). A and B mostly read 16,848 anyway: that is Claude
+Code's own prefix, cached by any recent session; Beager's prefix (Reflex schemas in
+the tool block) is not, so every first Beager session paid ~19.5K cache-write tokens
+(23.4K written, 0 read). A scripted warm-up followed by one trial-shaped call does hit
+(read 19,578 / 21,319), so the cause is still open (concurrent warm-ups? the burst of
+9 trials?). Until it is fixed, compare runs with the cold prefix moved from the
+write to the read price (cold = first call read < 16,848 for A/B, < 19,541 for Beager):
+
+| run | B raw → warm | Beager raw → warm |
+| --- | --- | --- |
+| hidden-params (investigate, 2 trials) | 1.06× → 1.06× | 1.19× → 1.10× |
+| investigate-route | 1.04× → 1.04× | 1.39× → **1.12×** |
+| aware-large (before routing) | 1.05× → 1.05× | 1.25× → 1.26× (A cold too) |
+| aware-large-route | 0.79× → 0.79× | 0.80× → **0.68×** |
+
+So the routing text costs nothing on plain searches (Beager 1.10× → 1.12×, within
+noise) and cuts code-only questions to 0.68–0.79× Grep's weighted tokens. Stronger candidates: languages with
+block comments and docstrings (Python `"""…"""`, JSDoc `/** … */`), where a line pipe
+cannot see that a line is inside a comment; the corpus lock rules them out today.
+
 ## Not done / next levers
 
-- The fixed text is still the gap (+4K tokens per call, ~1.06× Grep's cost on Sonnet 5.5).
-  What is left is the 6 schemas (8,079 chars, mostly the shared search parameters) and
-  the instructions (2,307 chars, the adoption-critical text).
+- The fixed text is still the gap: ~9.2K chars per call after hidden parameters
+  (6,847 schemas + 2,307 instructions). Next candidates: fold `search_regex` into
+  `search_code` (−1.4K), trim "Exact call shapes" / "Rules" (−550).
 - `list_locations` `dependencies: true` is accepted but its imports never reached the
   reply (either shape). Fixed 2026-10-25: a `dependencies` map beside `locations`.

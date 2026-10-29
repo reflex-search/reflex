@@ -175,7 +175,7 @@ uses most:
 |------|------------|
 | `search_code` | Every occurrence of a name, with previews. `symbols: true` for definitions only. `mode: "count"` for how many matches, in how many files. |
 | `search_regex` | Regular expressions, and patterns with `->`, `::`, `(`, `[`. |
-| `find_references` | A symbol's definition plus every usage, in one call. Skips strings and comments by default. Code files only. |
+| `find_references` | Every line where a name is used in code, plus its definition, in one call. Skips lines where it is only in a comment or string (whole-file scan). Code files only. |
 | `list_locations` | Every matching line for a pattern, grouped by file (`{path: [line, ...]}`), without previews. A line with two matches appears once, like `grep -n`. |
 | `get_dependencies` | What a file imports. `reverse: true` for the files that import it; `depth: N` to follow imports N levels. |
 | `analyze` | Import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or `islands`. |
