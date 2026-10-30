@@ -368,6 +368,28 @@ noise) and cuts code-only questions to 0.68–0.79× Grep's weighted tokens. Str
 block comments and docstrings (Python `"""…"""`, JSDoc `/** … */`), where a line pipe
 cannot see that a line is inside a comment; the corpus lock rules them out today.
 
+### Warm re-run (2026-10-29, fixed warm-up, `results-sessions/sonnet55-{aware-large,investigate}-warm`)
+
+Same sessions, same binary, 1 trial per cell. Every warm-up wrote or read the prefix
+(Beager: write 23,254 on the first run, read 19,578 on the second), and all 18 first
+calls read from the cache (A/B 16,848, Beager 19,578). Sums over 3 sessions per arm:
+
+| sessions | A weighted / $ | B vs A (weighted / $) | Beager vs A (weighted / $) | accuracy A / B / Beager |
+| --- | --- | --- | --- | --- |
+| aware-large | 575.6K / 1.312 | **0.77× / 0.69×** | **0.72× / 0.64×** | 0.972 / 1.000 / 1.000 |
+| investigate | 268.9K / 0.570 | 1.04× / 1.03× | 1.05× / 0.98× | 1.000 / 1.000 / 1.000 |
+
+- `aware-large`: every Reflex question went to `find_references` (B 27 lists + 13
+  counts, Beager 19 + 18), none re-checked. A used 39 Bash pipes and 7 Grep calls.
+- Grep's miss: `command` counted 56, key 58. Its pipe (`grep -rnw … | grep -Ev
+  '^…\s*//'`) kept every non-`//` line, and the agent dropped two lines that mix code
+  and a string (`format!("Unknown command: {}", command)`,
+  `shell_words::split(command).context("Failed to parse command string")`). Mixed
+  lines are what a line filter cannot judge and the whole-file scan can.
+- `investigate`: no question moved to `find_references`; eager Reflex at Grep's cost
+  (0.98×), 1.05× its weighted tokens. Before the fixed warm-up, the same comparison
+  needed the cold-prefix correction (1.12× after it).
+
 ## Not done / next levers
 
 - The fixed text is still the gap: ~9.2K chars per call after hidden parameters
