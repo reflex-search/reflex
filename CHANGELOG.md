@@ -57,9 +57,9 @@ answer from it marked `stale`.
   `find_references`, and say its answer needs no re-check.** Its description now says
   it takes any identifier, not only a symbol. Before, agents answered such questions
   with `list_locations preview:true` and read every line, comments included. On 36
-  such questions (names with 100–400 grep lines, Sonnet 5.5): Reflex 0.68–0.79× Grep's
-  weighted tokens (was 1.05–1.26×), accuracy 1.000. Plain "every occurrence" questions
-  did not move to `find_references`.
+  such questions (names with 100–400 grep lines, Sonnet 5.5): Reflex 0.72–0.77× Grep's
+  weighted tokens and 0.64–0.69× its cost (was 1.05–1.26× weighted), accuracy 1.000
+  (Grep 0.972). Plain "every occurrence" questions did not move to `find_references`.
 
 ### Fixed
 
