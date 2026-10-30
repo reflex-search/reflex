@@ -60,8 +60,9 @@ SEARCH_TOOLS = frozenset([
 # Listing these in --allowedTools forces the Claude Code SDK to eagerly load
 # their schemas at session start, eliminating the "deferred schema" ToolSearch
 # calls that otherwise add 1-2 wasted turns to every arm B/C trial.
-# The tools `rfx mcp` lists (10 since 2026-09-30), plus the names merged into them
-# (still callable, unlisted) so a binary from before the merge also runs.
+# Every tool `rfx mcp` can list (6 by default since 2026-10-27, 10 from 2026-09-30;
+# `[mcp] extra_tools` lists the rest), plus the names merged into them (still
+# callable, unlisted) so a binary from before the merge also runs.
 REFLEX_MCP_TOOLS = [
     "mcp__reflex__analyze",
     "mcp__reflex__check_index_status",
@@ -137,6 +138,16 @@ ARMS = {
         "mcp_command": "TARGET_RELEASE_RFX",
         "mcp_always_load": True,
         "mcp_env": {"REFLEX_MCP_GROUPED": "0"},
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
+        "append_system_prompt": None,
+    },
+    "Beager_allparams": {
+        "description": "Arm Beager with every search parameter listed (REFLEX_MCP_HIDDEN_PARAMS=0), the schemas before HIDDEN_PARAMS",
+        "mcp_command": "TARGET_RELEASE_RFX",
+        "mcp_always_load": True,
+        "mcp_env": {"REFLEX_MCP_HIDDEN_PARAMS": "0"},
         "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
         "disallowed_tools": [],
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
@@ -351,6 +362,8 @@ def _expected_flag_value(var: str, val: str) -> tuple[str, str] | None:
         return ("columnar", "off" if v in _FALSEY else "on")
     if var == "REFLEX_MCP_GROUPED":
         return ("grouped", "off" if v in _FALSEY else "on")
+    if var == "REFLEX_MCP_HIDDEN_PARAMS":
+        return ("hidden_params", "off" if v in _FALSEY else "on")
     if var == "REFLEX_MCP_SC_STAGE2":
         return ("sc_stage2", "on" if v in _TRUTHY else "off")
     return None
@@ -413,7 +426,8 @@ def verify_mcp_arm_flags(
     print(f"  [PROBE] {arm_name} resolved MCP flags: build={flags.get('build','?')} "
           f"structuredContent={flags.get('structuredContent','?')} "
           f"sc_stage2={flags.get('sc_stage2','?')} columnar={flags.get('columnar','?')} "
-          f"grouped={flags.get('grouped','?')}")
+          f"grouped={flags.get('grouped','?')} hidden_params={flags.get('hidden_params','?')} "
+          f"unlisted={flags.get('unlisted','?')}")
     for var, val in (mcp_env or {}).items():
         expected = _expected_flag_value(var, val)
         if expected is None:

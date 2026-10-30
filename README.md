@@ -128,12 +128,26 @@ When connected via MCP, your AI assistant gets these tools:
 | `search_regex` | Regex pattern matching across the codebase |
 | `list_locations` | Fast file+line discovery (minimal tokens) |
 | `find_references` | Symbol definition + all usage sites in a single call; the primary code-navigation tool for AI agents |
-| `search_ast` | Structure-aware search via Tree-sitter AST queries (slow; always pass `glob`) |
 | `get_dependencies` | Imports of a file; `reverse: true` for the files that import it, `depth: N` to follow imports N levels |
 | `analyze` | Import-graph analysis: `kind` = `summary`, `hotspots`, `circular`, `unused` or `islands` |
+
+Four more tools are not listed by default, because every listed tool costs tokens on every agent turn:
+
+| Tool | What it does |
+|---|---|
+| `search_ast` | Structure-aware search via Tree-sitter AST queries (slow; always pass `glob`) |
 | `gather_context` | Codebase structure and project-type summary |
 | `index_project` | Force an index run (rarely needed: every tool updates the index first) |
 | `check_index_status` | Report whether the index matches the files on disk, without updating it |
+
+To list them, name them in `~/.reflex/config.toml`:
+
+```toml
+[mcp]
+extra_tools = ["search_ast", "gather_context"]
+```
+
+`rfx mcp --no-update` lists `index_project` and `check_index_status`, because they are then the only way to refresh the index.
 
 Eight older tool names still work but are deprecated: `count_occurrences` (use `search_code` with `mode: "count"`), `get_dependents` and `get_transitive_deps` (use `get_dependencies` with `reverse` / `depth`), and `find_hotspots`, `find_circular`, `find_unused`, `find_islands`, `analyze_summary` (use `analyze` with `kind`).
 

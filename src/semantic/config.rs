@@ -28,11 +28,13 @@ fn user_home_dir() -> Option<PathBuf> {
 /// MCP server configuration (read from `~/.reflex/config.toml`, `[mcp]` section)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfig {
-    /// Include structural analysis tools in the MCP tool list.
-    /// Gated tools: find_circular, find_islands, find_unused, analyze_summary, get_transitive_deps.
-    /// Default: true (no change to existing behaviour).
+    /// List `analyze` (the import-graph tool) in `tools/list`. Default: true.
     #[serde(default = "default_structural_tools")]
     pub enable_structural_tools: bool,
+    /// Tools left out of `tools/list` by default to list anyway: `search_ast`,
+    /// `gather_context`, `index_project`, `check_index_status`. Default: none.
+    #[serde(default)]
+    pub extra_tools: Vec<String>,
 }
 
 fn default_structural_tools() -> bool {
@@ -43,6 +45,7 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enable_structural_tools: true,
+            extra_tools: Vec::new(),
         }
     }
 }
@@ -71,7 +74,7 @@ pub fn load_mcp_config() -> McpConfig {
     };
 
     // Warn about unknown keys within the [mcp] section
-    let known_mcp_keys = ["enable_structural_tools"];
+    let known_mcp_keys = ["enable_structural_tools", "extra_tools"];
     if let Some(toml::Value::Table(mcp_table)) = toml_value.get("mcp") {
         for key in mcp_table.keys() {
             if !known_mcp_keys.contains(&key.as_str()) {

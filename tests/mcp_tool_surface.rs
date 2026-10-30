@@ -1,9 +1,11 @@
-//! The MCP tool surface after the 2026-09-30 merge: 10 listed tools with short
-//! schemas, and the 8 removed names still callable (unlisted, with a deprecation
-//! warning). Claude Code carries every listed schema on every turn, so the size of
-//! `tools/list` is guarded here too.
+//! The MCP tool surface: 6 listed tools with short schemas (10 until 2026-10-27;
+//! `search_ast`, `gather_context`, `index_project` and `check_index_status` are
+//! listed only on request), and the 8 names removed on 2026-09-30 still callable
+//! (unlisted, with a deprecation warning). Claude Code carries every listed schema
+//! on every turn, so the size of `tools/list` is guarded here too.
 
-use reflex::mcp::run_mcp_server_io_in;
+use reflex::auto_update::UpdateOptions;
+use reflex::mcp::{run_mcp_server_io_in, run_mcp_server_io_with};
 use reflex::{CacheManager, IndexConfig, Indexer};
 use serde_json::{Value, json};
 use std::fs;
@@ -60,34 +62,102 @@ fn warnings(v: &Value) -> String {
     v["warnings"].to_string()
 }
 
-#[test]
-fn ten_tools_are_listed_in_a_small_schema() {
-    let temp = indexed();
-    let tools = rpc(temp.path(), "tools/list", json!({}))["result"]["tools"].clone();
-    let names: Vec<&str> = tools
+/// One request to a server that updates the index first, as `rfx mcp` does.
+fn rpc_updating(root: &Path, method: &str, params: Value) -> Value {
+    let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let mut out: Vec<u8> = Vec::new();
+    run_mcp_server_io_with(
+        root,
+        Cursor::new(format!("{req}\n").into_bytes()),
+        &mut out,
+        true,
+        Some(UpdateOptions::library()),
+    )
+    .unwrap();
+    serde_json::from_str(String::from_utf8(out).unwrap().lines().next().unwrap()).unwrap()
+}
+
+fn names(tools: &Value) -> Vec<&str> {
+    tools
         .as_array()
         .unwrap()
         .iter()
         .map(|t| t["name"].as_str().unwrap())
-        .collect();
+        .collect()
+}
+
+#[test]
+fn six_tools_are_listed_in_a_small_schema() {
+    let temp = indexed();
+    let tools = rpc_updating(temp.path(), "tools/list", json!({}))["result"]["tools"].clone();
     assert_eq!(
-        names,
+        names(&tools),
         [
             "search_code",
             "search_regex",
             "list_locations",
             "find_references",
-            "search_ast",
             "get_dependencies",
             "analyze",
-            "gather_context",
-            "index_project",
-            "check_index_status",
         ]
     );
-    // Was 44 KB with 17 tools; every byte here is carried on every agent turn.
+    // Was 44 KB with 17 tools, 10.3 KB with 10, 8.1 KB before HIDDEN_PARAMS; every byte here is carried on every
+    // agent turn.
     let bytes = serde_json::to_string(&tools).unwrap().len();
-    assert!(bytes <= 14_000, "tools/list is {bytes} bytes");
+    assert!(bytes <= 7_000, "tools/list is {bytes} bytes");
+}
+
+/// Without the automatic update, the index tools are the only way to refresh the
+/// index, so they are listed.
+#[test]
+fn no_update_lists_the_index_tools() {
+    let temp = indexed();
+    let tools = rpc(temp.path(), "tools/list", json!({}))["result"]["tools"].clone();
+    let listed = names(&tools);
+    assert!(listed.contains(&"index_project"), "{listed:?}");
+    assert!(listed.contains(&"check_index_status"), "{listed:?}");
+    assert!(!listed.contains(&"search_ast"), "{listed:?}");
+    assert!(!listed.contains(&"gather_context"), "{listed:?}");
+}
+
+/// Unlisted tools still answer a client that calls them by name.
+#[test]
+fn hidden_tools_still_answer_by_name() {
+    let temp = indexed();
+    for (tool, args) in [
+        (
+            "search_ast",
+            json!({"pattern": "(function_item) @fn", "lang": "rust", "glob": ["src/**/*.rs"]}),
+        ),
+        ("gather_context", json!({"structure": true})),
+        ("check_index_status", json!({})),
+    ] {
+        let v = rpc_updating(
+            temp.path(),
+            "tools/call",
+            json!({"name": tool, "arguments": args}),
+        );
+        assert!(v.get("error").is_none(), "{tool}: {v}");
+        assert!(!v.to_string().contains("deprecated"), "{tool}: {v}");
+    }
+}
+
+/// With `index_project` unlisted, `action_required` names the CLI: Claude Code can
+/// call only listed tools.
+#[test]
+fn action_required_names_the_cli_when_index_project_is_unlisted() {
+    let temp = TempDir::new().unwrap();
+    let args = json!({"name": "check_index_status", "arguments": {}});
+    let v = rpc_updating(temp.path(), "tools/call", args.clone());
+    let text = v["result"]["content"][0]["text"].as_str().unwrap();
+    let status: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(status["status"], "missing", "{status}");
+    assert_eq!(status["action_required"], "rfx index", "{status}");
+
+    let v = rpc(temp.path(), "tools/call", args);
+    let text = v["result"]["content"][0]["text"].as_str().unwrap();
+    let status: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(status["action_required"], "index_project", "{status}");
 }
 
 #[test]

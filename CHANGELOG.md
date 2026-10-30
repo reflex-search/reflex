@@ -13,6 +13,24 @@ answer from it marked `stale`.
   Reflex's replies. `total_locations`, `status` and `can_trust_results` are unchanged.
   `REFLEX_MCP_GROUPED=0` restores the flat array; the `rfx mcp` startup line on stderr
   reports `grouped=on|off`.
+- **Four tools are no longer in `tools/list`: `search_ast`, `gather_context`,
+  `index_project`, `check_index_status`.** Claude Code sends every listed schema on every
+  API call. These four were 2,203 of its 10,286 characters, and agents made 14 calls to
+  them in 508 benchmark sessions. The fixed text Reflex adds to each call falls from
+  12,653 to 10,386 characters (−18 %). They still answer a client that calls them by
+  name, but Claude Code can call only listed tools. To list them, add
+  `[mcp] extra_tools = ["search_ast", "gather_context"]` (any of the four) to
+  `~/.reflex/config.toml`. `rfx mcp --no-update` lists `index_project` and
+  `check_index_status`: without the automatic update they are the only way to refresh
+  the index. When `index_project` is not listed, `action_required` and error advice
+  name `rfx index` instead, and the instructions no longer mention the index tools. The
+  startup line reports `unlisted=…`.
+- **Six search parameters are no longer in the listed schemas: `exclude`, `force`,
+  `dependencies`, `preview_length`, `expand`, `exact`.** Agents passed none of them in
+  5,914 Reflex calls over 520 benchmark sessions (`exact` twice). The six schemas fall
+  from 8,054 to 6,847 characters, about 490 tokens less on every API call. The server
+  still accepts them. A pattern too broad to run by default now says to pass
+  `"force": true` over MCP (the message named only the CLI's `--force`).
 
 ### Added
 
@@ -35,8 +53,25 @@ answer from it marked `stale`.
 - **The `list_locations` description says "every matching line", not "every match".**
   A line with two matches was always listed once, like `grep -n`. Agents that read
   "every match" counted occurrences on doubled lines and read files to check.
+- **The instructions send "used in code, not in comments or strings" questions to
+  `find_references`, and say its answer needs no re-check.** Its description now says
+  it takes any identifier, not only a symbol. Before, agents answered such questions
+  with `list_locations preview:true` and read every line, comments included. On 36
+  such questions (names with 100–400 grep lines, Sonnet 5.5): Reflex 0.68–0.79× Grep's
+  weighted tokens (was 1.05–1.26×), accuracy 1.000. Plain "every occurrence" questions
+  did not move to `find_references`.
 
 ### Fixed
+
+- **`find_references` kept matches inside multi-line comments and strings.** It read
+  each matching line alone, so a line inside a `/* … */` or `/*! … */` block, or a line
+  of a string that spans lines, counted as a usage. It now reads the whole file with the
+  same comment and string rules, and falls back to the line when the file does not scan
+  cleanly. A comment-only line whose code match is a longer identifier (`async_op_span`
+  for `async_op`) is no longer kept either. On 137 names in the benchmark corpora,
+  against a Rust lexer written apart from Reflex: exact on 109 → 137 names, 59 kept
+  comment/string lines → 0, no code line lost. Grep returns 2,261 lines for those
+  names; 1,113 of them are code.
 
 - **`swift` is a language name.** Swift files are indexed as text with
   `language: "swift"`, but `--lang swift` (`rfx query`, `rfx list-files`, `rfx index

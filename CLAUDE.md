@@ -206,7 +206,7 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 Every JSON-object MCP answer (search, count mode, `list_locations`, `find_references`,
 `analyze`) and `check_index_status` carry `status` and `can_trust_results`. Array answers
 (`get_dependencies` in every form, `search_ast`) do not. The index is updated before every call (see
-Auto-update), so agents are told NOT to call `check_index_status` / `index_project`. Freshness is judged by
+Auto-update), so `check_index_status` and `index_project` are not listed (see below). Freshness is judged by
 **file content, not by commit**: every indexed file has a recorded fingerprint (size,
 mtime, blake3 hash), and the index is stale only when a file on disk differs from it —
 edited, added or deleted, committed or not.
@@ -230,29 +230,38 @@ edited, added or deleted, committed or not.
 - `details.checked_by` is `git` (candidates from `git status`, confirmed by fingerprint)
   or `walk` (every file is stat'ed: no git repository, or the git candidate query failed).
 - The file lists are paths, capped at 100 per category; `truncated` says when.
-- `action_required` names the MCP tool (`index_project`), never the CLI.
+- `action_required` names the MCP tool (`index_project`) when `tools/list` shows it,
+  else `rfx index` (Claude Code can call only listed tools). Error advice follows the
+  same rule (`mcp_facing_message`).
 - With auto-update (default), a search that finds the index stale updates it and answers
   again, so `stale` appears only when the update could not run (`warnings` says why) or
   with `--no-update`. `check_index_status` never updates: it reports the truth.
 - The verdict is memoised for 1 s per workspace (`REFLEX_FRESHNESS_TTL_MS`; `0`
   disables). `check_index_status` always bypasses the memo.
 
-Ten tools (since 2026-09-30; was 17). Claude Code carries every listed schema on every
-turn, so `tools/list` is kept small (~10.6 KB, guarded by `tests/mcp_tool_surface.rs`);
-the shared matching / coverage / freshness rules live in `MCP_INSTRUCTIONS`, said once.
+Six listed tools (since 2026-10-27; 10 from 2026-09-30, 17 before). Claude Code carries
+every listed schema on every turn, so `tools/list` is kept small (~6.8 KB, guarded by
+`tests/mcp_tool_surface.rs`). The search schemas leave out `HIDDEN_PARAMS` (`exclude`,
+`force`, `dependencies`, `preview_length`, `expand`, `exact`: no agent passed them in
+5,914 calls); the server still accepts them; the shared matching / coverage / freshness rules live in
+`MCP_INSTRUCTIONS`, said once. Four more tools (`HIDDEN_TOOLS`) are callable by name but
+listed only on request: `[mcp] extra_tools = ["search_ast", ...]` in
+`~/.reflex/config.toml`. `rfx mcp --no-update` lists `index_project` and
+`check_index_status` (the only way to refresh the index then). The freshness paragraph of
+the instructions follows the listing (`instructions()`).
 
-| Tool | Purpose |
-|------|---------|
-| `search_code` | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
-| `search_regex` | Regex search (use for `->`, `::`, alternation, etc.) |
-| `list_locations` | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
-| `find_references` | Definition + all usages in one atomic call (default limit: 200) |
-| `search_ast` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
-| `get_dependencies` | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
-| `analyze` | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
-| `gather_context` | Project structure, frameworks, entry points |
-| `index_project` | Force an index run (rarely needed: every tool updates first) |
-| `check_index_status` | Report freshness without updating (rarely needed) |
+| Tool | Listed | Purpose |
+|------|--------|---------|
+| `search_code` | yes | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
+| `search_regex` | yes | Regex search (use for `->`, `::`, alternation, etc.) |
+| `list_locations` | yes | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
+| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200) |
+| `get_dependencies` | yes | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
+| `analyze` | yes | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
+| `search_ast` | `extra_tools` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
+| `gather_context` | `extra_tools` | Project structure, frameworks, entry points |
+| `index_project` | `extra_tools`, `--no-update` | Force an index run (every tool updates first) |
+| `check_index_status` | `extra_tools`, `--no-update` | Report freshness without updating |
 
 Removed names still work, unlisted, with a deprecation warning (`LEGACY_TOOLS`):
 `count_occurrences`, `get_dependents`, `get_transitive_deps`, `find_hotspots`,
@@ -398,6 +407,24 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   (was 1.17× on the same sessions), 1.10× its weighted tokens. Opus no longer drifts to
   Bash grep (11.1 → 1.1 per session; Reflex calls 2.5 → 11.3). The rest is the fixed
   text: +5K tokens of instructions and schemas on every call.
+- **Fewer listed tools (6 tools, 2026-10-27):** `search_ast`, `gather_context`,
+  `index_project` and `check_index_status` are listed only on request. Fixed text
+  12,653 → 10,386 chars (−18 %). Sonnet 5.5, 12-question investigate sessions (6 per arm):
+  eager 1.06× Grep's cost, 1.12× its weighted tokens; deferred 1.06× (4 of 6 sessions
+  used Reflex); accuracy 1.000. The fixed text (+4K tokens per call) is still the gap.
+- **Hidden parameters (2026-10-28):** `tools/list` 8,054 → 6,847 chars, −487 tokens per
+  call; accuracy 1.000, no tool errors. The session-level saving (~1 %) is below the
+  run-to-run noise: arms started with different prompt-cache warmth. Cuts alone cannot
+  reach parity (Grep stays listed, so Reflex text is pure extra); `aware` sessions
+  (`session_bench.py`) measure questions grep answers badly. See GREP_PARITY_RESEARCH.md.
+- **Code-only questions (`aware` / `aware-large`, 2026-10-28):** "every use of X in code,
+  not in comments or strings". On Rust, Grep agents filter with `rg … | rg -v '^…\s*//'`
+  (exact, cheap). Reflex wins only when the instructions route these to
+  `find_references` and say not to re-check: 0.68–0.79× Grep's weighted tokens on names
+  with 100–400 grep lines (1.05–1.26× before), accuracy 1.000; plain searches unchanged.
+  Keep that sentence. Runs before 2026-10-29 started every arm cold (the warm-up used
+  text input, trials stream-json: different prefixes); compare those with the cold
+  prefix at the read price.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`

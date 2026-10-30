@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-10-24 (Reflex 2.2.0)
+**Last Updated:** 2026-10-27 (Reflex 2.2.0 + main)
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md`.
 > Update this file as you work. Keep it to LIVE work: open tasks, current policy, open
@@ -119,6 +119,15 @@ From 2.0.0 (2026-09-23):
 - New symbol queries go into the language's `SYMBOL_QUERIES`, never a separate
   per-kind `QueryCursor` (one combined query per language per file).
 
+From the grep-parity work (user decisions, 2026-10-27):
+
+- `tools/list` shows six tools. `search_ast`, `gather_context`, `index_project` and
+  `check_index_status` are listed only with `[mcp] extra_tools`; `--no-update` lists the
+  two index tools. A tool `tools/list` does not show is never named as advice: with
+  `index_project` unlisted, `action_required` and error text name `rfx index`.
+- REF-219 (file-grouped rows for `search_code` / `search_regex`) is dropped: 0.1–0.9 % of
+  reply text in current sessions (`.context/GREP_PARITY_RESEARCH.md`).
+
 ---
 
 ## 🔭 Open follow-ups
@@ -180,7 +189,6 @@ Query latency:
 MCP:
 - 1.7.0 item E: measure first-call correctness on a fresh Claude Code session with
   deferred tools, in a consumer project.
-- Hybrid columnar format (file-grouped rows; REF-219) — optional.
 
 Tests:
 - `estimate_is_within_band_on_synthetic_corpus` is `#[ignore]` (builds the 30 MB corpus):
@@ -210,11 +218,30 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
   grouped by file (`{path: [line, ...]}`, `REFLEX_MCP_GROUPED=0` = flat). Measured
   (Sonnet 5, investigate sessions): replies −45–54 %, cost 0.91–0.97× flat, 160/160 list
   answers exact after the "every matching line" wording fix. Not worth it: duplicate
-  reply metadata (6–8 % of reply weight, <1 % of a session). Open: file-grouped rows for
-  `search_code` / `search_regex` (REF-219); fixed text = fewer listed tools (user
-  decision). Opus 12-question investigate sessions (2026-10-25, `main`): 1.02× Grep's cost,
-  1.10× its weighted tokens, Bash greps 11.1 → 1.1 per session; the rest is the fixed
-  text (+5K tokens on every call).
+  reply metadata (6–8 % of reply weight, <1 % of a session); file-grouped rows for
+  `search_code` / `search_regex` (REF-219, 0.1–0.9 % of reply text; dropped 2026-10-27).
+  Opus 12-question investigate sessions (2026-10-25, `main`): 1.02× Grep's cost, 1.10×
+  its weighted tokens, Bash greps 11.1 → 1.1 per session; the rest is the fixed text
+  (+5K tokens on every call). **Fewer listed tools** (2026-10-27, branch
+  `feat/fewer-listed-tools`): 10 → 6 listed, fixed text 12,653 → 10,386 chars (−18 %).
+  Measured (Sonnet 5.5, 18 sessions): eager 1.06× Grep's cost, deferred 1.06×, accuracy
+  1.000; the fixed text (+4K tokens per call) is still the gap. **Hidden parameters**
+  (2026-10-28, branch `feat/hidden-params`): `tools/list` 8,054 → 6,847 chars, −487
+  tokens per call; the session effect is below the noise. Open:
+  - `aware` / `aware-large` sessions (uses in code only, comments and strings left
+    out; `session_bench.py`, warm-up on): Grep was exact and cheaper in both. On Rust,
+    agents drop comment lines with `rg … | rg -v '^…\s*//'`; Reflex agents used
+    `list_locations preview:true`, not `find_references` (GREP_PARITY_RESEARCH.md).
+    With routing text (code-only questions → `find_references`, trusted): Reflex
+    0.69–0.75× Grep's cost on `aware-large`, accuracy 1.000 (1 trial); `investigate`
+    unchanged (0 `find_references` calls, accuracy 1.000).
+  - Import-graph questions for `aware` (who imports a file, transitive deps): need an
+    answer key written apart from Reflex's resolver. Prototype on `tokio/src`: Reflex
+    finds 304 of 417 edges (73 %); misses: `use` inside `cfg_*!` macro bodies, items
+    imported from `lib.rs` / parent `mod.rs`, one module of a `{…}` group
+    (GREP_PARITY_RESEARCH.md). Fix those first.
+  - Next cuts: fold `search_regex` into `search_code` (−1.4K), trim "Exact call shapes" /
+    "Rules" in the instructions (−550).
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 
