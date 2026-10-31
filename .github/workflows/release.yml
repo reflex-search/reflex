@@ -215,7 +215,10 @@ jobs:
             # --ignore-scripts skips the package's postinstall (which downloads the
             # rfx binary from a release tag that doesn't exist yet at this stage).
             npm install --ignore-scripts
-            npm audit fix --ignore-scripts
+            # Without --audit-level, `audit fix` exits 1 while any advisory remains,
+            # so a moderate one with no fix stopped the release before the gate
+            # below (v2.3.0: glob, minimatch, rimraf).
+            npm audit fix --ignore-scripts --audit-level=high
             # Hard gate: fail the release if anything high/critical remains.
             npm audit --audit-level=high
             cd -
