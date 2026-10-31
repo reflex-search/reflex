@@ -25,3 +25,8 @@ publish-jobs = ["npm", "homebrew"]
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+
+# dist 0.31 builds aarch64-apple-darwin on macos-14, which GitHub retires on
+# 2026-11-02 (its brownouts failed the first v2.3.0 re-release).
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
