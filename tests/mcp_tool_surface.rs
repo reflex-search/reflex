@@ -87,24 +87,24 @@ fn names(tools: &Value) -> Vec<&str> {
 }
 
 #[test]
-fn six_tools_are_listed_in_a_small_schema() {
+fn five_tools_are_listed_in_a_small_schema() {
     let temp = indexed();
     let tools = rpc_updating(temp.path(), "tools/list", json!({}))["result"]["tools"].clone();
     assert_eq!(
         names(&tools),
         [
             "search_code",
-            "search_regex",
             "list_locations",
             "find_references",
             "get_dependencies",
             "analyze",
         ]
     );
-    // Was 44 KB with 17 tools, 10.3 KB with 10, 8.1 KB before HIDDEN_PARAMS; every byte here is carried on every
-    // agent turn.
+    // Was 44 KB with 17 tools, 10.3 KB with 10, 8.1 KB before HIDDEN_PARAMS, 6.8 KB
+    // before search_regex became search_code regex:true; every byte here is carried
+    // on every agent turn.
     let bytes = serde_json::to_string(&tools).unwrap().len();
-    assert!(bytes <= 7_000, "tools/list is {bytes} bytes");
+    assert!(bytes <= 6_000, "tools/list is {bytes} bytes");
 }
 
 /// Without the automatic update, the index tools are the only way to refresh the
@@ -226,6 +226,11 @@ fn removed_names_still_work_with_a_deprecation_warning() {
     let temp = indexed();
     let cases = [
         (
+            "search_regex",
+            json!({"pattern": "surface_\\w+"}),
+            "search_code with regex:true",
+        ),
+        (
             "count_occurrences",
             json!({"pattern": "surface_token"}),
             "search_code with mode",
@@ -270,6 +275,92 @@ fn removed_names_still_work_with_a_deprecation_warning() {
     );
     assert_eq!(count["total"], 3, "{count}");
     assert!(warnings(&count).contains("deprecated"));
+
+    // `search_regex` answers what `search_code` with regex:true answers, plus the warning.
+    for mode in ["list", "count"] {
+        let args = json!({"pattern": "surface_\\w+", "mode": mode});
+        let mut old = call(temp.path(), "search_regex", args.clone());
+        let mut with_flag = args;
+        with_flag["regex"] = json!(true);
+        let new = call(temp.path(), "search_code", with_flag);
+        assert!(
+            warnings(&old).contains("search_code with regex:true"),
+            "{old}"
+        );
+        assert!(new.get("warnings").is_none(), "{new}");
+        old.as_object_mut().unwrap().remove("warnings");
+        assert_eq!(old, new, "{mode}");
+    }
+}
+
+/// `regex:true` makes `search_code` a regular-expression search; without it the same
+/// pattern is a literal (its brackets make it an escaped regex that matches nothing).
+#[test]
+fn search_code_regex_flag() {
+    let temp = indexed();
+    let regex = call(
+        temp.path(),
+        "search_code",
+        json!({"pattern": "fn surface_(a|b)\\(", "regex": true, "mode": "count"}),
+    );
+    assert_eq!(regex["count"], 2, "{regex}");
+    let literal = call(
+        temp.path(),
+        "search_code",
+        json!({"pattern": "fn surface_(a|b)\\(", "mode": "count"}),
+    );
+    assert_eq!(literal["count"], 0, "{literal}");
+    // A regex without the flag runs as literal text, and the answer says so.
+    let unflagged = call(
+        temp.path(),
+        "search_code",
+        json!({"pattern": "surface_\\w+", "mode": "count"}),
+    );
+    assert_eq!(unflagged["count"], 0, "{unflagged}");
+    assert!(
+        warnings(&unflagged).contains("search_code with regex:true"),
+        "{unflagged}"
+    );
+    // list_locations has no regex key, so its warning names search_code too.
+    let located = call(
+        temp.path(),
+        "list_locations",
+        json!({"pattern": "surface_\\w+"}),
+    );
+    assert!(
+        warnings(&located).contains("search_code with regex:true"),
+        "{located}"
+    );
+    // contains adds nothing to a regex (already a substring search).
+    let both = call(
+        temp.path(),
+        "search_code",
+        json!({"pattern": "surface_\\w+", "regex": true, "contains": true, "mode": "count"}),
+    );
+    let plain = call(
+        temp.path(),
+        "search_code",
+        json!({"pattern": "surface_\\w+", "regex": true, "mode": "count"}),
+    );
+    assert_eq!(both["count"], plain["count"], "{both} {plain}");
+    // symbols:true keeps the definitions the regex lines fall in.
+    let defs = call(
+        temp.path(),
+        "search_code",
+        json!({"pattern": "fn surface_\\w+", "regex": true, "symbols": true}),
+    );
+    let col = defs["columns"]
+        .as_array()
+        .and_then(|c| c.iter().position(|n| n == "symbol"))
+        .unwrap_or_else(|| panic!("no symbol column: {defs}"));
+    let symbols: Vec<&str> = defs["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r[col].as_str())
+        .collect();
+    assert!(symbols.contains(&"surface_a"), "{defs}");
+    assert!(symbols.contains(&"surface_b"), "{defs}");
 }
 
 #[test]
@@ -357,8 +448,8 @@ fn unknown_lang_is_an_error_not_a_search_of_everything() {
             json!({"pattern": "surface_token", "lang": "cobol"}),
         ),
         (
-            "search_regex",
-            json!({"pattern": "surface_token", "lang": "pyhton"}),
+            "search_code",
+            json!({"pattern": "surface_token", "regex": true, "lang": "pyhton"}),
         ),
         (
             "list_locations",

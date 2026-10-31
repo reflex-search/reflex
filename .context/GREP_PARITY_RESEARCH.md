@@ -390,10 +390,84 @@ calls read from the cache (A/B 16,848, Beager 19,578). Sums over 3 sessions per 
   (0.98×), 1.05× its weighted tokens. Before the fixed warm-up, the same comparison
   needed the cold-prefix correction (1.12× after it).
 
+### `search_regex` folded into `search_code` (2026-10-30, 2.2.0 + unreleased)
+
+`search_code` takes `regex: true`; `search_regex` is a `LEGACY_TOOLS` name (runs as
+`search_code` with `regex: true`, plus a deprecation warning). Sizes, compact JSON,
+UTF-8 characters:
+
+| | `main` (89acce5) | `regex: true` |
+| --- | --- | --- |
+| `tools/list` | 6,959 | 5,938 (−1,021) |
+| instructions | 2,341 | 2,377 (+36) |
+| fixed text per call | 9,300 | 8,315 (−985, −10.6 %) |
+
+- The 6,847 measured for hidden parameters predates the longer `find_references`
+  description of the routing change (+108); `main` is 6,959.
+- The estimate was −1.4K. The real cut is smaller: `search_code` gained the `regex`
+  parameter and a regex clause in its description, and the instructions name
+  `regex:true` in the call shape and the matching rules.
+- The instructions keep a regex call shape: agents that never load the schema learn
+  the flag there.
+- Risk: an agent passes a regex without `regex: true`. It runs as literal text and
+  finds the text itself or nothing. On this repo `impl\s+\w+\s+for` counted 1 (a doc
+  line) against 58, with no warning; `fn (get|set)_\w+` counted 6 against 89, with the
+  bracket-rewrite warning. Fix: `filter::regex_syntax_warning` puts a warning naming
+  `regex: true` on any literal search with regex syntax (class escapes, escaped regex
+  characters, `.*`, `.+`). It is a warning, not a rewrite: `foo\.bar` can be literal.
+
+#### Sessions (2026-10-31, Sonnet 5.5, 2.2.0 + unreleased)
+
+`regex` sessions (`session_bench.py`): one per corpus, 12 questions each, every
+question names a Rust regex. 8 ask for every matching line (3–80 lines), 4 for the
+count (10–400 lines); the answer key is `rg -g '*.rs' -e RX SCOPE`. 13 of the 36
+regexes have no brackets, so a literal search of them gets only the new warning.
+Offline check first: `search_code` with `regex: true` equals the key on all 36;
+without the flag every one returns 0 with the warning. 1 trial per cell, warm-up per
+arm. Wave 1 (`results-sessions/sonnet55-regex`): A, B, Beager on the new binary.
+Wave 2 (`results-sessions/sonnet55-regex-main`): Beager on `main` (89acce5), where
+`search_regex` is listed; its Grep baseline is wave 1's A.
+
+| | A (Grep) | B | Beager, `regex: true` | Beager, `main` |
+| --- | --- | --- | --- | --- |
+| sessions using Reflex | — | 1 of 3 (1 call) | 1 of 3 | 3 of 3 |
+| questions answered by Reflex | 0 of 36 | 0 of 36 | 12 of 36 | 33 of 36 |
+| Bash re-checks | 0 | 0 | 1 | 6 |
+| cost vs A (median) | 1.00× | 1.00× | **1.02×** | 1.06× |
+| weighted vs A (median) | 1.00× | 1.01× | **1.09×** | 1.17× |
+| accuracy | 1.000 | 1.000 | 1.000 | 1.000 |
+
+Per session (cost $ / weighted tokens):
+
+| session | A | Beager, `regex: true` | Beager, `main` |
+| --- | --- | --- | --- |
+| reflex | 0.240 / 111,562 | 0.244 / 122,923 (12 `search_code` regex) | 0.258 / 130,597 (10 `search_regex`, 3 `rg -c … \| awk`) |
+| ripgrep | 0.295 / 126,057 | 0.300 / 134,987 (Grep) | 0.313 / 148,995 (11 `search_regex`, 3 `grep -rE … \| wc -l`) |
+| tokio | 0.271 / 117,625 | 0.297 / 128,267 (Grep) | 0.250 / 120,780 (12 `search_regex`) |
+
+- Fixed text, measured: the Beager warm-up wrote 22,849 cache tokens against 23,254
+  on `main` (−405 tokens per call); A's warm-up wrote 19,643.
+- Cost: no worse, maybe better. On the one session where both binaries used Reflex
+  throughout (`reflex`), `regex: true` cost 5.7 % less; `main` also re-checked 3
+  counts with `rg`.
+- Adoption fell: a tool named `search_regex` drew regex questions (3 of 3 sessions); a
+  flag on `search_code` does not (1 of 3). The rest went to Grep, which is exact on
+  regexes, so cost and accuracy did not move. Accepted: Reflex has no accuracy edge on
+  regex questions; the fold saves the fixed text on every call of every session.
+- When used, `regex: true` was used right: 8 lists and 4 counts (`mode: "count"`), all
+  exact, no re-checks.
+- Warning defect, fixed: B called `list_locations` with `impl\s+\w+\s+for\s+\w+`. The
+  warning said "Pass regex:true", a key `list_locations` does not take, and the agent
+  went to Grep. The text now says "Use search_code with regex:true"; the bracket
+  warning names `search_code` too.
+- 1 trial per cell: the adoption drop (3 of 3 → 1 of 3 sessions) suggests an effect,
+  not a proof. A tool choice is made once per session and kept, so the 36 questions
+  are not 36 samples.
+
 ## Not done / next levers
 
-- The fixed text is still the gap: ~9.2K chars per call after hidden parameters
-  (6,847 schemas + 2,307 instructions). Next candidates: fold `search_regex` into
-  `search_code` (−1.4K), trim "Exact call shapes" / "Rules" (−550).
+- The fixed text is still the gap: ~8.3K chars per call after `regex: true`
+  (5,938 schemas + 2,377 instructions). Next candidate: trim "Exact call shapes" /
+  "Rules" in the instructions (−550).
 - `list_locations` `dependencies: true` is accepted but its imports never reached the
   reply (either shape). Fixed 2026-10-25: a `dependencies` map beside `locations`.

@@ -124,8 +124,7 @@ When connected via MCP, your AI assistant gets these tools:
 
 | Tool | What it does |
 |---|---|
-| `search_code` | Full-text or symbol search with line numbers and context; `mode: "count"` for match and file counts only |
-| `search_regex` | Regex pattern matching across the codebase |
+| `search_code` | Full-text or symbol search with line numbers and context; `regex: true` for regular expressions; `mode: "count"` for match and file counts only |
 | `list_locations` | Fast file+line discovery (minimal tokens) |
 | `find_references` | Symbol definition + all usage sites in a single call; the primary code-navigation tool for AI agents |
 | `get_dependencies` | Imports of a file; `reverse: true` for the files that import it, `depth: N` to follow imports N levels |

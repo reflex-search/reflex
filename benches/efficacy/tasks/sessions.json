@@ -2602,6 +2602,423 @@
      "name": "option"
     }
    ]
+  },
+  {
+   "id": "reflex-session-regex",
+   "repo": "reflex",
+   "kind": "regex",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `impl\\s+\\w+\\s+for\\s+\\w+` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "impl\\s+\\w+\\s+for\\s+\\w+",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `fn\\s+(get|set)_\\w+` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+(get|set)_\\w+",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `\\bmatch\\s+self\\b` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bmatch\\s+self\\b",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `fn\\s+is_\\w+\\(` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+is_\\w+\\(",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `Box<dyn\\s+\\w+` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "Box<dyn\\s+\\w+",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `fn\\s+new\\(` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+new\\(",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `&mut\\s+self\\)` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "&mut\\s+self\\)",
+      "src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `src/` that matches the regular expression `\\bpanic!\\(` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bpanic!\\(",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `src/` match the regular expression `#\\[cfg\\(test\\)\\]` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "#\\[cfg\\(test\\)\\]",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `src/` match the regular expression `\\bas\\s+usize\\b` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bas\\s+usize\\b",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `src/` match the regular expression `\\bconst\\s+[A-Z_]+:` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bconst\\s+[A-Z_]+:",
+      "src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `src/` match the regular expression `loop\\s*\\{` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "loop\\s*\\{",
+      "src"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-regex",
+   "repo": "ripgrep",
+   "kind": "regex",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `fn\\s+(get|set)_\\w+` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+(get|set)_\\w+",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `\\bas\\s+usize\\b` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bas\\s+usize\\b",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `Box<dyn\\s+\\w+` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "Box<dyn\\s+\\w+",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `fn\\s+new\\(` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+new\\(",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `\\bconst\\s+[A-Z_]+:` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bconst\\s+[A-Z_]+:",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `&mut\\s+self\\)` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "&mut\\s+self\\)",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `\\bwhere\\s*$` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bwhere\\s*$",
+      "crates"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `crates/` that matches the regular expression `\\bpanic!\\(` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bpanic!\\(",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `crates/` match the regular expression `impl\\s+\\w+\\s+for\\s+\\w+` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "impl\\s+\\w+\\s+for\\s+\\w+",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `crates/` match the regular expression `\\bmatch\\s+self\\b` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bmatch\\s+self\\b",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `crates/` match the regular expression `#\\[cfg\\(test\\)\\]` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "#\\[cfg\\(test\\)\\]",
+      "crates"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `crates/` match the regular expression `fn\\s+is_\\w+\\(` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+is_\\w+\\(",
+      "crates"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-regex",
+   "repo": "tokio",
+   "kind": "regex",
+   "steps": [
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `#\\[cfg\\(test\\)\\]` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "#\\[cfg\\(test\\)\\]",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `pub\\s+enum\\s+\\w+` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "pub\\s+enum\\s+\\w+",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `impl\\s+Drop\\s+for` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "impl\\s+Drop\\s+for",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `\\bPhantomData<` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bPhantomData<",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `#\\[doc\\(hidden\\)\\]` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "#\\[doc\\(hidden\\)\\]",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `impl\\s+fmt::Display\\s+for` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "impl\\s+fmt::Display\\s+for",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `\\bu(8|16|32|64)::MAX\\b` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bu(8|16|32|64)::MAX\\b",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "list",
+     "prompt": "List every line of the `.rs` files under `tokio/src/` that matches the regular expression `#\\[must_use\\]` (Rust regex syntax). End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "#\\[must_use\\]",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` match the regular expression `impl\\s+\\w+\\s+for\\s+\\w+` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "impl\\s+\\w+\\s+for\\s+\\w+",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` match the regular expression `fn\\s+(get|set)_\\w+` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+(get|set)_\\w+",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` match the regular expression `\\bmatch\\s+self\\b` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "\\bmatch\\s+self\\b",
+      "tokio/src"
+     ]
+    },
+    {
+     "kind": "count_lines",
+     "prompt": "How many lines of the `.rs` files under `tokio/src/` match the regular expression `fn\\s+is_\\w+\\(` (Rust regex syntax)? End your answer with a JSON code block {\"answer\": <number>}.",
+     "oracle": [
+      "-g",
+      "*.rs",
+      "-e",
+      "fn\\s+is_\\w+\\(",
+      "tokio/src"
+     ]
+    }
+   ]
   }
  ]
 }

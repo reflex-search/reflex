@@ -31,6 +31,20 @@ answer from it marked `stale`.
   from 8,054 to 6,847 characters, about 490 tokens less on every API call. The server
   still accepts them. A pattern too broad to run by default now says to pass
   `"force": true` over MCP (the message named only the CLI's `--force`).
+- **`search_regex` is no longer in `tools/list`: `search_code` takes `regex: true`.**
+  The regex tool repeated `search_code`'s filters and answer in a second schema.
+  `tools/list` falls from 6,959 to 5,938 characters (five tools), and the fixed text
+  Reflex adds to each call from 9,300 to 8,315 (−11 %). A call to `search_regex` by
+  name still runs, as `search_code` with `regex: true`, and answers with a deprecation
+  warning. `regex: true` also works with `symbols: true` (the definitions whose lines
+  match) and `mode: "count"`; `contains` adds nothing to a regex and is ignored.
+  A literal search whose pattern looks like a regex (`\w`, `\s`, `\d`, `\b`, an escaped
+  `.` or `(`, `.*`, `.+`) now says so in `warnings` and names `search_code` with
+  `regex: true` (`--regex` on the CLI), also on `list_locations` and `find_references`,
+  which take no `regex` key. Without the flag, `impl\s+\w+\s+for` counted the 1 line
+  holding that text, against 58 regex matches, and said nothing. In Sonnet 5.5
+  sessions of 12 regex questions, Reflex cost 1.02× Grep's cost (1.06× with
+  `search_regex` listed), with exact answers in both.
 
 ### Added
 

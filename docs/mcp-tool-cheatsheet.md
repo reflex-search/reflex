@@ -1,7 +1,7 @@
 # Reflex MCP Tool Selection Cheatsheet
 
 > **Quick rule:** Start cheap, escalate only when needed.
-> `list_locations` → `search_code` → `search_regex` → `search_ast` (last resort)
+> `list_locations` → `search_code` → `search_code` with `regex: true` → `search_ast` (last resort)
 >
 > `search_ast`, `gather_context`, `index_project` and `check_index_status` are not in
 > `tools/list` by default. See [Listed tools](#listed-tools).
@@ -18,7 +18,7 @@
 | Locations plus the matching line | `list_locations` with `preview: true` | Each line becomes `[line, text]` (text trimmed, 120 chars) |
 | Locations plus each file's imports | `list_locations` with `dependencies: true` | Adds `dependencies: {path: [import, ...]}`, the `get_dependencies` answer for each matching file that has imports |
 | Need locations **and** code previews | `search_code` | Full results with line numbers + context |
-| Regex: alternation, wildcards, anchors, `->`, `::` | `search_regex` | Real regular expressions |
+| Regex: alternation, wildcards, anchors, `->`, `::` | `search_code` with `regex: true` | Real regular expressions |
 | How many times does X appear? | `search_code` with `mode: "count"` | `{count, files, pattern}` — no content loaded |
 
 ```
@@ -122,7 +122,7 @@ and builds it when there is none; after an edit, a checkout or a rebase, just se
 | `list_locations` | ⚡ Cheapest | `{path: [line, ...]}` | `pattern` |
 | `search_code` with `mode: "count"` | ⚡ Cheap | `{count, files, pattern}` | `pattern` |
 | `search_code` | 🟡 Medium | Full results with previews | `pattern` |
-| `search_regex` | 🟡 Medium | Full results with previews | `pattern` |
+| `search_code` with `regex: true` | 🟡 Medium | Full results with previews | `pattern` |
 | `find_references` | 🟡 Medium | Definition + every usage | `pattern` |
 | `gather_context` | 🟡 Medium | Project structure summary | — |
 | `get_dependencies` | 🟡 Medium | Imports of one file; with `reverse: true`, files importing it; with `depth: N`, `[{path, depth}]` | `path` |
@@ -132,9 +132,10 @@ and builds it when there is none; after an edit, a checkout or a rebase, just se
 
 ### Listed tools
 
-Claude Code sends every listed schema on every API call, so `tools/list` shows six tools:
-`list_locations`, `search_code`, `search_regex`, `find_references`, `get_dependencies` and
-`analyze`. The other four answer when a client calls them by name, but Claude Code can call
+Claude Code sends every listed schema on every API call, so `tools/list` shows five tools:
+`list_locations`, `search_code`, `find_references`, `get_dependencies` and `analyze`.
+`search_regex` is now `search_code` with `regex: true`; the old name still answers, with a
+deprecation warning. The other four answer when a client calls them by name, but Claude Code can call
 only listed tools. Configure the list in `~/.reflex/config.toml`:
 
 ```toml
@@ -200,9 +201,10 @@ get_dependencies(path: "src/auth.rs", reverse: true)
 | `glob` | array | `["src/**/*.rs"]` — gitignore rules: a `/` anchors at the root; `**/src/**/*.rs` for any `src/`; `*.rs` at any depth; `*` never crosses `/` |
 | `exclude` | array | `["target/**", "node_modules/**"]` — same rules |
 | `file` | string | `"Controllers"` (substring match) |
-| `contains` | bool | `true` = substring match (`grep -F`); default matches whole identifiers only. Not on `search_regex` |
-| `ignore_case` | bool | `true` = `rg -i` (with `contains`: `rg -i -F`). On `search_code`, `search_regex`, `list_locations`, `find_references`. Uses the trigram index, so it costs about the same as a case-sensitive search |
+| `contains` | bool | `true` = substring match (`grep -F`); default matches whole identifiers only. Ignored with `regex: true` (a regex is already a substring search) |
+| `ignore_case` | bool | `true` = `rg -i` (with `contains`: `rg -i -F`). On `search_code` (with `regex: true` it prepends `(?i)`), `list_locations`, `find_references`. Uses the trigram index, so it costs about the same as a case-sensitive search |
 | `paths` | bool | `true` = `{status, can_trust_results, paths, total_files}`, no rows — the cheapest "which files" answer |
+| `regex` | bool | `true` = the pattern is a Rust regular expression (`grep -E`). `search_code` only. In JSON, double each backslash |
 | `symbols` | bool | `true` = definitions only |
 | `kind` | string | `"function"`, `"class"`, `"struct"` |
 | `expand` | bool | `true` = show full symbol body |
@@ -251,7 +253,7 @@ the first tool call.
 
 `search_ast` is a **last resort**, listed only with `[mcp] extra_tools = ["search_ast"]`.
 Use it only when:
-1. Text search (`search_code` / `search_regex`) cannot express the pattern
+1. Text search (`search_code`, with or without `regex: true`) cannot express the pattern
 2. You need structural matching (e.g., "all async functions that contain a `match` expression")
 3. You **must** add `glob` to limit scope
 
@@ -267,7 +269,7 @@ search_ast(
 search_ast(pattern: "(function_item) @fn", lang: "rust")
 ```
 
-**Cost order:** `list_locations` < `search_code` < `search_regex` ≪ `search_ast` (parses every selected file).
+**Cost order:** `list_locations` < `search_code` < `search_code` with `regex: true` ≪ `search_ast` (parses every selected file).
 
 ---
 
@@ -275,7 +277,7 @@ search_ast(pattern: "(function_item) @fn", lang: "rust")
 
 ### Columnar result format
 
-`search_code` and `search_regex` return results in `{columns, rows}` format by default,
+`search_code` returns results in `{columns, rows}` format by default,
 which avoids repeating JSON keys per match. The flat rows still repeat `path` and
 `language` on every row. To revert to the legacy `results[]` shape: `REFLEX_MCP_COLUMNAR=0`.
 

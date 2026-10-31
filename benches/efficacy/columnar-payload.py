@@ -4,7 +4,7 @@ Columnar vs legacy MCP payload size, measured per call (no agent, no model).
 
 Spawns `rfx mcp` twice in the pinned reflex corpus — once with the default
 columnar result shape and once with REFLEX_MCP_COLUMNAR=0 — and sends the same
-fixed list of search_code / search_regex calls to each. Reports the byte length
+fixed list of search_code calls (literal and regex:true) to each. Reports the byte length
 of `content[0].text` per call and the per-call reduction.
 
 Session-level A/B runs cannot see this effect (turn count dominates
@@ -36,8 +36,8 @@ CALLS: list[tuple[str, dict]] = [
     ("search_code", {"pattern": "TODO", "limit": 50}),
     ("search_code", {"pattern": "QueryEngine", "symbols": True}),
     ("search_code", {"pattern": "trigram", "contains": True, "limit": 100}),
-    ("search_regex", {"pattern": r"fn (get|set)_\w+"}),
-    ("search_regex", {"pattern": r"impl\s+\w+\s+for"}),
+    ("search_code", {"pattern": r"fn (get|set)_\w+", "regex": True}),
+    ("search_code", {"pattern": r"impl\s+\w+\s+for", "regex": True}),
 ]
 
 

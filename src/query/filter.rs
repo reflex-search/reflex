@@ -286,8 +286,8 @@ pub fn prepare_literal_pattern(pattern: &str, filter: &QueryFilter) -> LiteralPa
             warning: Some(format!(
                 "Pattern {:?} contains brackets, which a whole-identifier search can never \
                  match. Searched it as an escaped regex instead (substring semantics). For \
-                 explicit control use a regex search (search_regex / --regex) or substring \
-                 mode (contains:true / --contains).",
+                 explicit control use a regex search (search_code with regex:true / --regex) \
+                 or substring mode (contains:true / --contains).",
                 pattern
             )),
         }
@@ -339,12 +339,68 @@ pub fn no_symbol_parser_warning(filter: &QueryFilter) -> Option<String> {
     })
 }
 
+/// Warn when a literal line search looks like a regular expression: a class escape
+/// (`\w`, `\s`, `\d`, `\b`), an escaped regex character (`\.`, `\(`, `\|`, …) or
+/// `.*` / `.+`. It runs as literal text, so it finds the text itself, or nothing.
+/// Since 2026-10-30 a regex is `search_code` with `regex:true`, not a tool of its own,
+/// and `impl\s+\w+\s+for` without the flag counted 1 line instead of 58. A pattern
+/// with brackets already carries the rewrite warning, which names `regex:true`.
+/// The text names `search_code`: `list_locations` and `find_references` take no
+/// `regex` key, and "pass regex:true" there sent an agent to Grep (2026-10-31).
+pub fn regex_syntax_warning(pattern: &str, filter: &QueryFilter) -> Option<String> {
+    if filter.use_regex || filter.use_ast || pattern.contains(REGEX_ONLY_CHARS) {
+        return None;
+    }
+    let escape = pattern
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0] == b'\\' && b"wWsSdDbB.()[]{}|+*?^$".contains(&w[1]));
+    (escape || pattern.contains(".*") || pattern.contains(".+")).then(|| {
+        format!(
+            "Pattern {:?} looks like a regular expression, but it was searched as literal \
+             text. Use search_code with regex:true (--regex on the CLI) to search it as a \
+             regex.",
+            pattern
+        )
+    })
+}
+
 #[cfg(test)]
 mod literal_pattern_tests {
     use super::*;
 
     fn plain() -> QueryFilter {
         QueryFilter::default()
+    }
+
+    #[test]
+    fn regex_syntax_in_a_literal_search_warns() {
+        for p in [r"impl\s+\w+\s+for", r"foo\.bar", r"get_.*_id", r"^\d+"] {
+            let w = regex_syntax_warning(p, &plain()).unwrap_or_else(|| panic!("{p}"));
+            assert!(w.contains("search_code with regex:true"), "{w}");
+        }
+        let contains = QueryFilter {
+            use_contains: true,
+            ..plain()
+        };
+        assert!(regex_syntax_warning(r"\w+_id", &contains).is_some());
+        // A regex search, a bracket pattern (it has its own warning) and plain code
+        // with string escapes do not warn.
+        let regex = QueryFilter {
+            use_regex: true,
+            ..plain()
+        };
+        assert!(regex_syntax_warning(r"impl\s+\w+", &regex).is_none());
+        for p in [
+            r"fn (get|set)_\w+",
+            "verify_csrf",
+            r#"\"name\""#,
+            r"C:\\temp",
+            "a.b",
+            r"\n",
+        ] {
+            assert!(regex_syntax_warning(p, &plain()).is_none(), "{p}");
+        }
     }
 
     #[test]

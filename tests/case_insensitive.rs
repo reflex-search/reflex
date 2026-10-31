@@ -396,17 +396,17 @@ fn cli_and_mcp_agree_on_case_insensitive_counts() {
 
     let mcp = call_tool(
         root,
-        "search_regex",
-        json!({ "pattern": "(?i)realmid", "mode": "count" }),
+        "search_code",
+        json!({ "pattern": "(?i)realmid", "regex": true, "mode": "count" }),
     );
     assert_eq!(mcp["count"], json!(3), "{mcp}");
     assert!(mcp.get("warnings").is_none(), "{mcp}");
 
-    // `ignore_case` on search_regex prepends `(?i)`.
+    // `ignore_case` on a regex search prepends `(?i)`.
     let mcp = call_tool(
         root,
-        "search_regex",
-        json!({ "pattern": "realm_?id", "ignore_case": true, "mode": "count" }),
+        "search_code",
+        json!({ "pattern": "realm_?id", "regex": true, "ignore_case": true, "mode": "count" }),
     );
     assert_eq!(mcp["count"], json!(4), "{mcp}");
 
@@ -428,8 +428,8 @@ fn cli_and_mcp_agree_on_case_insensitive_counts() {
     assert!(stderr(&out).contains("no literals"), "{}", stderr(&out));
     let mcp = call_tool(
         root,
-        "search_regex",
-        json!({ "pattern": r"(?i)\w+_?id", "mode": "count" }),
+        "search_code",
+        json!({ "pattern": r"(?i)\w+_?id", "regex": true, "mode": "count" }),
     );
     assert_eq!(mcp["count"], json!(oracle(r"(?i)\w+_?id")), "{mcp}");
     assert!(
@@ -457,8 +457,8 @@ fn mcp_paths_mode_is_compact() {
 
     let mcp = call_tool(
         temp.path(),
-        "search_regex",
-        json!({ "pattern": "(?i)realm", "paths": true }),
+        "search_code",
+        json!({ "pattern": "(?i)realm", "regex": true, "paths": true }),
     );
     assert_eq!(mcp["paths"], json!(["src/lib.rs"]), "{mcp}");
     assert!(mcp.get("rows").is_none(), "{mcp}");

@@ -248,22 +248,22 @@ fn parse_symbol_kind(kind: Option<String>) -> Option<SymbolKind> {
 /// (`test_instructions_*`).
 const MCP_INSTRUCTIONS: &str = r#"Reflex is the full-text code search engine for this workspace. For any task that asks where code is, where a pattern occurs, where a symbol is defined or used, or who imports a file, prefer a Reflex tool over Grep, Glob, ripgrep, or shell grep: call Reflex first. It returns grep's data plus line context, symbol typing, and dependency links, instantly.
 
-Your harness may defer MCP tool schemas. If Reflex tools appear in a deferred-tools list, load them first: ToolSearch("select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references").
+Your harness may defer MCP tool schemas. If Reflex tools appear in a deferred-tools list, load them first: ToolSearch("select:mcp__reflex__search_code,mcp__reflex__find_references").
 
 Exact call shapes:
 search_code {"pattern": "fn verify_totp", "limit": 40, "file": "src/identity"}
-search_regex {"pattern": "fn (get|set)_\w+", "glob": ["src/**/*.rs"]}
+search_code {"pattern": "fn (get|set)_\w+", "regex": true, "glob": ["src/**/*.rs"]}
 find_references {"pattern": "start_webauthn_registration"}
 
 Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: natural-language queries match nothing; search for identifiers or code fragments.
 
-Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint saying why.
+Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); search_code regex:true runs a regex (grep -E); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint saying why.
 
 Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated. glob and exclude follow gitignore rules: "src/**/*.rs" is anchored at the root, "*.rs" matches at any depth.
 
 The index updates itself before every call and is built on first use. can_trust_results: false means the update could not run; warnings say why.
 
-To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. For uses in code only (no comments or strings), use find_references; it drops those lines exactly, so do not re-check.Use search_code for context or symbols, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
+To list where something occurs, use list_locations: path and line only, the cheapest answer; preview:true adds each matching line. For uses in code only (no comments or strings), use find_references; it drops those lines exactly, so do not re-check. Use search_code for context or symbols, get_dependencies with reverse:true for what imports a file. If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails."#;
 
 /// The freshness paragraph of [`MCP_INSTRUCTIONS`]: the index updates itself and
 /// the index tools are not listed.
@@ -350,12 +350,7 @@ const HIDDEN_PARAMS: [&str; 6] = [
 
 /// The tools whose listed schemas drop [`HIDDEN_PARAMS`]. `search_ast` and
 /// `index_project` keep `force`: there it is their main switch.
-const SEARCH_TOOLS: [&str; 4] = [
-    "search_code",
-    "search_regex",
-    "list_locations",
-    "find_references",
-];
+const SEARCH_TOOLS: [&str; 3] = ["search_code", "list_locations", "find_references"];
 
 /// Which tools `tools/list` shows. Every tool stays callable by name.
 #[derive(Debug, Clone)]
@@ -423,26 +418,16 @@ fn tool_list() -> Vec<Value> {
     vec![
         json!({
             "name": "search_code",
-            "description": "Search code for a literal pattern: every match with path, line and preview (for path and line only, list_locations is cheaper). Whole identifiers by default; contains:true for substrings; symbols:true for definitions only (kind narrows them). Answer: {columns, rows} (each row aligns with columns) plus pagination; when has_more, fetch the next page with offset. total_count is exact only when total_is_exact.",
+            "description": "Search code for a pattern: every match with path, line and preview (for path and line only, list_locations is cheaper). Whole identifiers by default; contains:true for substrings; regex:true for a Rust regex (alternation, classes, anchors; in JSON double each backslash); symbols:true for definitions only (kind narrows them). Answer: {columns, rows} (each row aligns with columns) plus pagination; when has_more, fetch the next page with offset. total_count is exact only when total_is_exact.",
             "inputSchema": search_params(json!({
                 "contains": contains,
+                "regex": {"type": "boolean", "description": "Pattern is a regular expression (grep -E)"},
                 "symbols": {"type": "boolean", "description": "Definitions only"},
                 "kind": {"type": "string", "description": "Symbol kind: function, struct, class, trait, …"},
                 "exact": {"type": "boolean", "description": "Exact symbol name"},
                 "expand": {"type": "boolean", "description": "Whole symbol body"},
                 "dependencies": {"type": "boolean", "description": "Attach each file's imports"},
                 "preview_length": {"type": "integer", "description": "Preview characters (default 180)"},
-                "mode": mode,
-                "paths": paths,
-                "limit": limit,
-                "offset": offset
-            }))
-        }),
-        json!({
-            "name": "search_regex",
-            "description": "Search code with a regular expression (Rust regex): alternation, classes, anchors, e.g. `fn (get|set)_\\w+` or `->with\\(`. In JSON double each backslash. Same filters and answer as search_code.",
-            "inputSchema": search_params(json!({
-                "dependencies": {"type": "boolean", "description": "Attach each file's imports"},
                 "mode": mode,
                 "paths": paths,
                 "limit": limit,
@@ -557,10 +542,13 @@ fn tool_list() -> Vec<Value> {
     ]
 }
 
-/// Tool names removed from `tools/list` on 2026-09-30 that still work: each call
-/// runs as the named replacement and answers with a deprecation warning. Their
-/// arguments are checked against the old schema (properties only, no text).
+/// Tool names removed from `tools/list` that still work: each call runs as the
+/// named replacement and answers with a deprecation warning. Their arguments are
+/// checked against the old schema (properties only, no text). `search_regex` left
+/// on 2026-10-30 (its schema was ~1.1K of the listing's characters), the rest on
+/// 2026-09-30.
 const LEGACY_TOOLS: &[(&str, &str)] = &[
+    ("search_regex", "search_code with regex:true"),
     ("count_occurrences", "search_code with mode:\"count\""),
     ("get_dependents", "get_dependencies with reverse:true"),
     ("get_transitive_deps", "get_dependencies with depth:N"),
@@ -577,6 +565,13 @@ fn legacy_schemas() -> Vec<(&'static str, Value)> {
     let string = json!({"type": "string"});
     let schema = |props: Value, required: &[&str]| json!({"type": "object", "properties": props, "required": required});
     vec![
+        (
+            "search_regex",
+            search_params(json!({
+                "dependencies": {"type": "boolean"}, "mode": string,
+                "paths": {"type": "boolean"}, "limit": int, "offset": int
+            })),
+        ),
         (
             "count_occurrences",
             search_params(json!({
@@ -764,6 +759,7 @@ const BOOL_ARG_KEYS: &[&str] = &[
     "symbols",
     "exact",
     "contains",
+    "regex",
     "ignore_case",
     "include_locks",
     "include_generated",
@@ -1891,8 +1887,10 @@ fn dispatch_tool(
                 .to_string();
 
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
+            // A regex is already a substring search, so `contains` adds nothing to it.
+            let regex = arguments["regex"].as_bool().unwrap_or(false);
             // Substring mode. Default false = whole-identifier match (see `contains` in the schema).
-            let contains = arguments["contains"].as_bool().unwrap_or(false);
+            let contains = arguments["contains"].as_bool().unwrap_or(false) && !regex;
             let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
             let include_locks = arguments["include_locks"].as_bool().unwrap_or(false);
             let include_generated = arguments["include_generated"].as_bool().unwrap_or(false);
@@ -1955,7 +1953,7 @@ fn dispatch_tool(
                     language,
                     kind: parsed_kind,
                     use_ast: false,
-                    use_regex: false,
+                    use_regex: regex,
                     limit: None, // count everything
                     count_only: true,
                     symbols_mode,
@@ -1992,7 +1990,7 @@ fn dispatch_tool(
                 language,
                 kind: parsed_kind,
                 use_ast: false,
-                use_regex: false,
+                use_regex: regex,
                 limit: final_limit,
                 symbols_mode,
                 expand: expand.unwrap_or(false),
@@ -2040,7 +2038,7 @@ fn dispatch_tool(
                 symbols_mode,
                 paths_only,
                 false, // use_ast
-                false, // use_regex
+                regex,
                 language.is_some(),
                 !glob_patterns.is_empty(),
                 exact.unwrap_or(false),
@@ -2085,172 +2083,10 @@ fn dispatch_tool(
             Ok(response_val)
         }
         "search_regex" => {
-            let pattern = arguments["pattern"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing pattern"))?
-                .to_string();
-
-            let lang = arguments["lang"].as_str().map(|s| s.to_string());
-            let file = arguments["file"].as_str().map(|s| s.to_string());
-            let limit = arguments["limit"].as_u64().map(|n| n as usize);
-            let glob_patterns: Vec<String> = arguments["glob"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let exclude_patterns = arguments["exclude"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let paths_only = arguments["paths"].as_bool().unwrap_or(false);
-            let ignore_case = arguments["ignore_case"].as_bool().unwrap_or(false);
-            let include_locks = arguments["include_locks"].as_bool().unwrap_or(false);
-            let include_generated = arguments["include_generated"].as_bool().unwrap_or(false);
-            let force = arguments["force"].as_bool().unwrap_or(false);
-            let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
-
-            let language = parse_language(lang);
-            let offset = arguments["offset"].as_u64().map(|n| n as usize);
-
-            // Smart limit handling (same as search_code)
-            let final_limit = if paths_only && limit.is_none() {
-                None // --paths without explicit limit means no limit
-            } else if let Some(user_limit) = limit {
-                Some(user_limit.min(500)) // Use user-specified limit, capped at 500
-            } else {
-                Some(DEFAULT_MCP_RESULT_LIMIT) // REF-191: one-call default
-            };
-
-            let mode = arguments["mode"].as_str().unwrap_or("list");
-
-            // Count mode: return only the total match count, no match bodies.
-            if mode == "count" {
-                let count_filter = QueryFilter {
-                    language,
-                    kind: None,
-                    use_ast: false,
-                    use_regex: true,
-                    limit: None, // count everything
-                    count_only: true,
-                    symbols_mode: false,
-                    expand: false,
-                    file_pattern: file,
-                    exact: false,
-                    use_contains: false,
-                    ignore_case,
-                    include_locks,
-                    include_generated,
-                    timeout_secs: 30,
-                    glob_patterns,
-                    exclude_patterns,
-                    paths_only: false,
-                    offset: None,
-                    force,
-                    suppress_output: true,
-                    include_dependencies: false,
-                    ..Default::default()
-                };
-                let cache = CacheManager::new(root);
-                let engine = engine_in(cache, update);
-                let response = engine.search_with_metadata(&pattern, count_filter)?;
-                let mut result =
-                    json!({"count": exact_total_or_count(&response), "pattern": pattern});
-                if let Some(files) = response.file_count {
-                    result["files"] = json!(files);
-                }
-                annotate_literal_result(&mut result, &response);
-                return Ok(result);
-            }
-
-            let filter = QueryFilter {
-                language,
-                kind: None,
-                use_ast: false,
-                use_regex: true,
-                limit: final_limit,
-                symbols_mode: false,
-                expand: false,
-                file_pattern: file,
-                exact: false,
-                use_contains: false, // Regex mode uses substring matching via use_regex flag
-                ignore_case,
-                include_locks,
-                include_generated,
-                timeout_secs: 30, // Default 30 second timeout for MCP queries
-                glob_patterns: glob_patterns.clone(),
-                exclude_patterns,
-                paths_only,
-                offset,
-                force,
-                suppress_output: true, // MCP always returns JSON
-                include_dependencies: dependencies,
-                collect_timings: timing_enabled(),
-                ..Default::default()
-            };
-
-            let cache = CacheManager::new(root);
-            let engine = engine_in(cache, update);
-            let mut response = engine.search_with_metadata(&pattern, filter)?;
-
-            if paths_only {
-                return Ok(paths_only_result(&response));
-            }
-
-            // Apply preview truncation for token efficiency
-            for file_group in response.results.iter_mut() {
-                for m in file_group.matches.iter_mut() {
-                    m.preview =
-                        crate::cli::truncate_preview(&m.preview, DEFAULT_MCP_PREVIEW_LENGTH);
-                }
-            }
-
-            // Calculate result count for AI instruction
-            let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
-
-            // Generate AI instruction (MCP always uses AI mode)
-            response.ai_instruction = crate::query::generate_ai_instruction(
-                result_count,
-                response.pagination.best_total(),
-                response.pagination.has_more,
-                false, // symbols_mode
-                paths_only,
-                false, // use_ast
-                true,  // use_regex
-                language.is_some(),
-                !glob_patterns.is_empty(),
-                false, // exact
-            );
-
-            // Extract pagination scalars before consuming response (REF-185)
-            let has_more = response.pagination.has_more;
-            let total_count = response.pagination.total;
-            let total_is_exact = response.pagination.total_is_exact;
-            let approx_total = response.pagination.approx_total;
-            let mut response_val = serde_json::to_value(response)?;
-            if let serde_json::Value::Object(ref mut map) = response_val {
-                map.insert("has_more".to_string(), json!(has_more));
-                map.insert("total_count".to_string(), json!(total_count));
-                map.insert("total_is_exact".to_string(), json!(total_is_exact));
-                if let Some(approx) = approx_total {
-                    map.insert("approx_total".to_string(), json!(approx));
-                }
-                map.insert("returned_count".to_string(), json!(result_count));
-            }
-
-            // REF-209: emit the token-efficient columnar shape by default; the
-            // env toggle restores the legacy results[] array for compatibility.
-            if columnar_enabled() {
-                response_val = to_columnar(response_val);
-            }
-
-            Ok(response_val)
+            // Unlisted since 2026-10-30: the same search as search_code with regex:true.
+            let mut arguments = arguments.clone();
+            arguments["regex"] = json!(true);
+            dispatch_tool("search_code", &arguments, root, update)
         }
         "search_ast" => {
             // AST pattern (Tree-sitter S-expression)
@@ -2296,7 +2132,7 @@ fn dispatch_tool(
                 anyhow::bail!(
                     "lang \"{}\" is the plain-text tier (docs, config, templates, lock and \
                      generated files). These files are trigram-indexed only and have no AST. \
-                     Use search_code or search_regex on them instead.",
+                     Use search_code on them instead.",
                     lang_str
                 );
             }
@@ -3469,7 +3305,7 @@ mod tests {
         );
         assert!(
             instructions.contains(
-                "ToolSearch(\"select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references\")"
+                "ToolSearch(\"select:mcp__reflex__search_code,mcp__reflex__find_references\")"
             ),
             "instructions must tell deferred-schema harnesses how to load the tools"
         );
@@ -3493,7 +3329,11 @@ mod tests {
             MCP_INSTRUCTIONS.contains("search_code {\"pattern\":"),
             "must show an exact search_code call shape with the real key"
         );
-        assert!(MCP_INSTRUCTIONS.contains("search_regex {\"pattern\":"));
+        assert!(MCP_INSTRUCTIONS.contains("\"regex\": true"));
+        assert!(
+            !MCP_INSTRUCTIONS.contains("search_regex"),
+            "search_regex is not listed"
+        );
         assert!(MCP_INSTRUCTIONS.contains("find_references {\"pattern\":"));
     }
 
@@ -3853,7 +3693,6 @@ mod tests {
             listed_names(&default),
             [
                 "search_code",
-                "search_regex",
                 "list_locations",
                 "find_references",
                 "get_dependencies",
@@ -3884,7 +3723,7 @@ mod tests {
             "{names:?}"
         );
         assert!(!names.contains(&"search_ast".to_string()), "{names:?}");
-        assert_eq!(names.len(), 8, "{names:?}");
+        assert_eq!(names.len(), 7, "{names:?}");
 
         let config = crate::semantic::config::McpConfig {
             enable_structural_tools: false,
@@ -3893,7 +3732,7 @@ mod tests {
         let names = listed_names(&ToolListing::from_config(&config, true));
         assert!(names.contains(&"gather_context".to_string()), "{names:?}");
         assert!(!names.contains(&"analyze".to_string()), "{names:?}");
-        assert_eq!(names.len(), 6, "{names:?}");
+        assert_eq!(names.len(), 5, "{names:?}");
     }
 
     /// 2026-10-28: the listed search schemas drop `HIDDEN_PARAMS`, the server still
@@ -4322,7 +4161,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("tool '{}' not found", name))
         };
 
-        for tool_name in &["search_code", "search_regex", "find_references"] {
+        for tool_name in &["search_code", "find_references"] {
             let tool = find_tool(tool_name);
             let limit_desc = tool["inputSchema"]["properties"]["limit"]["description"]
                 .as_str()
@@ -4461,14 +4300,14 @@ mod tests {
         );
     }
 
-    // REF-187: search_code, search_regex, and find_references must expose mode parameter
+    // REF-187: search_code and find_references must expose mode parameter
     #[test]
     fn test_count_mode_schema_exposed_on_search_tools() {
         let raw = call_server(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":null}"#);
         let resp = parse_first_response(&raw);
         let tools = resp["result"]["tools"].as_array().expect("tools array");
 
-        for tool_name in &["search_code", "search_regex", "find_references"] {
+        for tool_name in &["search_code", "find_references"] {
             let tool = tools
                 .iter()
                 .find(|t| t["name"] == *tool_name)

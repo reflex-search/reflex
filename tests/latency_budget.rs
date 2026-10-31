@@ -594,15 +594,14 @@ fn mcp_call_for(shape: &Shape) -> (&'static str, Value) {
             json!({"pattern": shape.pattern, "limit": shape.limit}),
         );
     }
-    let tool = if shape.regex {
-        "search_regex"
-    } else {
-        "search_code"
-    };
+    let tool = "search_code";
     let mut args = match shape.limit {
         Some(limit) => json!({"pattern": shape.pattern, "limit": limit}),
         None => json!({"pattern": shape.pattern, "mode": "count"}),
     };
+    if shape.regex {
+        args["regex"] = json!(true);
+    }
     if shape.symbols {
         args["symbols"] = json!(true);
     }
