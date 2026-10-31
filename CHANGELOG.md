@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-31
+
 Several answers that were wrong without a warning are fixed. The first CLI command after
 upgrading rebuilds the index once (2.2.0 wrote it); until then `rfx mcp` and `rfx serve`
 answer from it marked `stale`.
