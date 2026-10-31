@@ -164,7 +164,7 @@ rfx mcp                          # Start MCP server on stdio (for AI coding assi
 When using Reflex as an MCP server (`rfx mcp`), the following tools are available as `mcp__reflex__<name>`.
 Claude Code may register MCP tools as *deferred*: their schemas are not in context until loaded.
 If Reflex tools appear in a deferred-tools list, load them first with
-`ToolSearch("select:mcp__reflex__search_code,mcp__reflex__search_regex,mcp__reflex__find_references")`.
+`ToolSearch("select:mcp__reflex__search_code,mcp__reflex__find_references")`.
 The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`
 (never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. The
 server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a
@@ -180,13 +180,16 @@ match `verify_csrf_form_field`. Three modes, each with a case-insensitive varian
 | --- | --- | --- |
 | whole identifier | default | `grep -w` |
 | substring | `contains: true` | `grep -F` |
-| regular expression | `search_regex` | `grep -E` |
+| regular expression | `regex: true` (`search_code`) | `grep -E` |
 | any of the above, case-insensitive | `ignore_case: true` (`-i` / `--ignore-case` on the CLI) | `rg -i` (+ `contains` = `rg -i -F`) |
 
-- `contains` is available on `search_code`, `list_locations` and `find_references` (not
-  `search_regex`, which is already substring-based).
-- `ignore_case` is available on those three **and** `search_regex` (where it prepends
-  `(?i)`). A `(?i)` literal is looked up in the trigram index under every case
+- `contains` is available on `search_code`, `list_locations` and `find_references`. A
+  regex is already substring-based, so `search_code` ignores `contains` with `regex: true`.
+- `ignore_case` is available on those three (with `regex: true` it prepends `(?i)`).
+- A literal search whose pattern looks like a regex (`\w`, `\s`, `\d`, `\b`, an escaped
+  regex character, `.*`, `.+`; no brackets) still runs as literal text, and `warnings`
+  names `search_code` with `regex: true` / `--regex` (`filter::regex_syntax_warning`;
+  `list_locations` and `find_references` take no `regex` key). A `(?i)` literal is looked up in the trigram index under every case
   variant, so it costs about what the case-sensitive query costs. A whole-identifier `ignore_case` search keeps
   whole-identifier semantics (`realmid` finds `RealmId`, not `realm_id`), reports
   `kind: text_match`, and produces no zero-result substring `hint`. Counts match
@@ -239,8 +242,8 @@ edited, added or deleted, committed or not.
 - The verdict is memoised for 1 s per workspace (`REFLEX_FRESHNESS_TTL_MS`; `0`
   disables). `check_index_status` always bypasses the memo.
 
-Six listed tools (since 2026-10-27; 10 from 2026-09-30, 17 before). Claude Code carries
-every listed schema on every turn, so `tools/list` is kept small (~6.8 KB, guarded by
+Five listed tools (since 2026-10-30; 6 from 2026-10-27, 10 from 2026-09-30, 17 before). Claude Code carries
+every listed schema on every turn, so `tools/list` is kept small (~5.9 KB, guarded by
 `tests/mcp_tool_surface.rs`). The search schemas leave out `HIDDEN_PARAMS` (`exclude`,
 `force`, `dependencies`, `preview_length`, `expand`, `exact`: no agent passed them in
 5,914 calls); the server still accepts them; the shared matching / coverage / freshness rules live in
@@ -252,8 +255,7 @@ the instructions follows the listing (`instructions()`).
 
 | Tool | Listed | Purpose |
 |------|--------|---------|
-| `search_code` | yes | Literal search with previews (default limit 200); `mode: "count"` → `{count, files}` |
-| `search_regex` | yes | Regex search (use for `->`, `::`, alternation, etc.) |
+| `search_code` | yes | Literal search with previews (default limit 200); `regex: true` = regex search (`->`, `::`, alternation); `mode: "count"` → `{count, files}` |
 | `list_locations` | yes | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
 | `find_references` | yes | Definition + all usages in one atomic call (default limit: 200) |
 | `get_dependencies` | yes | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
@@ -264,13 +266,14 @@ the instructions follows the listing (`instructions()`).
 | `check_index_status` | `extra_tools`, `--no-update` | Report freshness without updating |
 
 Removed names still work, unlisted, with a deprecation warning (`LEGACY_TOOLS`):
+`search_regex` (= `search_code` with `regex: true`, since 2026-10-30),
 `count_occurrences`, `get_dependents`, `get_transitive_deps`, `find_hotspots`,
 `find_circular`, `find_unused`, `find_islands`, `analyze_summary`.
 
 See [`docs/mcp-tool-cheatsheet.md`](./docs/mcp-tool-cheatsheet.md) for a decision tree by agent intent.
 
-**Columnar result format (`search_code` / `search_regex`, list mode):** To cut token
-cost from repeated JSON keys, these two tools return matches in a columnar shape
+**Columnar result format (`search_code`, list mode):** To cut token
+cost from repeated JSON keys, it returns matches in a columnar shape
 instead of an array of per-file objects (flat rows still repeat `path`/`language`):
 
 ```json
@@ -305,7 +308,7 @@ shape. `count` mode (`{count, pattern}`) and the other tools are unaffected.
 
 ### Early termination and totals
 
-A list-mode `search_code` / `search_regex` call verifies candidates in path order
+A list-mode `search_code` call verifies candidates in path order
 and **stops once the page is full** (`offset + limit` results). The page is identical
 to the same slice of a full run, but the total is not always exact:
 
@@ -341,8 +344,8 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
 - `rfx query <pattern> --timing` prints per-phase timings (open, candidates, verify,
   status, group) to stderr; with `--json` they appear as a `timings` object
   (`update_us` when an automatic update ran).
-- `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` /
-  `search_regex` responses from `rfx mcp`.
+- `REFLEX_MCP_TIMING=1` adds the same `timings` object to `search_code` responses
+  from `rfx mcp`.
 - `timings.index_path` is `"trigram"` (candidates from the inverted index) or `"scan"`
   (every line verified: a pattern under 3 chars, a regex with no 3-byte literal such
   as `\w+_?id`, a non-ASCII literal under `(?i)`, or a keyword symbol query). A scan
@@ -427,6 +430,12 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   Keep that sentence. Runs before 2026-10-29 started every arm cold (the warm-up used
   text input, trials stream-json: different prefixes); compare those with the cold
   prefix at the read price.
+- **`search_regex` folded into `search_code` (`regex: true`, 2026-10-30):** `tools/list`
+  6,959 → 5,938 chars, fixed text 9,300 → 8,315 (−11 %; −405 tokens per call). Sonnet 5.5
+  `regex` sessions (12 regex questions, 1 trial, 2026-10-31): eager 1.02× Grep's cost,
+  1.09× its weighted tokens (`main` with `search_regex`: 1.06×, 1.17×); accuracy 1.000.
+  Agents use Reflex less on regexes: `search_regex` drew 33 of 36 questions, the flag
+  12 of 36 (the rest went to Grep, exact on regexes). Accepted: no accuracy edge to lose.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
@@ -504,7 +513,7 @@ marker is **not** read (the query engine derives language from the path).
 
 | Tool / flag | Text / lock / generated tiers |
 | --- | --- |
-| `search_code`, `search_regex`, `list_locations` | text **included by default**; lock and generated on request |
+| `search_code`, `list_locations` | text **included by default**; lock and generated on request |
 | `--symbols`, `--kind`, `--ast`, `search_ast` | excluded (there is no grammar) |
 | `find_references`, `get_dependencies`, `analyze` | excluded (a mention in a changelog is not a call site) |
 

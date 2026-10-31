@@ -1002,6 +1002,7 @@ impl QueryEngine {
         // escaped regex and say so. This lives here, not in the surfaces, so the CLI,
         // MCP and HTTP paths cannot disagree about it (1.7.2 fixed only MCP).
         let prepared = prepare_literal_pattern(pattern, &filter);
+        let regex_warning = filter::regex_syntax_warning(pattern, &filter);
         let mut filter = filter;
         if prepared.use_regex && !filter.use_regex {
             log::debug!(
@@ -1130,6 +1131,7 @@ impl QueryEngine {
             warnings: prepared
                 .warning
                 .into_iter()
+                .chain(regex_warning)
                 .chain(filter::no_symbol_parser_warning(&filter))
                 .chain(engine_warnings)
                 .collect(),
@@ -3272,7 +3274,7 @@ pub fn generate_ai_instruction(
     // Priority 1: No results
     if result_count == 0 {
         return Some(
-            "No results found. Consider these alternatives: 1) Check pattern spelling, 2) Remove --kind or --lang filters to broaden search, 3) Try partial match or related term, 4) Use search_regex tool for pattern matching with special characters or complex patterns."
+            "No results found. Consider these alternatives: 1) Check pattern spelling, 2) Remove --kind or --lang filters to broaden search, 3) Try partial match or related term, 4) Use a regex search (regex:true, or --regex on the CLI) for special characters or complex patterns."
             .to_string()
         );
     }

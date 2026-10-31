@@ -514,16 +514,17 @@ Text, lock and generated files never enter the graph.
   prints per-phase timings, including `index_path` (`trigram` or `scan`).
 - **MCP** (`src/mcp.rs`, `run_mcp_server`): JSON-RPC over stdio. Tool arguments are
   normalised (known aliases accepted with a warning, unknown keys rejected with a
-  did-you-mean, unknown language names rejected). `search_code` and `search_regex` return a columnar
+  did-you-mean, unknown language names rejected). `search_code` returns a columnar
   `{columns, rows}` shape (`to_columnar`; `REFLEX_MCP_COLUMNAR=0` restores
   `results[]`). A tool that fails with `CacheCorrupted` triggers one forced rebuild
-  and one retry (`with_corruption_recovery`). `tool_list` holds ten tools and
-  `ToolListing` picks the six `tools/list` shows: `search_ast`, `gather_context`,
+  and one retry (`with_corruption_recovery`). `tool_list` holds nine tools and
+  `ToolListing` picks the five `tools/list` shows: `search_ast`, `gather_context`,
   `index_project` and `check_index_status` (`HIDDEN_TOOLS`) are listed only with
   `[mcp] extra_tools` in `~/.reflex/config.toml` (the two index tools also under
   `--no-update`), and stay callable by name. The structural analyses are one `analyze`
   tool (hidden with `[mcp] enable_structural_tools = false`), and the reverse and
-  transitive lookups are options of `get_dependencies` (`handler_for` routes them). The
+  transitive lookups are options of `get_dependencies` (`handler_for` routes them).
+  `search_regex` is `search_code` with `regex: true` (`LEGACY_TOOLS`, since 2026-10-30). The
   eight names merged on 2026-09-30 stay callable, unlisted, with a deprecation warning
   (`LEGACY_TOOLS`). Shared rules live in `MCP_INSTRUCTIONS`, so descriptions stay short:
   every listed schema is carried on every agent turn. See

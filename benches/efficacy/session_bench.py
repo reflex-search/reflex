@@ -25,6 +25,10 @@ Session kinds (one of each per corpus):
                rust_code.py (a Rust lexer written apart from Reflex)
   aware-large  `aware` on names with 100-400 grep lines, where grep over-fetches:
                6 lists, 6 counts
+  regex        12 questions that give a regular expression: every matching line
+               (8, 3-80 lines each) and how many lines match (4, 10-400). Half
+               the pool has no brackets, so a search without regex:true runs as
+               literal text. Answer key: ripgrep (the same Rust regex engine)
 
 Every trial runs in its own copy of the corpus (a fresh git repository, so
 .gitignore applies); Reflex arms index it before the trial, outside the token
@@ -187,6 +191,7 @@ def generate() -> None:
     sessions += [long_session(repo, scope, candidates(repo)) for repo, scope in SCOPES.items()]
     sessions += [aware_session(repo, scope, candidates(repo)) for repo, scope in SCOPES.items()]
     sessions += [aware_large_session(repo, scope) for repo, scope in SCOPES.items()]
+    sessions += [regex_session(repo, scope) for repo, scope in SCOPES.items()]
     SESSIONS_JSON.write_text(json.dumps(
         {"generated_by": "session_bench.py generate (pinned corpora); do not edit by hand",
          "sessions": sessions}, indent=1) + "\n")
@@ -335,6 +340,72 @@ def aware_large_session(repo: str, scope: str) -> dict:
         raise SystemExit(f"{repo}: not enough names for an aware-large session")
     return {"id": f"{repo}-session-aware-large", "repo": repo, "kind": "aware",
             "steps": aware_steps(scope, picked[:6], picked[6:])}
+
+
+# Regexes for `regex_session`, in pick order. Generic Rust shapes; the ones with no
+# bracket (`impl\s+\w+\s+for\s+\w+`, `\bas\s+usize\b`, ...) run as literal text
+# without regex:true, where a bracket pattern is rewritten to an escaped regex.
+REGEX_POOL = [
+    r"impl\s+\w+\s+for\s+\w+",
+    r"fn\s+(get|set)_\w+",
+    r"\bmatch\s+self\b",
+    r"#\[cfg\(test\)\]",
+    r"fn\s+is_\w+\(",
+    r"\bas\s+usize\b",
+    r"Box<dyn\s+\w+",
+    r"fn\s+new\(",
+    r"\bconst\s+[A-Z_]+:",
+    r"&mut\s+self\)",
+    r"\bwhere\s*$",
+    r"\bpanic!\(",
+    r"Result<\(\),",
+    r"loop\s*\{",
+    r"pub\s+enum\s+\w+",
+    r"fn\s+\w+<",
+    r"#\[derive\([^)]*Debug",
+    r"->\s*io::Result<",
+    r"#\[inline\]",
+    r"^\s*use\s+std::",
+    r"impl<\w+",
+    r"pub\(crate\)\s+fn",
+    # Rarer shapes, for tokio's larger tree.
+    r"impl\s+Drop\s+for",
+    r"\bPhantomData<",
+    r"#\[doc\(hidden\)\]",
+    r"impl\s+fmt::Display\s+for",
+    r"\bu(8|16|32|64)::MAX\b",
+    r"#\[must_use\]",
+    r"todo!\(|unimplemented!\(",
+    r"Arc<Mutex<",
+]
+
+
+def regex_session(repo: str, scope: str) -> dict:
+    """12 questions that hand the agent a regular expression: 8 lists (3-80 lines),
+    4 counts (10-400 lines). Tests whether Reflex agents pass regex:true."""
+    repo_dir = runner.CORPUS_REPOS[repo]
+    lists, counts = [], []
+    for rx in REGEX_POOL:
+        n = len(rg(repo_dir, "-g", "*.rs", "-e", rx, scope))
+        if len(lists) < 8 and 3 <= n <= 80:
+            lists.append(rx)
+        elif len(counts) < 4 and 10 <= n <= 400:
+            counts.append(rx)
+    if len(lists) < 8 or len(counts) < 4:
+        raise SystemExit(f"{repo}: not enough regexes for a regex session")
+    steps = [{
+        "kind": "list",
+        "prompt": f"List every line of the `.rs` files under `{scope}/` that matches the regular "
+                  f"expression `{rx}` (Rust regex syntax). {FORMAT_LIST}",
+        "oracle": ["-g", "*.rs", "-e", rx, scope],
+    } for rx in lists]
+    steps += [{
+        "kind": "count_lines",
+        "prompt": f"How many lines of the `.rs` files under `{scope}/` match the regular expression "
+                  f"`{rx}` (Rust regex syntax)? {FORMAT_NUMBER}",
+        "oracle": ["-g", "*.rs", "-e", rx, scope],
+    } for rx in counts]
+    return {"id": f"{repo}-session-regex", "repo": repo, "kind": "regex", "steps": steps}
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +602,8 @@ def grade(step: dict, ans, tree: Path, scope: str) -> float:
         return 1.0 if isinstance(ans, list) and ans and norm_loc(ans[0]) in defs else 0.0
     if kind == "count_files":
         return 1.0 if ans == len(rg_files(tree, step["oracle"])) else 0.0
+    if kind == "count_lines":
+        return 1.0 if ans == len(rg(tree, *step["oracle"])) else 0.0
     if kind == "refs_count":
         return 1.0 if ans == len(code_refs(tree, step["name"], scope)) else 0.0
     if kind == "files":

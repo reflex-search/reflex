@@ -240,8 +240,12 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
     finds 304 of 417 edges (73 %); misses: `use` inside `cfg_*!` macro bodies, items
     imported from `lib.rs` / parent `mod.rs`, one module of a `{…}` group
     (GREP_PARITY_RESEARCH.md). Fix those first.
-  - Next cuts: fold `search_regex` into `search_code` (−1.4K), trim "Exact call shapes" /
-    "Rules" in the instructions (−550).
+  - `search_regex` folded into `search_code` (`regex: true`, 2026-10-30): fixed text
+    9,300 → 8,315 chars. Measured 2026-10-31 (`regex` sessions, Sonnet 5.5, 1 trial):
+    eager 1.02× Grep's cost (1.06× with `search_regex`), accuracy 1.000; agents send
+    fewer regex questions to Reflex (12 of 36, was 33). More trials only if adoption
+    on regexes starts to matter.
+  - Next cut: trim "Exact call shapes" / "Rules" in the instructions (−550).
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 
@@ -250,9 +254,9 @@ item below is a parameter or mode on an existing tool; measure its schema cost w
 
 - **Enclosing symbol on every match** — a `scope` column (`fn handle_request`,
   `impl Indexer`) from the symbol cache spans. Aim: remove follow-up `Read` turns in
-  comprehension tasks (REF-225 arm B made 46 `search_regex` calls). Adds bytes per row;
+  comprehension tasks (REF-225 arm B made 46 `search_regex` calls, now `search_code` `regex: true`). Adds bytes per row;
   measure with the REF-225 design, not only REF-222.
-- **Many patterns in one call** — `patterns: [...]` on `search_code` / `search_regex`,
+- **Many patterns in one call** — `patterns: [...]` on `search_code`,
   one result block per pattern. Aim: fewer turns in multi-search comprehension work.
 - **Co-occurrence** — files that contain all of A and B and none of C, optionally within
   N lines, as `search_code` parameters. Posting-list intersection makes it cheap.

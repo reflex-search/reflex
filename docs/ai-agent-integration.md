@@ -168,13 +168,12 @@ The response has file paths, line ranges, symbol kinds and previews. See
 
 ## Key tools
 
-Reflex offers 10 tools (9 when structural tools are off). These are the ones Claude
+Reflex lists 5 tools (4 when structural tools are off). These are the ones Claude
 uses most:
 
 | Tool | Use it for |
 |------|------------|
-| `search_code` | Every occurrence of a name, with previews. `symbols: true` for definitions only. `mode: "count"` for how many matches, in how many files. |
-| `search_regex` | Regular expressions, and patterns with `->`, `::`, `(`, `[`. |
+| `search_code` | Every occurrence of a name, with previews. `symbols: true` for definitions only. `regex: true` for regular expressions, and patterns with `->`, `::`, `(`, `[`. `mode: "count"` for how many matches, in how many files. |
 | `find_references` | Every line where a name is used in code, plus its definition, in one call. Skips lines where it is only in a comment or string (whole-file scan). Code files only. |
 | `list_locations` | Every matching line for a pattern, grouped by file (`{path: [line, ...]}`), without previews. A line with two matches appears once, like `grep -n`. |
 | `get_dependencies` | What a file imports. `reverse: true` for the files that import it; `depth: N` to follow imports N levels. |
@@ -212,10 +211,10 @@ and `analyze_summary`. The cheatsheet lists their replacements.
 { "pattern": "process_request", "file": "src/api" }
 { "pattern": "useAuth", "glob": ["packages/web/**/*.ts"] }
 { "pattern": "TODO", "exclude": ["vendor/", "target/"] }
-{ "pattern": "fn (get|set)_\\w+", "glob": ["src/**/*.rs"] }
+{ "pattern": "fn (get|set)_\\w+", "regex": true, "glob": ["src/**/*.rs"] }
 ```
 
-The last one is a `search_regex` call; the others work with `search_code`.
+All of them are `search_code` calls.
 
 Globs follow gitignore rules. A pattern with a `/` is anchored at the project root, so
 `src/**/*.rs` matches only the top-level `src/`. Use `**/src/**/*.rs` to match any
@@ -230,7 +229,7 @@ does not match `verify_csrf_form_field`.
 | Want | Pass |
 |------|------|
 | Substring match (`grep -F`) | `contains: true` |
-| Regular expression (`grep -E`) | use `search_regex` |
+| Regular expression (`grep -E`) | `regex: true` |
 | Case-insensitive (`rg -i`) | `ignore_case: true` |
 
 A pattern with brackets, such as `unwrap()`, is escaped and run as a regex
@@ -242,7 +241,7 @@ substring count.
 
 ## Reading results
 
-`search_code` and `search_regex` return a columnar shape. Each row lines up with
+`search_code` returns a columnar shape. Each row lines up with
 `columns`. This is a real response to `{"pattern": "Config", "symbols": true, "lang": "rust"}`:
 
 ```json
@@ -297,7 +296,7 @@ content does not make it stale. Inside a git repository, candidates come from
 
 | Response | Freshness fields |
 |----------|------------------|
-| `search_code`, `search_regex` (list, `paths` and `count` modes), `list_locations`, `find_references`, `analyze` | `status`, `can_trust_results`, and `warning` when stale |
+| `search_code` (list, `paths` and `count` modes), `list_locations`, `find_references`, `analyze` | `status`, `can_trust_results`, and `warning` when stale |
 | `check_index_status` | `status`, `can_trust_results`, `details`, and the stale fields at the top level |
 | `get_dependencies` (every form), `search_ast` | none (they answer bare arrays) |
 
@@ -333,7 +332,7 @@ one file:
 - `action_required` names the MCP tool to call, `index_project`, when `tools/list`
   shows it. Otherwise it is `rfx index`: Claude Code can call only listed tools. Error
   advice follows the same rule.
-- In `search_code` / `search_regex` responses the same fields sit inside `warning`.
+- In `search_code` responses the same fields sit inside `warning`.
 
 ### What to do
 
