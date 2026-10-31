@@ -436,6 +436,14 @@ Library readers: `PaginationInfo::exact_total()` (the total or `None`) and
   1.09× its weighted tokens (`main` with `search_regex`: 1.06×, 1.17×); accuracy 1.000.
   Agents use Reflex less on regexes: `search_regex` drew 33 of 36 questions, the flag
   12 of 36 (the rest went to Grep, exact on regexes). Accepted: no accuracy edge to lose.
+- **Instructions trimmed (2026-10-31):** the call shapes and argument-name rules left
+  (a deferred schema is loaded before the first call; `ARG_ALIASES` rewrites the wrong
+  names; 0 of 6,526 saved Reflex calls used one): 2,377 → 1,838 chars, fixed text
+  8,315 → 7,776 (−6.5 %; −208 tokens per call). Sonnet 5.5 `investigate` sessions:
+  deferred used Reflex in 3 of 3 (was 2 of 3), eager 3 of 3; no wrong argument names;
+  accuracy 1.000; cost vs Grep deferred 1.02×, eager 1.03× (Grep's own run was 8 %
+  cheaper on tokio; eager's tokens fell 1.0–1.7 %).
+  `test_instructions_keep_the_routing_rules` pins the sentences measured to matter.
 - **structuredContent: evaluated and rejected.** MCP `outputSchema`/`structuredContent` was
   built and removed: Claude Code transmits *both* `content[text]` and `structuredContent`,
   so it saved nothing. Do not re-attempt unless using a client that honors `outputSchema`
