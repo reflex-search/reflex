@@ -245,7 +245,10 @@ extra turns, not payload. Re-measure every step with `benches/efficacy/run-ref22
     eager 1.02× Grep's cost (1.06× with `search_regex`), accuracy 1.000; agents send
     fewer regex questions to Reflex (12 of 36, was 33). More trials only if adoption
     on regexes starts to matter.
-  - Next cut: trim "Exact call shapes" / "Rules" in the instructions (−550).
+  - Instructions trimmed (2026-10-31): call shapes and argument-name rules left;
+    2,377 → 1,838 chars, fixed text 8,315 → 7,776 (−208 tokens per call). Measured
+    2026-10-31 (`investigate`, Sonnet 5.5, 1 trial): adoption held (deferred 3 of 3),
+    no wrong argument names, accuracy 1.000.
 
 ### 2. Capabilities (as parameters on existing tools — never new tools)
 

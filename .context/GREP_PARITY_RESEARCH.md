@@ -408,7 +408,7 @@ UTF-8 characters:
   parameter and a regex clause in its description, and the instructions name
   `regex:true` in the call shape and the matching rules.
 - The instructions keep a regex call shape: agents that never load the schema learn
-  the flag there.
+  the flag there. (The call shapes left on 2026-10-31; see "Instructions trimmed".)
 - Risk: an agent passes a regex without `regex: true`. It runs as literal text and
   finds the text itself or nothing. On this repo `impl\s+\w+\s+for` counted 1 (a doc
   line) against 58, with no warning; `fn (get|set)_\w+` counted 6 against 89, with the
@@ -464,10 +464,57 @@ Per session (cost $ / weighted tokens):
   not a proof. A tool choice is made once per session and kept, so the 36 questions
   are not 36 samples.
 
+### Instructions trimmed (2026-10-31, 2.3.0 + unreleased)
+
+"Exact call shapes" (three example calls) and "Rules" (the canonical argument names,
+"literal text index") left the instructions. "Search for code, not natural language."
+replaces the last rule. "glob and exclude follow gitignore rules" became "glob follows"
+(`exclude` is a hidden parameter). Sizes, UTF-8 characters:
+
+| | 2.3.0 | trimmed |
+| --- | --- | --- |
+| instructions | 2,377 | 1,838 (−539) |
+| fixed text per call | 8,315 | 7,776 (−6.5 %) |
+
+- The rules answered 1.7.0 field data: 14 of 16 sessions opened with `query`, because
+  agents called deferred tools without their schema. Today Claude Code loads a deferred
+  schema before the first call, and `ARG_ALIASES` rewrites `query` / `symbol` / `text`
+  / `search` → `pattern`, `max_results` → `limit`, `path` → `file`, with a warning.
+- In the saved sessions (`results-sessions/*/B*`), 0 of 6,526 Reflex calls used one of
+  those names. The rules were in place for all of them, so this alone does not show
+  they are unneeded; the aliases make a wrong name cost a warning, not a failed call.
+- Kept word for word: the Reflex-first paragraph, the ToolSearch line, the
+  `list_locations` / `find_references` routing and the retry-once fallback. Each was
+  measured; `test_instructions_keep_the_routing_rules` pins them.
+- The regex call shape left with the rest. Agents learn `regex:true` from the Matching
+  paragraph and the `search_code` description.
+
+Sessions (2026-10-31, Sonnet 5.5, `investigate`, 1 trial per cell, warm-up per arm;
+`results-sessions/sonnet55-trim-investigate`). A regression check against the
+2026-10-29 warm run (`sonnet55-investigate-warm`, before the `regex` fold and the trim):
+
+| | A (Grep) | B | Beager |
+| --- | --- | --- | --- |
+| sessions using Reflex | — | 3 of 3 (was 2 of 3) | 3 of 3 (was 3 of 3) |
+| Reflex calls | 0 | 34 `list_locations`; 2 Grep (was 24 Reflex, 12 Grep) | 24 `list_locations`, 12 `search_code` (unchanged) |
+| cost vs A (median) | 1.00× | 1.02× (was 1.03×) | 1.03× (was 0.98×) |
+| weighted vs A (median) | 1.00× | 1.06× (was 1.04×) | 1.08× (was 1.05×) |
+| accuracy | 1.000 | 1.000 | 1.000 |
+
+- Fixed text, measured by the warm-up cache writes: eager 22,849 → 22,641, deferred
+  20,594 → 20,386 (−208 tokens per call in both). With the `regex` fold: eager
+  23,254 → 22,641 (−613) since 2.2.0.
+- No wrong argument name, alias warning, tool error or prose pattern in any arm (the
+  same as the baseline).
+- The ratios moved because Grep moved: A's tokio session cost 98,987 weighted tokens
+  against 108,107 on 2026-10-29. Eager's own weighted tokens fell 1.0–1.7 % per
+  session, about what −613 tokens per call at the cache-read price predicts.
+
 ## Not done / next levers
 
-- The fixed text is still the gap: ~8.3K chars per call after `regex: true`
-  (5,938 schemas + 2,377 instructions). Next candidate: trim "Exact call shapes" /
-  "Rules" in the instructions (−550).
+- The fixed text is still the gap: ~7.8K chars per call after the trim (5,938
+  schemas + 1,838 instructions). The cut left on the list is the parameter
+  descriptions (−3.3K): names such as `file` and `include_locks` are unclear
+  without them.
 - `list_locations` `dependencies: true` is accepted but its imports never reached the
   reply (either shape). Fixed 2026-10-25: a `dependencies` map beside `locations`.

@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Changed
+
+- **MCP: the server instructions are 539 characters shorter** (2,377 → 1,838). The
+  exact call shapes and the argument-name rules are gone: Claude Code loads a tool's
+  schema before its first call, and the server already rewrites `query`, `symbol`,
+  `text`, `max_results` and `path` to the real names, with a warning. Every API call
+  carries the instructions, so the fixed text Reflex adds to each call falls from
+  8,315 to 7,776 characters (−6.5 %, −208 tokens). In Sonnet 5.5 sessions agents
+  still chose Reflex, passed no wrong argument names and answered exactly.
+
 ## [2.3.0] - 2026-10-31
 
 Several answers that were wrong without a warning are fixed. The first CLI command after

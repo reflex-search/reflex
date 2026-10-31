@@ -417,7 +417,7 @@ jobs:
           # Generate release notes from conventional commits since last tag
           git-cliff --latest --strip header > $RUNNER_TEMP/notes.txt
 
-          # Upload binaries, installers, and archives (archives needed for npm/homebrew)
+          # Upload binaries, installers, and archives (archives needed for npm)
           cd artifacts
           gh release create "${{ needs.plan.outputs.tag }}" \
             --target "$RELEASE_COMMIT" \

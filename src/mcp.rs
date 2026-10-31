@@ -239,27 +239,20 @@ fn parse_symbol_kind(kind: Option<String>) -> Option<SymbolKind> {
 
 /// Server instructions sent in the `initialize` response.
 ///
-/// Written for agents that never see the tool schemas: Claude Code defers MCP
-/// tool schemas until the model calls `ToolSearch`, and in 34 measured
-/// sessions 14 of 16 opened with a wrong argument name (`query` instead of
-/// `pattern`). So the text carries the exact call shapes and the canonical
-/// argument names, plus the ToolSearch hint. Keep it compact: every consumer
-/// pays these tokens once per session. Guarded by tests
-/// (`test_instructions_*`).
+/// Claude Code defers MCP tool schemas until the model calls `ToolSearch`, so the
+/// text carries the ToolSearch hint. It once also carried exact call shapes and
+/// the canonical argument names (1.7.0: 14 of 16 sessions opened with `query`
+/// instead of `pattern`). Both left on 2026-10-31: a deferred schema is loaded
+/// before the first call, `ARG_ALIASES` rewrites the habitual wrong names, and
+/// 0 of 6,526 Reflex calls in the saved sessions used one. Keep it compact:
+/// every API call carries these tokens. Guarded by tests (`test_instructions_*`).
 const MCP_INSTRUCTIONS: &str = r#"Reflex is the full-text code search engine for this workspace. For any task that asks where code is, where a pattern occurs, where a symbol is defined or used, or who imports a file, prefer a Reflex tool over Grep, Glob, ripgrep, or shell grep: call Reflex first. It returns grep's data plus line context, symbol typing, and dependency links, instantly.
 
 Your harness may defer MCP tool schemas. If Reflex tools appear in a deferred-tools list, load them first: ToolSearch("select:mcp__reflex__search_code,mcp__reflex__find_references").
 
-Exact call shapes:
-search_code {"pattern": "fn verify_totp", "limit": 40, "file": "src/identity"}
-search_code {"pattern": "fn (get|set)_\w+", "regex": true, "glob": ["src/**/*.rs"]}
-find_references {"pattern": "start_webauthn_registration"}
+Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); search_code regex:true runs a regex (grep -E); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. Search for code, not natural language. A zero result carries a hint saying why.
 
-Rules: the required argument is always "pattern", never "query", "symbol", or "text". The result cap is "limit", never "max_results". The path filter is "file" (substring) or "glob" (array), never "path". search_code is a literal text index: natural-language queries match nothing; search for identifiers or code fragments.
-
-Matching: search_code, list_locations and find_references match WHOLE identifiers, like grep -w: "verify_csrf" does not match "verify_csrf_form_field". contains:true matches substrings (grep -F); search_code regex:true runs a regex (grep -E); ignore_case:true is rg -i. A pattern with brackets runs as an escaped regex. A zero result carries a hint saying why.
-
-Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated. glob and exclude follow gitignore rules: "src/**/*.rs" is anchored at the root, "*.rs" matches at any depth.
+Coverage matches ripgrep's defaults: not gitignored, not binary, not under a dot-directory (.github/, .githooks/ …); use grep for hidden paths. Lock and generated files need include_locks / include_generated. glob follows gitignore rules: "src/**/*.rs" is anchored at the root, "*.rs" matches at any depth.
 
 The index updates itself before every call and is built on first use. can_trust_results: false means the update could not run; warnings say why.
 
@@ -3280,7 +3273,8 @@ mod tests {
     // REF-197 introduced the `instructions` field; 1.7.0 reversed its Stage-1
     // "no Claude-Code-isms" policy after field data showed 14 of 16 sessions
     // opened with a wrong argument name because deferred schemas were never
-    // loaded. The text must now carry the ToolSearch hint and exact call shapes.
+    // loaded. The text must now carry the ToolSearch hint (the call shapes left on
+    // 2026-10-31: see MCP_INSTRUCTIONS).
     #[test]
     fn test_initialize_includes_instructions() {
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
@@ -3315,8 +3309,10 @@ mod tests {
         assert_eq!(resp["result"]["serverInfo"]["name"], "reflex");
     }
 
+    /// The sentences that measurements tied to adoption and cost (CLAUDE.md, "MCP
+    /// efficiency"): each one is here because removing it was tried or measured.
     #[test]
-    fn test_instructions_have_pattern_call_shape() {
+    fn test_instructions_keep_the_routing_rules() {
         assert!(
             !MCP_INSTRUCTIONS.contains("do NOT call ToolSearch"),
             "the false 'pre-loaded' claim must never come back"
@@ -3325,16 +3321,40 @@ mod tests {
             !MCP_INSTRUCTIONS.contains("pre-loaded"),
             "the false 'pre-loaded' claim must never come back"
         );
-        assert!(
-            MCP_INSTRUCTIONS.contains("search_code {\"pattern\":"),
-            "must show an exact search_code call shape with the real key"
-        );
-        assert!(MCP_INSTRUCTIONS.contains("\"regex\": true"));
+        assert!(MCP_INSTRUCTIONS.contains("search_code regex:true"));
         assert!(
             !MCP_INSTRUCTIONS.contains("search_regex"),
             "search_regex is not listed"
         );
-        assert!(MCP_INSTRUCTIONS.contains("find_references {\"pattern\":"));
+        assert!(MCP_INSTRUCTIONS.contains("not natural language"));
+        for needle in [
+            // Without it agents returned 1.3–1.9K-char previews per lookup.
+            "To list where something occurs, use list_locations",
+            // Code-only questions: Reflex wins only with this routing (0.64–0.69× cost).
+            "use find_references; it drops those lines exactly, so do not re-check",
+            // Adoption: other fallback wordings took it from 8/12 to 4/12 or 2/72.
+            "If a Reflex tool fails, retry it once; only fall back to Grep/Glob after the retry also fails.",
+        ] {
+            assert!(MCP_INSTRUCTIONS.contains(needle), "lost: {needle}");
+        }
+    }
+
+    /// The instructions no longer name the canonical arguments: the server rewrites
+    /// the habitual wrong ones instead (see `MCP_INSTRUCTIONS`).
+    #[test]
+    fn test_wrong_argument_names_are_aliases() {
+        for (wrong, right) in [
+            ("query", "pattern"),
+            ("symbol", "pattern"),
+            ("text", "pattern"),
+            ("max_results", "limit"),
+            ("path", "file"),
+        ] {
+            assert!(
+                ARG_ALIASES.contains(&(wrong, right)),
+                "{wrong} must be an alias of {right}"
+            );
+        }
     }
 
     /// The coverage text must say what is true: ripgrep's defaults, which skip
@@ -3364,36 +3384,17 @@ mod tests {
     }
 
     #[test]
-    fn test_instructions_name_canonical_arg_names() {
-        for needle in [
-            "\"pattern\"",
-            "\"limit\"",
-            "\"file\"",
-            "\"glob\"",
-            "\"query\"",
-            "\"symbol\"",
-            "\"max_results\"",
-            "\"path\"",
-            "literal text index",
-        ] {
-            assert!(
-                MCP_INSTRUCTIONS.contains(needle),
-                "instructions must mention {needle}"
-            );
-        }
-    }
-
-    #[test]
     fn test_instructions_size_budget() {
         assert!(
-            // 2400 (was 1700): on 2026-09-30 the matching, coverage and freshness rules
-            // moved here from the tool descriptions. The instructions are sent once per
-            // session; each description is carried on every turn.
-            MCP_INSTRUCTIONS.len() <= 2400,
-            "instructions are paid for on every session; keep them under 2400 chars (got {})",
+            // 1900 (was 2400): the call shapes and argument rules left on 2026-10-31.
+            // Claude Code puts the instructions in the prompt of every API call.
+            MCP_INSTRUCTIONS.len() <= INSTRUCTIONS_BUDGET,
+            "every API call carries the instructions; keep them under {INSTRUCTIONS_BUDGET} bytes (got {})",
             MCP_INSTRUCTIONS.len()
         );
     }
+
+    const INSTRUCTIONS_BUDGET: usize = 1900;
 
     // ---- 1.7.0 argument validation -------------------------------------------
 
@@ -3816,7 +3817,7 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("updates itself"), "{text}");
-        assert!(text.len() <= 2400, "{}", text.len());
+        assert!(text.len() <= INSTRUCTIONS_BUDGET, "{}", text.len());
     }
 
     #[test]
