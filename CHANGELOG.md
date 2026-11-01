@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [2.3.1] - 2026-10-31
+
 ### Changed
 
 - **MCP: the server instructions are 539 characters shorter** (2,377 → 1,838). The
