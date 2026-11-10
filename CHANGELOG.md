@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Fixed
+
+- **`rfx mcp` and `rfx serve` no longer answer `stale` forever after an upgrade.** A
+  `.reflex/` written by an older release was never rebuilt by a server: every answer
+  said `can_trust_results: false` until someone ran `rfx index` by hand, and the
+  warning told the agent to "rebuild with force", which no listed tool can do. A server
+  now rebuilds a cache an older release wrote, once, at its first update. It still
+  leaves a newer release's cache alone (two servers of different versions would
+  rebuild it in turns), and the warning names `rfx index`. The automatic update of a
+  CLI command had the same gap when the cache format had not changed; it now rebuilds
+  another version's cache as `rfx index` does.
+
 ## [2.3.1] - 2026-10-31
 
 ### Changed

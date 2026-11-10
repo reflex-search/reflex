@@ -88,7 +88,8 @@ See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats and
   behaviour. `QueryEngine::new` has no update (library default); front ends build engines
   through `cli::engine` / `mcp::engine_in` (a test fails on any other `QueryEngine::new` in `src/`).
 - Never fails the command: `Updated::Skipped(reason)` → answer from the current index,
-  `stale`, reason in `warnings`. The CLI rebuilds another version's cache; servers skip it.
+  `stale`, reason in `warnings`. The CLI rebuilds another version's cache; servers
+  rebuild an older release's cache (an upgrade) and skip a newer one (`auto_update::SelfHeal`).
   Waits for `index.lock` forever (`LOCK_WAIT_FOREVER`). A failed plan over the same bytes is
   not retried.
 - Rule files: an index run records the blake3 of `.reflex/config.toml`, the root ignore

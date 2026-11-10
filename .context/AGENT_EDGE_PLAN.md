@@ -169,7 +169,17 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
 - [ ] **1.4 CLI JSON parity audit.** List every MCP answer shape and its CLI equivalent.
   Fill the gaps, for example grouped `list_locations` output (`{path: [line, ...]}`) as
   an `rfx query` flag, and `find_references` as `rfx refs <name>`.
-- [ ] **1.6 An upgrade leaves `rfx mcp` stale until a manual `rfx index`.** Found
+- [x] **1.6 An upgrade leaves `rfx mcp` stale until a manual `rfx index`.** Fixed
+  2026-11-09 (branch `feat/agent-edge-phase1`): `auto_update::SelfHeal`
+  (`Never` library / `OlderOnly` servers / `Any` CLI) and `is_older_release`
+  (MAJOR.MINOR.PATCH; a suffix on equal numbers or an unparsable version is not older).
+  Two paths were broken, not one: the `Foreign` plan (format changed), and the same
+  format with another version's stamp, where `assert_writable` refused the
+  `update_paths` / `index` run (this one hit the CLI's auto-update too). Both now go
+  through `take_over` (clear + build; skips the clear when another process of this
+  version already rebuilt it). A fresh older cache is not rebuilt. Refusal text names
+  `rfx index`, never "force". Tests: 3 unit (`src/auto_update.rs`), 5 integration
+  (`tests/auto_update.rs`, incl. the field case). Found
   2026-11-09 doing 1.1: `.reflex/` written by 2.2.0, binary 2.3.1. Every MCP search
   answered `status: stale`, `can_trust_results: false`, `action_required: null`, warning
   "automatic index update failed: this .reflex/ was written by reflex 2.2.0 (sha

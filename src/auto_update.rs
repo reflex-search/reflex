@@ -7,8 +7,12 @@
 //! run (which still reads only the files whose stat moved). No index at all is
 //! built. See `.context/AUTO_UPDATE_RESEARCH.md`.
 //!
+//! A cache another released version wrote is rebuilt for this one when the front
+//! end allows it ([`SelfHeal`]): the CLI always, a server only after an upgrade
+//! (the cache's writer is an older release).
+//!
 //! An update never fails the command: when it cannot run (a read-only `.reflex/`,
-//! another version's cache in a server, a symbol pass that does not yield) the
+//! a newer version's cache in a server, a symbol pass that does not yield) the
 //! result is [`Updated::Skipped`] with the reason, and the command answers from the
 //! index it has, with the check's `stale` verdict. Only a missing index whose
 //! build fails is an error.
@@ -32,30 +36,81 @@ pub struct UpdateOptions {
     /// one an update cancelled. Only the `rfx` binary may set this: the pass is
     /// started as `<current executable> index-symbols-internal`.
     pub spawn_symbol_pass: bool,
-    /// Rebuild a cache another released version wrote. The CLI does, as
-    /// `rfx index` does; servers do not, because two servers of different versions
-    /// would rebuild the same cache in turns forever.
-    pub self_heal_version: bool,
+    /// Which caches written by another released version this front end rebuilds
+    /// ([`SelfHeal`]).
+    pub self_heal_version: SelfHeal,
     /// Say on stderr when a build or a full run starts (they take seconds on a
     /// large tree). A path update is silent. Stdout is never written.
     pub progress: bool,
 }
 
+/// Which caches written by ANOTHER released version an update may rebuild.
+///
+/// The writer refuses another version's cache (`CacheManager::assert_writable`),
+/// so an update that cannot take it over answers from it as it is, `stale`, for
+/// as long as the other version's cache stays. Taking it over means clearing it
+/// and building it again for this version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfHeal {
+    /// Never (library callers and tests).
+    Never,
+    /// Only a cache an OLDER release wrote: an upgrade (`rfx mcp`, `rfx serve`).
+    /// A NEWER one is left alone, so two servers of different versions sharing one
+    /// `.reflex/` do not rebuild it in turns forever: the newer one takes it over
+    /// once, and the older one then refuses it.
+    OlderOnly,
+    /// Any other version (CLI commands, as `rfx index` does: a human picked
+    /// this binary).
+    Any,
+}
+
+impl SelfHeal {
+    /// Whether a cache `owner` wrote may be rebuilt. `None` (the writer is not
+    /// known) is rebuilt only by [`SelfHeal::Any`].
+    pub fn allows(self, owner: Option<&str>) -> bool {
+        match self {
+            Self::Never => false,
+            Self::OlderOnly => {
+                owner.is_some_and(|v| is_older_release(v, env!("CARGO_PKG_VERSION")))
+            }
+            Self::Any => true,
+        }
+    }
+}
+
+/// Whether release `owner` is strictly older than release `this`, comparing
+/// `MAJOR.MINOR.PATCH`. Anything else (a pre-release or build suffix on equal
+/// numbers, a version that does not parse) is not older: refusing is the safe
+/// side, and the CLI still rebuilds it.
+pub fn is_older_release(owner: &str, this: &str) -> bool {
+    fn parse(v: &str) -> Option<(u64, u64, u64)> {
+        let core = v.split(['-', '+']).next()?;
+        let mut parts = core.split('.');
+        let n = (
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        );
+        parts.next().is_none().then_some(n)
+    }
+    matches!((parse(owner), parse(this)), (Some(a), Some(b)) if a < b)
+}
+
 impl UpdateOptions {
-    /// A CLI command: rebuilds another version's cache.
+    /// A CLI command: rebuilds any other version's cache.
     pub fn cli() -> Self {
         Self {
             spawn_symbol_pass: true,
-            self_heal_version: true,
+            self_heal_version: SelfHeal::Any,
             progress: true,
         }
     }
 
-    /// `rfx mcp` / `rfx serve`: never writes another version's cache.
+    /// `rfx mcp` / `rfx serve`: rebuilds an older release's cache, never a newer one.
     pub fn server() -> Self {
         Self {
             spawn_symbol_pass: true,
-            self_heal_version: false,
+            self_heal_version: SelfHeal::OlderOnly,
             progress: false,
         }
     }
@@ -64,7 +119,7 @@ impl UpdateOptions {
     pub fn library() -> Self {
         Self {
             spawn_symbol_pass: false,
-            self_heal_version: false,
+            self_heal_version: SelfHeal::Never,
             progress: false,
         }
     }
@@ -161,10 +216,16 @@ pub fn update_if_stale(cache: &CacheManager, opts: &UpdateOptions) -> Result<Upd
             return Ok(Updated::Nothing);
         }
         UpdatePlan::Unknown(reason) => return Ok(Updated::Skipped(reason.clone())),
-        UpdatePlan::Foreign(reason) if !opts.self_heal_version => {
-            return Ok(Updated::Skipped(reason.clone()));
-        }
         _ => {}
+    }
+
+    // Another version wrote this cache. A different format plans `Foreign`; the
+    // same format still has the other version's stamp, and the writer refuses it
+    // (`assert_writable`), so either way the update is a takeover or nothing.
+    let other = other_writer(cache);
+    let foreign = matches!(plan, UpdatePlan::Foreign(_)) || other.is_some();
+    if foreign && !opts.self_heal_version.allows(other.as_deref()) {
+        return Ok(Updated::Skipped(refusal(&plan, other.as_deref(), opts)));
     }
 
     let attempt = stat_of(&root, &plan);
@@ -179,13 +240,8 @@ pub fn update_if_stale(cache: &CacheManager, opts: &UpdateOptions) -> Result<Upd
     }
 
     let result = match &plan {
-        UpdatePlan::Foreign(_) => {
-            crate::query::invalidate_caches(&root);
-            match cache.clear() {
-                Ok(()) => build(cache, &root, opts).map(|()| Updated::Built),
-                Err(e) => Err(e),
-            }
-        }
+        _ if foreign => take_over(cache, &root, opts),
+        UpdatePlan::Foreign(_) => unreachable!("foreign is set for this plan"),
         UpdatePlan::Paths(paths) => config(cache).and_then(|config| {
             with_symbol_pass_retry(cache, || {
                 Indexer::new(CacheManager::new(&root), config.clone()).update_paths(&root, paths)
@@ -304,7 +360,94 @@ fn restart_symbol_pass(cache: &CacheManager, root: &Path, opts: &UpdateOptions, 
     }
 }
 
+/// The version stamped on this cache when it is not this binary's version.
+fn other_writer(cache: &CacheManager) -> Option<String> {
+    cache
+        .cache_owner()
+        .map(|(version, _)| version)
+        .filter(|v| v != env!("CARGO_PKG_VERSION"))
+}
+
+/// Rebuild another version's cache for this one: clear it, then build it.
+fn take_over(cache: &CacheManager, root: &Path, opts: &UpdateOptions) -> Result<Updated> {
+    crate::query::invalidate_caches(root);
+    // Another process of this version (a second server after the same upgrade) may
+    // have rebuilt it while this one waited: update that index, do not clear it.
+    if other_writer(cache).is_none() && cache.cache_owner().is_some() {
+        let config = config(cache)?;
+        return with_symbol_pass_retry(cache, || {
+            Indexer::new(CacheManager::new(root), config.clone()).index(root, false)
+        })
+        .map(|stats| Updated::Index {
+            changed: stats.new_files + stats.modified_files + stats.deleted_files,
+        });
+    }
+    cache.clear()?;
+    build(cache, root, opts)?;
+    Ok(Updated::Built)
+}
+
+/// Why another version's cache was not rebuilt, for `warnings`: who wrote it and
+/// the command that rebuilds it (no MCP tool can, unless `index_project` is listed).
+fn refusal(plan: &UpdatePlan, other: Option<&str>, opts: &UpdateOptions) -> String {
+    let this = env!("CARGO_PKG_VERSION");
+    match other {
+        Some(v) if opts.self_heal_version == SelfHeal::OlderOnly => format!(
+            "this .reflex/ was written by reflex {v}, which is newer than this binary \
+             (reflex {this}), so it is not rebuilt automatically. Upgrade this binary, \
+             or run `rfx index` to rebuild the index for reflex {this}."
+        ),
+        Some(v) => format!(
+            "this .reflex/ was written by reflex {v}; this binary is reflex {this}. \
+             Run `rfx index` to rebuild it for reflex {this}."
+        ),
+        None => match plan {
+            UpdatePlan::Foreign(reason) => reason.clone(),
+            _ => "this .reflex/ was written by another reflex version; run `rfx index` \
+                  to rebuild it"
+                .to_string(),
+        },
+    }
+}
+
 /// The reason an update did not run, for `warnings`.
 fn describe(e: &anyhow::Error) -> String {
     format!("automatic index update failed: {e}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_release_compares_major_minor_patch() {
+        assert!(is_older_release("2.2.0", "2.3.1"));
+        assert!(is_older_release("2.3.0", "2.3.1"));
+        assert!(is_older_release("1.9.9", "2.0.0"));
+        assert!(is_older_release("9.9.9", "10.0.0"));
+        assert!(!is_older_release("2.3.1", "2.3.1"));
+        assert!(!is_older_release("2.4.0", "2.3.1"));
+        assert!(!is_older_release("10.0.0", "9.9.9"));
+    }
+
+    #[test]
+    fn unparsable_or_suffixed_versions_are_not_older() {
+        assert!(!is_older_release("2.3.1-rc.1", "2.3.1"));
+        assert!(!is_older_release("2.3", "2.3.1"));
+        assert!(!is_older_release("2.3.1.4", "2.4.0"));
+        assert!(!is_older_release("garbage", "2.3.1"));
+        assert!(!is_older_release("", "2.3.1"));
+        // A suffix on an older core is still older.
+        assert!(is_older_release("2.2.0-rc.1", "2.3.1"));
+    }
+
+    #[test]
+    fn self_heal_rules() {
+        assert!(SelfHeal::Any.allows(Some("99.0.0")));
+        assert!(SelfHeal::Any.allows(None));
+        assert!(SelfHeal::OlderOnly.allows(Some("0.0.1")));
+        assert!(!SelfHeal::OlderOnly.allows(Some("99.0.0")));
+        assert!(!SelfHeal::OlderOnly.allows(None));
+        assert!(!SelfHeal::Never.allows(Some("0.0.1")));
+    }
 }

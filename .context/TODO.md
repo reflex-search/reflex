@@ -113,7 +113,9 @@ From the 1.7.2 MCP correctness release (2026-09-22):
 2. **Stale always means `can_trust_results: false`**, including a zero-result search.
    Scope (did a changed file appear in the results?) only sharpens the warning text.
 3. **Readers degrade, writers refuse.** Refuse only when a different released version
-   owns the cache. Refusing on the schema hash alone breaks every upgrade.
+   owns the cache. Refusing on the schema hash alone breaks every upgrade. Since
+   2026-11-09 (D8 in `AGENT_EDGE_PLAN.md`): servers take over an OLDER release's cache
+   (an upgrade) and still refuse a NEWER one; the CLI takes over any version's.
 4. **The symbol pass yields rather than holding the lock.** It stops at its next batch
    on a cancel sentinel, so `index_project` is never blocked for the whole pass.
 5. **Text tier on by default** (`[index] text_tier = false` opts out), and exempt from
@@ -201,6 +203,15 @@ MCP:
   deferred tools, in a consumer project.
 
 Tests:
+- After a version bump, a `tests/corpus/.reflex/` left by an older build fails 70 tests
+  (`corpus_test`, `query_early_termination`, …) with "this .reflex/ was written by
+  reflex 2.3.0 …": `test_helpers` indexes through `Indexer::index`, which refuses another
+  version's cache. Fix: the helper clears the fixture cache first, or builds in a temp
+  dir. Workaround: `rm -rf tests/corpus/.reflex` (found 2026-11-09).
+- `git::tests::test_is_git_repo` fails on a machine where `is_git_repo("/tmp")` is true
+  (seen 2026-11-09 although `git -C /tmp rev-parse` says no repo); use a fresh temp dir.
+- A skipped update over MCP leaves `action_required: null` (seen 2026-11-09 with a
+  newer release's cache); the advice is only in `warnings`.
 - `estimate_is_within_band_on_synthetic_corpus` is `#[ignore]` (builds the 30 MB corpus):
   `cargo test --release --test query_early_termination -- --ignored`.
 
