@@ -444,8 +444,8 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
     fresh_copy(session["repo"], tree)
     cfg = runner.ARMS[arm]
     rfx_bin = rfx if cfg["mcp_command"] == "TARGET_RELEASE_RFX" else None
-    if rfx_bin:
-        subprocess.run([str(rfx_bin), "index", "--quiet"], cwd=tree, check=True,
+    if rfx_bin or cfg.get("cli_rfx"):
+        subprocess.run([str(rfx), "index", "--quiet"], cwd=tree, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     mcp_cfg = runner.make_mcp_config(
         rfx_bin, tmp, f"{arm}-{session['id']}-{trial}",
@@ -464,7 +464,8 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
         # is merged into the running turn, so the next one is sent only after the
         # previous answer's result event.
         proc = subprocess.Popen(cmd, cwd=tree, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                                stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                env=arm_env(cfg, rfx))
         for step in session["steps"]:
             proc.stdin.write(user_message(step["prompt"]))
             proc.stdin.flush()
@@ -500,7 +501,7 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
         rfx_bin, tmp, f"warm-{arm}",
         mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
     )
-    proc = subprocess.run(session_cmd(arm, cfg, mcp_cfg, model), cwd=tree, text=True,
+    proc = subprocess.run(session_cmd(arm, cfg, mcp_cfg, model), cwd=tree, text=True, env=arm_env(cfg, rfx),
                           input=user_message("Reply with the word OK and nothing else."),
                           capture_output=True, timeout=300)
     usage = {}
@@ -513,6 +514,15 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
             usage = e.get("usage") or {}
     return (f"warm-up {arm} exit={proc.returncode} cache write={usage.get('cache_creation_input_tokens')}"
             f" read={usage.get('cache_read_input_tokens')}")
+
+
+def arm_env(cfg: dict, rfx: Path) -> dict:
+    """The agent's environment. A CLI arm (S) gets the target rfx first on PATH, so
+    its Bash calls run the build under test, not an installed release."""
+    env = dict(os.environ)
+    if cfg.get("cli_rfx"):
+        env["PATH"] = f"{rfx.parent}{os.pathsep}{env.get('PATH', '')}"
+    return env
 
 
 def session_cmd(arm: str, cfg: dict, mcp_cfg, model: str) -> list[str]:
@@ -562,6 +572,12 @@ def run(args) -> None:
 # ---------------------------------------------------------------------------
 # score
 # ---------------------------------------------------------------------------
+
+
+# A Bash call that runs rfx (arm S) counts as a Reflex call; one that runs grep,
+# rg, find or ls counts on the grep side.
+RFX_CMD = re.compile(r"(^|[;&|(]\s*|\s)(\S*/)?rfx\s")
+GREP_CMD = re.compile(r"(^|[;&|(]\s*)(\S*/)?(grep|rg|egrep|find|ls)\s")
 
 
 def answer_of(text: str):
@@ -645,6 +661,11 @@ def score(args) -> None:
                 for c in e["message"].get("content", []):
                     if c.get("type") == "tool_use":
                         calls[c["name"]] += 1
+                        cmd = str((c.get("input") or {}).get("command", "")) if c["name"] == "Bash" else ""
+                        if RFX_CMD.search(cmd):
+                            calls["Bash:rfx"] += 1
+                        elif GREP_CMD.search(cmd):
+                            calls["Bash:grep"] += 1
         s = sessions[meta["task_id"]]
         tree = Path(meta["tree"])
         u = collections.Counter()
@@ -662,7 +683,8 @@ def score(args) -> None:
         rows.append({
             "arm": meta["arm"], "session": s["id"], "trial": meta["trial"],
             "complete": len(results) >= len(s["steps"]), "turns": sum(r.get("num_turns", 0) for r in results),
-            "tool_calls": sum(calls.values()), "reflex_calls": sum(v for k, v in calls.items() if "reflex" in k),
+            "tool_calls": sum(v for k, v in calls.items() if ":" not in k), "reflex_calls": sum(v for k, v in calls.items() if "reflex" in k) + calls["Bash:rfx"],
+            "grep_calls": calls["Grep"] + calls["Glob"] + calls["Bash:grep"],
             "toolsearch": calls["ToolSearch"], "raw": raw, "weighted": weighted, "cost": cost,
             "accuracy": statistics.mean(scores),
         })
@@ -679,11 +701,11 @@ def score(args) -> None:
     for r in rows:
         by[(r["arm"], r["session"])].append(r)
     print(f"{len(rows)} sessions ({sum(not r['complete'] for r in rows)} incomplete) -> {out_csv}\n")
-    print(f"{'arm':<8}{'sessions':>9}{'turns':>7}{'calls':>7}{'reflex':>7}{'raw tok':>10}{'weighted':>10}{'cost $':>8}{'acc':>6}")
+    print(f"{'arm':<8}{'sessions':>9}{'turns':>7}{'calls':>7}{'reflex':>7}{'grep':>6}{'raw tok':>10}{'weighted':>10}{'cost $':>8}{'acc':>6}")
     for arm in arms:
         rs = [r for r in rows if r["arm"] == arm]
         med = lambda k: statistics.median(r[k] for r in rs)  # noqa: E731
-        print(f"{arm:<8}{len(rs):>9}{med('turns'):>7.0f}{med('tool_calls'):>7.0f}{med('reflex_calls'):>7.0f}"
+        print(f"{arm:<8}{len(rs):>9}{med('turns'):>7.0f}{med('tool_calls'):>7.0f}{med('reflex_calls'):>7.0f}{med('grep_calls'):>6.0f}"
               f"{med('raw'):>10.0f}{med('weighted'):>10.0f}{med('cost'):>8.3f}{statistics.mean(r['accuracy'] for r in rs):>6.3f}")
     print("\nratio vs A (median over sessions of per-session medians):")
     for arm in arms[1:]:

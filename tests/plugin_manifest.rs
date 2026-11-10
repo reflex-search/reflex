@@ -91,3 +91,35 @@ fn skill_keeps_the_routing_rules() {
         assert!(skill.contains(needle), "lost: {needle}");
     }
 }
+
+/// The skill alone did not fire (0 of 12 searches used it, 2026-11-10), so a
+/// SessionStart hook puts the routing rules in context when `rfx` is on PATH.
+#[test]
+fn session_start_hook_routes_to_rfx() {
+    let dir = root().join("plugins/reflex/hooks");
+    let hooks = json(&dir.join("hooks.json"));
+    let command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("SessionStart command");
+    assert!(
+        command.contains("${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"),
+        "{command}"
+    );
+    let script = std::fs::read_to_string(dir.join("session-start.sh")).expect("script");
+    assert!(
+        script.contains("command -v rfx"),
+        "the hook must stay silent without rfx"
+    );
+    let text = std::fs::read_to_string(dir.join("routing.md")).expect("routing.md");
+    // Every session pays for this text: keep it short.
+    assert!(text.len() < 1200, "routing.md is {} bytes", text.len());
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "prefer `rfx` over Grep, Glob, ripgrep, or shell grep",
+        "To list where something occurs, use `rfx locations X`",
+        "use `rfx refs X`; it drops those lines exactly, so do not re-check",
+        "If `rfx` fails, retry it once; only fall back to Grep/Glob after the retry also fails.",
+    ] {
+        assert!(text.contains(needle), "lost: {needle}");
+    }
+}

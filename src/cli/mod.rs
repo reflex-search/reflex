@@ -125,14 +125,14 @@ pub enum Command {
         /// Search pattern (omit to launch interactive mode)
         pattern: Option<String>,
 
+        /// Only these files or directories, like grep's path arguments (`src/`, `lib/a.rs`)
+        #[arg(value_name = "PATH")]
+        scope: Vec<String>,
+
         /// Search pattern, as a named flag: for patterns that start with `-`
-        /// (`--pattern '-> Result<'`), so agents never have to reach for `--`
-        #[arg(
-            long = "pattern",
-            value_name = "PATTERN",
-            conflicts_with = "pattern",
-            allow_hyphen_values = true
-        )]
+        /// (`--pattern '-> Result<'`), so agents never have to reach for `--`.
+        /// Every positional argument is then a PATH.
+        #[arg(long = "pattern", value_name = "PATTERN", allow_hyphen_values = true)]
         pattern_flag: Option<String>,
 
         /// Search symbol definitions only (functions, classes, etc.)
@@ -1333,6 +1333,21 @@ impl Cli {
                 {
                     *file = rel.join(&*file);
                 }
+                // PATH arguments are relative to where the command ran.
+                if let Ok(rel) = cwd.strip_prefix(&root) {
+                    let scope = match command {
+                        Command::Query { scope, .. } => Some(scope),
+                        Command::Refs { filters, .. } | Command::Locations { filters, .. } => {
+                            Some(&mut filters.scope)
+                        }
+                        _ => None,
+                    };
+                    for p in scope.into_iter().flatten() {
+                        if std::path::Path::new(p.as_str()).is_relative() {
+                            *p = rel.join(&*p).to_string_lossy().into_owned();
+                        }
+                    }
+                }
                 std::env::set_current_dir(&root)?;
                 eprintln!(
                     "rfx: using the index at {} (paths and globs are relative to it)",
@@ -1385,6 +1400,7 @@ impl Cli {
             Some(Command::Query {
                 pattern,
                 pattern_flag,
+                scope,
                 symbols,
                 lang,
                 kind,
@@ -1416,7 +1432,9 @@ impl Cli {
                 dependencies,
             }) => {
                 // If no pattern provided, launch interactive mode (REF-68: require TTY)
-                match pattern.or(pattern_flag) {
+                let (pattern, scope) = tools::split_pattern(pattern, pattern_flag, scope);
+                let glob = tools::scope_globs(&scope, &glob)?;
+                match pattern {
                     None => {
                         use crossterm::tty::IsTty;
                         if !std::io::stdin().is_tty() {

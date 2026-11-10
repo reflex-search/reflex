@@ -65,3 +65,62 @@ is only on `feat/agent-edge-phase1` until it is merged).
      `detect-libc`: musl → `*-unknown-linux-musl-dynamic` (the static tarball); a glibc
      older than the build's → `*-musl-static`. The shell installer has the same table.
    - Not tested: the CI build itself and an npm install from a real release (needs a tag).
+
+## Phase 0: arm S (CLI + skill) vs Beager (MCP) vs A (Grep) — 2026-11-10
+
+Branch `feat/agent-edge-phase1` at `56ac4e8` (rfx 2.3.1 + branch), Claude Code 2.1.318,
+Sonnet 5.5 (`claude-sonnet-5-5`), `session_bench.py` investigate sessions (12 questions:
+8 find-every-occurrence, 2 where-defined, 2 how-many-files), 1 trial per arm and corpus.
+Results: `benches/efficacy/results-sessions/sonnet55-phase0-investigate/`.
+
+Arm S (`runner.py`): no MCP server, `--plugin-dir plugins/reflex`, the built `rfx` first
+on PATH, the tree indexed before the trial (as for the MCP arms). Slash commands stay on,
+so Claude Code's ~20 bundled skills are listed too (deny rules do not hide them).
+
+### The skill alone does not fire
+
+Smoke session (reflex corpus, skill only, no hook): the `reflex:reflex` skill was listed
+and `Skill` was allowed. The agent never invoked it: Grep for 12 of 12 questions,
+accuracy 1.000, $0.154 (`results-sessions/sonnet55-skill-smoke-nohook/`). A skill
+description does not pull a plain search away from a built-in tool.
+
+Fix: a SessionStart hook in the `reflex` plugin (`plugins/reflex/hooks/`) prints the
+routing rules (965 chars, later 1,037) when `rfx` is on PATH. Same session with the hook:
+`rfx` for 13 of 13 searches, Grep 0, accuracy 1.000, $0.146.
+
+### Results (cost = `total_cost_usd`; weighted = input + output + 0.1 cache read + 1.25 cache write)
+
+| Arm | Corpus | Turns | Reflex calls | Grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | reflex | 24 | 0 | 12 | 76,379 | 0.149 | 1.000 |
+| A | ripgrep | 24 | 0 | 12 | 80,734 | 0.161 | 1.000 |
+| A | tokio | 24 | 0 | 12 | 96,645 | 0.208 | 1.000 |
+| Beager | reflex | 24 | 12 | 0 | 84,687 | 0.160 | 1.000 |
+| Beager | ripgrep | 24 | 12 | 0 | 89,449 | 0.173 | 1.000 |
+| Beager | tokio | 24 | 12 | 0 | 105,769 | 0.228 | 1.000 |
+| S | reflex | 25 | 13 | 0 | 73,423 | 0.146 | 1.000 |
+| S | ripgrep | 25 | 13 | 0 | 72,657 | 0.149 | 1.000 |
+| S | tokio | 25 | 1 | 12 | 99,445 | 0.237 | 1.000 |
+
+Ratios vs A (median of sessions): Beager weighted 1.11×, cost 1.07×; S weighted 0.96×,
+cost 0.98×. Where S used `rfx` (reflex, ripgrep): weighted 0.90–0.96×, cost 0.93–0.98×,
+and 0.86–0.92× Beager's cost.
+
+Warm-up prefix (cache write + read): A 19,662 tokens, S 17,007, Beager 22,660.
+
+### Why S fell back to Grep on tokio
+
+The first call was `rfx locations spawn_named tokio/src/` → `error: unexpected argument
+'tokio/src/' found`. The agent said "My `rfx` call failed on an argument error, so I
+didn't retry it" and used Grep for the remaining 11 questions. The reflex smoke session
+made the same mistake (`... --preview src`) but retried without the path. Fix: `rfx
+query`, `rfx refs` and `rfx locations` take grep-style PATH arguments (2026-11-10).
+
+### Reading
+
+- On plain grep questions, S is at parity with Grep (0.96× weighted) and cheaper than
+  MCP (Beager 1.11×): its fixed text is a 1 KB hook, not ~7.8 KB of instructions and
+  schemas. This leans D2 toward CLI + skill + hook. Not a D5 clear win (≤0.85× cost):
+  investigate questions are grep's home ground.
+- Open: the tokio S session with PATH arguments; the `aware` sessions (code-only uses,
+  where `rfx refs` should win); 1 trial each, so ±5 % is noise.

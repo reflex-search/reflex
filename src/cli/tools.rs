@@ -15,13 +15,13 @@ pub struct ToolFilters {
     /// Text to find. Whole identifiers by default, like `grep -w`
     pub pattern: Option<String>,
 
-    /// The pattern as a named flag, for patterns that start with `-`
-    #[arg(
-        long = "pattern",
-        value_name = "PATTERN",
-        conflicts_with = "pattern",
-        allow_hyphen_values = true
-    )]
+    /// Only these files or directories, like grep's path arguments (`src/`, `lib/a.rs`)
+    #[arg(value_name = "PATH")]
+    pub scope: Vec<String>,
+
+    /// The pattern as a named flag, for patterns that start with `-`. Every
+    /// positional argument is then a PATH.
+    #[arg(long = "pattern", value_name = "PATTERN", allow_hyphen_values = true)]
     pub pattern_flag: Option<String>,
 
     /// Match substrings, not whole identifiers (like `grep -F`)
@@ -73,11 +73,14 @@ impl ToolFilters {
     /// The tool arguments: only the flags that were given, so the tool's defaults
     /// apply to the rest.
     fn arguments(&self) -> Result<Map<String, Value>> {
-        let pattern = self
-            .pattern
-            .clone()
-            .or_else(|| self.pattern_flag.clone())
+        let (pattern, scope) = split_pattern(
+            self.pattern.clone(),
+            self.pattern_flag.clone(),
+            self.scope.clone(),
+        );
+        let pattern = pattern
             .ok_or_else(|| anyhow::anyhow!("a pattern is required (or --pattern PATTERN)"))?;
+        let glob = scope_globs(&scope, &self.glob)?;
         let mut args = Map::new();
         args.insert("pattern".into(), json!(pattern));
         for (key, on) in [
@@ -97,14 +100,93 @@ impl ToolFilters {
         if let Some(file) = &self.file {
             args.insert("file".into(), json!(file));
         }
-        if !self.glob.is_empty() {
-            args.insert("glob".into(), json!(self.glob));
+        if !glob.is_empty() {
+            args.insert("glob".into(), json!(glob));
         }
         if !self.exclude.is_empty() {
             args.insert("exclude".into(), json!(self.exclude));
         }
         Ok(args)
     }
+}
+
+/// The pattern and the PATH arguments. With `--pattern`, the first positional
+/// argument is a PATH too (`rfx locations --pattern '-> T' src/`).
+pub(crate) fn split_pattern(
+    positional: Option<String>,
+    flag: Option<String>,
+    mut scope: Vec<String>,
+) -> (Option<String>, Vec<String>) {
+    match flag {
+        Some(flag) => {
+            if let Some(first) = positional {
+                scope.insert(0, first);
+            }
+            (Some(flag), scope)
+        }
+        None => (positional, scope),
+    }
+}
+
+/// PATH arguments as globs, the way grep reads them: a directory covers everything
+/// under it, a file only itself, `.` (or the index root) the whole index. With
+/// `--glob` too, a directory narrows each glob (`src/` + `*.rs` = `src/**/*.rs`).
+/// Paths are relative to the index root (the CLI rebases them from a subdirectory).
+pub(crate) fn scope_globs(scope: &[String], globs: &[String]) -> Result<Vec<String>> {
+    use std::path::{Component, Path};
+    if scope.is_empty() {
+        return Ok(globs.to_vec());
+    }
+    let root = std::env::current_dir()?;
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for raw in scope {
+        let path = Path::new(raw);
+        let rel = if path.is_absolute() {
+            path.strip_prefix(&root)
+                .map_err(|_| anyhow::anyhow!("{raw} is outside the index at {}", root.display()))?
+        } else {
+            path
+        };
+        let mut parts: Vec<String> = Vec::new();
+        for c in rel.components() {
+            match c {
+                Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+                Component::ParentDir if parts.pop().is_some() => {}
+                Component::ParentDir => {
+                    anyhow::bail!("{raw} is outside the index at {}", root.display())
+                }
+                _ => {}
+            }
+        }
+        if parts.is_empty() {
+            return Ok(globs.to_vec()); // the whole index
+        }
+        let rel = parts.join("/");
+        if root.join(&rel).is_dir() {
+            dirs.push(rel);
+        } else if root.join(&rel).is_file() || rel.contains(['*', '?', '[']) {
+            files.push(rel);
+        } else {
+            anyhow::bail!("{raw}: no such file or directory");
+        }
+    }
+    let mut out = files;
+    for dir in dirs {
+        if globs.is_empty() {
+            out.push(format!("{dir}/**"));
+        }
+        for g in globs {
+            if g.trim_start_matches('/').contains('/') {
+                anyhow::bail!(
+                    "--glob {g} contains a '/': it cannot be combined with the path {dir}; \
+                     put the directory in the glob instead"
+                );
+            }
+            out.push(format!("{dir}/**/{}", g.trim_start_matches('/')));
+        }
+    }
+    Ok(out)
 }
 
 /// Run one MCP tool for the CLI, with the CLI's automatic update.

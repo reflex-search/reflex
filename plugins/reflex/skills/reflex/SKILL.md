@@ -44,7 +44,7 @@ exactly, so do not re-check. It prints the definition, then `path:line:text` per
 | What imports a file | `rfx deps src/a.rs --reverse --json` (direct importers) |
 | Import graph | `rfx analyze --hotspots --json` (or `--circular`, `--unused`, `--islands`) |
 
-Filters (all search commands): `--lang rust`, `--glob 'src/**/*.rs'`,
+Filters (all search commands): a path argument as in grep (`rfx locations X src/`), `--lang rust`, `--glob 'src/**/*.rs'`,
 `--exclude 'tests/**'`, `--file <path substring>`. Quote globs. `rfx refs` and
 `rfx locations` take `--json` for the full answer.
 

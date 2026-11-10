@@ -256,3 +256,61 @@ fn deps_refuses_reverse_with_depth() {
         stderr(&out)
     );
 }
+
+/// Agents pass paths the way grep takes them (`rfx locations X src/`): seen twice in
+/// the first arm-S sessions (2026-11-10), where the error sent the agent back to Grep.
+#[test]
+fn path_arguments_scope_the_search_like_grep() {
+    let temp = indexed_fixture();
+    let root = temp.path();
+    let run = |dir: &Path, args: &[&str]| {
+        let out = rfx(dir, args);
+        assert!(out.status.success(), "rfx {args:?}: {}", stderr(&out));
+        stdout(&out)
+    };
+    // A directory, a file, `.` (the whole index), and --pattern with a path.
+    assert_eq!(
+        run(root, &["locations", "alpha", "src/"]),
+        "src/lib.rs:3,8,9\nsrc/util.rs:2,6\n"
+    );
+    assert_eq!(
+        run(root, &["locations", "alpha", "./src/util.rs"]),
+        "src/util.rs:2,6\n"
+    );
+    assert_eq!(run(root, &["locations", "alpha", "."]).lines().count(), 3);
+    assert_eq!(
+        run(root, &["locations", "--pattern", "alpha", "src"])
+            .lines()
+            .count(),
+        2
+    );
+    // A directory narrows a --glob that has no '/'.
+    assert_eq!(
+        run(root, &["locations", "alpha", "src", "--glob", "util.*"]),
+        "src/util.rs:2,6\n"
+    );
+    // rfx refs and rfx query take them too.
+    assert_eq!(
+        run(root, &["refs", "alpha", "src/util.rs", "--count"]).trim(),
+        "1"
+    );
+    assert_eq!(
+        json_out(root, &["query", "alpha", "src/lib.rs", "--count", "--json"])["count"],
+        3
+    );
+    // From a subdirectory, a path is relative to it.
+    let src = root.join("src");
+    assert_eq!(
+        run(&src, &["locations", "alpha", "util.rs"]),
+        "src/util.rs:2,6\n"
+    );
+    assert_eq!(run(&src, &["locations", "alpha", "."]).lines().count(), 2);
+    // A path that does not exist is an error, as in grep.
+    let out = rfx(root, &["locations", "alpha", "nope/"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("nope/: no such file or directory"),
+        "{}",
+        stderr(&out)
+    );
+}

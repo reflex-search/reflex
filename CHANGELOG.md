@@ -10,10 +10,11 @@
   upgrade the binary or run `rfx index`.
 - **Claude Code plugins.** The repository is a plugin marketplace
   (`.claude-plugin/marketplace.json`) with two plugins; install one:
-  - `reflex`: a skill that teaches the agent the `rfx` CLI through Bash, with the
-    routing rules of the MCP instructions. No MCP server; about 100 tokens per session
-    until the skill fires (the MCP server's instructions and schemas are ~7.8K chars
-    on every call).
+  - `reflex`: a skill that teaches the agent the `rfx` CLI through Bash, and a
+    SessionStart hook that adds the routing rules (965 chars) when `rfx` is on PATH.
+    No MCP server (its instructions and schemas are ~7.8K chars on every call). The
+    skill alone did not fire: Sonnet 5.5 used Grep for 12 of 12 searches; with the
+    hook, `rfx` for 13 of 13.
   - `reflex-mcp`: the `rfx mcp` server.
 
   Both need `rfx` on `PATH` (`npm install -g reflex-search`). `cargo release` bumps
@@ -27,6 +28,11 @@
 - **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
   instruction names (default `mcp__reflex__`). A plugin's tools are
   `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.
+- **Path arguments on `rfx query`, `rfx refs` and `rfx locations`**, as in grep:
+  `rfx locations X src/ lib/a.rs`. A directory covers everything under it, a file only
+  itself, `.` the whole index; from a subdirectory a path is relative to it. Agents
+  passed one (`rfx locations spawn_named tokio/src/`), got "unexpected argument", and
+  went back to Grep for the rest of the session.
 - **Linux musl binaries** (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
   static). `npm install -g reflex-search` and the shell installer now work on Alpine;
   they failed with "Platform ... is not supported". A glibc older than the build's

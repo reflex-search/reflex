@@ -133,6 +133,21 @@ ARMS = {
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + REFLEX_MCP_TOOLS,
         "append_system_prompt": None,
     },
+    "S": {
+        "description": "Skill route: no MCP server; the reflex skill (plugins/reflex) teaches the rfx CLI through Bash; the built rfx is first on PATH",
+        "mcp_command": None,
+        # The run puts the target rfx binary first on PATH and indexes the tree first.
+        "cli_rfx": True,
+        # Skills must stay on, so --disable-slash-commands is left out. Claude Code's
+        # bundled skills are then listed too (~20 names; deny rules do not hide them,
+        # checked 2026-11-10 on 2.1.318); the warm-up's cache write shows their size.
+        "skills": True,
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions",
+                        "--plugin-dir", str(REPO_ROOT / "plugins" / "reflex")],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + ["Skill"],
+        "append_system_prompt": None,
+    },
     "Beager_flat": {
         "description": "Arm Beager with list_locations as the flat [{path, line}] array (REFLEX_MCP_GROUPED=0), the shape before file grouping",
         "mcp_command": "TARGET_RELEASE_RFX",
@@ -483,10 +498,11 @@ def build_claude_cmd(
         # for mcp__reflex__* tools, which sent the control arm hunting for tools it
         # does not have (REF-190's confound). ripgrep/tokio have no CLAUDE.md.
         "--setting-sources", "",
-        # User skills still load under --setting-sources; their listing adds prompt
-        # text unrelated to the task. Disable them in every arm.
-        "--disable-slash-commands",
     ]
+    # User skills still load under --setting-sources; their listing adds prompt
+    # text unrelated to the task. Disable them in every arm but a skill arm (S).
+    if not arm_cfg.get("skills"):
+        cmd.append("--disable-slash-commands")
 
     # Arm-specific flags
     cmd.extend(arm_cfg["extra_flags"])
