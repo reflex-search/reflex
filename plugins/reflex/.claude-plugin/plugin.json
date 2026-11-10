@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "reflex",
+  "version": "2.3.1",
+  "description": "Search code with the Reflex rfx CLI instead of grep: whole-identifier matches, symbol definitions, import graph. Needs rfx on PATH (npm install -g reflex-search).",
+  "author": {
+    "name": "Reflex Contributors",
+    "url": "https://github.com/reflex-search/reflex"
+  },
+  "homepage": "https://github.com/reflex-search/reflex",
+  "repository": "https://github.com/reflex-search/reflex",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["code-search", "grep", "trigram", "references", "dependencies"],
+  "skills": "./skills/"
+}

@@ -12,7 +12,7 @@
 
 ---
 
-## 🎯 Agent edge plan (2026-11-09) — PLANNED, decisions D1–D7 made, nothing started
+## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1: 1.1, 1.2, 1.3, 1.6 done (branch `feat/agent-edge-phase1`)
 
 Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
 capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),

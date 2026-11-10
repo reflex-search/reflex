@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "reflex-mcp",
+  "version": "2.3.1",
+  "description": "The Reflex MCP server (rfx mcp) for local code search: search_code, list_locations, find_references, get_dependencies, analyze. Needs rfx on PATH (npm install -g reflex-search).",
+  "author": {
+    "name": "Reflex Contributors",
+    "url": "https://github.com/reflex-search/reflex"
+  },
+  "homepage": "https://github.com/reflex-search/reflex",
+  "repository": "https://github.com/reflex-search/reflex",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["code-search", "mcp", "grep", "trigram", "references"],
+  "mcpServers": {
+    "reflex": {
+      "command": "rfx",
+      "args": ["mcp"],
+      "alwaysLoad": true,
+      "env": {
+        "REFLEX_MCP_TOOL_PREFIX": "mcp__plugin_reflex-mcp_reflex__"
+      }
+    }
+  }
+}

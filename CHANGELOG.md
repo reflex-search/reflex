@@ -8,6 +8,19 @@
   older; rebuilt for reflex 2.3.1 at the first update`. When the index is newer than the
   binary (an `rfx` left behind on PATH), the line starts with `WARNING` and says to
   upgrade the binary or run `rfx index`.
+- **Claude Code plugins.** The repository is a plugin marketplace
+  (`.claude-plugin/marketplace.json`) with two plugins; install one:
+  - `reflex`: a skill that teaches the agent the `rfx` CLI through Bash, with the
+    routing rules of the MCP instructions. No MCP server; about 100 tokens per session
+    until the skill fires (the MCP server's instructions and schemas are ~7.8K chars
+    on every call).
+  - `reflex-mcp`: the `rfx mcp` server.
+
+  Both need `rfx` on `PATH` (`npm install -g reflex-search`). `cargo release` bumps
+  their versions with the crate.
+- **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
+  instruction names (default `mcp__reflex__`). A plugin's tools are
+  `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.
 
 ### Fixed
 

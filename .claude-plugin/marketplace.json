@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "reflex",
+  "owner": {
+    "name": "Reflex Contributors",
+    "url": "https://github.com/reflex-search/reflex"
+  },
+  "metadata": {
+    "description": "Reflex: local trigram code search for AI coding agents. Install one plugin: the CLI skill or the MCP server."
+  },
+  "plugins": [
+    {
+      "name": "reflex",
+      "source": "./plugins/reflex",
+      "description": "A skill that teaches the agent to search code with the rfx CLI (through Bash) instead of grep. No MCP server.",
+      "category": "development",
+      "keywords": ["code-search", "grep", "trigram", "references", "dependencies"]
+    },
+    {
+      "name": "reflex-mcp",
+      "source": "./plugins/reflex-mcp",
+      "description": "The Reflex MCP server (rfx mcp): search_code, list_locations, find_references, get_dependencies and analyze tools.",
+      "category": "development",
+      "keywords": ["code-search", "mcp", "grep", "trigram", "references"]
+    }
+  ]
+}

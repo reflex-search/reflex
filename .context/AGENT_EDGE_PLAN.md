@@ -164,16 +164,39 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
   `startup_index_line_names_the_writer_and_the_outcome`; checked on real caches. Was: The `rfx` on PATH here is 2.0.3; the repo is 2.3.1. Add a
   line to `rfx mcp` startup logs (stderr) with the binary version and the index's
   writer version, so a stale install is visible.
-- [ ] **1.3 Claude Code plugin + skill.** A plugin that holds:
-  - `skills/reflex/SKILL.md`: when to use `rfx` instead of grep, the call shapes, the
-    routing rules now in `MCP_INSTRUCTIONS` (keep the sentences that
-    `test_instructions_keep_the_routing_rules` pins);
-  - an optional MCP server entry (`rfx mcp`);
-  - install via the existing npm package `reflex-search` (`dist-workspace.toml`).
-  Check the current plugin manifest format against the Claude Code docs before writing it.
+- [x] **1.3 Claude Code plugin + skill.** Done 2026-11-09 (2.3.1, branch
+  `feat/agent-edge-phase1`). The repo root is a marketplace
+  (`.claude-plugin/marketplace.json`, name `reflex`) with two plugins, so arm S and the
+  MCP arm can be installed apart (D2):
+  - `plugins/reflex`: `skills/reflex/SKILL.md` only. The CLI call shapes, the matching
+    and coverage rules, and the MCP routing sentences (prefer-first, "not natural
+    language", retry-once fallback). `claude plugin details`: ~104 tokens always-on,
+    ~1.3k when it fires (the MCP server: ~7.8K chars of instructions + schemas per call).
+  - `plugins/reflex-mcp`: `mcpServers.reflex` = `rfx mcp`, with
+    `REFLEX_MCP_TOOL_PREFIX=mcp__plugin_reflex-mcp_reflex__`. Claude Code lists the
+    server as `plugin:reflex-mcp:reflex` (checked with `claude --plugin-dir … mcp list`),
+    so the default ToolSearch line (`select:mcp__reflex__…`) named tools that do not
+    exist. The server now rewrites the prefix (`with_tool_prefix`, `src/mcp.rs`).
+  - Both say to install `rfx` from npm `reflex-search`; no binary in the plugin.
+  - Versions: only in each `plugin.json` (not in the marketplace entries);
+    `release.toml` `pre-release-replacements` bumps them; `tests/plugin_manifest.rs`
+    checks them against `CARGO_PKG_VERSION`, the prefix, and the skill's routing sentences.
+  - `claude plugin validate` passes on all three manifests. Warning only: no icon.
+  - Code-only uses: the skill says the CLI does not split code from comments yet
+    (1.4 adds `rfx refs`, then the skill routes code-only questions to it).
 - [ ] **1.4 CLI JSON parity audit.** List every MCP answer shape and its CLI equivalent.
-  Fill the gaps, for example grouped `list_locations` output (`{path: [line, ...]}`) as
-  an `rfx query` flag, and `find_references` as `rfx refs <name>`.
+  Fill the gaps. Found doing 1.3 (2026-11-09, 2.3.1):
+  - no `find_references`: add `rfx refs <name>` (code-only, `--json` = the MCP shape);
+  - no grouped `list_locations` (`{path: [line, ...]}`): an `rfx query` flag
+    (`--locations`?). `rfx query X --json` is 2,624 bytes where `--paths` is 164;
+  - the default text output is 5,019 bytes for 15 matches (a box-drawing rule after
+    every match): a compact `path:line:text` mode would suit Bash agents;
+  - `rfx query X --count` prints `{"count":15,"timing_ms":10}` with no `status` /
+    `can_trust_results`; `rfx deps --json` and `rfx analyze --json` also lack them
+    (ground rule: every JSON-object answer carries them);
+  - `rfx` run from a subdirectory builds a second index there (`src/.reflex/`). Find
+    the enclosing index (or git root) like git does, before an agent `cd`s into `src/`;
+  Then update `plugins/reflex/skills/reflex/SKILL.md` (the code-only section).
 - [x] **1.6 An upgrade leaves `rfx mcp` stale until a manual `rfx index`.** Fixed
   2026-11-09 (branch `feat/agent-edge-phase1`): `auto_update::SelfHeal`
   (`Never` library / `OlderOnly` servers / `Any` CLI) and `is_older_release`

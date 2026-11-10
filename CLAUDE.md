@@ -166,6 +166,15 @@ When using Reflex as an MCP server (`rfx mcp`), the following tools are availabl
 Claude Code may register MCP tools as *deferred*: their schemas are not in context until loaded.
 If Reflex tools appear in a deferred-tools list, load them first with
 `ToolSearch("select:mcp__reflex__search_code,mcp__reflex__find_references")`.
+Installed from the `reflex-mcp` plugin, the tools are `mcp__plugin_reflex-mcp_reflex__<name>`;
+the plugin sets `REFLEX_MCP_TOOL_PREFIX` so that ToolSearch line names them.
+
+**Claude Code plugins** (`.claude-plugin/marketplace.json`, `plugins/`): `reflex` is a
+skill that teaches the `rfx` CLI through Bash (no server); `reflex-mcp` is the server.
+Versions live only in each `plugin.json`; `release.toml` bumps them and
+`tests/plugin_manifest.rs` checks them. When the routing sentences of `MCP_INSTRUCTIONS`
+change, change `plugins/reflex/skills/reflex/SKILL.md` too.
+
 The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`
 (never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. The
 server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a

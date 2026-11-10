@@ -38,9 +38,23 @@ rfx query "CacheManager" --symbols
 rfx query "TODO" --json --limit 20
 ```
 
-### 3. (Optional) Connect to an AI agent via MCP
+### 3. (Optional) Connect to an AI agent
 
-With Claude Code:
+**Claude Code plugin.** This repository is a plugin marketplace. Install one of its two
+plugins (both need `rfx` on `PATH`, step 1):
+
+```bash
+claude plugin marketplace add reflex-search/reflex
+claude plugin install reflex@reflex       # a skill: the agent runs rfx through Bash
+claude plugin install reflex-mcp@reflex   # or: the MCP server (rfx mcp)
+```
+
+In a session, `/plugin marketplace add reflex-search/reflex` and
+`/plugin install reflex@reflex` do the same. The skill adds about 100 tokens to a
+session until it fires; the MCP server adds its instructions and tool schemas to every
+call. We have not yet measured which route costs less per task.
+
+**MCP server by hand.** With Claude Code:
 
 ```bash
 # every project

@@ -267,6 +267,34 @@ const FRESHNESS_TEXT: &str = "The index updates itself before every call and is 
 /// must be told not to call them after edits (Sonnet 5 made 33 such calls before
 /// that sentence, 0 after); under `--no-update` they are how the index is refreshed.
 fn instructions(listing: &ToolListing) -> std::borrow::Cow<'static, str> {
+    with_tool_prefix(
+        instructions_for(listing),
+        std::env::var("REFLEX_MCP_TOOL_PREFIX").ok().as_deref(),
+    )
+}
+
+/// The prefix the ToolSearch line of [`MCP_INSTRUCTIONS`] gives the tool names: what
+/// Claude Code calls the tools of a server registered as `reflex`.
+const DEFAULT_TOOL_PREFIX: &str = "mcp__reflex__";
+
+/// Claude Code names a tool `mcp__<server>__<tool>`, and a plugin's server
+/// `mcp__plugin_<plugin>_<server>__<tool>`. The server cannot see its registered name,
+/// so a plugin passes the prefix in `REFLEX_MCP_TOOL_PREFIX`; with the default, the
+/// ToolSearch line would select tools that do not exist.
+fn with_tool_prefix(
+    text: std::borrow::Cow<'static, str>,
+    prefix: Option<&str>,
+) -> std::borrow::Cow<'static, str> {
+    match prefix.map(str::trim) {
+        Some(p) if !p.is_empty() && p != DEFAULT_TOOL_PREFIX => {
+            std::borrow::Cow::Owned(text.replace(DEFAULT_TOOL_PREFIX, p))
+        }
+        _ => text,
+    }
+}
+
+/// [`instructions`] before the tool prefix is applied.
+fn instructions_for(listing: &ToolListing) -> std::borrow::Cow<'static, str> {
     let freshness = if !listing.auto_update {
         "This server does not update the index (--no-update): after edits, call index_project before you search. can_trust_results: false means the index is stale."
     } else if listing.lists("index_project") || listing.lists("check_index_status") {
@@ -3787,6 +3815,23 @@ mod tests {
 
         let e = anyhow::anyhow!("Query too broad - would be expensive to execute");
         assert!(mcp_facing_message(&e, false).contains("\"force\": true"));
+    }
+
+    /// A plugin's server has another tool prefix; the ToolSearch line follows it.
+    #[test]
+    fn test_tool_prefix_renames_the_tool_search_line() {
+        let base = || std::borrow::Cow::Borrowed(MCP_INSTRUCTIONS);
+        assert_eq!(with_tool_prefix(base(), None), MCP_INSTRUCTIONS);
+        assert_eq!(with_tool_prefix(base(), Some("  ")), MCP_INSTRUCTIONS);
+        assert_eq!(
+            with_tool_prefix(base(), Some(DEFAULT_TOOL_PREFIX)),
+            MCP_INSTRUCTIONS
+        );
+        let text = with_tool_prefix(base(), Some("mcp__plugin_reflex-mcp_reflex__"));
+        assert!(text.contains(
+            "ToolSearch(\"select:mcp__plugin_reflex-mcp_reflex__search_code,mcp__plugin_reflex-mcp_reflex__find_references\")"
+        ));
+        assert!(!text.contains("select:mcp__reflex__"), "{text}");
     }
 
     /// The freshness paragraph names the index tools only when they are listed.
