@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Added
+
+- **`rfx mcp` and `rfx serve` say at startup which version wrote the index.** One stderr
+  line (Claude Code keeps it in its MCP logs), for example
+  `reflex-mcp index: root=/repo writer=2.2.0 (89acce5) binary=2.3.1 -> reflex 2.2.0 is
+  older; rebuilt for reflex 2.3.1 at the first update`. When the index is newer than the
+  binary (an `rfx` left behind on PATH), the line starts with `WARNING` and says to
+  upgrade the binary or run `rfx index`.
+
 ### Fixed
 
 - **`rfx mcp` and `rfx serve` no longer answer `stale` forever after an upgrade.** A

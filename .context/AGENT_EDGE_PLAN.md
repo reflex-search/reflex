@@ -156,7 +156,12 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
   not exist, so the `reflex` server fails to connect when you work on Reflex. Point it
   at `rfx` on PATH; document `cargo install --path . --locked` for dev builds in
   CONTRIBUTING.md (Development Setup, step 6).
-- [ ] **1.2 Version drift.** The `rfx` on PATH here is 2.0.3; the repo is 2.3.1. Add a
+- [x] **1.2 Version drift.** Done 2026-11-09 (branch `feat/agent-edge-phase1`):
+  `auto_update::startup_index_line`, printed on stderr by `rfx mcp` (after the existing
+  `reflex-mcp startup:` line, which already had `version=` and `build=`) and by
+  `rfx serve`. States: no index, unstamped, this version, another build of it, older
+  (rebuilt), newer (`WARNING`), `--no-update`. Unit test
+  `startup_index_line_names_the_writer_and_the_outcome`; checked on real caches. Was: The `rfx` on PATH here is 2.0.3; the repo is 2.3.1. Add a
   line to `rfx mcp` startup logs (stderr) with the binary version and the index's
   writer version, so a stale install is visible.
 - [ ] **1.3 Claude Code plugin + skill.** A plugin that holds:

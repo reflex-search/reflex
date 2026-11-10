@@ -3153,6 +3153,12 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
         "{}",
         startup_flags_line(columnar_enabled(), &listing, grouped_locations_enabled())
     );
+    // Which version wrote the index, and what this binary will do about it: an `rfx`
+    // older than the index shows up here, not only as `stale` answers.
+    eprintln!(
+        "{}",
+        crate::auto_update::startup_index_line("reflex-mcp", &CacheManager::new(root), update)
+    );
 
     for line in reader.lines() {
         let line = line?;

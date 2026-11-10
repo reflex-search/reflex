@@ -415,6 +415,90 @@ fn describe(e: &anyhow::Error) -> String {
     format!("automatic index update failed: {e}")
 }
 
+/// One stderr line for a server's startup (`rfx mcp`, `rfx serve`): which version
+/// wrote the workspace's index, and what this binary will do about it. An install
+/// older than the index (an `rfx` on PATH left behind after an upgrade elsewhere)
+/// is otherwise visible only as `stale` answers. `update` is `None` under
+/// `--no-update`. `prefix` names the server (`reflex-mcp`).
+pub fn startup_index_line(
+    prefix: &str,
+    cache: &CacheManager,
+    update: Option<UpdateOptions>,
+) -> String {
+    let owner = if cache.exists() {
+        Some(cache.cache_owner())
+    } else {
+        None
+    };
+    let root = cache.workspace_root();
+    index_line(
+        prefix,
+        &root.canonicalize().unwrap_or(root),
+        owner,
+        update,
+        env!("CARGO_PKG_VERSION"),
+        option_env!("REFLEX_GIT_SHA"),
+    )
+}
+
+/// [`startup_index_line`] from its inputs. `owner`: `None` = no index;
+/// `Some(None)` = an index with no writer stamp (written before 1.7.2).
+fn index_line(
+    prefix: &str,
+    root: &Path,
+    owner: Option<Option<(String, Option<String>)>>,
+    update: Option<UpdateOptions>,
+    this: &str,
+    this_sha: Option<&str>,
+) -> String {
+    let short = |s: &str| s[..s.len().min(7)].to_string();
+    let (writer, verdict) = match (&owner, update) {
+        (None, Some(_)) => ("none".to_string(), "built at the first call".to_string()),
+        (None, None) => (
+            "none".to_string(),
+            "automatic update is off; run `rfx index`".to_string(),
+        ),
+        (Some(None), _) => (
+            "unstamped".to_string(),
+            "written before 1.7.2; adopted".to_string(),
+        ),
+        (Some(Some((v, sha))), update) => {
+            let writer = match sha {
+                Some(s) => format!("{v} ({})", short(s)),
+                None => v.clone(),
+            };
+            let verdict = if v == this {
+                match (sha, this_sha) {
+                    (Some(a), Some(b)) if short(a) != short(b) => {
+                        "this version (another build); updated in place".to_string()
+                    }
+                    _ => "this version".to_string(),
+                }
+            } else if let Some(opts) = update
+                && opts.self_heal_version.allows(Some(v.as_str()))
+            {
+                format!("reflex {v} is older; rebuilt for reflex {this} at the first update")
+            } else if update.is_none() {
+                format!(
+                    "written by another version and automatic update is off; run `rfx index` \
+                     to rebuild it for reflex {this}"
+                )
+            } else {
+                format!(
+                    "WARNING reflex {v} is newer than this binary (reflex {this}): it is not \
+                     rebuilt, so answers stay stale after any edit. Upgrade this binary \
+                     (check `which rfx`), or run `rfx index` to rebuild it for reflex {this}"
+                )
+            };
+            (writer, verdict)
+        }
+    };
+    format!(
+        "{prefix} index: root={} writer={writer} binary={this} -> {verdict}",
+        root.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +523,48 @@ mod tests {
         assert!(!is_older_release("", "2.3.1"));
         // A suffix on an older core is still older.
         assert!(is_older_release("2.2.0-rc.1", "2.3.1"));
+    }
+
+    fn line(owner: Option<Option<(&str, Option<&str>)>>, update: Option<UpdateOptions>) -> String {
+        let owner = owner.map(|o| o.map(|(v, s)| (v.to_string(), s.map(str::to_string))));
+        index_line(
+            "reflex-mcp",
+            Path::new("/w"),
+            owner,
+            update,
+            "2.3.1",
+            Some("a6f5bad0000"),
+        )
+    }
+
+    #[test]
+    fn startup_index_line_names_the_writer_and_the_outcome() {
+        let server = Some(UpdateOptions::server());
+
+        let l = line(None, server);
+        assert_eq!(
+            l,
+            "reflex-mcp index: root=/w writer=none binary=2.3.1 -> built at the first call"
+        );
+        assert!(line(None, None).contains("run `rfx index`"));
+        assert!(line(Some(None), server).contains("writer=unstamped"));
+
+        let same = line(Some(Some(("2.3.1", Some("a6f5bad1111")))), server);
+        assert!(same.ends_with("-> this version"), "{same}");
+        let other_build = line(Some(Some(("2.3.1", Some("89acce5")))), server);
+        assert!(other_build.contains("another build"), "{other_build}");
+
+        let older = line(Some(Some(("2.2.0", Some("89acce5abc")))), server);
+        assert!(older.contains("writer=2.2.0 (89acce5)"), "{older}");
+        assert!(older.contains("rebuilt for reflex 2.3.1"), "{older}");
+        assert!(!older.contains("WARNING"), "{older}");
+
+        let newer = line(Some(Some(("99.0.0", None))), server);
+        assert!(newer.contains("WARNING reflex 99.0.0 is newer"), "{newer}");
+        assert!(newer.contains("`rfx index`"), "{newer}");
+
+        let off = line(Some(Some(("2.2.0", None))), None);
+        assert!(off.contains("automatic update is off"), "{off}");
     }
 
     #[test]
