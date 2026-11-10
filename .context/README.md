@@ -18,7 +18,8 @@ development sessions (human and AI). Committed to git.
 | `DEPENDENCY_RESOLUTION_RESEARCH.md` | Import-graph accuracy per language (2026-09-30): why Go/Java/C#/Kotlin/Python barely resolved, the package-key design, before/after numbers. |
 | `EFFICACY-2.0.3.md` | Efficacy A/B on 2.0.3 (Opus 5.5, Sonnet 5): method, all endpoints, per-task tables, limits. |
 | `GREP_PARITY_RESEARCH.md` | Where Reflex still costs more than Grep (fixed text, reply weight, rename style); grouped `list_locations` A/B (2026-10-25). |
-| `AGENT_EDGE_PLAN.md` | Plan and spec (2026-11-09) for code-only capabilities that make Reflex a clear win over Grep and LSP; checklist, decisions D1–D7, kill criterion. |
+| `AGENT_EDGE_PLAN.md` | Plan and spec (2026-11-09) for code-only capabilities that make Reflex a clear win over Grep and LSP; checklist, decisions D1–D8, kill criterion. |
+| `AGENT_EDGE_RESEARCH.md` | Measurements for the agent edge plan: the install smoke test (2026-11-10: npm wrapper cost, shell installer, npm 12, Alpine); the task 0.6 baselines go here. |
 
 ## Rules
 

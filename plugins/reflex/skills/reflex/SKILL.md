@@ -13,7 +13,10 @@ call `rfx` first.
 ## Setup
 
 - Check: `rfx --version`. If it is missing: `npm install -g reflex-search`
-  (or `cargo install reflex-search`).
+  (or `cargo install reflex-search`). The native binary is faster per call (the npm
+  `rfx` is a Node wrapper):
+  `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.sh | sh`
+  installs it into `~/.cargo/bin`.
 - Do not run `rfx index` first. Every command builds a missing index and updates a
   stale one before it answers. Notes go to stderr; stdout is only the answer.
 - In a subdirectory, `rfx` uses the index of the enclosing project. Paths and globs

@@ -18,6 +18,9 @@ Reflex is a local-first, full-text code search engine. Use it from the command l
 # Via NPM
 npm install -g reflex-search
 
+# Or the native binary (no Node wrapper: ~240 ms faster per call), into ~/.cargo/bin
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.sh | sh
+
 # Or via Cargo
 cargo install reflex-search
 ```
@@ -283,11 +286,27 @@ support. A GitHub Action is included. See [docs/features/PULSE.md](docs/features
 npm install -g reflex-search
 ```
 
+The npm `rfx` is a Node wrapper around the binary. It adds about 240 ms to each call
+(measured 2026-11-10). That is paid once per `rfx mcp` start, but on every call when an
+agent runs `rfx` through a shell (the `reflex` skill). npm 12 blocks the install
+script; `rfx` then downloads the binary at its first run.
+
+### Shell installer (native binary)
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.sh | sh
+```
+
+It installs `rfx` into `~/.cargo/bin`; put that on `PATH` (`source $HOME/.cargo/env`).
+Windows: `reflex-search-installer.ps1` from the same release.
+
 ### Cargo
 
 ```bash
 cargo install reflex-search
 ```
+
+Alpine and other musl systems: the release has glibc binaries only, so use Cargo.
 
 **Setup note:** run `rfx` commands from your project root directory. Add `.reflex/` to your `.gitignore` to exclude the search index from version control.
 

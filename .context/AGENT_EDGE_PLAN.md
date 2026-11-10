@@ -252,8 +252,20 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
   when the cache's writer is an OLDER release (an upgrade) and refuses only when it is
   NEWER (a downgrade, two binaries fighting). Until then, the warning names `rfx index`
   and `action_required` is set.
-- [ ] **1.5 Install smoke test.** In a clean container: install from npm, run the first
-  CLI query and the first MCP call. Record the time and every manual step.
+- [x] **1.5 Install smoke test.** Done 2026-11-10 (npm `reflex-search` 2.3.1):
+  `scripts/install-smoke.sh`, results in `AGENT_EDGE_RESEARCH.md`. On
+  `node:24-bookworm`: npm install 5.88 s, first CLI query (builds the index of 451
+  files) 1.08 s, first MCP call 1.02 s, no manual step; the plugins install from a
+  local marketplace in 2.08 s without a login. Found:
+  - the npm `rfx` is a Node wrapper: +~240 ms on every call (query 270–343 ms vs
+    26–59 ms native). The skill route pays it per Bash call. The shell installer
+    (`reflex-search-installer.sh`, 2.54 s) gives the native binary; the README and the
+    skill now name it;
+  - npm 12 blocks `postinstall`; the wrapper then downloads the binary at the first
+    run (1.83 s). Works, with a warning;
+  - Alpine (musl) fails: no musl target in `dist-workspace.toml`. **Open, needs a
+    decision**: add the musl targets (a CI change).
+  - Not tested: `claude plugin marketplace add reflex-search/reflex` (needs the merge).
 
 ---
 
