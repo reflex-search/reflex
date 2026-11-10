@@ -62,7 +62,20 @@ After this, any commit that includes `.rs` files will automatically run
 `cargo fmt --all` and re-stage the formatted files — the commit proceeds
 without any extra steps.
 
-6. **Generate documentation:**
+6. **Use your build as the MCP server (dogfooding):**
+
+The repo's `.mcp.json` starts `rfx mcp` from your `PATH`, so a Claude Code session
+in this repo searches it with Reflex. Install the checkout so that `rfx` is the
+version you are working on:
+
+```bash
+cargo install --path . --locked   # re-run after changes you want the agent to use
+rfx --version                     # must match the version in Cargo.toml
+```
+
+Restart the Claude Code session after an install; it starts `rfx mcp` once per session.
+
+7. **Generate documentation:**
 
 ```bash
 cargo doc --open

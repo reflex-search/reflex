@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-10-27 (Reflex 2.2.0 + main)
+**Last Updated:** 2026-11-09 (Reflex 2.3.1)
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md`.
 > Update this file as you work. Keep it to LIVE work: open tasks, current policy, open
@@ -9,6 +9,16 @@
 > **History:** the pre-2026-09 roadmap (MVP plan, per-module task lists, 2025 status
 > summaries, old benchmarks) was removed on 2026-09-28 because it described an
 > architecture that no longer exists. Read it with `git show fc8da6b:.context/TODO.md`.
+
+---
+
+## 🎯 Agent edge plan (2026-11-09) — PLANNED, decisions D1–D7 made, nothing started
+
+Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
+capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),
+measured on three headline workflows, with a kill criterion. Spec, decisions (D1–D7)
+and the checklist: `.context/AGENT_EDGE_PLAN.md`. It supersedes backlog §1 D (grep-parity
+trimming) and absorbs backlog §2.
 
 ---
 
