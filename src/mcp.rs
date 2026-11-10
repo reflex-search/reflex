@@ -708,25 +708,29 @@ fn finish_tool_result(data: Value, warnings: Vec<String>) -> Value {
             result
         }
         mut other => {
-            if !warnings.is_empty()
-                && let Some(obj) = other.as_object_mut()
-            {
-                // Merge, don't overwrite: a handler may have already attached its own
-                // warnings (for example, a bracket pattern rewritten to a regex).
-                let mut all = obj
-                    .get("warnings")
-                    .and_then(|w| w.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                all.extend(warnings);
-                obj.insert("warnings".to_string(), json!(all));
-            }
+            merge_warnings(&mut other, warnings);
             make_tool_result(other)
         }
+    }
+}
+
+/// Add `warnings` to a JSON-object answer's `warnings[]`. Merge, don't overwrite: a
+/// handler may have already attached its own (a bracket pattern rewritten to a regex).
+fn merge_warnings(data: &mut Value, warnings: Vec<String>) {
+    if !warnings.is_empty()
+        && let Some(obj) = data.as_object_mut()
+    {
+        let mut all = obj
+            .get("warnings")
+            .and_then(|w| w.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        all.extend(warnings);
+        obj.insert("warnings".to_string(), json!(all));
     }
 }
 
@@ -1584,11 +1588,39 @@ fn handle_call_tool(
     let name = params["name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
-
-    let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
-    let (arguments, warnings) = normalize_arguments(name, spec, params["arguments"].clone())?;
-
     let index_tool = listing.lists("index_project");
+    let (data, warnings) =
+        call_tool_inner(name, params["arguments"].clone(), root, update, index_tool)?;
+    Ok(finish_tool_result(data, warnings))
+}
+
+/// One tool call for the CLI (`rfx refs`, `rfx query --locations`): the tool's data
+/// exactly as `tools/call` returns it in `content[0].text`, with the warnings in
+/// `warnings[]`. A JSON-object answer only (the tools the CLI routes here). Error
+/// advice names `rfx index`.
+pub fn call_tool_data(
+    name: &str,
+    arguments: Value,
+    root: &Path,
+    update: Option<UpdateOptions>,
+) -> Result<Value> {
+    let (mut data, warnings) = call_tool_inner(name, arguments, root, update, false)?;
+    merge_warnings(&mut data, warnings);
+    Ok(data)
+}
+
+/// The body of `tools/call`: the tool's data and the warnings to attach to it.
+/// `index_tool`: `tools/list` shows `index_project` (else advice names `rfx index`).
+fn call_tool_inner(
+    name: &str,
+    raw_arguments: Value,
+    root: &Path,
+    update: Option<UpdateOptions>,
+    index_tool: bool,
+) -> Result<(Value, Vec<String>)> {
+    let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
+    let (arguments, warnings) = normalize_arguments(name, spec, raw_arguments)?;
+
     // Tools that read the index without the engine bring it up to date here.
     let mut warnings = warnings;
     if let Some(opts) = update
@@ -1617,7 +1649,7 @@ fn handle_call_tool(
     }
     warnings.extend(graph_warnings(handler, &arguments, root));
 
-    Ok(finish_tool_result(data, warnings))
+    Ok((data, warnings))
 }
 
 /// Point `action_required` (top level, or in the stale `warning`) at `rfx index`

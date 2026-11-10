@@ -184,19 +184,52 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
   - `claude plugin validate` passes on all three manifests. Warning only: no icon.
   - Code-only uses: the skill says the CLI does not split code from comments yet
     (1.4 adds `rfx refs`, then the skill routes code-only questions to it).
-- [ ] **1.4 CLI JSON parity audit.** List every MCP answer shape and its CLI equivalent.
-  Fill the gaps. Found doing 1.3 (2026-11-09, 2.3.1):
-  - no `find_references`: add `rfx refs <name>` (code-only, `--json` = the MCP shape);
-  - no grouped `list_locations` (`{path: [line, ...]}`): an `rfx query` flag
-    (`--locations`?). `rfx query X --json` is 2,624 bytes where `--paths` is 164;
-  - the default text output is 5,019 bytes for 15 matches (a box-drawing rule after
-    every match): a compact `path:line:text` mode would suit Bash agents;
-  - `rfx query X --count` prints `{"count":15,"timing_ms":10}` with no `status` /
-    `can_trust_results`; `rfx deps --json` and `rfx analyze --json` also lack them
-    (ground rule: every JSON-object answer carries them);
-  - `rfx` run from a subdirectory builds a second index there (`src/.reflex/`). Find
-    the enclosing index (or git root) like git does, before an agent `cd`s into `src/`;
-  Then update `plugins/reflex/skills/reflex/SKILL.md` (the code-only section).
+- [x] **1.4 CLI JSON parity audit.** Done 2026-11-09 (2.3.1, branch
+  `feat/agent-edge-phase1`). Added:
+  - `rfx refs <name>` = `find_references`, `rfx locations <pattern>` (alias `loc`) =
+    `list_locations`. Both run the MCP tool (`mcp::call_tool_data`, the body of
+    `tools/call` split out as `call_tool_inner`), so `--json` is the MCP answer value
+    for value (`tests/cli_tools.rs` compares them). Text form: `rfx refs` prints
+    `definition path:line kind name`, then `path:line:text`; `rfx locations` prints
+    `path:4,128,193` per file (`--preview`: `path:line:text`). On this repo,
+    `update_if_stale`: `rfx locations` 209 bytes, `rfx query` text 5,019, `--json` 2,624.
+  - `status` / `can_trust_results` on `rfx query --count --json` and on every
+    `rfx analyze --json` answer (incl. the empty-result ones), as the MCP answers.
+  - `rfx deps --reverse --depth N` (N ≠ 1) is refused, as `get_dependencies` refuses
+    the pair (the depth was ignored without a word).
+  - A read command (`query`, `refs`, `locations`, `stats`, `list-files`, `analyze`,
+    `deps`, `context`) run in a directory with no `.reflex/` uses the nearest parent
+    index (`.reflex/meta.db`), never past a `.git` (`cli::enclosing_index_root`);
+    stderr says so; a relative `deps` path is rebased. `index`, `watch` and the servers
+    keep working where they are started.
+  - The skill routes "where" to `rfx locations` and code-only to `rfx refs` (the MCP
+    routing sentences, pinned in `tests/plugin_manifest.rs`).
+
+  Parity table (MCP tool → CLI; "same" = identical JSON):
+
+  | MCP | CLI | JSON |
+  | --- | --- | --- |
+  | `search_code` list | `rfx query X --json` | differs: CLI `results[]` grouped by file; MCP columnar `{columns, rows}` |
+  | `search_code` `mode:"count"` | `rfx query X --count --json` | same fields + `timing_ms` |
+  | `search_code` `paths:true` | `rfx query X --paths --json` | differs: CLI a bare array, no `status`; MCP `{status, can_trust_results, paths, total_files}` |
+  | `search_code` `symbols` / `regex` / `kind` | `--symbols` / `--regex` / `--kind` | as list |
+  | `list_locations` | `rfx locations X --json` | same |
+  | `find_references` | `rfx refs X --json` | same |
+  | `get_dependencies` | `rfx deps F --json` | differs: CLI `{import_type, line, path (raw import), symbols}`; MCP `{line, path (resolved file)}` |
+  | `get_dependencies` `reverse` | `rfx deps F --reverse --json` | same |
+  | `get_dependencies` `depth` | `rfx deps F --depth N --json` | not compared |
+  | `analyze` hotspots / circular / unused / islands | `rfx analyze --<kind> --json` | same (CLI islands adds `filter`) |
+  | `analyze` summary | `rfx analyze --json` | differs: CLI has more fields (`islands` object, `vendored_files`, `warnings`) |
+  | `search_ast` | `rfx query P --ast --json` | not compared |
+  | `gather_context` | `rfx context` | prose |
+  | `index_project` | `rfx index` | n/a |
+  | `check_index_status` | none (`rfx index status` is the symbol pass) | gap |
+
+  Left open (changing them breaks a public CLI JSON shape; decide before changing):
+  the `query --json` and `--paths --json` shapes, the forward `deps` shape, a CLI
+  `check_index_status`. Also: a subdirectory search covers the whole index (rg would
+  search the subtree only); `list_locations` gives no zero-result `hint`
+  (`search_code` does).
 - [x] **1.6 An upgrade leaves `rfx mcp` stale until a manual `rfx index`.** Fixed
   2026-11-09 (branch `feat/agent-edge-phase1`): `auto_update::SelfHeal`
   (`Never` library / `OlderOnly` servers / `Any` CLI) and `is_older_release`

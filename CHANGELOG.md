@@ -18,9 +18,28 @@
 
   Both need `rfx` on `PATH` (`npm install -g reflex-search`). `cargo release` bumps
   their versions with the crate.
+- **`rfx refs <name>` and `rfx locations <pattern>`** (alias `rfx loc`): the MCP tools
+  `find_references` and `list_locations` on the CLI, for agents that search through a
+  shell. `rfx refs` prints the definition and every use in code, without the lines
+  where the name is only in a comment or a string. `rfx locations` prints every
+  matching line, grouped by file (`src/a.rs:4,128,193`; `--preview` adds the text).
+  `--json` prints the MCP answer exactly.
 - **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
   instruction names (default `mcp__reflex__`). A plugin's tools are
   `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.
+
+### Changed
+
+- **`rfx` in a subdirectory uses the project's index.** A search command (`query`,
+  `refs`, `locations`, `stats`, `list-files`, `analyze`, `deps`, `context`) run in a
+  directory with no `.reflex/` answers from the nearest parent directory's index,
+  without leaving the git repository, and says so on stderr. It used to build a
+  second index in the subdirectory. Paths and globs stay relative to the index root;
+  a relative `rfx deps` path is rebased.
+- **`rfx query --count --json` and `rfx analyze --json` carry `status` and
+  `can_trust_results`**, like every other JSON answer.
+- **`rfx deps --reverse --depth N` is an error.** `--reverse` lists direct importers
+  only; the depth was ignored without a word.
 
 ### Fixed
 

@@ -119,6 +119,12 @@ rfx watch                        # Auto-reindex on file changes
 # Full-text search (finds all occurrences)
 rfx query "extract_symbols"
 
+# Every matching line, grouped by file (the MCP list_locations): src/a.rs:4,128,193
+rfx locations "extract_symbols"            # --preview adds the line text
+
+# Definition + every use in code, not in comments or strings (the MCP find_references)
+rfx refs "extract_symbols"                 # --count, --json
+
 # Symbol definitions only (--symbols finds DEFINITIONS, not usages)
 rfx query "extract_symbols" --symbols
 
@@ -172,7 +178,9 @@ the plugin sets `REFLEX_MCP_TOOL_PREFIX` so that ToolSearch line names them.
 **Claude Code plugins** (`.claude-plugin/marketplace.json`, `plugins/`): `reflex` is a
 skill that teaches the `rfx` CLI through Bash (no server); `reflex-mcp` is the server.
 Versions live only in each `plugin.json`; `release.toml` bumps them and
-`tests/plugin_manifest.rs` checks them. When the routing sentences of `MCP_INSTRUCTIONS`
+`tests/plugin_manifest.rs` checks them. `rfx refs` / `rfx locations` run the MCP tools
+(`mcp::call_tool_data`), so their `--json` is the MCP answer (`tests/cli_tools.rs`).
+When the routing sentences of `MCP_INSTRUCTIONS`
 change, change `plugins/reflex/skills/reflex/SKILL.md` too.
 
 The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`

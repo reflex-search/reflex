@@ -14,6 +14,7 @@ mod pulse;
 mod query;
 mod serve;
 mod snapshot;
+mod tools;
 mod watch;
 
 pub use self::query::truncate_preview;
@@ -340,6 +341,62 @@ pub enum Command {
         /// Currently only available for Rust files
         #[arg(long)]
         dependencies: bool,
+    },
+
+    /// Find a name's definition and every use in code (the MCP `find_references`)
+    ///
+    /// Lines where the name is only in a comment or a string are left out by a
+    /// whole-file scan, so no re-check is needed. Code files only (no docs, no text).
+    /// Prints `definition path:line kind name`, then `path:line:text` per use;
+    /// `--json` prints the MCP answer.
+    ///
+    /// Examples:
+    ///   rfx refs update_if_stale
+    ///   rfx refs Config --lang rust --count
+    ///   rfx refs parse --glob 'src/**' --json
+    Refs {
+        #[command(flatten)]
+        filters: tools::ToolFilters,
+
+        /// Symbol kind of the definition (function, struct, class, …)
+        #[arg(short, long)]
+        kind: Option<String>,
+
+        /// Keep the lines where the name is only in a comment or a string
+        #[arg(long)]
+        include_strings: bool,
+
+        /// Print only the number of uses in code
+        #[arg(short, long)]
+        count: bool,
+
+        /// Maximum number of uses (default 200)
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
+        /// Skip the first N uses
+        #[arg(short, long)]
+        offset: Option<usize>,
+    },
+
+    /// List every matching line, by file (the MCP `list_locations`)
+    ///
+    /// The cheapest answer to "where does X occur": `path:4,128,193` per file, or
+    /// `path:line:text` per line with --preview. No limit. Same matching as
+    /// `rfx query`; docs and config files included. `--json` prints the MCP answer
+    /// (`{path: [line, ...]}`).
+    ///
+    /// Examples:
+    ///   rfx locations update_if_stale
+    ///   rfx locations TODO --preview --glob '*.rs'
+    #[command(visible_alias = "loc")]
+    Locations {
+        #[command(flatten)]
+        filters: tools::ToolFilters,
+
+        /// Add each matching line (trimmed to 120 characters)
+        #[arg(short, long)]
+        preview: bool,
     },
 
     /// Start a local HTTP API server
@@ -1081,6 +1138,43 @@ pub(crate) fn engine(cache: CacheManager, no_update: bool) -> crate::query::Quer
     }
 }
 
+/// Commands that answer from an index found in a parent directory when the current
+/// one has none ([`enclosing_index_root`]). Not `index`, `watch` or the servers: they
+/// work on the directory they are given.
+fn searches_enclosing_index(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Query { .. }
+            | Command::Refs { .. }
+            | Command::Locations { .. }
+            | Command::Stats { .. }
+            | Command::ListFiles { .. }
+            | Command::Analyze { .. }
+            | Command::Deps { .. }
+            | Command::Context { .. }
+    )
+}
+
+/// The nearest parent of `dir` whose `.reflex/` holds an index (`meta.db`), when `dir`
+/// has no `.reflex/` of its own. The walk stops at the first directory with a `.git`
+/// (the repository root), so it never leaves the repository; `dir` itself being a
+/// repository root ends it at once. `~/.reflex/` (user settings, no `meta.db`) is no
+/// index.
+pub(crate) fn enclosing_index_root(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    if dir.join(".reflex").exists() || dir.join(".git").exists() {
+        return None;
+    }
+    for parent in dir.ancestors().skip(1) {
+        if parent.join(".reflex").join(crate::cache::META_DB).is_file() {
+            return Some(parent.to_path_buf());
+        }
+        if parent.join(".git").exists() {
+            return None;
+        }
+    }
+    None
+}
+
 /// Commands that read the index without the query engine's own update.
 fn reads_index_first(command: &Command) -> bool {
     match command {
@@ -1215,7 +1309,7 @@ fn try_background_compact(cache: &CacheManager, command: &Command) {
 
 impl Cli {
     /// Execute the CLI command
-    pub fn execute(self) -> Result<()> {
+    pub fn execute(mut self) -> Result<()> {
         // Setup logging based on verbosity
         let log_level = match self.verbose {
             0 => "warn",  // Default: only warnings and errors
@@ -1225,6 +1319,27 @@ impl Cli {
         };
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
             .init();
+
+        // An agent that `cd`s into `src/` must not build a second index there: the
+        // read commands answer from the index of the enclosing directory.
+        if let Some(command) = self.command.as_mut()
+            && searches_enclosing_index(command)
+        {
+            let cwd = std::env::current_dir()?;
+            if let Some(root) = enclosing_index_root(&cwd) {
+                if let Command::Deps { file, .. } = command
+                    && file.is_relative()
+                    && let Ok(rel) = cwd.strip_prefix(&root)
+                {
+                    *file = rel.join(&*file);
+                }
+                std::env::set_current_dir(&root)?;
+                eprintln!(
+                    "rfx: using the index at {} (paths and globs are relative to it)",
+                    root.display()
+                );
+            }
+        }
 
         // Try background compaction (non-blocking) before command execution
         if let Some(ref command) = self.command {
@@ -1345,6 +1460,25 @@ impl Cli {
                         no_update,
                     ),
                 }
+            }
+            Some(Command::Refs {
+                filters,
+                kind,
+                include_strings,
+                count,
+                limit,
+                offset,
+            }) => tools::handle_refs(
+                filters,
+                kind,
+                include_strings,
+                count,
+                limit,
+                offset,
+                no_update,
+            ),
+            Some(Command::Locations { filters, preview }) => {
+                tools::handle_locations(filters, preview, no_update)
             }
             Some(Command::Serve { port, host }) => serve::handle_serve(port, host, no_update),
             Some(Command::Stats { json, pretty }) => misc::handle_stats(json, pretty),
@@ -1543,5 +1677,35 @@ impl Cli {
                 LlmSubcommand::Status => llm::handle_llm_status(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod enclosing_index_tests {
+    use super::enclosing_index_root;
+
+    #[test]
+    fn enclosing_index_is_found_up_to_the_repository_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let sub = repo.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        // No index yet: nothing to use, the caller builds where it stands.
+        assert_eq!(enclosing_index_root(&sub), None);
+        std::fs::create_dir_all(repo.join(".reflex")).unwrap();
+        // A `.reflex/` without meta.db (like ~/.reflex/) is no index.
+        assert_eq!(enclosing_index_root(&sub), None);
+        std::fs::write(repo.join(".reflex/meta.db"), b"").unwrap();
+        assert_eq!(enclosing_index_root(&sub), Some(repo.clone()));
+        // The root itself, and a directory with its own `.reflex/`, use their own.
+        assert_eq!(enclosing_index_root(&repo), None);
+        std::fs::create_dir_all(sub.join(".reflex")).unwrap();
+        assert_eq!(enclosing_index_root(&sub), None);
+        // Never past a repository root: an index above a nested repo is not used.
+        let nested = repo.join("vendor/other");
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        std::fs::create_dir_all(nested.join("lib")).unwrap();
+        assert_eq!(enclosing_index_root(&nested.join("lib")), None);
     }
 }

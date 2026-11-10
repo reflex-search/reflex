@@ -76,11 +76,17 @@ fn skill_keeps_the_routing_rules() {
     let skill = std::fs::read_to_string(root().join("plugins/reflex/skills/reflex/SKILL.md"))
         .expect("SKILL.md");
     assert!(skill.starts_with("---\nname: reflex\ndescription: "));
+    // A sentence may wrap: compare with the whitespace collapsed.
+    let skill = skill.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
         "prefer `rfx` over Grep, Glob, ripgrep, or shell grep",
         "not natural language",
         "If `rfx` fails, retry it once; only fall back to Grep/Glob after the retry also fails.",
         "npm install -g reflex-search",
+        // The MCP routing sentences, with the CLI commands (`list_locations`,
+        // `find_references`): measured to matter for adoption and cost.
+        "To list where something occurs, use `rfx locations X`",
+        "use `rfx refs X`; it drops those lines exactly, so do not re-check",
     ] {
         assert!(skill.contains(needle), "lost: {needle}");
     }

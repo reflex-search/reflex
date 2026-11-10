@@ -184,6 +184,12 @@ Reflex also works as a standalone CLI for humans and shell scripts.
 # Full-text search (finds every occurrence)
 rfx query "extract_symbols"
 
+# Every matching line, grouped by file (the MCP list_locations): src/a.rs:4,128,193
+rfx locations "extract_symbols"            # --preview adds the line text
+
+# Definition + every use in code, not in comments or strings (the MCP find_references)
+rfx refs "extract_symbols"                 # --count, --json
+
 # Symbol definitions only (faster, uses tree-sitter)
 rfx query "extract_symbols" --symbols
 
