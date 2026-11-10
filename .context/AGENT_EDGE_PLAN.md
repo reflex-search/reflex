@@ -263,8 +263,10 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
     skill now name it;
   - npm 12 blocks `postinstall`; the wrapper then downloads the binary at the first
     run (1.83 s). Works, with a warning;
-  - Alpine (musl) fails: no musl target in `dist-workspace.toml`. **Open, needs a
-    decision**: add the musl targets (a CI change).
+  - Alpine (musl) failed: no musl target in `dist-workspace.toml`. **Done
+    (2026-11-10)**: `x86_64-` and `aarch64-unknown-linux-musl` added. A local static
+    build runs in `node:24-alpine`; the npm package maps musl to it. The first release
+    proves the CI build.
   - Not tested: `claude plugin marketplace add reflex-search/reflex` (needs the merge).
 
 ---

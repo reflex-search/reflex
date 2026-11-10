@@ -12,7 +12,7 @@
 
 ---
 
-## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6); open from 1.5: musl targets for Alpine (branch `feat/agent-edge-phase1`)
+## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); Phase 0 runs next: arm S vs Beager vs A (branch `feat/agent-edge-phase1`)
 
 Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
 capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),

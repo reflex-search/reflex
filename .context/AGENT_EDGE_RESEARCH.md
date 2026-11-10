@@ -53,3 +53,15 @@ is only on `feat/agent-edge-phase1` until it is merged).
    reflex-search` is the only route there. Fix: add `x86_64-unknown-linux-musl` and
    `aarch64-unknown-linux-musl` to the dist targets (needs a CI run to prove the C
    dependencies — tree-sitter grammars, bundled SQLite, zstd — build on musl).
+
+   **Fixed (2026-11-10, 2.3.1 + branch):** both musl targets are in `dist-workspace.toml`.
+   - `dist plan`: native runners (`ubuntu-22.04`, `ubuntu-22.04-arm`) with `musl-tools`.
+   - Local build (`rust:1-bookworm` + `musl-tools`, rustc 1.99.1): 4 min 17 s, a
+     `static-pie` binary of 41.8 MB.
+   - In `node:24-alpine` (Alpine 3.24) it ran `rfx query --count` (index built, 800 ms),
+     `rfx refs --count`, `rfx locations` and an MCP `find_references` call. Tree-sitter,
+     SQLite and zstd all work.
+   - The generated npm package (`dist build --artifacts=global`) reads the libc with
+     `detect-libc`: musl → `*-unknown-linux-musl-dynamic` (the static tarball); a glibc
+     older than the build's → `*-musl-static`. The shell installer has the same table.
+   - Not tested: the CI build itself and an npm install from a real release (needs a tag).

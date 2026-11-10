@@ -306,7 +306,8 @@ Windows: `reflex-search-installer.ps1` from the same release.
 cargo install reflex-search
 ```
 
-Alpine and other musl systems: the release has glibc binaries only, so use Cargo.
+Alpine and other musl systems: from the next release, npm and the shell installer pick
+the static musl binary. Until then, use Cargo.
 
 **Setup note:** run `rfx` commands from your project root directory. Add `.reflex/` to your `.gitignore` to exclude the search index from version control.
 

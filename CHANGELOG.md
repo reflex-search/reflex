@@ -27,6 +27,10 @@
 - **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
   instruction names (default `mcp__reflex__`). A plugin's tools are
   `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.
+- **Linux musl binaries** (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
+  static). `npm install -g reflex-search` and the shell installer now work on Alpine;
+  they failed with "Platform ... is not supported". A glibc older than the build's
+  also gets the static musl binary.
 
 ### Changed
 
