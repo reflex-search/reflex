@@ -43,19 +43,23 @@ rfx query "TODO" --json --limit 20
 
 ### 3. (Optional) Connect to an AI agent
 
-**Claude Code plugin.** This repository is a plugin marketplace. Install one of its two
-plugins (both need `rfx` on `PATH`, step 1):
+**Claude Code plugin (recommended).** This repository is a plugin marketplace. Install
+the `reflex` plugin (it needs `rfx` on `PATH`, step 1):
 
 ```bash
 claude plugin marketplace add reflex-search/reflex
-claude plugin install reflex@reflex       # a skill: the agent runs rfx through Bash
-claude plugin install reflex-mcp@reflex   # or: the MCP server (rfx mcp)
+claude plugin install reflex@reflex
 ```
 
 In a session, `/plugin marketplace add reflex-search/reflex` and
-`/plugin install reflex@reflex` do the same. The skill adds about 100 tokens to a
-session until it fires; the MCP server adds its instructions and tool schemas to every
-call. We have not yet measured which route costs less per task.
+`/plugin install reflex@reflex` do the same. The plugin has no server: the agent runs
+`rfx` through Bash. A SessionStart hook adds about 1 KB of routing rules to the session,
+and a skill holds the full command list. It costs less than the MCP server, which adds
+about 7.8 KB of instructions and tool schemas to every call (see
+[Measured efficiency](#measured-efficiency-ab-vs-built-in-ai-search)).
+
+`claude plugin install reflex-mcp@reflex` installs the MCP server (`rfx mcp`) instead.
+Use it when your agent cannot run shell commands.
 
 **MCP server by hand.** With Claude Code:
 
@@ -109,7 +113,19 @@ schemas, so the first Reflex call costs an extra ToolSearch turn; Sonnet 5 also 
 control (1.04–1.07×); trials that used it cost 1.55–1.68×. Columnar results already save
 about 20% of bytes per call, which the extra turns outweigh.
 
-**Honest reading.** Reflex does not save tokens over built-in search in these agent runs.
+**The CLI route (2.3.1 + the `reflex` plugin, 2026-11-10, Sonnet 5.5, 1 trial per task
+and corpus, 12-question sessions).** Built-in Grep/Glob = 1.00:
+
+| Sessions | `reflex` plugin (CLI) | MCP server (`alwaysLoad`) | Accuracy |
+|---|---|---|---|
+| 12 find-every-occurrence / where-defined / how-many-files | 0.96× weighted tokens, 0.98× cost | 1.11×, 1.07× | 1.000 in every arm |
+| 12 every use in code, not in comments or strings | **0.82× weighted tokens, 0.80× cost** | 1.04×, 0.95× | 1.000 in every arm |
+
+The CLI route costs less than MCP on every session measured: its fixed text is a 1 KB
+hook, not 7.8 KB of schemas. Method and per-session numbers:
+`.context/AGENT_EDGE_RESEARCH.md`.
+
+**Honest reading (2.0.3, MCP).** Reflex does not save tokens over built-in search in these agent runs.
 Its value is capability: symbol-aware search, dependency analysis, `find_references` in one
 call, exact counts without loading content, and more complete answers from weaker models on
 large result sets. Full method, per-task tables and limits: `.context/EFFICACY-2.0.3.md`.

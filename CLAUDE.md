@@ -178,7 +178,9 @@ the plugin sets `REFLEX_MCP_TOOL_PREFIX` so that ToolSearch line names them.
 **Claude Code plugins** (`.claude-plugin/marketplace.json`, `plugins/`): `reflex` is a
 skill that teaches the `rfx` CLI through Bash (no server) plus a SessionStart hook
 (`plugins/reflex/hooks/routing.md`) that puts the routing rules in context: the skill
-alone never fired (0 of 12 searches, 2026-11-10); `reflex-mcp` is the server.
+alone never fired (0 of 12 searches, 2026-11-10); `reflex-mcp` is the server. The
+`reflex` plugin is the primary route for Claude Code (D2, 2026-11-10: 0.80× Grep's cost
+on code-only questions, MCP 0.95×).
 Versions live only in each `plugin.json`; `release.toml` bumps them and
 `tests/plugin_manifest.rs` checks them. `rfx refs` / `rfx locations` run the MCP tools
 (`mcp::call_tool_data`), so their `--json` is the MCP answer (`tests/cli_tools.rs`).

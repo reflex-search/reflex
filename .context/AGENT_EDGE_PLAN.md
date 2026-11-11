@@ -49,6 +49,11 @@ them". Each item's **Decided** line is binding; the options are kept for context
 - [x] **D2 — Primary delivery** — **Decided 2026-11-09: the measurement decides.** After
   task 0.6, compare arm `S` (CLI + skill) with `Beager`; the cheaper arm at equal accuracy
   becomes the primary route. Record the result here. Until then, build both (Phase 1).
+  **Result (2026-11-10): CLI + skill + SessionStart hook (the `reflex` plugin) is the
+  primary route for Claude Code;** `reflex-mcp` stays for clients without a shell. Arm S
+  cost 0.68–0.95× Beager's in all 7 sessions measured, accuracy 1.000 in both (aware:
+  S 0.80× Grep's cost, Beager 0.95×; investigate: S 0.98×, Beager 1.07×). The skill alone
+  never fired; the hook is required. Numbers: `.context/AGENT_EDGE_RESEARCH.md`.
 - [x] **D3 — Pulse** — **Decided 2026-11-09: freeze in this repo.** No new milestones;
   its "Left" items move under a "Frozen" heading in `TODO.md`.
 - [x] **D4 — Rename** — **Decided 2026-11-09: dry-run diff only.** `rfx rename` never

@@ -12,7 +12,7 @@
 
 ---
 
-## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); Phase 0: S (CLI+skill+hook) 0.80× Grep's cost on code-only, Beager 0.95×; D2 pending (branch `feat/agent-edge-phase1`)
+## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); D2 decided: the `reflex` plugin (CLI + skill + hook) is primary; arm L (LSP) next (branch `feat/agent-edge-phase1`)
 
 Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
 capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),
@@ -21,10 +21,8 @@ and the checklist: `.context/AGENT_EDGE_PLAN.md`. It supersedes backlog §1 D (g
 trimming) and absorbs backlog §2.
 
 Open follow-ups (2026-11-10):
-- [ ] D2 (MCP vs CLI + skill): the data favours CLI + skill + hook (aware: S 0.80×
-  Grep's cost, Beager 0.95×; investigate: S at parity, Beager 1.07×). Decide with the
-  user. Still unmeasured: the LSP arm (L), Opus, more than 1 trial.
-  Results: `.context/AGENT_EDGE_RESEARCH.md`.
+- [ ] Arm L (LSP) for D5: in progress (2026-11-10). Still unmeasured after it: Opus,
+  more than 1 trial. Results: `.context/AGENT_EDGE_RESEARCH.md`.
 
 ---
 
@@ -108,6 +106,10 @@ failed Zola build still exits 0.
 ---
 
 ## 📐 Current policy (decisions still in force)
+
+From the agent edge plan (2026-11-10): **the `reflex` plugin (CLI + skill + SessionStart
+hook) is the primary route for Claude Code** (D2); `reflex-mcp` is for clients without a
+shell. Docs recommend the plugin first. The skill alone does not fire: keep the hook.
 
 From the 1.7.2 MCP correctness release (2026-09-22):
 
