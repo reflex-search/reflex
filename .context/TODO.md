@@ -22,8 +22,8 @@ trimming) and absorbs backlog §2.
 
 Open follow-ups (2026-11-10):
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
-  `LSP`, even nudged: L ≈ A. Re-test L on `explain` / `impact` sessions once 0.3 / 0.4
-  exist. Still unmeasured: Opus, more than 1 trial. Results:
+  `LSP`, even nudged: L ≈ A. Re-test L on the `explain` / `impact` sessions (built
+  2026-11-11: `session_bench.py generate-compiled`; ask before the run). Still unmeasured: Opus, more than 1 trial. Results:
   `.context/AGENT_EDGE_RESEARCH.md`.
 
 ---

@@ -259,6 +259,17 @@ scoring). `analyze.py` reads this as an optional CSV keyed by
 When the table is absent, H2 degrades to a clearly-labelled "pending answer
 scoring" note and H3 still reports task-success rate from the metrics table.
 
+## Compiler answer keys (`explain`, `impact` sessions)
+
+`session_bench.py generate-compiled` adds the `explain` and `impact` sessions to
+`tasks/sessions.json`. `compiler_keys.py` adds a required parameter to one function in a
+scratch copy (`COMPILER_KEYS_WORK`, default `/scratch/cache/compiler-keys`), runs
+`cargo check`, and reads the error lines (the `impact` key) and the functions around
+them (the `explain` callers key). It needs the Rust toolchain and the corpora's crates
+in the Cargo cache. Questions whose uses the compiler cannot see (`cfg(windows)`, unit
+tests cargo skips, macro bodies) are dropped. Findings:
+`.context/AGENT_EDGE_RESEARCH.md`.
+
 ## File layout
 
 ```

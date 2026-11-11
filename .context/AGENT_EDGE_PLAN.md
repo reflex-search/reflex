@@ -133,10 +133,18 @@ Without these, no feature can show a win. Answer keys must not come from Reflex.
   Document the setup in `benches/efficacy/README.md`.
 - [x] **0.2 Skill arm `S`** — Done 2026-11-10: needs the SessionStart hook (the skill alone never fired).: no MCP server; the Reflex skill (task 1.3) and Bash `rfx`.
   Needs 1.3 and 1.4.
-- [ ] **0.3 `explain` session kind** in `session_bench.py`: "What does `X` do, what does it
+- [x] **0.3 `explain` session kind** — Done 2026-11-11 (`session_bench.py
+  generate-compiled`, `benches/efficacy/compiler_keys.py`): 8 questions per corpus,
+  graded by the mean F1 of the callers and callees lists. Callers key: the compiler
+  (the fn around each error after a parameter is added), not rust-analyzer, so no
+  arm's tool writes the key. Callees key: the calls in the body text. Hand check:
+  AGENT_EDGE_RESEARCH.md. Was: "What does `X` do, what does it
   call, and what calls it?" Score the callers and callees lists. Answer key:
   rust-analyzer call hierarchy, checked by hand on a sample.
-- [ ] **0.4 `impact` session kind**: the harness applies a scripted signature change
+- [x] **0.4 `impact` session kind** — Done 2026-11-11: "I will add a required parameter
+  to fn X: which lines must change?" Key: `cargo check` error lines, computed once on a
+  scratch copy; nothing is edited or built in the trial. Functions used in code the
+  build does not compile (`cfg(windows)`) are left out. Was: the harness applies a scripted signature change
   (add a parameter, remove a function) on a scratch branch and asks "which call sites
   must change?" Answer key: `cargo check` errors. The compiler is the oracle.
 - [ ] **0.5 `tests` session kind**: "Which tests exercise `X`?" Answer key: mutation.

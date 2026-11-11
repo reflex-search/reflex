@@ -10,6 +10,7 @@ at the end of the trial.
 
   session_bench.py generate                 write tasks/sessions.json from the pinned corpora
   session_bench.py run --arms A B Beager --n 4 --model claude-sonnet-5 [--jobs 24]
+  session_bench.py generate-compiled        add the explain and impact sessions (runs cargo check)
   session_bench.py score [--results DIR]    per-arm totals and ratios vs arm A
 
 Session kinds (one of each per corpus):
@@ -25,6 +26,13 @@ Session kinds (one of each per corpus):
                rust_code.py (a Rust lexer written apart from Reflex)
   aware-large  `aware` on names with 100-400 grep lines, where grep over-fetches:
                6 lists, 6 counts
+  explain      8 questions "what does fn X do, what does it call, what calls it?",
+               graded on the two name lists (mean F1). Callers key: the compiler
+               (compiler_keys.py: add a parameter to X, the fn around each error);
+               callees key: the calls in X's body text. `generate-compiled` builds it
+  impact       8 questions "I will add a required parameter to fn X: which lines must
+               change?", graded by F1 on path:line. Key: the compiler's error lines
+               (compiler_keys.py). Nothing is edited or built in the trial
   regex        12 questions that give a regular expression: every matching line
                (8, 3-80 lines each) and how many lines match (4, 10-400). Half
                the pool has no brackets, so a search without regex:true runs as
@@ -70,6 +78,10 @@ FORMAT_LIST = (
 FORMAT_ONE = 'End your answer with a JSON code block {"answer": ["path:line"]}.'
 FORMAT_NUMBER = 'End your answer with a JSON code block {"answer": <number>}.'
 FORMAT_DONE = 'End your answer with a JSON code block {"answer": "done"}.'
+FORMAT_EXPLAIN = (
+    'End your answer with a JSON code block {"answer": {"calls": ["name", ...], '
+    '"callers": ["name", ...]}} with bare function and method names.'
+)
 
 
 def rg(repo_dir: Path, *args: str) -> list[str]:
@@ -408,6 +420,63 @@ def regex_session(repo: str, scope: str) -> dict:
     return {"id": f"{repo}-session-regex", "repo": repo, "kind": "regex", "steps": steps}
 
 
+def compiled_sessions(repo: str, scope: str, per_kind: int = 8) -> list[dict]:
+    """The `explain` and `impact` sessions of one corpus, keyed by the compiler."""
+    import compiler_keys as ck
+    tree = ck.scratch_copy(repo, runner.CORPUS_REPOS[repo])
+    if ck.cargo_errors(repo, tree):
+        raise SystemExit(f"{repo}: the unchanged corpus does not build; no compiler keys")
+    compiled = ck.compiled_files(repo, tree)
+    print(f"  {repo}: {len(compiled)} source files compiled", flush=True)
+    explain, impact = [], []
+    for name, _, _, where in candidates(repo):
+        if len(explain) >= per_kind and len(impact) >= per_kind:
+            break
+        path, line = where.rsplit(":", 1)
+        if f"fn {name}" not in (tree / path).read_text().split("\n")[int(line) - 1]:
+            continue
+        k = ck.probe(repo, tree, scope, name, where, compiled)
+        if not k or not k["sites"]:
+            continue
+        print(f"  {repo} {name}: {len(k['sites'])} sites, callers {k['callers']}, "
+              f"{len(k['calls'])} calls, codes {k['codes']}", flush=True)
+        if len(impact) < per_kind and 3 <= len(k["sites"]) <= 25:
+            impact.append({
+                "kind": "impact",
+                "prompt": f"I plan to add a new required parameter to the function `{name}` defined at "
+                          f"`{where}`. Without editing any file or building the project, list every line "
+                          f"under `{scope}/` that will then fail to compile and must change: each call of "
+                          f"this function, and each place it is used as a value. Leave out its definition. "
+                          f"{FORMAT_LIST}",
+                "expected": k["sites"], "key": k,
+            })
+        elif len(explain) < per_kind and 2 <= len(k["calls"]) <= 12 and 1 <= len(k["callers"]) <= 8:
+            explain.append({
+                "kind": "explain",
+                "prompt": f"Explain the function `{name}` defined at `{where}`: what it does (two sentences), "
+                          f"every function and method its body calls directly, by name, standard-library ones "
+                          f"too (such as `map`, `collect` or `new`; leave out macros and constructors such "
+                          f"as `Some`), and which functions under "
+                          f"`{scope}/` call it directly (tests included). Do not edit files or build the "
+                          f"project. {FORMAT_EXPLAIN}",
+                "calls": k["calls"], "callers": k["callers"], "key": k,
+            })
+    if len(explain) < per_kind or len(impact) < per_kind:
+        raise SystemExit(f"{repo}: only {len(explain)} explain and {len(impact)} impact questions")
+    return [{"id": f"{repo}-session-explain", "repo": repo, "kind": "explain", "steps": explain},
+            {"id": f"{repo}-session-impact", "repo": repo, "kind": "impact", "steps": impact}]
+
+
+def generate_compiled(repos: list[str]) -> None:
+    """Add (or replace) the explain and impact sessions in tasks/sessions.json."""
+    data = json.loads(SESSIONS_JSON.read_text())
+    new = [s for repo in repos for s in compiled_sessions(repo, SCOPES[repo])]
+    ids = {s["id"] for s in new}
+    data["sessions"] = [s for s in data["sessions"] if s["id"] not in ids] + new
+    SESSIONS_JSON.write_text(json.dumps(data, indent=1) + "\n")
+    print(f"wrote {SESSIONS_JSON}: {len(new)} compiled sessions")
+
+
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
@@ -605,6 +674,21 @@ def rg_files(tree: Path, args: list[str]) -> set[str]:
     return set(out.split())
 
 
+def bare_name(x) -> str:
+    """`Foo::bar()`, `self.bar`, `bar()` -> `bar`."""
+    x = re.sub(r"\(.*$", "", str(x).strip().strip("`"))
+    return re.split(r"::|\.", x)[-1].strip()
+
+
+def name_f1(got, want: list[str]) -> float:
+    got = {bare_name(g) for g in got} if isinstance(got, list) else set()
+    want = set(want)
+    if not want and not got:
+        return 1.0
+    tp = len(want & got)
+    return 0.0 if tp == 0 else 2 * tp / (len(got) + len(want))
+
+
 def grade(step: dict, ans, tree: Path, scope: str) -> float:
     """1.0 = exact; lists are scored by F1 against the oracle on the final tree."""
     kind = step["kind"]
@@ -622,6 +706,10 @@ def grade(step: dict, ans, tree: Path, scope: str) -> float:
         return 1.0 if ans == len(rg(tree, *step["oracle"])) else 0.0
     if kind == "refs_count":
         return 1.0 if ans == len(code_refs(tree, step["name"], scope)) else 0.0
+    if kind == "explain":
+        if not isinstance(ans, dict):
+            return 0.0
+        return (name_f1(ans.get("calls"), step["calls"]) + name_f1(ans.get("callers"), step["callers"])) / 2
     if kind == "files":
         want = rg_files(tree, step["oracle"])
         got = {str(a).strip().lstrip("./") for a in ans} if isinstance(ans, list) else set()
@@ -725,6 +813,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("generate")
+    g = sub.add_parser("generate-compiled")
+    g.add_argument("--repos", nargs="+", default=list(SCOPES))
     r = sub.add_parser("run")
     r.add_argument("--arms", nargs="+", default=["A", "B", "Beager"])
     r.add_argument("--sessions", nargs="*")
@@ -736,7 +826,7 @@ def main() -> None:
     s = sub.add_parser("score")
     s.add_argument("--results", default=str(runner.RESULTS_DIR))
     args = p.parse_args()
-    {"generate": lambda: generate(), "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
+    {"generate": lambda: generate(), "generate-compiled": lambda: generate_compiled(args.repos), "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
 
 
 if __name__ == "__main__":

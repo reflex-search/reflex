@@ -194,3 +194,41 @@ upper bound, wall time, not tokens): ripgrep 22 s, tokio 61 s, reflex 81 s.
   questions an agent with LSP behaves like arm A. For D5, beating A on these
   workflows is beating L. L may still matter for `explain` (call hierarchy) and
   `impact` sessions (tasks 0.3, 0.4), which do not exist yet.
+
+## Compiler answer keys: `explain` and `impact` sessions (tasks 0.3, 0.4) — 2026-11-11
+
+`session_bench.py generate-compiled` (`benches/efficacy/compiler_keys.py`) writes one
+`explain` and one `impact` session of 8 questions per corpus (reflex, ripgrep, tokio).
+rustc 1.99.1 on Linux x86_64. Each probe adds `__impact_probe: u32` to one function in
+a scratch copy (`/scratch/cache/compiler-keys/<repo>`), runs `cargo check` twice
+(normal and `--profile test`), and restores the file. 1–3 s per probe once the target
+dir is warm; a full run with the first build: about 7 min.
+
+- **impact key:** every error primary-span line under the scope (E0061, E0593 for a
+  function used as a value). 3–25 lines per question.
+- **explain callers key:** the innermost fn around each error line. Callees key: the
+  `name(` / `.name(` / `path::name(` calls in the body's code text, minus keywords,
+  macros, capitalised names and locals. So `new`, `map` and `collect` are in it; the
+  prompt says to list standard-library calls too.
+- No arm's tool writes a key: not Reflex, not rust-analyzer, not grep.
+
+What the compiler cannot see, and the filter for each (a question is dropped):
+
+| Gap | Example | Filter |
+| --- | --- | --- |
+| `cfg` this host does not build | `globals`: calls in `tokio/src/signal/windows/sys.rs` | a code line naming the fn in a file outside cargo dep-info (`compiled_files`) |
+| cargo skips units that need the failed crate | `instant_to_tick`: tokio's `lib test` unit needs the lib (dev-dependencies), so `runtime/time/tests/mod.rs:174` was never checked | a grep code line not in the key that is in test code or in another package. Test code: a `tests/` path, a `mod` under any `cfg` naming `test` (`#[cfg(all(test, not(loom)))]`; the first filter, `#[cfg(test)]` only, missed `from_histogram`'s calls in `histogram.rs:330`), or an out-of-line test module (`#[cfg(test)] mod testutil;`) |
+| `macro_rules!` bodies are checked only where expanded | `output_mut` at `macros/try_join.rs:234` | the same, for lines in a macro body |
+| `tokio_unstable` code | `task::Builder` | built with `RUSTFLAGS=--cfg tokio_unstable` (as tokio's CI) |
+
+Hand check of the 48 questions kept: 34 have no grep code line outside the key. In the
+other 14, every extra line is a different item with the same name (a field
+`index_status`, `Interest::is_writable`, `Instant::checked_add` vs
+`usize::checked_add`, `StandardImpl::trim_ascii_prefix`), a local of the same name
+(`let haystack_builder`), or a `mod` / `use` line. Self-callers are wrappers of the same
+name, not recursion: `StandardImpl::trim_ascii_prefix` calls `util::trim_ascii_prefix`,
+`Wheel::next_expiration` calls `Level::next_expiration`,
+`AsyncReadExt::read_to_string` calls `io::util::read_to_string`.
+
+Name-based limits of the grader: callers and callees are graded as bare names (F1), so
+two callers with one name count once.
