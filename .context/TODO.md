@@ -23,8 +23,11 @@ trimming) and absorbs backlog §2.
 Open follow-ups (2026-11-10):
 - [ ] `rfx refs X --at path:line` (MCP `find_references` `at`, hidden): built
   (`src/bind.rs`, Rust only), scored offline: site F1 0.989 tuning, 0.953 and 0.951 on
-  two blind held-out sets (0.663 / 0.734 without `--at`). In the skill and the SessionStart hook. Next: a
-  light live run (tokio explain + impact, arm S) — ask first. AGENT_EDGE_RESEARCH.md.
+  two blind held-out sets (0.663 / 0.734 without `--at`). In the skill and the SessionStart hook. Live
+  (2026-11-11): agents never pass `--at`; what moved cost was `[in f]` on every use and
+  the `definitions` list (`d1ae6dc`). tokio explain, 3 vs 3 trials: S 0.82× A's cost,
+  accuracy 1.000 (meets D5 on 1 workflow). Next: explain on ripgrep/reflex, Opus;
+  impact routing (agent drifts to grep after `rfx locations`). AGENT_EDGE_RESEARCH.md.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:

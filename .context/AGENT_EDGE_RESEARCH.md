@@ -387,3 +387,26 @@ run). Spend: $0.38 plus a warm-up.
   One trial each: routing on impact varies between runs.
 - **Reading:** first single-trial result under D5's 0.85× cost line on a headline
   workflow (explain). Needs more trials (A and S) before it counts.
+
+### Explain confirmation: A and S, 2 more trials — 2026-11-11, Sonnet 5.5, `d1ae6dc`
+
+`results-sessions/sonnet55-explain3/`. Spend: $0.84 plus warm-ups.
+
+| Arm | Trial | Turns | rfx calls | grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | 1 | 30 | 0 | 9 | 102,974 | 0.230 | 1.000 |
+| A | 2 | 30 | 0 | 8 | 106,825 | 0.235 | 1.000 |
+| S | 1 | 24 | 8 | 0 | 79,573 | 0.193 | 1.000 |
+| S | 2 | 25 | 8 | 0 | 77,140 | 0.186 | 1.000 |
+
+Pooled with the earlier same-day trial of each arm (3 vs 3): A $0.235, 105,348
+weighted; S $0.192, 79,693 weighted. **S = 0.82× A's cost, 0.76× its weighted
+tokens, accuracy 1.000 in all 6.** Spread is small (S $0.186–0.197, A $0.230–0.239).
+Vs L (1 trial, $0.244, 0 LSP calls): 0.79×.
+
+- Every S trial: Read the function, one `rfx refs X tokio/src/`, answer. No grep, no
+  caller search by hand. The `[in f]` column and the `definitions` list do the work
+  A does with grep plus reads. 0 calls with `--at` in 3 trials.
+- **D5:** explain meets the cost line (≤0.85× at equal accuracy) vs A, and vs L on
+  1 trial of L. Workflow 1 of the 2 needed. Not yet: Opus, other corpora (ripgrep,
+  reflex have explain keys), impact (≈1.0×, routing varies).
