@@ -436,3 +436,25 @@ cost; accuracy S 0.997, A 0.999.**
   `to_prompt_string` have many uses; S used one grep and more reads there.
 - **D5 on explain:** 0.83× pooled at accuracy within 0.002 of A (one disputed
   macro caller). Below the 0.85× line, by a small margin; reflex alone is above it.
+
+### Impact with the `--at` routing line: A and S, 1 trial — 2026-11-11, Sonnet 5.5, `f2aba72`
+
+`results-sessions/sonnet55-impact/`. Spend: $0.36 plus warm-ups.
+
+| Arm | Turns | rfx calls | grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 24 | 0 | 9 | 76,176 | 0.168 | 1.000 |
+| S | 20 | 9 | 1 | 81,468 | 0.193 | 1.000 |
+
+S vs A: 1.07× weighted, 1.15× cost, 0.83× turns. All S impact runs so far: $0.180,
+$0.184, $0.193; A: $0.178, $0.168.
+
+- **The routing line works: `--at` on 8 of 8 questions** (0 in the runs before, when
+  the hook named it only in a parenthesis).
+- **But every `--at` call came with `rfx locations X --preview` in the same command**,
+  plus `sed` reads of the left-out lines: the agent checks what `--at` left out. The
+  answer printed "N lines name other items (left out)" without naming them, so the
+  agent fetched them. Fewer turns, more tokens per turn.
+- Candidate: print the left-out lines in the `--at` answer itself (grouped
+  `path:line,line`, with the definition each one names where known), so one call is
+  the whole answer and its own check.
