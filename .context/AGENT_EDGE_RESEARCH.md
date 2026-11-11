@@ -458,3 +458,29 @@ $0.184, $0.193; A: $0.178, $0.168.
 - Candidate: print the left-out lines in the `--at` answer itself (grouped
   `path:line,line`, with the definition each one names where known), so one call is
   the whole answer and its own check.
+
+### Impact with `left_out` in the `--at` answer: A and S, 1 trial — 2026-11-11, `f04cf34`
+
+`results-sessions/sonnet55-impact2/`. Spend: $0.36 plus warm-ups.
+
+| Arm | Turns | rfx calls | grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 21 | 0 | 11 | 77,617 | 0.171 | 1.000 |
+| S | 19 | 8 | 1 | 80,587 | 0.192 | 1.000 |
+
+S vs A: 1.04× weighted, 1.13× cost (was 1.07× / 1.15×).
+
+- `--at` on 8 of 8 questions again. The paired check moved from `rfx locations
+  --preview` to `grep -rn X` in the same command: the agent checks a completeness
+  answer from a new tool whatever the answer shows. It also `sed`-read the false
+  `This` lines of `checked_add` (integer receivers) and dropped them (accuracy 1.000).
+- **Impact across runs (Sonnet 5.5, tokio): S $0.180, $0.184, $0.193, $0.192; A
+  $0.178, $0.168, $0.171.** About 1.1× A. A's answer is cheap here (8 short grep calls,
+  few hits per name), so a second check costs S its margin.
+- Not tried: telling agents not to re-check `--at`. It is not exact (F1 0.95 blind;
+  `checked_add` has 3 false `This` lines in this very session), so the check is what
+  keeps accuracy at 1.000. The "do not re-check" sentence stays on plain `rfx refs`,
+  which is exact for its question.
+- **D5 status:** explain meets the line (0.83×, 5 vs 5). Impact ("change a signature
+  safely") does not (≈1.1×). The third workflow ("find the tests for a change") has no
+  session yet.
