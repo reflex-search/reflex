@@ -127,11 +127,11 @@ Phases 0, 1 and 2 can run in parallel. Phase 4 needs 2.2 and 2.4. Phase 6 needs 
 
 Without these, no feature can show a win. Answer keys must not come from Reflex.
 
-- [ ] **0.1 LSP arm `L`** in `benches/efficacy/runner.py` `ARMS`. Claude Code's `LSP`
+- [x] **0.1 LSP arm `L`** — Done 2026-11-11: arms `L` and `Lnudge`; the agent never called `LSP` on code-only questions (AGENT_EDGE_RESEARCH.md). in `benches/efficacy/runner.py` `ARMS`. Claude Code's `LSP`
   tool with a language server per corpus (rust-analyzer for tokio). Grep stays allowed,
   as in the Reflex arms. Record the server's warm-up time apart from session cost.
   Document the setup in `benches/efficacy/README.md`.
-- [ ] **0.2 Skill arm `S`**: no MCP server; the Reflex skill (task 1.3) and Bash `rfx`.
+- [x] **0.2 Skill arm `S`** — Done 2026-11-10: needs the SessionStart hook (the skill alone never fired).: no MCP server; the Reflex skill (task 1.3) and Bash `rfx`.
   Needs 1.3 and 1.4.
 - [ ] **0.3 `explain` session kind** in `session_bench.py`: "What does `X` do, what does it
   call, and what calls it?" Score the callers and callees lists. Answer key:

@@ -12,7 +12,7 @@
 
 ---
 
-## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); D2 decided: the `reflex` plugin (CLI + skill + hook) is primary; arm L (LSP) next (branch `feat/agent-edge-phase1`)
+## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); D2 decided: the `reflex` plugin (CLI + skill + hook) is primary; arm L built (agents ignore LSP: L ≈ A) (branch `feat/agent-edge-phase1`)
 
 Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
 capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),
@@ -21,8 +21,10 @@ and the checklist: `.context/AGENT_EDGE_PLAN.md`. It supersedes backlog §1 D (g
 trimming) and absorbs backlog §2.
 
 Open follow-ups (2026-11-10):
-- [ ] Arm L (LSP) for D5: in progress (2026-11-10). Still unmeasured after it: Opus,
-  more than 1 trial. Results: `.context/AGENT_EDGE_RESEARCH.md`.
+- [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
+  `LSP`, even nudged: L ≈ A. Re-test L on `explain` / `impact` sessions once 0.3 / 0.4
+  exist. Still unmeasured: Opus, more than 1 trial. Results:
+  `.context/AGENT_EDGE_RESEARCH.md`.
 
 ---
 

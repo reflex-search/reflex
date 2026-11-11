@@ -148,6 +148,34 @@ ARMS = {
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + ["Skill"],
         "append_system_prompt": None,
     },
+    "L": {
+        "description": "LSP: Claude Code's LSP tool with rust-analyzer (plugins/lsp-rust, the official rust-analyzer-lsp server entry); Grep/Glob stay allowed; no Reflex",
+        "mcp_command": None,
+        # rust-analyzer starts with the session and indexes the fresh copy each trial;
+        # its warm-up is wall time, not tokens (measured apart: AGENT_EDGE_RESEARCH.md).
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions",
+                        "--plugin-dir", str(SCRIPT_DIR / "plugins" / "lsp-rust")],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + ["LSP"],
+        "append_system_prompt": None,
+    },
+    "Lnudge": {
+        "description": "Arm L plus a routing note in the system prompt (LSP at its best, as arm S gets a SessionStart hook): LSP for definitions, references and calls; Grep for text",
+        "mcp_command": None,
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions",
+                        "--plugin-dir", str(SCRIPT_DIR / "plugins" / "lsp-rust")],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + ["LSP"],
+        # Arm L alone used Grep for 12 of 12 questions (2026-11-10): an installed LSP
+        # tool that nothing points to is not used. ~420 chars, like arm S's hook in role.
+        "append_system_prompt": (
+            "A language server (rust-analyzer) is available through the LSP tool (load its "
+            "schema with ToolSearch if it is deferred). For where a Rust symbol is defined, "
+            "every reference to it in code, or what calls a function, prefer the LSP tool "
+            "(workspaceSymbol to find the definition, then findReferences or incomingCalls "
+            "at its position) over Grep. Use Grep for plain text and non-Rust files."
+        ),
+    },
     "Beager_flat": {
         "description": "Arm Beager with list_locations as the flat [{path, line}] array (REFLEX_MCP_GROUPED=0), the shape before file grouping",
         "mcp_command": "TARGET_RELEASE_RFX",

@@ -164,3 +164,33 @@ S vs Beager: 0.78–0.95× cost.
   workflows; neither is measured yet.
 - 1 trial per cell: treat ±5 % as noise. Accuracy is 1.000 everywhere, so the decision
   rests on cost.
+
+## Phase 0: arm L (LSP) — 2026-11-10/11, Claude Code 2.1.318, Sonnet 5.5
+
+Setup (`benches/efficacy/README.md`): `plugins/lsp-rust` (the official
+`rust-analyzer-lsp` server entry) by `--plugin-dir`, `LSP` in `--allowedTools`, Grep
+allowed, no Reflex. rust-analyzer 1.99.1. The corpora's crates were fetched into the
+Cargo cache on copies first (`cargo metadata --offline` failed before: the LSP arm would
+have had no workspace). Full `rust-analyzer analysis-stats` per corpus (the warm-up's
+upper bound, wall time, not tokens): ripgrep 22 s, tokio 61 s, reflex 81 s.
+
+| Arm | Session | Grep calls | LSP calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | tokio aware | 12 | 0 | 102,003 | 0.219 | 1.000 |
+| L | tokio aware | 12 | 0 | 100,416 | 0.212 | 0.917 |
+| Lnudge | tokio aware | 12 | 0 | 112,476 | 0.265 | 1.000 |
+| S | tokio aware | 0 | 0 (12 `rfx refs`) | 84,035 | 0.177 | 1.000 |
+
+- **L:** the `LSP` tool was in the session (init `tools`); its schema is deferred (the
+  warm-up prefix equals arm A's, 19,664 tokens). The agent never loaded or called it.
+- **Lnudge:** L plus 383 chars of system prompt ("prefer the LSP tool (workspaceSymbol,
+  then findReferences or incomingCalls) over Grep"). Still Grep for 12 of 12. Its cost
+  is inflated: the appended prompt changed the prefix (warm-up cache write 19,814,
+  read 0).
+- Possible reason, not checked: an LSP reference search needs a file position first
+  (2–3 calls per question vs 1 grep), and tokio's `cfg(windows)` code is not analysed
+  on Linux.
+- Stopped after the two smoke sessions (the user approved 5 more each): on code-only
+  questions an agent with LSP behaves like arm A. For D5, beating A on these
+  workflows is beating L. L may still matter for `explain` (call hierarchy) and
+  `impact` sessions (tasks 0.3, 0.4), which do not exist yet.

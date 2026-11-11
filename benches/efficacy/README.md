@@ -72,6 +72,20 @@ few NDJSON transcripts.
 | **B**  | ✅ Reflex | ✅ active     | ✅ allowed | Realistic: Reflex MCP + nudge |
 | **C**  | ✅ Reflex | ✅ active     | ❌ blocked | Reflex-forced |
 | **B'** | ✅ Reflex | ❌ neutralized | ✅ allowed | No-nudge (secondary) |
+| **Beager** | ✅ Reflex, `alwaysLoad` | ✅ active | ✅ allowed | Arm B with the schemas loaded at session start |
+| **S**  | ❌ None | hook | ✅ allowed | CLI route: the `reflex` plugin (skill + SessionStart hook) by `--plugin-dir`, the built `rfx` first on PATH |
+| **L**  | ❌ None | — | ✅ allowed | LSP: Claude Code's `LSP` tool with rust-analyzer (`plugins/lsp-rust`); no Reflex |
+
+> **Arm S:** slash commands stay on (the skill needs them), so Claude Code's ~20
+> bundled skills are listed too; deny rules do not hide them. The tree is indexed before
+> the trial, as in the MCP arms. Bash calls that run `rfx` count as Reflex calls.
+>
+> **Arm L:** `plugins/lsp-rust` carries the `lspServers` entry of the official
+> `rust-analyzer-lsp` plugin. Needs `rust-analyzer` on PATH and every corpus's crates in
+> the Cargo cache: run `cargo fetch` on a copy of each corpus first (not in
+> `corpus/`: a `Cargo.lock` written there would change the grep answer keys).
+> rust-analyzer starts with each session and indexes the fresh copy; that warm-up is
+> wall time, not tokens. Its time per corpus is in `.context/AGENT_EDGE_RESEARCH.md`.
 
 > **Note on arm A:** `--strict-mcp-config` is passed so the project `.mcp.json`
 > (which configures Reflex MCP) cannot load — the control arm truly has no MCP.

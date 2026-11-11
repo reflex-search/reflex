@@ -685,6 +685,7 @@ def score(args) -> None:
             "complete": len(results) >= len(s["steps"]), "turns": sum(r.get("num_turns", 0) for r in results),
             "tool_calls": sum(v for k, v in calls.items() if ":" not in k), "reflex_calls": sum(v for k, v in calls.items() if "reflex" in k) + calls["Bash:rfx"],
             "grep_calls": calls["Grep"] + calls["Glob"] + calls["Bash:grep"],
+            "lsp_calls": calls["LSP"],
             "toolsearch": calls["ToolSearch"], "raw": raw, "weighted": weighted, "cost": cost,
             "accuracy": statistics.mean(scores),
         })
@@ -701,11 +702,11 @@ def score(args) -> None:
     for r in rows:
         by[(r["arm"], r["session"])].append(r)
     print(f"{len(rows)} sessions ({sum(not r['complete'] for r in rows)} incomplete) -> {out_csv}\n")
-    print(f"{'arm':<8}{'sessions':>9}{'turns':>7}{'calls':>7}{'reflex':>7}{'grep':>6}{'raw tok':>10}{'weighted':>10}{'cost $':>8}{'acc':>6}")
+    print(f"{'arm':<8}{'sessions':>9}{'turns':>7}{'calls':>7}{'reflex':>7}{'grep':>6}{'lsp':>5}{'raw tok':>10}{'weighted':>10}{'cost $':>8}{'acc':>6}")
     for arm in arms:
         rs = [r for r in rows if r["arm"] == arm]
         med = lambda k: statistics.median(r[k] for r in rs)  # noqa: E731
-        print(f"{arm:<8}{len(rs):>9}{med('turns'):>7.0f}{med('tool_calls'):>7.0f}{med('reflex_calls'):>7.0f}{med('grep_calls'):>6.0f}"
+        print(f"{arm:<8}{len(rs):>9}{med('turns'):>7.0f}{med('tool_calls'):>7.0f}{med('reflex_calls'):>7.0f}{med('grep_calls'):>6.0f}{med('lsp_calls'):>5.0f}"
               f"{med('raw'):>10.0f}{med('weighted'):>10.0f}{med('cost'):>8.3f}{statistics.mean(r['accuracy'] for r in rs):>6.3f}")
     print("\nratio vs A (median over sessions of per-session medians):")
     for arm in arms[1:]:
