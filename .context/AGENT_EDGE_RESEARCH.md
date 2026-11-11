@@ -124,3 +124,43 @@ query`, `rfx refs` and `rfx locations` take grep-style PATH arguments (2026-11-1
   investigate questions are grep's home ground.
 - Open: the tokio S session with PATH arguments; the `aware` sessions (code-only uses,
   where `rfx refs` should win); 1 trial each, so ±5 % is noise.
+
+### Tokio re-run with PATH arguments (2026-11-10, `5434e5c`)
+
+`results-sessions/sonnet55-phase0-tokio-s/`: `rfx` for 12 of 12 searches (8 ×
+`rfx locations X tokio/src/`, 2 × `--symbols`, 2 × `--paths tokio/src/`), Grep 0,
+accuracy 1.000, weighted 71,818 (A 96,645: 0.74×), $0.154 (A $0.208: 0.74×; Beager
+$0.228). Run ~1 h after A and Beager, so its prompt-cache state may differ.
+
+### Aware sessions (code-only uses), A vs S vs Beager (2026-11-10, `5434e5c`)
+
+`results-sessions/sonnet55-phase0-aware/`, 12 questions per session (10 lists, 2 counts
+of the uses of a name in code, with comment and string lines left out), 1 trial.
+
+| Arm | Corpus | Reflex calls | Grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | reflex | 0 | 12 | 87,664 | 0.179 | 1.000 |
+| A | ripgrep | 0 | 12 | 90,697 | 0.184 | 1.000 |
+| A | tokio | 0 | 12 | 102,003 | 0.219 | 1.000 |
+| Beager | reflex | 12 | 0 | 91,383 | 0.170 | 1.000 |
+| Beager | ripgrep | 13 | 0 | 98,052 | 0.183 | 1.000 |
+| Beager | tokio | 12 | 0 | 98,783 | 0.186 | 1.000 |
+| S | reflex | 13 | 0 | 73,717 | 0.143 | 1.000 |
+| S | ripgrep | 12 | 0 | 72,888 | 0.143 | 1.000 |
+| S | tokio | 12 | 0 | 84,035 | 0.177 | 1.000 |
+
+Ratios vs A: S weighted 0.82×, cost 0.80×; Beager weighted 1.04×, cost 0.95×. S used
+`rfx refs` for every question (`--count` for the counts) and never re-checked with grep.
+S vs Beager: 0.78–0.95× cost.
+
+### Phase 0 reading so far (D2)
+
+- The CLI route (skill + SessionStart hook) beats MCP on every session measured: same
+  accuracy, 0.68–0.95× its cost. The fixed text is the difference (~1 KB hook vs ~7.8 KB
+  of instructions and schemas on every call).
+- Against Grep: parity on plain searches (investigate 0.93–0.98× cost where S stayed on
+  `rfx`; 0.74× on the tokio re-run), and **0.80× cost on code-only questions** — under
+  D5's 0.85× line for this workflow. D5 also needs the LSP arm (L) and 2 of 3 headline
+  workflows; neither is measured yet.
+- 1 trial per cell: treat ±5 % as noise. Accuracy is 1.000 everywhere, so the decision
+  rests on cost.

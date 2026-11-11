@@ -12,7 +12,7 @@
 
 ---
 
-## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); Phase 0 investigate run done (S 0.96×, Beager 1.11× Grep's weighted tokens) (branch `feat/agent-edge-phase1`)
+## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); Phase 0: S (CLI+skill+hook) 0.80× Grep's cost on code-only, Beager 0.95×; D2 pending (branch `feat/agent-edge-phase1`)
 
 Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
 capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),
@@ -21,10 +21,10 @@ and the checklist: `.context/AGENT_EDGE_PLAN.md`. It supersedes backlog §1 D (g
 trimming) and absorbs backlog §2.
 
 Open follow-ups (2026-11-10):
-- [ ] Phase 0 next runs (ask first): arm S tokio investigate again (PATH arguments now
-  work); `aware` sessions A/S/Beager. Results so far: `.context/AGENT_EDGE_RESEARCH.md`.
-- [ ] PR #68 body: the `gh` account `brad-anyonehome` cannot edit it; the new body
-  (musl, hook) must go in by hand.
+- [ ] D2 (MCP vs CLI + skill): the data favours CLI + skill + hook (aware: S 0.80×
+  Grep's cost, Beager 0.95×; investigate: S at parity, Beager 1.07×). Decide with the
+  user. Still unmeasured: the LSP arm (L), Opus, more than 1 trial.
+  Results: `.context/AGENT_EDGE_RESEARCH.md`.
 
 ---
 
