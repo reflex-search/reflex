@@ -1,0 +1,500 @@
+{
+ "sessions": [
+  {
+   "id": "ripgrep-session-tests",
+   "repo": "ripgrep",
+   "kind": "tests",
+   "steps": [
+    {
+     "kind": "tests",
+     "key": {
+      "name": "quit_byte",
+      "where": "crates/searcher/src/searcher/mod.rs:102",
+      "tests": [
+       "crates/printer/src/json.rs:892",
+       "crates/printer/src/standard.rs:1842",
+       "crates/searcher/src/searcher/glue.rs:693",
+       "crates/searcher/src/searcher/glue.rs:705",
+       "crates/searcher/src/searcher/glue.rs:717",
+       "crates/searcher/src/searcher/glue.rs:752"
+      ],
+      "test_names": [
+       "json::tests::binary_detection",
+       "searcher::glue::tests::binary1",
+       "searcher::glue::tests::binary2",
+       "searcher::glue::tests::binary3",
+       "searcher::glue::tests::binary4",
+       "standard::tests::reports_binary"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/printer/src/json.rs:892",
+      "crates/printer/src/standard.rs:1842",
+      "crates/searcher/src/searcher/glue.rs:693",
+      "crates/searcher/src/searcher/glue.rs:705",
+      "crates/searcher/src/searcher/glue.rs:717",
+      "crates/searcher/src/searcher/glue.rs:752"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "auto_heap_limit",
+      "where": "crates/searcher/src/testutil.rs:417",
+      "tests": [
+       "crates/searcher/src/searcher/glue.rs:717",
+       "crates/searcher/src/searcher/glue.rs:752"
+      ],
+      "test_names": [
+       "searcher::glue::tests::binary3",
+       "searcher::glue::tests::binary4"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/searcher/src/searcher/glue.rs:717",
+      "crates/searcher/src/searcher/glue.rs:752"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "separator_field_context",
+      "where": "crates/printer/src/standard.rs:436",
+      "tests": [
+       "crates/printer/src/standard.rs:2086"
+      ],
+      "test_names": [
+       "standard::tests::separator_field"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/printer/src/standard.rs:2086"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "binary_data",
+      "where": "crates/searcher/src/searcher/core.rs:97",
+      "tests": [
+       "crates/printer/src/json.rs:892",
+       "crates/printer/src/standard.rs:1842",
+       "crates/searcher/src/searcher/glue.rs:693",
+       "crates/searcher/src/searcher/glue.rs:705",
+       "crates/searcher/src/searcher/glue.rs:717",
+       "crates/searcher/src/searcher/glue.rs:752"
+      ],
+      "test_names": [
+       "json::tests::binary_detection",
+       "searcher::glue::tests::binary1",
+       "searcher::glue::tests::binary2",
+       "searcher::glue::tests::binary3",
+       "searcher::glue::tests::binary4",
+       "standard::tests::reports_binary"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/printer/src/json.rs:892",
+      "crates/printer/src/standard.rs:1842",
+      "crates/searcher/src/searcher/glue.rs:693",
+      "crates/searcher/src/searcher/glue.rs:705",
+      "crates/searcher/src/searcher/glue.rs:717",
+      "crates/searcher/src/searcher/glue.rs:752"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "elapsed",
+      "where": "crates/printer/src/stats.rs:32",
+      "tests": [
+       "crates/printer/src/standard.rs:1868",
+       "crates/printer/src/standard.rs:1895"
+      ],
+      "test_names": [
+       "standard::tests::reports_stats",
+       "standard::tests::reports_stats_multiple"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/printer/src/standard.rs:1868",
+      "crates/printer/src/standard.rs:1895"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "max_filesize",
+      "where": "crates/ignore/src/walk.rs:634",
+      "tests": [
+       "crates/ignore/src/walk.rs:2153"
+      ],
+      "test_names": [
+       "walk::tests::max_filesize"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/ignore/src/walk.rs:2153"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "trim_ascii_prefix",
+      "where": "crates/printer/src/util.rs:446",
+      "tests": [
+       "crates/printer/src/standard.rs:2286",
+       "crates/printer/src/standard.rs:2309",
+       "crates/printer/src/standard.rs:2334"
+      ],
+      "test_names": [
+       "standard::tests::trim_ascii",
+       "standard::tests::trim_ascii_multi_line",
+       "standard::tests::trim_ascii_with_line_term"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/printer/src/standard.rs:2286",
+      "crates/printer/src/standard.rs:2309",
+      "crates/printer/src/standard.rs:2334"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "always_begin_end",
+      "where": "crates/printer/src/json.rs:97",
+      "tests": [
+       "crates/printer/src/json.rs:979"
+      ],
+      "test_names": [
+       "json::tests::always_begin_end_no_match"
+      ],
+      "seconds": 2
+     },
+     "expected": [
+      "crates/printer/src/json.rs:979"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-tests",
+   "repo": "tokio",
+   "kind": "tests",
+   "steps": [
+    {
+     "kind": "tests",
+     "key": {
+      "name": "spawn_named",
+      "where": "tokio/src/runtime/handle.rs:332",
+      "tests": [
+       "tokio/src/runtime/tests/task_combinations.rs:69",
+       "tokio/src/util/idle_notified_set.rs:501"
+      ],
+      "test_names": [
+       "runtime::tests::task_combinations::test_combinations",
+       "util::idle_notified_set::tests::join_set_test"
+      ],
+      "seconds": 4
+     },
+     "expected": [
+      "tokio/src/runtime/tests/task_combinations.rs:69",
+      "tokio/src/util/idle_notified_set.rs:501"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "is_cancelled",
+      "where": "tokio/src/runtime/task/error.rs:40",
+      "tests": [
+       "tokio/src/runtime/tests/task_combinations.rs:69"
+      ],
+      "test_names": [
+       "runtime::tests::task_combinations::test_combinations"
+      ],
+      "seconds": 4
+     },
+     "expected": [
+      "tokio/src/runtime/tests/task_combinations.rs:69"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "globals",
+      "where": "tokio/src/signal/registry.rs:162",
+      "tests": [
+       "tokio/src/process/unix/orphan.rs:297",
+       "tokio/src/process/unix/pidfd_reaper.rs:261",
+       "tokio/src/process/unix/pidfd_reaper.rs:281",
+       "tokio/src/process/unix/pidfd_reaper.rs:303"
+      ],
+      "test_names": [
+       "process::imp::orphan::test::does_not_register_signal_if_queue_empty",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_drop",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_kill",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_poll"
+      ],
+      "seconds": 5
+     },
+     "expected": [
+      "tokio/src/process/unix/orphan.rs:297",
+      "tokio/src/process/unix/pidfd_reaper.rs:261",
+      "tokio/src/process/unix/pidfd_reaper.rs:281",
+      "tokio/src/process/unix/pidfd_reaper.rs:303"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "async_trace_leaf",
+      "where": "tokio/src/lib.rs:576",
+      "tests": [
+       "tokio/src/fs/file/tests.rs:742",
+       "tokio/src/fs/file/tests.rs:773",
+       "tokio/src/fs/file/tests.rs:806",
+       "tokio/src/fs/file/tests.rs:837",
+       "tokio/src/fs/file/tests.rs:870",
+       "tokio/src/fs/file/tests.rs:886",
+       "tokio/src/fs/file/tests.rs:904",
+       "tokio/src/signal/registry.rs:181",
+       "tokio/src/sync/tests/notify.rs:105"
+      ],
+      "test_names": [
+       "fs::file::tests::open_set_len_err",
+       "fs::file::tests::open_set_len_ok",
+       "fs::file::tests::partial_read_set_len_ok",
+       "fs::file::tests::sync_all_err_ordered_after_write",
+       "fs::file::tests::sync_all_ordered_after_write",
+       "fs::file::tests::sync_data_err_ordered_after_write",
+       "fs::file::tests::sync_data_ordered_after_write",
+       "signal::registry::tests::smoke",
+       "sync::tests::notify::watch_test"
+      ],
+      "seconds": 4
+     },
+     "expected": [
+      "tokio/src/fs/file/tests.rs:742",
+      "tokio/src/fs/file/tests.rs:773",
+      "tokio/src/fs/file/tests.rs:806",
+      "tokio/src/fs/file/tests.rs:837",
+      "tokio/src/fs/file/tests.rs:870",
+      "tokio/src/fs/file/tests.rs:886",
+      "tokio/src/fs/file/tests.rs:904",
+      "tokio/src/signal/registry.rs:181",
+      "tokio/src/sync/tests/notify.rs:105"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "instant_to_tick",
+      "where": "tokio/src/runtime/time/source.rs:22",
+      "tests": [
+       "tokio/src/runtime/time/tests/mod.rs:107",
+       "tokio/src/runtime/time/tests/mod.rs:140",
+       "tokio/src/runtime/time/tests/mod.rs:202",
+       "tokio/src/runtime/time/tests/mod.rs:237",
+       "tokio/src/runtime/time/tests/mod.rs:259",
+       "tokio/src/runtime/time/tests/mod.rs:44",
+       "tokio/src/runtime/time/tests/mod.rs:73",
+       "tokio/src/signal/registry.rs:181"
+      ],
+      "test_names": [
+       "runtime::time::tests::change_waker",
+       "runtime::time::tests::drop_timer",
+       "runtime::time::tests::instant_to_tick_max",
+       "runtime::time::tests::poll_process_levels",
+       "runtime::time::tests::poll_process_levels_targeted",
+       "runtime::time::tests::reset_future",
+       "runtime::time::tests::single_timer",
+       "signal::registry::tests::smoke"
+      ],
+      "seconds": 4
+     },
+     "expected": [
+      "tokio/src/runtime/time/tests/mod.rs:107",
+      "tokio/src/runtime/time/tests/mod.rs:140",
+      "tokio/src/runtime/time/tests/mod.rs:202",
+      "tokio/src/runtime/time/tests/mod.rs:237",
+      "tokio/src/runtime/time/tests/mod.rs:259",
+      "tokio/src/runtime/time/tests/mod.rs:44",
+      "tokio/src/runtime/time/tests/mod.rs:73",
+      "tokio/src/signal/registry.rs:181"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "set_thread_id",
+      "where": "tokio/src/runtime/metrics/worker.rs:79",
+      "tests": [
+       "tokio/src/io/stdio_common.rs:181",
+       "tokio/src/io/stdio_common.rs:195",
+       "tokio/src/process/unix/pidfd_reaper.rs:261",
+       "tokio/src/process/unix/pidfd_reaper.rs:281",
+       "tokio/src/process/unix/pidfd_reaper.rs:303",
+       "tokio/src/runtime/tests/task_combinations.rs:69",
+       "tokio/src/runtime/time/tests/mod.rs:107",
+       "tokio/src/runtime/time/tests/mod.rs:140",
+       "tokio/src/runtime/time/tests/mod.rs:202",
+       "tokio/src/runtime/time/tests/mod.rs:237",
+       "tokio/src/runtime/time/tests/mod.rs:259",
+       "tokio/src/runtime/time/tests/mod.rs:44",
+       "tokio/src/runtime/time/tests/mod.rs:73",
+       "tokio/src/signal/registry.rs:181",
+       "tokio/src/sync/tests/notify.rs:105",
+       "tokio/src/task/local.rs:1253",
+       "tokio/src/task/local.rs:1275",
+       "tokio/src/util/idle_notified_set.rs:501"
+      ],
+      "test_names": [
+       "io::stdio_common::tests::test_pseudo_text",
+       "io::stdio_common::tests::test_splitter",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_drop",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_kill",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_poll",
+       "runtime::tests::task_combinations::test_combinations",
+       "runtime::time::tests::change_waker",
+       "runtime::time::tests::drop_timer",
+       "runtime::time::tests::instant_to_tick_max",
+       "runtime::time::tests::poll_process_levels",
+       "runtime::time::tests::poll_process_levels_targeted",
+       "runtime::time::tests::reset_future",
+       "runtime::time::tests::single_timer",
+       "signal::registry::tests::smoke",
+       "sync::tests::notify::watch_test",
+       "task::local::tests::local_current_thread_scheduler",
+       "task::local::tests::wakes_to_local_queue",
+       "util::idle_notified_set::tests::join_set_test"
+      ],
+      "seconds": 5
+     },
+     "expected": [
+      "tokio/src/io/stdio_common.rs:181",
+      "tokio/src/io/stdio_common.rs:195",
+      "tokio/src/process/unix/pidfd_reaper.rs:261",
+      "tokio/src/process/unix/pidfd_reaper.rs:281",
+      "tokio/src/process/unix/pidfd_reaper.rs:303",
+      "tokio/src/runtime/tests/task_combinations.rs:69",
+      "tokio/src/runtime/time/tests/mod.rs:107",
+      "tokio/src/runtime/time/tests/mod.rs:140",
+      "tokio/src/runtime/time/tests/mod.rs:202",
+      "tokio/src/runtime/time/tests/mod.rs:237",
+      "tokio/src/runtime/time/tests/mod.rs:259",
+      "tokio/src/runtime/time/tests/mod.rs:44",
+      "tokio/src/runtime/time/tests/mod.rs:73",
+      "tokio/src/signal/registry.rs:181",
+      "tokio/src/sync/tests/notify.rs:105",
+      "tokio/src/task/local.rs:1253",
+      "tokio/src/task/local.rs:1275",
+      "tokio/src/util/idle_notified_set.rs:501"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "copy_to",
+      "where": "tokio/src/io/blocking.rs:211",
+      "tests": [
+       "tokio/src/fs/file/tests.rs:13",
+       "tokio/src/fs/file/tests.rs:154",
+       "tokio/src/fs/file/tests.rs:232",
+       "tokio/src/fs/file/tests.rs:39",
+       "tokio/src/fs/file/tests.rs:452",
+       "tokio/src/fs/file/tests.rs:63",
+       "tokio/src/fs/file/tests.rs:904",
+       "tokio/src/fs/file/tests.rs:99"
+      ],
+      "test_names": [
+       "fs::file::tests::incomplete_partial_read_followed_by_write",
+       "fs::file::tests::open_read",
+       "fs::file::tests::partial_read_set_len_ok",
+       "fs::file::tests::read_err_then_read_success",
+       "fs::file::tests::read_twice_before_dispatch",
+       "fs::file::tests::read_with_bigger_buf",
+       "fs::file::tests::read_with_buffer_larger_than_max",
+       "fs::file::tests::read_with_smaller_buf"
+      ],
+      "seconds": 6
+     },
+     "expected": [
+      "tokio/src/fs/file/tests.rs:13",
+      "tokio/src/fs/file/tests.rs:154",
+      "tokio/src/fs/file/tests.rs:232",
+      "tokio/src/fs/file/tests.rs:39",
+      "tokio/src/fs/file/tests.rs:452",
+      "tokio/src/fs/file/tests.rs:63",
+      "tokio/src/fs/file/tests.rs:904",
+      "tokio/src/fs/file/tests.rs:99"
+     ]
+    },
+    {
+     "kind": "tests",
+     "key": {
+      "name": "waker_ref",
+      "where": "tokio/src/util/wake.rs:35",
+      "tests": [
+       "tokio/src/io/stdio_common.rs:181",
+       "tokio/src/io/stdio_common.rs:195",
+       "tokio/src/process/unix/pidfd_reaper.rs:261",
+       "tokio/src/process/unix/pidfd_reaper.rs:281",
+       "tokio/src/process/unix/pidfd_reaper.rs:303",
+       "tokio/src/runtime/tests/task_combinations.rs:69",
+       "tokio/src/runtime/time/tests/mod.rs:107",
+       "tokio/src/runtime/time/tests/mod.rs:140",
+       "tokio/src/runtime/time/tests/mod.rs:44",
+       "tokio/src/signal/registry.rs:181",
+       "tokio/src/sync/tests/notify.rs:105",
+       "tokio/src/task/local.rs:1253",
+       "tokio/src/task/local.rs:1275",
+       "tokio/src/util/idle_notified_set.rs:501"
+      ],
+      "test_names": [
+       "io::stdio_common::tests::test_pseudo_text",
+       "io::stdio_common::tests::test_splitter",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_drop",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_kill",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_poll",
+       "runtime::tests::task_combinations::test_combinations",
+       "runtime::time::tests::change_waker",
+       "runtime::time::tests::reset_future",
+       "runtime::time::tests::single_timer",
+       "signal::registry::tests::smoke",
+       "sync::tests::notify::watch_test",
+       "task::local::tests::local_current_thread_scheduler",
+       "task::local::tests::wakes_to_local_queue",
+       "util::idle_notified_set::tests::join_set_test"
+      ],
+      "seconds": 5
+     },
+     "expected": [
+      "tokio/src/io/stdio_common.rs:181",
+      "tokio/src/io/stdio_common.rs:195",
+      "tokio/src/process/unix/pidfd_reaper.rs:261",
+      "tokio/src/process/unix/pidfd_reaper.rs:281",
+      "tokio/src/process/unix/pidfd_reaper.rs:303",
+      "tokio/src/runtime/tests/task_combinations.rs:69",
+      "tokio/src/runtime/time/tests/mod.rs:107",
+      "tokio/src/runtime/time/tests/mod.rs:140",
+      "tokio/src/runtime/time/tests/mod.rs:44",
+      "tokio/src/signal/registry.rs:181",
+      "tokio/src/sync/tests/notify.rs:105",
+      "tokio/src/task/local.rs:1253",
+      "tokio/src/task/local.rs:1275",
+      "tokio/src/util/idle_notified_set.rs:501"
+     ]
+    }
+   ]
+  }
+ ]
+}

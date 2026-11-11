@@ -484,3 +484,41 @@ S vs A: 1.04× weighted, 1.13× cost (was 1.07× / 1.15×).
 - **D5 status:** explain meets the line (0.83×, 5 vs 5). Impact ("change a signature
   safely") does not (≈1.1×). The third workflow ("find the tests for a change") has no
   session yet.
+
+### Tests for a change: test-run keys and an offline caller walk — 2026-11-11, 2.3.1 + `--at`
+
+Why agents re-checked `--at` in impact: the question asks for calls *and* value uses,
+and the `--at` answer did not say it covers value uses (it does: `.map(case_variants)`).
+The CLI now prints "Uses are every mention in code: calls, values (`.map(f)`) and
+paths." under the `--at` summary. Not measured live yet.
+
+**Key (`tests_keys.py`, `tasks/tests_keys.json`).** A marker `println!` at the start of
+the function's body; the unit tests (`--lib --bins`) run with `--show-output`; a test
+whose captured output holds the marker runs the function. Threads a test starts
+(tokio workers) inherit the capture. Not a failure key: a panic probe misses tests that
+catch panics. Integration tests and subprocesses (reflex's CLI tests) are out of
+scope. Per probe: ripgrep 2–4 s, tokio 4–14 s, reflex not yet (125 s cold baseline).
+16 questions (8 ripgrep, 8 tokio), 1–18 tests each; candidates with 0 or > 20 tests
+dropped (ripgrep `as_byte` 137, `set_pos` 129).
+
+**Offline walk (`score_tests.py`).** From the function: `rfx refs X --at`, take each
+use's `in`, find that `fn` line above the use, repeat; a caller with a test attribute
+is an answer.
+
+| Walk | Mean F1 | Exact | rfx calls / question |
+| --- | --- | --- | --- |
+| name only (`rfx refs X`, every caller by name: a grep walk) | 0.040 | 0 | 834 |
+| `--at` | **0.410** | 5 | 20 |
+| `--at` + `possible` lines | 0.356 | 5 | 535 |
+
+- A name walk reaches almost every test (412 of ripgrep's, 230 of tokio's): one
+  generic name (`new`, `poll`) on the path joins everything.
+- `--at` is 10× better, and still misses most runtime-wide reach:
+  - receivers whose type is not written: `CurrentThread::new` and `block_on` are
+    called on fields (`exec.block_on(...)`), so `--at` marks them `possible` (117 for
+    `new`, 36 for `block_on`) and the walk stops (`set_thread_id` 0 of 18);
+  - trait dispatch: `copy_to` ← `File::poll_read` ← `AsyncReadExt::read` in tests
+    (0 of 8);
+  - extras from tests the key never runs: `cfg(loom)`, `signal/windows/sys.rs`.
+- So this workflow needs receiver types from field declarations (and trait impls),
+  which is type inference. rust-analyzer (arm L) has it.

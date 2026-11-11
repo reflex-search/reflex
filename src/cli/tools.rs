@@ -298,6 +298,11 @@ pub(super) fn handle_refs(filters: ToolFilters, opts: RefsOptions, no_update: bo
             data["definition"]["symbol"].as_str().unwrap_or(""),
             data["elsewhere"].as_u64().unwrap_or(0),
         );
+        // Impact questions ask for calls *and* value uses; without this line agents
+        // re-ran grep to look for the value uses (sonnet55-impact2, 2026-11-11).
+        eprintln!(
+            "Uses are every mention in code: calls, values (`.map(f)`) and paths. Comments and strings are left out."
+        );
         return Ok(());
     }
     // `pagination` counts lines before the comment and string filter (the space
