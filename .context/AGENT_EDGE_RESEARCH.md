@@ -232,3 +232,41 @@ name, not recursion: `StandardImpl::trim_ascii_prefix` calls `util::trim_ascii_p
 
 Name-based limits of the grader: callers and callees are graded as bare names (F1), so
 two callers with one name count once.
+
+## Phase 0: tokio `explain` + `impact`, arms A, S, L — 2026-11-11, Sonnet 5.5, 1 trial
+
+Claude Code 2.1.318, rfx 2.3.1 (`17cd51d`), `results-sessions/sonnet55-phase0-compiled/`.
+8 questions per session. Spend: $1.31 plus warm-ups.
+
+| Arm | Session | Turns | rfx calls | Grep / grep calls | LSP calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A | explain | 30 | 0 | 11 | 0 | 106,244 | 0.239 | 1.000 |
+| A | impact | 24 | 0 | 9 | 0 | 79,182 | 0.178 | 1.000 |
+| L | explain | 31 | 0 | 8 | 0 | 109,068 | 0.244 | 1.000 |
+| L | impact | 24 | 0 | 10 | 0 | 84,612 | 0.194 | 1.000 |
+| S | explain | 32 | 2 | 10 | 0 | 106,187 | 0.238 | 1.000 |
+| S | impact | 25 | 8 | 5 | 0 | 95,444 | 0.219 | 1.000 |
+
+Vs A: L 1.05× weighted and cost; S 1.10× weighted, 1.11× cost. One trial: within noise.
+
+- **Key bugs found by the run, fixed before this table** (every arm lost the same
+  points): `#[cfg(all(...))]` attributes put `cfg`, `all`, `not` in the callees key
+  (`new_unnamed`), and a turbofish holding `()` hid `cast::<()>()` (`waker_ref`).
+  `callees` now blanks attributes and reads turbofishes 3 levels deep.
+  `detect_circular_dependencies` (`collect::<Result<Vec<_>, _>>`) and
+  `async_trace_leaf` (`#[inline]`) keys changed too.
+- **Same workflow in every arm:** read the function, search its name, read the hits to
+  tell same-name items apart. No accuracy headroom: every arm 1.000.
+- **L:** 0 LSP calls again (the schema is deferred; Grep is enough). L ≈ A on all four
+  Phase 0 session kinds measured.
+- **S fell back to shell grep in `explain`** after two `rfx refs` calls. `rfx refs
+  waker_ref` named `current_thread/mod.rs:563` as "the definition"; the question was
+  `util/wake.rs:35`. tokio has three `waker_ref` functions, and `refs` lists every
+  use of the name. `rfx refs read_to_string` named a `mod` line. So `refs` gave the
+  agent grep's work plus a wrong label, and it used `grep -rn` for the other 6
+  questions. In `impact` it kept `rfx refs` (8 of 13 searches).
+- **Reading for D5:** on these two workflows Reflex has no edge yet. The gap is the
+  one the questions name: "uses of THIS definition", not "uses of this name". Candidate
+  (Phase 2): `rfx refs X --at path:line`, binding each use to a definition by imports,
+  `self.`/`Type::` qualifiers and the file's own items, with the unbound uses listed
+  apart. Measure it on these sessions (keys are ready) before building more.

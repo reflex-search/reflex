@@ -4820,6 +4820,7 @@
      "prompt": "Explain the function `waker_ref` defined at `tokio/src/util/wake.rs:35`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
      "calls": [
       "as_ptr",
+      "cast",
       "from_raw",
       "new",
       "waker_vtable"
@@ -4841,6 +4842,7 @@
       ],
       "calls": [
        "as_ptr",
+       "cast",
        "from_raw",
        "new",
        "waker_vtable"
@@ -4950,10 +4952,7 @@
      "kind": "explain",
      "prompt": "Explain the function `new_unnamed` defined at `tokio/src/util/trace.rs:35`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
      "calls": [
-      "all",
-      "capture",
-      "cfg",
-      "not"
+      "capture"
      ],
      "callers": [
       "block_on",
@@ -4995,10 +4994,7 @@
        "spawn_mandatory_blocking"
       ],
       "calls": [
-       "all",
-       "capture",
-       "cfg",
-       "not"
+       "capture"
       ],
       "codes": [
        "E0061"
@@ -5184,7 +5180,6 @@
        "wait_internal"
       ],
       "calls": [
-       "inline",
        "trace_leaf"
       ],
       "codes": [

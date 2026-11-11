@@ -206,17 +206,32 @@ def add_parameter(src: str, parts: dict) -> str:
     return src[: parts["p_close"]] + sep + "__impact_probe: u32" + src[parts["p_close"]:]
 
 
+# `<...>` with up to three levels of nesting: `::<Result<Vec<_>, _>>`, `::<()>`.
+TURBOFISH = r"<[^<>;{}]*>"
+for _ in range(2):
+    TURBOFISH = r"<(?:[^<>;{}]|" + TURBOFISH + r")*>"
+
+
 def callees(src: str, parts: dict) -> list[str]:
     """Functions and methods the body calls directly, by name."""
     body = src[parts["b_open"] + 1: parts["b_close"]]
     mask = parts["mask"][parts["b_open"] + 1: parts["b_close"]]
     code = "".join(c if mask[k] else " " for k, c in enumerate(body))
+    # Attributes are not calls: `#[cfg(all(tokio_unstable, feature = "tracing"))]`.
+    for m in reversed(list(re.finditer(r"#!?\[", code))):
+        depth, j = 0, m.end() - 1
+        while j < len(code):
+            depth += {"[": 1, "]": -1}.get(code[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        code = code[: m.start()] + " " * (j + 1 - m.start()) + code[j + 1:]
     params = src[parts["p_open"] + 1: parts["p_close"]]
     local = set(re.findall(r"\b([a-z_][A-Za-z0-9_]*)\s*:", params))
     local |= set(re.findall(r"\blet\s+(?:mut\s+)?([a-z_][A-Za-z0-9_]*)", code))
     local |= set(re.findall(r"\|\s*([a-z_][A-Za-z0-9_]*)", code))  # closure params
     out = set()
-    for m in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^()]*?>\s*)?\(", code):
+    for m in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*" + TURBOFISH + r"\s*)?\(", code):
         n = m.group(1)
         before = code[: m.start()].rstrip()
         if n in KEYWORDS or n[0].isupper() or code[m.end(1):].lstrip().startswith("!"):
