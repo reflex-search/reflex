@@ -373,6 +373,23 @@ fn refs_at_binds_uses_to_one_definition() {
         .collect();
     assert_eq!(refs, vec![("src/a.rs".to_string(), 6, "use_a".to_string())]);
     assert_eq!(cli["possible"].as_array().map_or(0, |p| p.len()), 0);
+    // The lines left out, with their text: b.rs's definition and its use.
+    let left: Vec<(String, u64)> = cli["left_out"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["path"].as_str().unwrap().to_string(),
+                r["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        left,
+        vec![("src/b.rs".to_string(), 3), ("src/b.rs".to_string(), 6)]
+    );
+    assert_eq!(cli["elsewhere"], 2);
 
     // The other definition binds the line in b.rs (two uses on one line).
     let b = json_out(root, &["refs", "run", "--json", "--at", "src/b.rs:3"]);
@@ -417,4 +434,9 @@ fn refs_at_binds_uses_to_one_definition() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("src/a.rs:6:"), "{}", stdout(&out));
     assert!(stdout(&out).contains("[in use_a]"), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("left out (these name another item called run):\nsrc/b.rs:3:"),
+        "{}",
+        stdout(&out)
+    );
 }

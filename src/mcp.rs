@@ -3202,7 +3202,9 @@ fn bind_references(
         .collect();
     let mut bound = Vec::new();
     let mut possible = Vec::new();
-    let mut elsewhere = 0usize;
+    // The lines that name other items, with their text: an agent checks what was
+    // left out, and fetched these with a second search when only the count was given.
+    let mut left_out = Vec::new();
     for l in &binding.lines {
         let mut row = json!({
             "path": l.path,
@@ -3218,7 +3220,7 @@ fn bind_references(
         match l.verdict {
             crate::bind::Verdict::This => bound.push(row),
             crate::bind::Verdict::Possible => possible.push(row),
-            crate::bind::Verdict::Other => elsewhere += 1,
+            crate::bind::Verdict::Other => left_out.push(row),
         }
     }
     let t = &binding.target;
@@ -3236,7 +3238,8 @@ fn bind_references(
         "references": bound,
         "returned_count": bound.len(),
         "possible": possible,
-        "elsewhere": elsewhere,
+        "elsewhere": left_out.len(),
+        "left_out": left_out,
         "has_more": false,
     }))
 }

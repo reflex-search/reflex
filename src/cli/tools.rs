@@ -292,7 +292,7 @@ pub(super) fn handle_refs(filters: ToolFilters, opts: RefsOptions, no_update: bo
     if at.is_some() {
         let n = |k: &str| data[k].as_array().map_or(0, |a| a.len());
         eprintln!(
-            "{} uses of this definition; {} possible (could not tell which `{}`); {} lines name other items (left out)",
+            "{} uses of this definition; {} possible (could not tell which `{}`); {} lines name other items (listed last)",
             n("references"),
             n("possible"),
             data["definition"]["symbol"].as_str().unwrap_or(""),
@@ -382,6 +382,17 @@ fn refs_text(data: &Value, at_hint: bool) -> String {
     if !possible.is_empty() {
         out.push_str("possible (the receiver's type is not written; check these):\n");
         for r in possible {
+            row(&mut out, r);
+        }
+    }
+    let left_out = data["left_out"]
+        .as_array()
+        .map_or(&[][..], |a| a.as_slice());
+    if !left_out.is_empty() {
+        out.push_str(&format!(
+            "left out (these name another item called {symbol}):\n"
+        ));
+        for r in left_out {
             row(&mut out, r);
         }
     }
