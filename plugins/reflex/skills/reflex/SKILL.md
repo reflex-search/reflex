@@ -35,6 +35,7 @@ exactly, so do not re-check. It prints the definition, then `path:line:text` per
 | --- | --- |
 | Where does X occur | `rfx locations X` (add `--preview` for the line text) |
 | Every use of X in code, not comments or strings | `rfx refs X` (`--count` for the number) |
+| Every use of the X defined at one line (Rust; other items share the name) | `rfx refs X --at src/a.rs:35` (each use names its caller) |
 | Where is X defined | `rfx query X --symbols --json` (narrow with `--kind function`) |
 | The full body of a definition | `rfx query X --symbols --expand --json` |
 | Lines around each match | `rfx query X -C 3 --json` |

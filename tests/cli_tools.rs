@@ -314,3 +314,75 @@ fn path_arguments_scope_the_search_like_grep() {
         stderr(&out)
     );
 }
+
+/// Two methods named `run`: `--at` keeps the uses of the one at that line.
+#[test]
+fn refs_at_binds_uses_to_one_definition() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub mod a;\npub mod b;\n").unwrap();
+    std::fs::write(
+        root.join("src/a.rs"),
+        "pub struct A;\n\
+         impl A {\n\
+         \x20   pub fn run(&self) -> u32 { 1 }\n\
+         }\n\
+         pub fn use_a(x: &A) -> u32 {\n\
+         \x20   x.run()\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/b.rs"),
+        "pub struct B;\n\
+         impl B {\n\
+         \x20   pub fn run(&self) -> u32 { 2 }\n\
+         }\n\
+         pub fn use_b(y: B) -> u32 {\n\
+         \x20   y.run() + B::run(&y)\n\
+         }\n",
+    )
+    .unwrap();
+    let out = rfx(root, &["index", "--quiet"]);
+    assert!(out.status.success(), "rfx index failed: {}", stderr(&out));
+
+    let cli = json_out(root, &["refs", "run", "--json", "--at", "src/a.rs:3"]);
+    assert_eq!(
+        cli,
+        call_tool(
+            root,
+            "find_references",
+            json!({"pattern": "run", "at": "src/a.rs:3"})
+        )
+    );
+    assert_eq!(cli["definition"]["path"], "src/a.rs");
+    assert_eq!(cli["definition"]["line"], 3);
+    let refs: Vec<(String, u64, String)> = cli["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["path"].as_str().unwrap().to_string(),
+                r["line"].as_u64().unwrap(),
+                r["in"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(refs, vec![("src/a.rs".to_string(), 6, "use_a".to_string())]);
+    assert_eq!(cli["possible"].as_array().map_or(0, |p| p.len()), 0);
+
+    // The other definition binds the line in b.rs (two uses on one line).
+    let b = json_out(root, &["refs", "run", "--json", "--at", "src/b.rs:3"]);
+    assert_eq!(b["references"][0]["path"], "src/b.rs", "{b}");
+    assert_eq!(b["references"][0]["line"], 6, "{b}");
+    assert_eq!(b["returned_count"], 1, "{b}");
+
+    // Text form: the caller in brackets.
+    let out = rfx(root, &["refs", "run", "--at", "src/a.rs:3"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("src/a.rs:6:"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("[in use_a]"), "{}", stdout(&out));
+}

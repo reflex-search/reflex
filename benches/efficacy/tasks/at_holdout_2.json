@@ -1,0 +1,2267 @@
+{
+ "sessions": [
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "new_timeout",
+      "where": "tokio/src/time/sleep.rs:250",
+      "sites": [
+       "tokio/src/time/sleep.rs:127",
+       "tokio/src/time/sleep.rs:128",
+       "tokio/src/time/sleep.rs:307",
+       "tokio/src/time/sleep.rs:63",
+       "tokio/src/time/timeout.rs:94"
+      ],
+      "callers": [
+       "far_future",
+       "sleep",
+       "sleep_until",
+       "timeout"
+      ],
+      "calls": [
+       "clock",
+       "column",
+       "current",
+       "deadline_to_tick",
+       "driver",
+       "expect",
+       "file",
+       "in_scope",
+       "line",
+       "new",
+       "now",
+       "saturating_sub",
+       "time",
+       "time_source"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/time/sleep.rs:127",
+       "tokio/src/time/sleep.rs:128",
+       "tokio/src/time/sleep.rs:250",
+       "tokio/src/time/sleep.rs:307",
+       "tokio/src/time/sleep.rs:63",
+       "tokio/src/time/timeout.rs:94"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "set_join_waker",
+      "where": "tokio/src/runtime/task/join.rs:257",
+      "sites": [
+       "tokio/src/task/join_set.rs:269"
+      ],
+      "callers": [
+       "insert"
+      ],
+      "calls": [
+       "try_set_join_waker",
+       "wake_by_ref"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/task/harness.rs:446",
+       "tokio/src/runtime/task/harness.rs:451",
+       "tokio/src/runtime/task/harness.rs:464",
+       "tokio/src/runtime/task/harness.rs:480",
+       "tokio/src/runtime/task/join.rs:257",
+       "tokio/src/runtime/task/state.rs:426",
+       "tokio/src/runtime/task/state.rs:436",
+       "tokio/src/runtime/task/state.rs:614",
+       "tokio/src/task/join_set.rs:269"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "caller_location",
+      "where": "tokio/src/util/trace.rs:185",
+      "sites": [
+       "tokio/src/time/interval.rs:110",
+       "tokio/src/time/interval.rs:75",
+       "tokio/src/time/sleep.rs:124",
+       "tokio/src/time/sleep.rs:63",
+       "tokio/src/time/timeout.rs:90"
+      ],
+      "callers": [
+       "interval",
+       "interval_at",
+       "sleep",
+       "sleep_until",
+       "timeout"
+      ],
+      "calls": [
+       "caller"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/time/interval.rs:110",
+       "tokio/src/time/interval.rs:75",
+       "tokio/src/time/sleep.rs:124",
+       "tokio/src/time/sleep.rs:63",
+       "tokio/src/time/timeout.rs:90",
+       "tokio/src/util/trace.rs:185"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "is_readable",
+      "where": "tokio/src/io/ready.rs:127",
+      "sites": [
+       "tokio/src/io/ready.rs:311",
+       "tokio/src/runtime/io/scheduled_io.rs:244"
+      ],
+      "callers": [
+       "fmt",
+       "wake"
+      ],
+      "calls": [
+       "contains",
+       "is_read_closed"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/interest.rs:217",
+       "tokio/src/io/interest.rs:290",
+       "tokio/src/io/interest.rs:86",
+       "tokio/src/io/ready.rs:127",
+       "tokio/src/io/ready.rs:241",
+       "tokio/src/io/ready.rs:311",
+       "tokio/src/io/ready.rs:71",
+       "tokio/src/runtime/io/scheduled_io.rs:244"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "try_enter_blocking_region",
+      "where": "tokio/src/runtime/context/blocking.rs:17",
+      "sites": [
+       "tokio/src/future/block_on.rs:6",
+       "tokio/src/runtime/blocking/shutdown.rs:44"
+      ],
+      "callers": [
+       "block_on",
+       "wait"
+      ],
+      "calls": [
+       "get",
+       "is_entered",
+       "new",
+       "try_with",
+       "unwrap_or_else"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/future/block_on.rs:6",
+       "tokio/src/runtime/blocking/shutdown.rs:38",
+       "tokio/src/runtime/blocking/shutdown.rs:44",
+       "tokio/src/runtime/context.rs:11",
+       "tokio/src/runtime/context/blocking.rs:17"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "wake_all",
+      "where": "tokio/src/util/wake_list.rs:39",
+      "sites": [
+       "tokio/src/runtime/io/scheduled_io.rs:278",
+       "tokio/src/runtime/io/scheduled_io.rs:287",
+       "tokio/src/runtime/time/mod.rs:281",
+       "tokio/src/runtime/time/mod.rs:295",
+       "tokio/src/sync/batch_semaphore.rs:366",
+       "tokio/src/sync/broadcast.rs:1045",
+       "tokio/src/sync/broadcast.rs:1054",
+       "tokio/src/sync/notify.rs:726",
+       "tokio/src/sync/notify.rs:735"
+      ],
+      "callers": [
+       "add_permits_locked",
+       "notify_rx",
+       "notify_waiters",
+       "process_at_time",
+       "wake"
+      ],
+      "calls": [
+       "add",
+       "as_mut_ptr",
+       "cast",
+       "drop_in_place",
+       "eq",
+       "offset_from",
+       "read",
+       "slice_from_raw_parts_mut",
+       "wake"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/io/scheduled_io.rs:278",
+       "tokio/src/runtime/io/scheduled_io.rs:287",
+       "tokio/src/runtime/time/mod.rs:281",
+       "tokio/src/runtime/time/mod.rs:295",
+       "tokio/src/sync/batch_semaphore.rs:366",
+       "tokio/src/sync/broadcast.rs:1045",
+       "tokio/src/sync/broadcast.rs:1054",
+       "tokio/src/sync/notify.rs:726",
+       "tokio/src/sync/notify.rs:735",
+       "tokio/src/util/wake_list.rs:39"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "sleep_until",
+      "where": "tokio/src/time/sleep.rs:62",
+      "sites": [
+       "tokio/src/time/interval.rs:138",
+       "tokio/src/time/timeout.rs:149"
+      ],
+      "callers": [
+       "internal_interval_at",
+       "timeout_at"
+      ],
+      "calls": [
+       "caller_location",
+       "new_timeout"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/time/interval.rs:1",
+       "tokio/src/time/interval.rs:135",
+       "tokio/src/time/interval.rs:138",
+       "tokio/src/time/mod.rs:102",
+       "tokio/src/time/sleep.rs:62",
+       "tokio/src/time/timeout.rs:149",
+       "tokio/src/time/timeout.rs:9"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "is_priority",
+      "where": "tokio/src/io/ready.rs:190",
+      "sites": [
+       "tokio/src/io/ready.rs:318"
+      ],
+      "callers": [
+       "fmt"
+      ],
+      "calls": [
+       "contains"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/interest.rs:149",
+       "tokio/src/io/interest.rs:226",
+       "tokio/src/io/interest.rs:307",
+       "tokio/src/io/ready.rs:190",
+       "tokio/src/io/ready.rs:252",
+       "tokio/src/io/ready.rs:318",
+       "tokio/src/io/ready.rs:93"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "poll_write_priv",
+      "where": "tokio/src/net/unix/stream.rs:1056",
+      "sites": [
+       "tokio/src/net/unix/split.rs:297",
+       "tokio/src/net/unix/split_owned.rs:378",
+       "tokio/src/net/unix/stream.rs:1015"
+      ],
+      "callers": [
+       "poll_write"
+      ],
+      "calls": [
+       "poll_write"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/net/tcp/split.rs:386",
+       "tokio/src/net/tcp/split_owned.rs:466",
+       "tokio/src/net/tcp/stream.rs:1310",
+       "tokio/src/net/tcp/stream.rs:1357",
+       "tokio/src/net/unix/split.rs:297",
+       "tokio/src/net/unix/split_owned.rs:378",
+       "tokio/src/net/unix/stream.rs:1015",
+       "tokio/src/net/unix/stream.rs:1056"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "with_current",
+      "where": "tokio/src/runtime/context/current.rs:37",
+      "sites": [
+       "tokio/src/runtime/handle.rs:151",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:252",
+       "tokio/src/runtime/scheduler/mod.rs:91",
+       "tokio/src/task/coop/mod.rs:333",
+       "tokio/src/task/local.rs:393",
+       "tokio/src/task/spawn.rs:202"
+      ],
+      "callers": [
+       "current",
+       "inc_budget_forced_yield_count",
+       "shutdown",
+       "spawn_inner",
+       "spawn_local_inner",
+       "try_current"
+      ],
+      "calls": [
+       "as_ref",
+       "borrow",
+       "map",
+       "new_no_context",
+       "new_thread_local_destroyed",
+       "try_with"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/context.rs:14",
+       "tokio/src/runtime/context/current.rs:37",
+       "tokio/src/runtime/handle.rs:151",
+       "tokio/src/runtime/park.rs:254",
+       "tokio/src/runtime/park.rs:258",
+       "tokio/src/runtime/park.rs:263",
+       "tokio/src/runtime/park.rs:268",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:252",
+       "tokio/src/runtime/scheduler/mod.rs:91",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:1056",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:1253",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:329",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:355",
+       "tokio/src/task/coop/mod.rs:333",
+       "tokio/src/task/local.rs:393",
+       "tokio/src/task/spawn.rs:202"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "as_u64",
+      "where": "tokio/src/runtime/task/id.rs:77",
+      "sites": [
+       "tokio/src/runtime/blocking/pool.rs:380",
+       "tokio/src/task/local.rs:1010",
+       "tokio/src/task/local.rs:414",
+       "tokio/src/task/spawn.rs:200"
+      ],
+      "callers": [
+       "spawn",
+       "spawn_blocking_inner",
+       "spawn_inner",
+       "spawn_local_inner"
+      ],
+      "calls": [
+       "get"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/blocking/pool.rs:380",
+       "tokio/src/runtime/handle.rs:322",
+       "tokio/src/runtime/handle.rs:347",
+       "tokio/src/runtime/handle.rs:372",
+       "tokio/src/runtime/local_runtime/runtime.rs:247",
+       "tokio/src/runtime/runtime.rs:350",
+       "tokio/src/runtime/task/id.rs:77",
+       "tokio/src/task/local.rs:1010",
+       "tokio/src/task/local.rs:414",
+       "tokio/src/task/spawn.rs:200"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "is_error",
+      "where": "tokio/src/io/ready.rs:205",
+      "sites": [
+       "tokio/src/io/ready.rs:315"
+      ],
+      "callers": [
+       "fmt"
+      ],
+      "calls": [
+       "contains"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/interest.rs:120",
+       "tokio/src/io/interest.rs:240",
+       "tokio/src/io/interest.rs:333",
+       "tokio/src/io/ready.rs:205",
+       "tokio/src/io/ready.rs:257",
+       "tokio/src/io/ready.rs:315",
+       "tokio/src/io/ready.rs:87"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "enable_all",
+      "where": "tokio/src/runtime/builder.rs:334",
+      "sites": [
+       "tokio/src/runtime/local_runtime/runtime.rs:94",
+       "tokio/src/runtime/runtime.rs:173"
+      ],
+      "callers": [
+       "new"
+      ],
+      "calls": [
+       "enable_io",
+       "enable_time"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/builder.rs:334",
+       "tokio/src/runtime/local_runtime/runtime.rs:94",
+       "tokio/src/runtime/runtime.rs:173"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "write_buf",
+      "where": "tokio/src/io/util/write_buf.rs:25",
+      "sites": [
+       "tokio/src/io/util/async_write_ext.rs:259"
+      ],
+      "callers": [
+       "write_buf"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/util/async_write_ext.rs:254",
+       "tokio/src/io/util/async_write_ext.rs:259",
+       "tokio/src/io/util/async_write_ext.rs:6",
+       "tokio/src/io/util/mod.rs:80",
+       "tokio/src/io/util/write_buf.rs:25"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "load_next",
+      "where": "tokio/src/sync/mpsc/block.rs:285",
+      "sites": [
+       "tokio/src/sync/mpsc/list.rs:132",
+       "tokio/src/sync/mpsc/list.rs:316",
+       "tokio/src/sync/mpsc/list.rs:354",
+       "tokio/src/sync/mpsc/list.rs:384"
+      ],
+      "callers": [
+       "find_block",
+       "free_blocks",
+       "reclaim_blocks",
+       "try_advancing_head"
+      ],
+      "calls": [
+       "as_ref",
+       "load",
+       "map_or",
+       "new",
+       "wrapping_add"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/sync/mpsc/block.rs:285",
+       "tokio/src/sync/mpsc/list.rs:132",
+       "tokio/src/sync/mpsc/list.rs:316",
+       "tokio/src/sync/mpsc/list.rs:354",
+       "tokio/src/sync/mpsc/list.rs:384"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout2",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "read_buf",
+      "where": "tokio/src/io/util/read_buf.rs:11",
+      "sites": [
+       "tokio/src/io/util/async_read_ext.rs:251"
+      ],
+      "callers": [
+       "read_buf"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/mod.rs:209",
+       "tokio/src/io/mod.rs:210",
+       "tokio/src/io/util/async_read_ext.rs:246",
+       "tokio/src/io/util/async_read_ext.rs:251",
+       "tokio/src/io/util/async_read_ext.rs:3",
+       "tokio/src/io/util/mod.rs:48",
+       "tokio/src/io/util/read_buf.rs:11",
+       "tokio/src/io/util/read_to_end.rs:102",
+       "tokio/src/io/util/read_to_end.rs:105",
+       "tokio/src/io/util/read_to_end.rs:106",
+       "tokio/src/io/util/read_to_end.rs:109",
+       "tokio/src/io/util/read_to_end.rs:113",
+       "tokio/src/io/util/read_to_end.rs:80",
+       "tokio/src/io/util/read_to_end.rs:91",
+       "tokio/src/io/util/read_to_end.rs:92",
+       "tokio/src/io/util/read_to_end.rs:94",
+       "tokio/src/io/util/read_to_end.rs:96",
+       "tokio/src/io/util/vec_with_initialized.rs:87",
+       "tokio/src/io/util/vec_with_initialized.rs:89",
+       "tokio/src/io/util/vec_with_initialized.rs:91",
+       "tokio/src/io/util/vec_with_initialized.rs:93"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "separator_field_match",
+      "where": "crates/printer/src/standard.rs:420",
+      "sites": [
+       "crates/core/flags/hiargs.rs:621",
+       "crates/printer/src/standard.rs:2089"
+      ],
+      "callers": [
+       "printer_standard",
+       "separator_field"
+      ],
+      "calls": [
+       "new"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:621",
+       "crates/printer/src/standard.rs:1594",
+       "crates/printer/src/standard.rs:2089",
+       "crates/printer/src/standard.rs:420",
+       "crates/printer/src/standard.rs:424",
+       "crates/printer/src/standard.rs:55",
+       "crates/printer/src/standard.rs:81"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "from_low_args",
+      "where": "crates/core/flags/hiargs.rs:112",
+      "sites": [
+       "crates/core/flags/parse.rs:50"
+      ],
+      "callers": [
+       "parse"
+      ],
+      "calls": [
+       "all",
+       "auto",
+       "available_parallelism",
+       "clone",
+       "from_low_args",
+       "get",
+       "into_bytes",
+       "is_file",
+       "is_none",
+       "is_only_stdin",
+       "is_some",
+       "iter",
+       "len",
+       "map_or",
+       "min",
+       "never",
+       "new",
+       "preprocessor_globs",
+       "supported",
+       "take_color_specs",
+       "take_hyperlink_config",
+       "to_vec",
+       "unwrap_or",
+       "unwrap_or_else"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:1062",
+       "crates/core/flags/hiargs.rs:112",
+       "crates/core/flags/hiargs.rs:1150",
+       "crates/core/flags/hiargs.rs:142",
+       "crates/core/flags/hiargs.rs:143",
+       "crates/core/flags/hiargs.rs:145",
+       "crates/core/flags/hiargs.rs:971",
+       "crates/core/flags/parse.rs:50"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "strip_dot_prefix",
+      "where": "crates/core/haystack.rs:85",
+      "sites": [
+       "crates/core/flags/hiargs.rs:357"
+      ],
+      "callers": [
+       "haystack_builder"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:357",
+       "crates/core/haystack.rs:100",
+       "crates/core/haystack.rs:109",
+       "crates/core/haystack.rs:17",
+       "crates/core/haystack.rs:23",
+       "crates/core/haystack.rs:50",
+       "crates/core/haystack.rs:85",
+       "crates/core/haystack.rs:89"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "parse_human_readable_size",
+      "where": "crates/cli/src/human.rs:79",
+      "sites": [
+       "crates/cli/src/human.rs:108",
+       "crates/cli/src/human.rs:114",
+       "crates/cli/src/human.rs:120",
+       "crates/cli/src/human.rs:126",
+       "crates/cli/src/human.rs:132",
+       "crates/cli/src/human.rs:137",
+       "crates/cli/src/human.rs:142",
+       "crates/cli/src/human.rs:147",
+       "crates/core/flags/defs.rs:7500"
+      ],
+      "callers": [
+       "human_readable_u64",
+       "invalid_empty",
+       "invalid_non_digit",
+       "invalid_overflow",
+       "invalid_suffix",
+       "suffix_g",
+       "suffix_k",
+       "suffix_m",
+       "suffix_none"
+      ],
+      "calls": [
+       "as_bytes",
+       "checked_mul",
+       "count",
+       "format",
+       "int",
+       "is_ascii_digit",
+       "is_empty",
+       "iter",
+       "map_err",
+       "ok_or_else",
+       "overflow",
+       "parse",
+       "take_while"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/cli/src/human.rs:108",
+       "crates/cli/src/human.rs:114",
+       "crates/cli/src/human.rs:120",
+       "crates/cli/src/human.rs:126",
+       "crates/cli/src/human.rs:132",
+       "crates/cli/src/human.rs:137",
+       "crates/cli/src/human.rs:142",
+       "crates/cli/src/human.rs:147",
+       "crates/cli/src/human.rs:79",
+       "crates/cli/src/lib.rs:141",
+       "crates/core/flags/defs.rs:7500"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "set_before",
+      "where": "crates/core/flags/lowargs.rs:379",
+      "sites": [
+       "crates/core/flags/defs.rs:1067",
+       "crates/core/flags/defs.rs:1074",
+       "crates/core/flags/defs.rs:1092",
+       "crates/core/flags/defs.rs:1099",
+       "crates/core/flags/defs.rs:372",
+       "crates/core/flags/defs.rs:382"
+      ],
+      "callers": [
+       "test_before_context",
+       "test_context",
+       "update"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/defs.rs:1067",
+       "crates/core/flags/defs.rs:1074",
+       "crates/core/flags/defs.rs:1092",
+       "crates/core/flags/defs.rs:1099",
+       "crates/core/flags/defs.rs:372",
+       "crates/core/flags/defs.rs:382",
+       "crates/core/flags/lowargs.rs:379"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "bytes_range_in_buffer",
+      "where": "crates/searcher/src/sink.rs:423",
+      "sites": [
+       "crates/printer/src/json.rs:712",
+       "crates/printer/src/standard.rs:833",
+       "crates/printer/src/standard.rs:835",
+       "crates/printer/src/summary.rs:663"
+      ],
+      "callers": [
+       "matched"
+      ],
+      "calls": [
+       "clone"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/json.rs:712",
+       "crates/printer/src/standard.rs:833",
+       "crates/printer/src/standard.rs:835",
+       "crates/printer/src/summary.rs:663",
+       "crates/searcher/src/searcher/core.rs:476",
+       "crates/searcher/src/sink.rs:372",
+       "crates/searcher/src/sink.rs:423",
+       "crates/searcher/src/sink.rs:424"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "capacity",
+      "where": "crates/searcher/src/line_buffer.rs:141",
+      "sites": [
+       "crates/searcher/src/line_buffer.rs:671",
+       "crates/searcher/src/line_buffer.rs:684",
+       "crates/searcher/src/line_buffer.rs:701",
+       "crates/searcher/src/line_buffer.rs:735",
+       "crates/searcher/src/line_buffer.rs:760",
+       "crates/searcher/src/searcher/mod.rs:228"
+      ],
+      "callers": [
+       "buffer_limited_capacity1",
+       "buffer_limited_capacity2",
+       "buffer_limited_capacity3",
+       "buffer_small_capacity",
+       "buffer_zero_capacity",
+       "line_buffer"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/searcher/src/line_buffer.rs:100",
+       "crates/searcher/src/line_buffer.rs:124",
+       "crates/searcher/src/line_buffer.rs:141",
+       "crates/searcher/src/line_buffer.rs:143",
+       "crates/searcher/src/line_buffer.rs:145",
+       "crates/searcher/src/line_buffer.rs:509",
+       "crates/searcher/src/line_buffer.rs:512",
+       "crates/searcher/src/line_buffer.rs:671",
+       "crates/searcher/src/line_buffer.rs:684",
+       "crates/searcher/src/line_buffer.rs:701",
+       "crates/searcher/src/line_buffer.rs:735",
+       "crates/searcher/src/line_buffer.rs:760",
+       "crates/searcher/src/line_buffer.rs:88",
+       "crates/searcher/src/searcher/mod.rs:222",
+       "crates/searcher/src/searcher/mod.rs:228"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "matched_lines",
+      "where": "crates/printer/src/stats.rs:60",
+      "sites": [
+       "crates/core/main.rs:474",
+       "crates/printer/src/standard.rs:1890",
+       "crates/printer/src/standard.rs:1927"
+      ],
+      "callers": [
+       "print_stats",
+       "reports_stats",
+       "reports_stats_multiple"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/main.rs:474",
+       "crates/printer/src/standard.rs:1890",
+       "crates/printer/src/standard.rs:1927",
+       "crates/printer/src/stats.rs:126",
+       "crates/printer/src/stats.rs:145",
+       "crates/printer/src/stats.rs:167",
+       "crates/printer/src/stats.rs:19",
+       "crates/printer/src/stats.rs:60",
+       "crates/printer/src/stats.rs:61",
+       "crates/printer/src/stats.rs:98"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "quit_after_match",
+      "where": "crates/core/flags/hiargs.rs:677",
+      "sites": [
+       "crates/core/main.rs:139",
+       "crates/core/main.rs:212",
+       "crates/core/main.rs:247",
+       "crates/core/main.rs:306"
+      ],
+      "callers": [
+       "files",
+       "files_parallel",
+       "search",
+       "search_parallel"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:166",
+       "crates/core/flags/hiargs.rs:307",
+       "crates/core/flags/hiargs.rs:677",
+       "crates/core/flags/hiargs.rs:678",
+       "crates/core/flags/hiargs.rs:93",
+       "crates/core/main.rs:139",
+       "crates/core/main.rs:212",
+       "crates/core/main.rs:247",
+       "crates/core/main.rs:306"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "exclude_zero",
+      "where": "crates/printer/src/summary.rs:295",
+      "sites": [
+       "crates/core/flags/hiargs.rs:647",
+       "crates/printer/src/summary.rs:915",
+       "crates/printer/src/summary.rs:935"
+      ],
+      "callers": [
+       "count_path_with_zero",
+       "count_path_without_zero",
+       "printer_summary"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:647",
+       "crates/printer/src/summary.rs:295",
+       "crates/printer/src/summary.rs:296",
+       "crates/printer/src/summary.rs:36",
+       "crates/printer/src/summary.rs:51",
+       "crates/printer/src/summary.rs:771",
+       "crates/printer/src/summary.rs:915",
+       "crates/printer/src/summary.rs:935"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "path_is_symlink",
+      "where": "crates/ignore/src/walk.rs:48",
+      "sites": [
+       "crates/core/haystack.rs:153",
+       "crates/ignore/src/walk.rs:2215",
+       "crates/ignore/src/walk.rs:2221"
+      ],
+      "callers": [
+       "first_path_not_symlink",
+       "is_dir"
+      ],
+      "calls": [
+       "path_is_symlink"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/haystack.rs:153",
+       "crates/ignore/src/walk.rs:155",
+       "crates/ignore/src/walk.rs:159",
+       "crates/ignore/src/walk.rs:160",
+       "crates/ignore/src/walk.rs:2215",
+       "crates/ignore/src/walk.rs:2221",
+       "crates/ignore/src/walk.rs:277",
+       "crates/ignore/src/walk.rs:48",
+       "crates/ignore/src/walk.rs:49"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "bytes_searched",
+      "where": "crates/printer/src/stats.rs:47",
+      "sites": [
+       "crates/core/main.rs:478",
+       "crates/printer/src/standard.rs:1888",
+       "crates/printer/src/standard.rs:1925"
+      ],
+      "callers": [
+       "print_stats",
+       "reports_stats",
+       "reports_stats_multiple"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/main.rs:478",
+       "crates/printer/src/standard.rs:1888",
+       "crates/printer/src/standard.rs:1925",
+       "crates/printer/src/stats.rs:124",
+       "crates/printer/src/stats.rs:143",
+       "crates/printer/src/stats.rs:165",
+       "crates/printer/src/stats.rs:17",
+       "crates/printer/src/stats.rs:47",
+       "crates/printer/src/stats.rs:48",
+       "crates/printer/src/stats.rs:88"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "literal_separator",
+      "where": "crates/globset/src/glob.rs:606",
+      "sites": [
+       "crates/globset/src/glob.rs:1061",
+       "crates/globset/src/glob.rs:1087",
+       "crates/globset/src/glob.rs:1118",
+       "crates/globset/src/glob.rs:1450",
+       "crates/ignore/src/gitignore.rs:505",
+       "crates/ignore/src/types.rs:340"
+      ],
+      "callers": [
+       "add_line",
+       "build"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/globset/src/glob.rs:1061",
+       "crates/globset/src/glob.rs:1087",
+       "crates/globset/src/glob.rs:1118",
+       "crates/globset/src/glob.rs:1450",
+       "crates/globset/src/glob.rs:202",
+       "crates/globset/src/glob.rs:215",
+       "crates/globset/src/glob.rs:339",
+       "crates/globset/src/glob.rs:402",
+       "crates/globset/src/glob.rs:466",
+       "crates/globset/src/glob.rs:516",
+       "crates/globset/src/glob.rs:606",
+       "crates/globset/src/glob.rs:607",
+       "crates/globset/src/glob.rs:671",
+       "crates/globset/src/glob.rs:678",
+       "crates/ignore/src/gitignore.rs:505",
+       "crates/ignore/src/types.rs:340"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "separator_search",
+      "where": "crates/printer/src/standard.rs:387",
+      "sites": [
+       "crates/core/flags/hiargs.rs:633",
+       "crates/printer/src/standard.rs:1965",
+       "crates/printer/src/standard.rs:2016"
+      ],
+      "callers": [
+       "context_break_multiple_heading",
+       "context_break_multiple_no_heading",
+       "printer_standard"
+      ],
+      "calls": [
+       "new"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:633",
+       "crates/printer/src/standard.rs:1439",
+       "crates/printer/src/standard.rs:1965",
+       "crates/printer/src/standard.rs:2016",
+       "crates/printer/src/standard.rs:387",
+       "crates/printer/src/standard.rs:391",
+       "crates/printer/src/standard.rs:53",
+       "crates/printer/src/standard.rs:79"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "per_match_one_line",
+      "where": "crates/printer/src/standard.rs:278",
+      "sites": [
+       "crates/core/flags/hiargs.rs:614",
+       "crates/printer/src/standard.rs:3276",
+       "crates/printer/src/standard.rs:3305",
+       "crates/printer/src/standard.rs:3333"
+      ],
+      "callers": [
+       "per_match_multi_line1_only_first_line",
+       "per_match_multi_line2_only_first_line",
+       "per_match_multi_line3_only_first_line",
+       "printer_standard"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:614",
+       "crates/printer/src/standard.rs:1230",
+       "crates/printer/src/standard.rs:278",
+       "crates/printer/src/standard.rs:279",
+       "crates/printer/src/standard.rs:3276",
+       "crates/printer/src/standard.rs:3305",
+       "crates/printer/src/standard.rs:3333",
+       "crates/printer/src/standard.rs:45",
+       "crates/printer/src/standard.rs:71"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout2",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "build_from_result",
+      "where": "crates/core/haystack.rs:31",
+      "sites": [
+       "crates/core/main.rs:113",
+       "crates/core/main.rs:184",
+       "crates/core/main.rs:240",
+       "crates/core/main.rs:301"
+      ],
+      "callers": [
+       "files",
+       "files_parallel",
+       "search",
+       "search_parallel"
+      ],
+      "calls": [
+       "build"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/haystack.rs:31",
+       "crates/core/main.rs:113",
+       "crates/core/main.rs:184",
+       "crates/core/main.rs:240",
+       "crates/core/main.rs:301"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "compact",
+      "where": "src/cache.rs:1634",
+      "sites": [
+       "src/cli/index.rs:67",
+       "src/cli/mod.rs:993"
+      ],
+      "callers": [
+       "handle_index_compact",
+       "try_background_compact"
+      ],
+      "calls": [
+       "as_millis",
+       "calculate_cache_size",
+       "delete_files_from_db",
+       "elapsed",
+       "identify_deleted_files",
+       "is_empty",
+       "len",
+       "now",
+       "saturating_sub",
+       "update_compaction_timestamp",
+       "vacuum_database"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cache.rs:1634",
+       "src/cli/index.rs:67",
+       "src/cli/mod.rs:993"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "from_key",
+      "where": "src/interactive/input.rs:192",
+      "sites": [
+       "src/interactive/app.rs:636",
+       "src/interactive/input.rs:314",
+       "src/interactive/input.rs:317",
+       "src/interactive/input.rs:320"
+      ],
+      "callers": [
+       "handle_key_event_with_editor",
+       "test_key_command_parsing"
+      ],
+      "calls": [
+       "contains"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:636",
+       "src/interactive/input.rs:192",
+       "src/interactive/input.rs:314",
+       "src/interactive/input.rs:317",
+       "src/interactive/input.rs:320"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "capabilities",
+      "where": "src/interactive/app.rs:1365",
+      "sites": [
+       "src/interactive/ui.rs:1000"
+      ],
+      "callers": [
+       "render_footer"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:1365",
+       "src/interactive/app.rs:1366",
+       "src/interactive/app.rs:167",
+       "src/interactive/app.rs:217",
+       "src/interactive/app.rs:42",
+       "src/interactive/ui.rs:1000"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "build_onboard_context",
+      "where": "src/pulse/onboard.rs:406",
+      "sites": [
+       "src/cli/pulse.rs:382",
+       "src/cli/pulse.rs:395",
+       "src/pulse/onboard.rs:601",
+       "src/pulse/site.rs:400"
+      ],
+      "callers": [
+       "generate_site",
+       "handle_pulse_onboard",
+       "test_build_onboard_context"
+      ],
+      "calls": [
+       "is_empty",
+       "iter",
+       "join",
+       "len",
+       "new",
+       "push",
+       "push_str",
+       "take"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/pulse.rs:382",
+       "src/cli/pulse.rs:395",
+       "src/pulse/onboard.rs:406",
+       "src/pulse/onboard.rs:601",
+       "src/pulse/site.rs:400"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "trigram_count",
+      "where": "src/trigram.rs:341",
+      "sites": [
+       "src/indexer.rs:1882",
+       "src/query/mod.rs:2031",
+       "src/query/result.rs:42"
+      ],
+      "callers": [
+       "get_trigram_candidates",
+       "index_with_callback",
+       "rebuild_trigram_index"
+      ],
+      "calls": [
+       "is_empty",
+       "len"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/misc.rs:115",
+       "src/cli/misc.rs:116",
+       "src/cli/misc.rs:31",
+       "src/indexer.rs:1882",
+       "src/query/mod.rs:2031",
+       "src/query/result.rs:42",
+       "src/trigram.rs:341"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "execute_ast_query",
+      "where": "src/ast_query.rs:77",
+      "sites": [
+       "src/ast_query.rs:328",
+       "src/ast_query.rs:376",
+       "src/ast_query.rs:409",
+       "src/ast_query.rs:443",
+       "src/ast_query.rs:485",
+       "src/query/mod.rs:1834"
+      ],
+      "callers": [
+       "enrich_with_ast",
+       "test_invalid_ast_pattern",
+       "test_python_function_query",
+       "test_rust_function_query",
+       "test_rust_struct_query",
+       "test_unsupported_language"
+      ],
+      "calls": [
+       "and_then",
+       "as_bytes",
+       "clone",
+       "collect",
+       "context",
+       "end_byte",
+       "end_position",
+       "entry",
+       "extension",
+       "extract_symbol_info",
+       "from_extension",
+       "get",
+       "get_tree_sitter_language",
+       "is_empty",
+       "keys",
+       "map_err",
+       "matches",
+       "new",
+       "next",
+       "or_default",
+       "parse",
+       "push",
+       "root_node",
+       "set_language",
+       "start_byte",
+       "start_position",
+       "to_str",
+       "to_string",
+       "unwrap_or",
+       "unwrap_or_else"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/ast_query.rs:328",
+       "src/ast_query.rs:376",
+       "src/ast_query.rs:409",
+       "src/ast_query.rs:443",
+       "src/ast_query.rs:485",
+       "src/ast_query.rs:77",
+       "src/query/mod.rs:1834"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "get_file_content",
+      "where": "src/content_store.rs:410",
+      "sites": [
+       "src/background_indexer.rs:486",
+       "src/content_store.rs:490",
+       "src/content_store.rs:537",
+       "src/content_store.rs:593",
+       "src/content_store.rs:594",
+       "src/content_store.rs:641",
+       "src/content_store.rs:643",
+       "src/content_store.rs:662",
+       "src/query/mod.rs:1092",
+       "src/query/mod.rs:1274",
+       "src/query/mod.rs:1441",
+       "src/query/mod.rs:1607",
+       "src/query/mod.rs:1815",
+       "src/query/mod.rs:2095",
+       "src/query/mod.rs:2216",
+       "src/query/mod.rs:2345",
+       "src/query/mod.rs:2377",
+       "src/query/mod.rs:2411",
+       "src/query/mod.rs:814",
+       "src/query/result.rs:33"
+      ],
+      "callers": [
+       "enrich_with_ast",
+       "enrich_with_symbols",
+       "get_context",
+       "get_context_by_line",
+       "get_regex_candidates",
+       "get_trigram_candidates",
+       "linear_scan_candidates",
+       "parse_symbols",
+       "rebuild_trigram_index",
+       "search_ast_all_files",
+       "search_ast_with_text_filter",
+       "search_internal",
+       "test_content_roundtrip",
+       "test_multiline_file",
+       "test_streaming_roundtrip"
+      ],
+      "calls": [
+       "context",
+       "from_utf8",
+       "get",
+       "len",
+       "ok_or_else"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/background_indexer.rs:486",
+       "src/content_store.rs:410",
+       "src/content_store.rs:490",
+       "src/content_store.rs:537",
+       "src/content_store.rs:593",
+       "src/content_store.rs:594",
+       "src/content_store.rs:641",
+       "src/content_store.rs:643",
+       "src/content_store.rs:662",
+       "src/query/mod.rs:1092",
+       "src/query/mod.rs:1274",
+       "src/query/mod.rs:1441",
+       "src/query/mod.rs:1607",
+       "src/query/mod.rs:1815",
+       "src/query/mod.rs:2095",
+       "src/query/mod.rs:2216",
+       "src/query/mod.rs:2345",
+       "src/query/mod.rs:2377",
+       "src/query/mod.rs:2411",
+       "src/query/mod.rs:814",
+       "src/query/result.rs:33"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "parse_command",
+      "where": "src/semantic/executor.rs:18",
+      "sites": [
+       "src/semantic/executor.rs:318",
+       "src/semantic/executor.rs:402",
+       "src/semantic/executor.rs:412",
+       "src/semantic/executor.rs:422",
+       "src/semantic/executor.rs:432",
+       "src/semantic/executor.rs:443",
+       "src/semantic/executor.rs:452",
+       "src/semantic/executor.rs:465",
+       "src/semantic/executor.rs:472",
+       "src/semantic/executor.rs:483",
+       "src/semantic/tools.rs:140"
+      ],
+      "callers": [
+       "execute_explore_codebase",
+       "execute_queries",
+       "test_parse_empty_command",
+       "test_parse_invalid_command",
+       "test_parse_query_with_exclude",
+       "test_parse_query_with_flags",
+       "test_parse_query_with_glob",
+       "test_parse_query_with_kind",
+       "test_parse_simple_query",
+       "test_to_query_filter",
+       "test_to_query_filter_with_kind"
+      ],
+      "calls": [
+       "as_str",
+       "clone",
+       "context",
+       "is_empty",
+       "len",
+       "new",
+       "parse",
+       "push",
+       "split"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/semantic/executor.rs:18",
+       "src/semantic/executor.rs:318",
+       "src/semantic/executor.rs:402",
+       "src/semantic/executor.rs:412",
+       "src/semantic/executor.rs:422",
+       "src/semantic/executor.rs:432",
+       "src/semantic/executor.rs:443",
+       "src/semantic/executor.rs:452",
+       "src/semantic/executor.rs:465",
+       "src/semantic/executor.rs:472",
+       "src/semantic/executor.rs:483",
+       "src/semantic/mod.rs:30",
+       "src/semantic/tools.rs:13",
+       "src/semantic/tools.rs:140"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "extract_literal_sequences",
+      "where": "src/regex_trigrams.rs:137",
+      "sites": [
+       "src/query/mod.rs:2366",
+       "src/regex_trigrams.rs:295",
+       "src/regex_trigrams.rs:301",
+       "src/regex_trigrams.rs:307",
+       "src/regex_trigrams.rs:313",
+       "src/regex_trigrams.rs:320",
+       "src/regex_trigrams.rs:327",
+       "src/regex_trigrams.rs:334",
+       "src/regex_trigrams.rs:341",
+       "src/regex_trigrams.rs:384",
+       "src/regex_trigrams.rs:391",
+       "src/regex_trigrams.rs:398",
+       "src/regex_trigrams.rs:405",
+       "src/regex_trigrams.rs:412",
+       "src/regex_trigrams.rs:419",
+       "src/regex_trigrams.rs:429",
+       "src/regex_trigrams.rs:437",
+       "src/regex_trigrams.rs:445",
+       "src/regex_trigrams.rs:452",
+       "src/regex_trigrams.rs:69"
+      ],
+      "callers": [
+       "extract_trigrams_from_regex",
+       "get_regex_candidates",
+       "test_extract_literal_sequences_alternation",
+       "test_extract_literal_sequences_case_insensitive_flag",
+       "test_extract_literal_sequences_combined_flags",
+       "test_extract_literal_sequences_escaped",
+       "test_extract_literal_sequences_flag_before_literal",
+       "test_extract_literal_sequences_multiline_flag",
+       "test_extract_literal_sequences_multiple",
+       "test_extract_literal_sequences_no_literals",
+       "test_extract_literal_sequences_non_capturing_group",
+       "test_extract_literal_sequences_quantifier_exact",
+       "test_extract_literal_sequences_quantifier_no_false_literal",
+       "test_extract_literal_sequences_quantifier_range",
+       "test_extract_literal_sequences_short_literals",
+       "test_extract_literal_sequences_simple",
+       "test_extract_literal_sequences_three_way_alternation",
+       "test_extract_literal_sequences_whitespace_escape",
+       "test_extract_literal_sequences_with_wildcard",
+       "test_extract_literal_sequences_word_boundary"
+      ],
+      "calls": [
+       "chars",
+       "clear",
+       "clone",
+       "len",
+       "new",
+       "next",
+       "peek",
+       "peekable",
+       "push"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/query/mod.rs:2365",
+       "src/query/mod.rs:2366",
+       "src/regex_trigrams.rs:137",
+       "src/regex_trigrams.rs:295",
+       "src/regex_trigrams.rs:301",
+       "src/regex_trigrams.rs:307",
+       "src/regex_trigrams.rs:313",
+       "src/regex_trigrams.rs:320",
+       "src/regex_trigrams.rs:327",
+       "src/regex_trigrams.rs:334",
+       "src/regex_trigrams.rs:341",
+       "src/regex_trigrams.rs:384",
+       "src/regex_trigrams.rs:391",
+       "src/regex_trigrams.rs:398",
+       "src/regex_trigrams.rs:405",
+       "src/regex_trigrams.rs:412",
+       "src/regex_trigrams.rs:419",
+       "src/regex_trigrams.rs:429",
+       "src/regex_trigrams.rs:437",
+       "src/regex_trigrams.rs:445",
+       "src/regex_trigrams.rs:452",
+       "src/regex_trigrams.rs:69"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "reclassify_rust_import",
+      "where": "src/parsers/rust.rs:1824",
+      "sites": [
+       "src/indexer.rs:1029",
+       "src/parsers/rust.rs:2003",
+       "src/parsers/rust.rs:2007",
+       "src/parsers/rust.rs:2012"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_reclassify_rust_import_workspace_crate"
+      ],
+      "calls": [
+       "classify_rust_import",
+       "starts_with"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1029",
+       "src/parsers/rust.rs:1824",
+       "src/parsers/rust.rs:2003",
+       "src/parsers/rust.rs:2007",
+       "src/parsers/rust.rs:2012"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_model_for",
+      "where": "src/semantic/config.rs:497",
+      "sites": [
+       "src/pulse/narrate.rs:211",
+       "src/semantic/chat_tui.rs:1309",
+       "src/semantic/chat_tui.rs:375",
+       "src/semantic/config.rs:1009",
+       "src/semantic/config.rs:489",
+       "src/semantic/config.rs:983"
+      ],
+      "callers": [
+       "create_pulse_provider",
+       "handle_model_command",
+       "new",
+       "resolve_model",
+       "resolve_model_for_openai_compatible_reads_user_config",
+       "resolve_model_for_override_beats_user_config"
+      ],
+      "calls": [
+       "map",
+       "or_else"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/pulse/narrate.rs:211",
+       "src/semantic/chat_tui.rs:1309",
+       "src/semantic/chat_tui.rs:375",
+       "src/semantic/config.rs:1009",
+       "src/semantic/config.rs:489",
+       "src/semantic/config.rs:497",
+       "src/semantic/config.rs:983"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "is_running",
+      "where": "src/background_indexer.rs:130",
+      "sites": [
+       "src/background_indexer.rs:517",
+       "src/background_indexer.rs:522",
+       "src/background_indexer.rs:525",
+       "src/background_indexer.rs:644",
+       "src/cli/index.rs:200"
+      ],
+      "callers": [
+       "handle_index_build",
+       "test_indexer_lock",
+       "test_is_running_cleans_stale_lock"
+      ],
+      "calls": [
+       "exists",
+       "is_lock_stale",
+       "join",
+       "remove_file"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/background_indexer.rs:130",
+       "src/background_indexer.rs:517",
+       "src/background_indexer.rs:522",
+       "src/background_indexer.rs:525",
+       "src/background_indexer.rs:644",
+       "src/cli/index.rs:200"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "highlight_code_lines",
+      "where": "src/interactive/syntax.rs:96",
+      "sites": [
+       "src/interactive/syntax.rs:219",
+       "src/interactive/syntax.rs:234",
+       "src/interactive/syntax.rs:252",
+       "src/interactive/syntax.rs:318",
+       "src/interactive/ui.rs:700",
+       "src/interactive/ui.rs:842"
+      ],
+      "callers": [
+       "render_file_preview",
+       "render_results_area",
+       "test_all_supported_languages_have_syntax",
+       "test_highlight_lines_maintains_state",
+       "test_highlight_lines_rust",
+       "test_highlight_lines_unknown_language"
+      ],
+      "calls": [
+       "collect",
+       "default",
+       "fg",
+       "from",
+       "get_syntax",
+       "get_syntax_highlighter",
+       "highlight_line",
+       "into_iter",
+       "is_supported",
+       "iter",
+       "len",
+       "map",
+       "new",
+       "push",
+       "styled",
+       "syntect_color_to_ratatui",
+       "to_string",
+       "with_capacity"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/syntax.rs:219",
+       "src/interactive/syntax.rs:234",
+       "src/interactive/syntax.rs:252",
+       "src/interactive/syntax.rs:318",
+       "src/interactive/syntax.rs:96",
+       "src/interactive/ui.rs:700",
+       "src/interactive/ui.rs:842"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_c_include_to_path",
+      "where": "src/parsers/c.rs:735",
+      "sites": [
+       "src/indexer.rs:1462",
+       "src/parsers/c.rs:771",
+       "src/parsers/c.rs:780",
+       "src/parsers/c.rs:789",
+       "src/parsers/c.rs:798"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_c_include_no_current_file",
+       "test_resolve_c_include_parent_directory",
+       "test_resolve_c_include_same_directory",
+       "test_resolve_c_include_subdirectory"
+      ],
+      "calls": [
+       "canonicalize",
+       "join",
+       "new",
+       "parent",
+       "replace",
+       "to_string_lossy"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1462",
+       "src/parsers/c.rs:735",
+       "src/parsers/c.rs:771",
+       "src/parsers/c.rs:780",
+       "src/parsers/c.rs:789",
+       "src/parsers/c.rs:798"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_csharp_using_to_path",
+      "where": "src/parsers/csharp.rs:1688",
+      "sites": [
+       "src/indexer.rs:1555",
+       "src/parsers/csharp.rs:1712",
+       "src/parsers/csharp.rs:1719",
+       "src/parsers/csharp.rs:1726",
+       "src/parsers/csharp.rs:1733"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_csharp_using_deep_namespace",
+       "test_resolve_csharp_using_services",
+       "test_resolve_csharp_using_simple_namespace",
+       "test_resolve_csharp_using_single_level"
+      ],
+      "calls": [
+       "replace"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1555",
+       "src/parsers/csharp.rs:1688",
+       "src/parsers/csharp.rs:1712",
+       "src/parsers/csharp.rs:1719",
+       "src/parsers/csharp.rs:1726",
+       "src/parsers/csharp.rs:1733"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout2",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "build_prompt",
+      "where": "src/semantic/prompt.rs:41",
+      "sites": [
+       "src/semantic/mod.rs:76",
+       "src/semantic/prompt.rs:123",
+       "src/semantic/prompt.rs:136",
+       "src/semantic/prompt.rs:151"
+      ],
+      "callers": [
+       "ask_question",
+       "test_prompt_contains_schema",
+       "test_prompt_injects_additional_context",
+       "test_prompt_injects_codebase_context"
+      ],
+      "calls": [
+       "extract",
+       "map",
+       "read_project_config",
+       "replace",
+       "to_prompt_string",
+       "to_string",
+       "unwrap_or_default",
+       "unwrap_or_else",
+       "workspace_root"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/semantic/mod.rs:76",
+       "src/semantic/prompt.rs:123",
+       "src/semantic/prompt.rs:136",
+       "src/semantic/prompt.rs:151",
+       "src/semantic/prompt.rs:41"
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

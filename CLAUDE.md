@@ -124,6 +124,7 @@ rfx locations "extract_symbols"            # --preview adds the line text
 
 # Definition + every use in code, not in comments or strings (the MCP find_references)
 rfx refs "extract_symbols"                 # --count, --json
+rfx refs "run" --at src/a.rs:3              # Rust: only the uses of the `run` defined at that line
 
 # Symbol definitions only (--symbols finds DEFINITIONS, not usages)
 rfx query "extract_symbols" --symbols
@@ -268,7 +269,7 @@ Five listed tools (since 2026-10-30; 6 from 2026-10-27, 10 from 2026-09-30, 17 b
 every listed schema on every turn, so `tools/list` is kept small (~5.9 KB, guarded by
 `tests/mcp_tool_surface.rs`). The search schemas leave out `HIDDEN_PARAMS` (`exclude`,
 `force`, `dependencies`, `preview_length`, `expand`, `exact`: no agent passed them in
-5,914 calls); the server still accepts them; the shared matching / coverage / freshness rules live in
+5,914 calls; and `at`, below); the server still accepts them; the shared matching / coverage / freshness rules live in
 `MCP_INSTRUCTIONS`, said once. Four more tools (`HIDDEN_TOOLS`) are callable by name but
 listed only on request: `[mcp] extra_tools = ["search_ast", ...]` in
 `~/.reflex/config.toml`. `rfx mcp --no-update` lists `index_project` and
@@ -279,7 +280,7 @@ the instructions follows the listing (`instructions()`).
 |------|--------|---------|
 | `search_code` | yes | Literal search with previews (default limit 200); `regex: true` = regex search (`->`, `::`, alternation); `mode: "count"` → `{count, files}` |
 | `list_locations` | yes | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
-| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200) |
+| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200); hidden `at: "path:line"` (Rust) keeps only the uses of that one definition (`src/bind.rs`; CLI `rfx refs X --at path:line`) |
 | `get_dependencies` | yes | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
 | `analyze` | yes | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
 | `search_ast` | `extra_tools` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |

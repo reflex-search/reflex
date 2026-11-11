@@ -270,3 +270,69 @@ Vs A: L 1.05× weighted and cost; S 1.10× weighted, 1.11× cost. One trial: wit
   (Phase 2): `rfx refs X --at path:line`, binding each use to a definition by imports,
   `self.`/`Type::` qualifiers and the file's own items, with the unbound uses listed
   apart. Measure it on these sessions (keys are ready) before building more.
+
+## `rfx refs X --at path:line`: uses of ONE definition, scored offline — 2026-11-11
+
+rfx 2.3.1 + `src/bind.rs` (branch `feat/agent-edge-phase1`). No agent runs: scored on
+compiler answer keys with `benches/efficacy/score_at.py`. MCP: `find_references` with
+the hidden `at` parameter (unlisted, in `HIDDEN_PARAMS`).
+
+**What it does.** `rfx refs X` lists every use of the NAME. `--at path:line` sorts each
+of those lines into `This` (uses the definition at that line), `Other` (another item,
+a local, a field, a module, a `std` or dependency type) or `Possible` (the rules
+cannot tell). It prints the `This` lines, each with its caller (`[in f]`), and the
+`Possible` lines apart. Rules, from the tree-sitter syntax tree only (no type
+inference, no macro expansion, no trait resolution):
+
+- `use` paths; `Self::` / `Type::` / `module::` qualifiers (with re-exports from an
+  ancestor module); the file's own free fns and imports; locals, parameters, patterns.
+- Method calls: the receiver's written type: `self`, a typed parameter or `let`,
+  `Foo::new()` / `Foo::now() + d`, `self.field` (the struct's field type),
+  `self.f[i]`, `for x in self.f.iter()`. A type that the file imports from `std` or
+  from a package dependency (`Cargo.toml`) that is not a workspace crate cannot reach
+  an inherent method here. A builder chain rooted in a dependency's type stays there.
+- Unknown receiver: `This` only when the target is the only method with that name,
+  else `Possible`. Item-level brace macros (`cfg_rt! { … }`) are opened up first.
+- Rust only (`--at` on another language is an error).
+
+**Scores** (F1 of the impact key's sites, `use` lines left out; callers = F1 of the
+explain key's callers from `in`; plain = `rfx refs X` without `--at`):
+
+| Set | Questions | plain F1 | `--at` F1 | exact plain / `--at` | callers F1 | Possible lines |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tuning (tasks/sessions.json explain + impact; rules built on it) | 48 | 0.851 | 0.989 | 34 / 46 | 0.989 | 2 |
+| Held-out 1, blind (first look) | 48 | 0.663 | 0.953 | 21 / 43 | 0.953 | 3 |
+| Held-out 1 after its 4 general fixes (no longer blind) | 48 | 0.663 | 0.997 | 21 / 47 | 0.996 | 3 |
+| Held-out 2, blind, after the fixes (`tasks/at_holdout_2.json`) | 48 | 0.734 | 0.951 | 22 / 42 | 0.965 | 18 |
+
+Held-out 1 is 16 impact questions per corpus (tokio, ripgrep, reflex), the next
+candidates after the tuning set (`holdout_keys.py`, `tasks/at_holdout_1.json`). Its blind misses and the fixes
+(each a general rule, with a unit test, `type_origin_and_typed_self`):
+
+- `if self.config.unicode { … }` inside `vec![…]`: the macro rule read the `if` block
+  as call arguments. A call now needs a `(…)` token tree.
+- `deadline.saturating_duration_since(..)` with `use std::time::Instant` (tokio has its
+  own `Instant`): type origin from the file's imports.
+- `decode_builder.encoding(..)….bom_sniffing(..)` (`encoding_rs_io`) and
+  `TranslatorBuilder::new()….unicode(..)` (`regex_syntax`): dependency builder chains.
+- `fn try_acquire_owned(self: Arc<Self>)`: a typed `self` was not seen as a method
+  receiver, so every `.try_acquire_owned()` was `Other`.
+
+Held-out 2 (the next 16 per corpus, built after the fixes, not tuned on) misses:
+`as_u64` (5 false `This`: `id.as_u64()` on receivers of unknown type, the target is
+the only project `as_u64`), `with_current` (6 uses all `Possible`, 0 `This`),
+`path_is_symlink` (4 `Possible`), `sleep_until` (1 false `This`), `poll_write_priv`
+(2 `Possible`). The unknown-receiver rule is the main source of error in both sets.
+
+Left (documented limits): tokio `checked_add` on integer locals whose type is not
+written (`last`, `tail.rx_cnt`; `This` because the target is the only project method
+`checked_add`); a use inside `debug_assert!(…)` is `Possible`; `enter_runtime` from a
+receiver of unknown type (`Possible`).
+
+**Reading.** The plain name search is the problem the tokio `explain` run showed:
+0.663 F1 on held-out names (21 of 48 exact), because common names (`storage`,
+`pretty`, `unicode`) have many items. `--at` answers the question "uses of THIS
+definition" at 0.95 F1 on two blind sets (0.99 on the tuning set), with 3 and 18
+`Possible` lines in 48 questions. Next: a light live
+run (tokio explain + impact, arm S with `--at` in the skill and hook) to see whether
+agents use it and stop re-reading hits.

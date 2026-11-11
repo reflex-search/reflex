@@ -229,18 +229,31 @@ fn report_notes(data: &Value) {
     }
 }
 
+/// `rfx refs` flags beyond the shared filters.
+pub(super) struct RefsOptions {
+    pub kind: Option<String>,
+    pub include_strings: bool,
+    pub count: bool,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    /// `path:line` of one Rust function (`find_references` `at`).
+    pub at: Option<String>,
+}
+
 /// `rfx refs`: the definition and every use in code (`find_references`).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn handle_refs(
-    filters: ToolFilters,
-    kind: Option<String>,
-    include_strings: bool,
-    count: bool,
-    limit: Option<usize>,
-    offset: Option<usize>,
-    no_update: bool,
-) -> Result<()> {
+pub(super) fn handle_refs(filters: ToolFilters, opts: RefsOptions, no_update: bool) -> Result<()> {
+    let RefsOptions {
+        kind,
+        include_strings,
+        count,
+        limit,
+        offset,
+        at,
+    } = opts;
     let mut args = filters.arguments()?;
+    if let Some(at) = &at {
+        args.insert("at".into(), json!(at));
+    }
     if let Some(kind) = kind {
         args.insert("kind".into(), json!(kind));
     }
@@ -266,6 +279,17 @@ pub(super) fn handle_refs(
         return Ok(());
     }
     print!("{}", refs_text(&data));
+    if at.is_some() {
+        let n = |k: &str| data[k].as_array().map_or(0, |a| a.len());
+        eprintln!(
+            "{} uses of this definition; {} possible (could not tell which `{}`); {} lines name other items (left out)",
+            n("references"),
+            n("possible"),
+            data["definition"]["symbol"].as_str().unwrap_or(""),
+            data["elsewhere"].as_u64().unwrap_or(0),
+        );
+        return Ok(());
+    }
     // `pagination` counts lines before the comment and string filter (the space
     // `offset` indexes), so the next page starts after both.
     let shown = data["returned_count"].as_u64().unwrap_or(0);
@@ -283,21 +307,50 @@ fn refs_text(data: &Value) -> String {
     let mut out = String::new();
     let def = &data["definition"];
     if def.is_object() {
+        let line = if def["line"].is_null() {
+            &def["span"]["start_line"]
+        } else {
+            &def["line"]
+        };
+        let owner = def["impl"]
+            .as_str()
+            .map(|t| format!(" in impl {t}"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "definition {}:{} {} {}\n",
+            "definition {}:{} {} {}{owner}\n",
             def["path"].as_str().unwrap_or(""),
-            def["span"]["start_line"],
+            line,
             def["kind"].as_str().unwrap_or(""),
             def["symbol"].as_str().unwrap_or(""),
         ));
     }
-    for r in data["references"].as_array().into_iter().flatten() {
+    let row = |out: &mut String, r: &Value| {
+        let caller = if r["import"] == json!(true) {
+            "  [import]".to_string()
+        } else {
+            r["in"]
+                .as_str()
+                .map(|c| format!("  [in {c}]"))
+                .unwrap_or_default()
+        };
         out.push_str(&format!(
-            "{}:{}:{}\n",
+            "{}:{}:{}{caller}\n",
             r["path"].as_str().unwrap_or(""),
             r["line"],
-            first_line(r["preview"].as_str().unwrap_or("")),
+            first_line(r["preview"].as_str().unwrap_or("")).trim_end(),
         ));
+    };
+    for r in data["references"].as_array().into_iter().flatten() {
+        row(&mut out, r);
+    }
+    let possible = data["possible"]
+        .as_array()
+        .map_or(&[][..], |a| a.as_slice());
+    if !possible.is_empty() {
+        out.push_str("possible (the receiver's type is not written; check these):\n");
+        for r in possible {
+            row(&mut out, r);
+        }
     }
     out
 }

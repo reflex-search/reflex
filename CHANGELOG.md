@@ -25,6 +25,14 @@
   where the name is only in a comment or a string. `rfx locations` prints every
   matching line, grouped by file (`src/a.rs:4,128,193`; `--preview` adds the text).
   `--json` prints the MCP answer exactly.
+- **`rfx refs X --at path:line`** (MCP: `find_references` with `at`): only the uses of
+  the Rust function or method defined at that line, when other items share its name.
+  tokio has three `waker_ref` functions; `rfx refs waker_ref` lists every use of the
+  name. With `--at`, each line is bound by Rust's name rules read from the syntax tree
+  (imports, `Self::` / `Type::` / `module::` paths, locals, the receiver's written
+  type, `std` and dependency types). Each use names its caller (`[in f]`); lines the
+  rules cannot decide are listed apart as possible. On compiler answer keys, the uses
+  found match the compiler's at F1 0.95 on two sets of unseen names (0.66 and 0.73 without `--at`).
 - **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
   instruction names (default `mcp__reflex__`). A plugin's tools are
   `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.

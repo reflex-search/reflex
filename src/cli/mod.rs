@@ -377,6 +377,12 @@ pub enum Command {
         /// Skip the first N uses
         #[arg(short, long)]
         offset: Option<usize>,
+
+        /// Only the uses of the Rust function defined at PATH:LINE, each with the
+        /// function it is in. Lines that name other items with the same name are left
+        /// out; lines it cannot place are listed apart.
+        #[arg(long, value_name = "PATH:LINE")]
+        at: Option<String>,
     },
 
     /// List every matching line, by file (the MCP `list_locations`)
@@ -1486,13 +1492,17 @@ impl Cli {
                 count,
                 limit,
                 offset,
+                at,
             }) => tools::handle_refs(
                 filters,
-                kind,
-                include_strings,
-                count,
-                limit,
-                offset,
+                tools::RefsOptions {
+                    kind,
+                    include_strings,
+                    count,
+                    limit,
+                    offset,
+                    at,
+                },
                 no_update,
             ),
             Some(Command::Locations { filters, preview }) => {

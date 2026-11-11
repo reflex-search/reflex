@@ -360,13 +360,15 @@ const HIDDEN_TOOLS: [&str; 4] = [
 /// were ~1.2K of the 8,054 characters of the six listed schemas. The server still
 /// accepts them: [`tool_specs`] validates against the full schemas in [`tool_list`].
 /// `offset` stays listed, because the `search_code` description pages with it.
-const HIDDEN_PARAMS: [&str; 6] = [
+const HIDDEN_PARAMS: [&str; 7] = [
     "exclude",
     "force",
     "dependencies",
     "preview_length",
     "expand",
     "exact",
+    // `find_references` `at` (task 2.x, `bind.rs`): unlisted until it is measured.
+    "at",
 ];
 
 /// The tools whose listed schemas drop [`HIDDEN_PARAMS`]. `search_ast` and
@@ -471,6 +473,7 @@ fn tool_list() -> Vec<Value> {
                 "contains": contains,
                 "kind": {"type": "string", "description": "Symbol kind of the definition"},
                 "include_strings": {"type": "boolean", "description": "Keep matches in strings and comments"},
+                "at": {"type": "string", "description": "path:line of one Rust fn: only uses of that fn, each with its caller (in); unsure lines in possible"},
                 "mode": mode,
                 "limit": limit,
                 "offset": offset
@@ -805,7 +808,9 @@ const BOOL_ARG_KEYS: &[&str] = &[
 ];
 
 /// Keys that must be strings when present.
-const STRING_ARG_KEYS: &[&str] = &["pattern", "lang", "kind", "mode", "file", "path", "sort"];
+const STRING_ARG_KEYS: &[&str] = &[
+    "pattern", "lang", "kind", "mode", "file", "path", "sort", "at",
+];
 
 /// Keys that must be arrays of strings when present.
 const STRING_ARRAY_ARG_KEYS: &[&str] = &["glob", "exclude", "languages"];
@@ -2810,6 +2815,9 @@ fn dispatch_tool(
                 .unwrap_or_default();
             let force = arguments["force"].as_bool().unwrap_or(false);
             let include_strings = arguments["include_strings"].as_bool().unwrap_or(false);
+            // `at: "path:line"`: keep only the uses of THE function defined there
+            // (`bind.rs`); every use is checked, so paging does not apply.
+            let at = arguments["at"].as_str().map(|s| s.to_string());
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -2817,7 +2825,7 @@ fn dispatch_tool(
             let mode = arguments["mode"].as_str().unwrap_or("list");
 
             // Count mode: skip the definition lookup and just count textual references.
-            if mode == "count" {
+            if mode == "count" && at.is_none() {
                 let count_filter = QueryFilter {
                     language,
                     kind: None,
@@ -2948,7 +2956,11 @@ fn dispatch_tool(
                 use_regex: false,
                 // REF-191: default to the one-call page size so "find all callers"
                 // returns the full set instead of paginating at 50.
-                limit: limit.map(|l| l.min(500)).or(Some(DEFAULT_MCP_RESULT_LIMIT)),
+                limit: if at.is_some() {
+                    None
+                } else {
+                    limit.map(|l| l.min(500)).or(Some(DEFAULT_MCP_RESULT_LIMIT))
+                },
                 symbols_mode: false,
                 expand: false,
                 file_pattern: None,
@@ -2964,7 +2976,7 @@ fn dispatch_tool(
                 glob_patterns,
                 exclude_patterns,
                 paths_only: false,
-                offset,
+                offset: if at.is_some() { None } else { offset },
                 force,
                 suppress_output: true,
                 include_dependencies: false,
@@ -3002,6 +3014,25 @@ fn dispatch_tool(
                         })
                 })
                 .collect();
+
+            if let Some(at) = &at {
+                let mut response = bind_references(root, at, &pattern, &references)?;
+                response["status"] = json!(ref_response.status);
+                if mode == "count" {
+                    let count = response["references"].as_array().map_or(0, |r| r.len());
+                    let mut result = json!({"count": count, "pattern": pattern, "at": at});
+                    annotate_literal_result(&mut result, &ref_response);
+                    return Ok(result);
+                }
+                annotate_literal_fields(
+                    &mut response,
+                    &ref_response.warnings,
+                    ref_response.hint.as_deref(),
+                    ref_response.excluded_reason,
+                    ref_response.excluded_by_default,
+                );
+                return Ok(response);
+            }
 
             // Count consistency. These were three different numbers reported under
             // names that all read like "total", which looked like an off-by-one:
@@ -3054,6 +3085,78 @@ fn dispatch_tool(
         }
         _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }
+}
+
+/// `find_references` with `at`: the code lines that name `pattern`, sorted by
+/// `bind::bind` into the uses of the function at `at` (`references`), the lines it
+/// cannot place (`possible`), and a count of lines that name other items.
+fn bind_references(
+    root: &Path,
+    at: &str,
+    pattern: &str,
+    references: &[serde_json::Value],
+) -> Result<serde_json::Value> {
+    let lines: Vec<(String, usize)> = references
+        .iter()
+        .filter_map(|r| {
+            Some((
+                r["path"].as_str()?.to_string(),
+                r["line"].as_u64()? as usize,
+            ))
+        })
+        .collect();
+    let binding = crate::bind::bind(root, at, pattern, &lines)?;
+    let preview: std::collections::HashMap<(String, usize), &serde_json::Value> = references
+        .iter()
+        .filter_map(|r| {
+            Some((
+                (
+                    r["path"].as_str()?.to_string(),
+                    r["line"].as_u64()? as usize,
+                ),
+                &r["preview"],
+            ))
+        })
+        .collect();
+    let mut bound = Vec::new();
+    let mut possible = Vec::new();
+    let mut elsewhere = 0usize;
+    for l in &binding.lines {
+        let mut row = json!({
+            "path": l.path,
+            "line": l.line,
+            "preview": preview.get(&(l.path.clone(), l.line)).copied().cloned().unwrap_or(json!("")),
+        });
+        if let Some(c) = &l.caller {
+            row["in"] = json!(c);
+        }
+        if l.import {
+            row["import"] = json!(true);
+        }
+        match l.verdict {
+            crate::bind::Verdict::This => bound.push(row),
+            crate::bind::Verdict::Possible => possible.push(row),
+            crate::bind::Verdict::Other => elsewhere += 1,
+        }
+    }
+    let t = &binding.target;
+    let mut definition = json!({
+        "path": t.path,
+        "line": t.line,
+        "symbol": pattern,
+        "kind": if t.has_self || !t.free { "Method" } else { "Function" },
+    });
+    if let Some(ty) = &t.impl_type {
+        definition["impl"] = json!(ty);
+    }
+    Ok(json!({
+        "definition": definition,
+        "references": bound,
+        "returned_count": bound.len(),
+        "possible": possible,
+        "elsewhere": elsewhere,
+        "has_more": false,
+    }))
 }
 
 /// Process a single JSON-RPC request

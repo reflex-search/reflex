@@ -1,0 +1,2145 @@
+{
+ "sessions": [
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "satisfies",
+      "where": "tokio/src/io/ready.rs:268",
+      "sites": [
+       "tokio/src/runtime/io/scheduled_io.rs:258"
+      ],
+      "callers": [
+       "wake"
+      ],
+      "calls": [
+       "from_interest"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/ready.rs:268",
+       "tokio/src/runtime/io/scheduled_io.rs:258"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "into_waker",
+      "where": "tokio/src/runtime/park.rs:295",
+      "sites": [
+       "tokio/src/runtime/park.rs:250"
+      ],
+      "callers": [
+       "waker"
+      ],
+      "calls": [
+       "waker"
+      ],
+      "codes": [
+       "E0593"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/park.rs:250",
+       "tokio/src/runtime/park.rs:295",
+       "tokio/src/sync/task/atomic_waker.rs:195",
+       "tokio/src/sync/task/atomic_waker.rs:361",
+       "tokio/src/sync/task/atomic_waker.rs:369",
+       "tokio/src/sync/task/atomic_waker.rs:379"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "enable_metrics_poll_time_histogram",
+      "where": "tokio/src/runtime/builder.rs:1223",
+      "sites": [
+       "tokio/src/runtime/builder.rs:1234"
+      ],
+      "callers": [
+       "enable_metrics_poll_count_histogram"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/builder.rs:1223",
+       "tokio/src/runtime/builder.rs:1234"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "try_acquire_owned",
+      "where": "tokio/src/sync/semaphore.rs:876",
+      "sites": [
+       "tokio/src/sync/tests/semaphore_batch.rs:284"
+      ],
+      "callers": [
+       "release_permits_at_drop"
+      ],
+      "calls": [
+       "try_acquire"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/sync/semaphore.rs:876",
+       "tokio/src/sync/tests/semaphore_batch.rs:284"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "storage",
+      "where": "tokio/src/signal/registry.rs:146",
+      "sites": [
+       "tokio/src/signal/unix.rs:281"
+      ],
+      "callers": [
+       "signal_enable"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/signal/registry.rs:146",
+       "tokio/src/signal/registry.rs:147",
+       "tokio/src/signal/registry.rs:65",
+       "tokio/src/signal/registry.rs:69",
+       "tokio/src/signal/registry.rs:70",
+       "tokio/src/signal/registry.rs:77",
+       "tokio/src/signal/registry.rs:87",
+       "tokio/src/signal/registry.rs:97",
+       "tokio/src/signal/unix.rs:281"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "inc_budget_forced_yield_count",
+      "where": "tokio/src/runtime/metrics/scheduler.rs:32",
+      "sites": [
+       "tokio/src/task/coop/mod.rs:334"
+      ],
+      "callers": [
+       "inc_budget_forced_yield_count"
+      ],
+      "calls": [
+       "add"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/metrics/scheduler.rs:32",
+       "tokio/src/task/coop/mod.rs:303",
+       "tokio/src/task/coop/mod.rs:332",
+       "tokio/src/task/coop/mod.rs:334",
+       "tokio/src/task/coop/mod.rs:341",
+       "tokio/src/task/coop/mod.rs:351"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "spawner",
+      "where": "tokio/src/runtime/blocking/pool.rs:240",
+      "sites": [
+       "tokio/src/runtime/builder.rs:1464",
+       "tokio/src/runtime/builder.rs:1620"
+      ],
+      "callers": [
+       "build_current_thread_runtime_components",
+       "build_threaded_runtime"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/blocking/pool.rs:20",
+       "tokio/src/runtime/blocking/pool.rs:215",
+       "tokio/src/runtime/blocking/pool.rs:240",
+       "tokio/src/runtime/blocking/pool.rs:241",
+       "tokio/src/runtime/blocking/pool.rs:245",
+       "tokio/src/runtime/blocking/pool.rs:256",
+       "tokio/src/runtime/builder.rs:1464",
+       "tokio/src/runtime/builder.rs:1620"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "read_to_end",
+      "where": "tokio/src/io/util/read_to_end.rs:27",
+      "sites": [
+       "tokio/src/io/util/async_read_ext.rs:1340",
+       "tokio/src/process/mod.rs:1452"
+      ],
+      "callers": [
+       "read_to_end"
+      ],
+      "calls": [
+       "new"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/util/async_read_ext.rs:12",
+       "tokio/src/io/util/async_read_ext.rs:1336",
+       "tokio/src/io/util/async_read_ext.rs:1340",
+       "tokio/src/io/util/mod.rs:107",
+       "tokio/src/io/util/mod.rs:109",
+       "tokio/src/io/util/mod.rs:54",
+       "tokio/src/io/util/mod.rs:57",
+       "tokio/src/io/util/read_to_end.rs:27",
+       "tokio/src/io/util/read_to_string.rs:2",
+       "tokio/src/process/mod.rs:1449",
+       "tokio/src/process/mod.rs:1452",
+       "tokio/src/process/mod.rs:1460",
+       "tokio/src/process/mod.rs:1461"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "disallow_block_in_place",
+      "where": "tokio/src/runtime/context/blocking.rs:34",
+      "sites": [
+       "tokio/src/task/local.rs:1046",
+       "tokio/src/task/local.rs:921",
+       "tokio/src/task/local.rs:955"
+      ],
+      "callers": [
+       "drop",
+       "poll"
+      ],
+      "calls": [
+       "get",
+       "set",
+       "try_with",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/context.rs:11",
+       "tokio/src/runtime/context/blocking.rs:34",
+       "tokio/src/task/local.rs:1046",
+       "tokio/src/task/local.rs:921",
+       "tokio/src/task/local.rs:955"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "discard_read",
+      "where": "tokio/src/io/blocking.rs:282",
+      "sites": [
+       "tokio/src/fs/file.rs:395",
+       "tokio/src/fs/file.rs:671",
+       "tokio/src/fs/file.rs:740",
+       "tokio/src/fs/file.rs:811"
+      ],
+      "callers": [
+       "poll_write",
+       "poll_write_vectored",
+       "set_len",
+       "start_seek"
+      ],
+      "calls": [
+       "bytes",
+       "len",
+       "truncate"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/fs/file.rs:395",
+       "tokio/src/fs/file.rs:671",
+       "tokio/src/fs/file.rs:740",
+       "tokio/src/fs/file.rs:811",
+       "tokio/src/io/blocking.rs:282"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "from_parts",
+      "where": "tokio/src/runtime/local_runtime/runtime.rs:55",
+      "sites": [
+       "tokio/src/runtime/builder.rs:1446"
+      ],
+      "callers": [
+       "build_current_thread_local_runtime"
+      ],
+      "calls": [
+       "default"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/builder.rs:1430",
+       "tokio/src/runtime/builder.rs:1446",
+       "tokio/src/runtime/builder.rs:1657",
+       "tokio/src/runtime/local_runtime/runtime.rs:55",
+       "tokio/src/runtime/runtime.rs:130"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "enter_runtime",
+      "where": "tokio/src/runtime/context/runtime.rs:35",
+      "sites": [
+       "tokio/src/runtime/handle.rs:326",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:188",
+       "tokio/src/runtime/scheduler/multi_thread/mod.rs:86",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:491"
+      ],
+      "callers": [
+       "block_on",
+       "block_on_inner",
+       "run"
+      ],
+      "calls": [
+       "get",
+       "is_entered",
+       "new",
+       "next_seed",
+       "replace_seed",
+       "seed_generator",
+       "set",
+       "set_current",
+       "unwrap_or_else",
+       "with"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/context.rs:17",
+       "tokio/src/runtime/context/runtime.rs:35",
+       "tokio/src/runtime/handle.rs:326",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:188",
+       "tokio/src/runtime/scheduler/multi_thread/mod.rs:86",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:491"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "saturating_duration_since",
+      "where": "tokio/src/time/instant.rs:114",
+      "sites": [
+       "tokio/src/runtime/time/source.rs:24",
+       "tokio/src/time/instant.rs:135"
+      ],
+      "callers": [
+       "elapsed",
+       "instant_to_tick"
+      ],
+      "calls": [
+       "saturating_duration_since"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/loom/std/barrier.rs:165",
+       "tokio/src/runtime/time/source.rs:24",
+       "tokio/src/time/instant.rs:114",
+       "tokio/src/time/instant.rs:115",
+       "tokio/src/time/instant.rs:135",
+       "tokio/src/time/instant.rs:183",
+       "tokio/src/time/instant.rs:73"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "cooperative",
+      "where": "tokio/src/task/coop/mod.rs:416",
+      "sites": [
+       "tokio/src/sync/broadcast.rs:1471",
+       "tokio/src/sync/watch.rs:1242",
+       "tokio/src/sync/watch.rs:747",
+       "tokio/src/sync/watch.rs:821"
+      ],
+      "callers": [
+       "changed",
+       "closed",
+       "recv",
+       "wait_for"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/sync/broadcast.rs:122",
+       "tokio/src/sync/broadcast.rs:1471",
+       "tokio/src/sync/watch.rs:115",
+       "tokio/src/sync/watch.rs:1242",
+       "tokio/src/sync/watch.rs:747",
+       "tokio/src/sync/watch.rs:821",
+       "tokio/src/task/coop/mod.rs:416"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "seed_generator",
+      "where": "tokio/src/runtime/scheduler/mod.rs:161",
+      "sites": [
+       "tokio/src/runtime/context/runtime.rs:49"
+      ],
+      "callers": [
+       "enter_runtime"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/builder.rs:1179",
+       "tokio/src/runtime/builder.rs:123",
+       "tokio/src/runtime/builder.rs:1467",
+       "tokio/src/runtime/builder.rs:1468",
+       "tokio/src/runtime/builder.rs:1493",
+       "tokio/src/runtime/builder.rs:1623",
+       "tokio/src/runtime/builder.rs:1624",
+       "tokio/src/runtime/builder.rs:1646",
+       "tokio/src/runtime/builder.rs:305",
+       "tokio/src/runtime/config.rs:46",
+       "tokio/src/runtime/context/runtime.rs:49",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:132",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:163",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:47",
+       "tokio/src/runtime/scheduler/mod.rs:161",
+       "tokio/src/runtime/scheduler/mod.rs:162",
+       "tokio/src/runtime/scheduler/multi_thread/handle.rs:32",
+       "tokio/src/runtime/scheduler/multi_thread/mod.rs:62",
+       "tokio/src/runtime/scheduler/multi_thread/mod.rs:71",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:242",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:269",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:300"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-holdout",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "pin_as_deref_mut",
+      "where": "tokio/src/util/mod.rs:109",
+      "sites": [
+       "tokio/src/io/async_buf_read.rs:91",
+       "tokio/src/io/async_buf_read.rs:95",
+       "tokio/src/io/async_read.rs:91",
+       "tokio/src/io/async_seek.rs:81",
+       "tokio/src/io/async_seek.rs:85",
+       "tokio/src/io/async_write.rs:235",
+       "tokio/src/io/async_write.rs:243",
+       "tokio/src/io/async_write.rs:251",
+       "tokio/src/io/async_write.rs:255"
+      ],
+      "callers": [
+       "consume",
+       "poll_complete",
+       "poll_fill_buf",
+       "poll_flush",
+       "poll_read",
+       "poll_shutdown",
+       "poll_write",
+       "poll_write_vectored",
+       "start_seek"
+      ],
+      "calls": [
+       "as_mut",
+       "get_unchecked_mut"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/async_buf_read.rs:91",
+       "tokio/src/io/async_buf_read.rs:95",
+       "tokio/src/io/async_read.rs:91",
+       "tokio/src/io/async_seek.rs:81",
+       "tokio/src/io/async_seek.rs:85",
+       "tokio/src/io/async_write.rs:235",
+       "tokio/src/io/async_write.rs:243",
+       "tokio/src/io/async_write.rs:251",
+       "tokio/src/io/async_write.rs:255",
+       "tokio/src/util/mod.rs:109"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "separator_field_context",
+      "where": "crates/printer/src/standard.rs:436",
+      "sites": [
+       "crates/core/flags/hiargs.rs:618",
+       "crates/printer/src/standard.rs:2090"
+      ],
+      "callers": [
+       "printer_standard",
+       "separator_field"
+      ],
+      "calls": [
+       "new"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:618",
+       "crates/printer/src/standard.rs:1592",
+       "crates/printer/src/standard.rs:2090",
+       "crates/printer/src/standard.rs:436",
+       "crates/printer/src/standard.rs:440",
+       "crates/printer/src/standard.rs:56",
+       "crates/printer/src/standard.rs:82"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "preprocessor_globs",
+      "where": "crates/core/search.rs:111",
+      "sites": [
+       "crates/core/flags/hiargs.rs:694"
+      ],
+      "callers": [
+       "search_worker"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:1225",
+       "crates/core/flags/hiargs.rs:151",
+       "crates/core/flags/hiargs.rs:694",
+       "crates/core/search.rs:111",
+       "crates/core/search.rs:115",
+       "crates/core/search.rs:21",
+       "crates/core/search.rs:288",
+       "crates/core/search.rs:291",
+       "crates/core/search.rs:31"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "pretty",
+      "where": "crates/printer/src/json.rs:75",
+      "sites": [
+       "crates/core/flags/hiargs.rs:589"
+      ],
+      "callers": [
+       "printer_json"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:589",
+       "crates/printer/src/json.rs:26",
+       "crates/printer/src/json.rs:33",
+       "crates/printer/src/json.rs:517",
+       "crates/printer/src/json.rs:75",
+       "crates/printer/src/json.rs:76"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "always_begin_end",
+      "where": "crates/printer/src/json.rs:97",
+      "sites": [
+       "crates/core/flags/hiargs.rs:591",
+       "crates/printer/src/json.rs:982"
+      ],
+      "callers": [
+       "always_begin_end_no_match",
+       "printer_json"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:591",
+       "crates/printer/src/json.rs:28",
+       "crates/printer/src/json.rs:33",
+       "crates/printer/src/json.rs:785",
+       "crates/printer/src/json.rs:97",
+       "crates/printer/src/json.rs:98",
+       "crates/printer/src/json.rs:982"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "unicode",
+      "where": "crates/regex/src/matcher.rs:179",
+      "sites": [
+       "crates/core/flags/hiargs.rs:463"
+      ],
+      "callers": [
+       "matcher_rust"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:463",
+       "crates/regex/src/config.rs:206",
+       "crates/regex/src/config.rs:318",
+       "crates/regex/src/config.rs:32",
+       "crates/regex/src/config.rs:324",
+       "crates/regex/src/config.rs:54",
+       "crates/regex/src/matcher.rs:179",
+       "crates/regex/src/matcher.rs:180"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "bom_sniffing",
+      "where": "crates/searcher/src/searcher/mod.rs:550",
+      "sites": [
+       "crates/core/flags/hiargs.rs:734"
+      ],
+      "callers": [
+       "searcher"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:734",
+       "crates/searcher/src/searcher/mod.rs:179",
+       "crates/searcher/src/searcher/mod.rs:199",
+       "crates/searcher/src/searcher/mod.rs:323",
+       "crates/searcher/src/searcher/mod.rs:325",
+       "crates/searcher/src/searcher/mod.rs:550",
+       "crates/searcher/src/searcher/mod.rs:551",
+       "crates/searcher/src/searcher/mod.rs:806"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "is_absolute_parent",
+      "where": "crates/ignore/src/dir.rs:153",
+      "sites": [
+       "crates/ignore/src/walk.rs:1757"
+      ],
+      "callers": [
+       "check_symlink_loop"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/ignore/src/dir.rs:117",
+       "crates/ignore/src/dir.rs:153",
+       "crates/ignore/src/dir.rs:154",
+       "crates/ignore/src/dir.rs:211",
+       "crates/ignore/src/dir.rs:319",
+       "crates/ignore/src/dir.rs:428",
+       "crates/ignore/src/dir.rs:481",
+       "crates/ignore/src/dir.rs:632",
+       "crates/ignore/src/walk.rs:1757"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "size_limit",
+      "where": "crates/regex/src/matcher.rs:209",
+      "sites": [
+       "crates/core/flags/hiargs.rs:497"
+      ],
+      "callers": [
+       "matcher_rust"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:497",
+       "crates/regex/src/config.rs:245",
+       "crates/regex/src/config.rs:34",
+       "crates/regex/src/config.rs:58",
+       "crates/regex/src/error.rs:17",
+       "crates/regex/src/matcher.rs:209",
+       "crates/regex/src/matcher.rs:210"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "context_kind",
+      "where": "crates/printer/src/util.rs:222",
+      "sites": [
+       "crates/printer/src/standard.rs:1570"
+      ],
+      "callers": [
+       "is_context"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/standard.rs:1570",
+       "crates/printer/src/util.rs:167",
+       "crates/printer/src/util.rs:179",
+       "crates/printer/src/util.rs:197",
+       "crates/printer/src/util.rs:215",
+       "crates/printer/src/util.rs:222",
+       "crates/printer/src/util.rs:223"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "backslash_escape",
+      "where": "crates/globset/src/glob.rs:619",
+      "sites": [
+       "crates/globset/src/glob.rs:1064",
+       "crates/globset/src/glob.rs:1090",
+       "crates/globset/src/glob.rs:1121",
+       "crates/globset/src/glob.rs:1453",
+       "crates/ignore/src/gitignore.rs:507"
+      ],
+      "callers": [
+       "add_line"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/globset/src/glob.rs:1064",
+       "crates/globset/src/glob.rs:1090",
+       "crates/globset/src/glob.rs:1121",
+       "crates/globset/src/glob.rs:1453",
+       "crates/globset/src/glob.rs:205",
+       "crates/globset/src/glob.rs:216",
+       "crates/globset/src/glob.rs:619",
+       "crates/globset/src/glob.rs:620",
+       "crates/globset/src/glob.rs:836",
+       "crates/ignore/src/gitignore.rs:507"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "generic",
+      "where": "crates/regex/src/error.rs:29",
+      "sites": [
+       "crates/regex/src/config.rs:197",
+       "crates/regex/src/config.rs:209",
+       "crates/regex/src/error.rs:23",
+       "crates/regex/src/error.rs:25"
+      ],
+      "callers": [
+       "new",
+       "regex"
+      ],
+      "calls": [
+       "to_string"
+      ],
+      "codes": [
+       "E0061",
+       "E0593"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/regex/src/config.rs:197",
+       "crates/regex/src/config.rs:209",
+       "crates/regex/src/error.rs:23",
+       "crates/regex/src/error.rs:25",
+       "crates/regex/src/error.rs:29"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "consume",
+      "where": "crates/searcher/src/line_buffer.rs:274",
+      "sites": [
+       "crates/searcher/src/line_buffer.rs:598",
+       "crates/searcher/src/searcher/glue.rs:55",
+       "crates/searcher/src/searcher/glue.rs:75"
+      ],
+      "callers": [
+       "buffer_basics1",
+       "fill"
+      ],
+      "calls": [
+       "consume"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/searcher/src/line_buffer.rs:274",
+       "crates/searcher/src/line_buffer.rs:275",
+       "crates/searcher/src/line_buffer.rs:373",
+       "crates/searcher/src/line_buffer.rs:386",
+       "crates/searcher/src/line_buffer.rs:598",
+       "crates/searcher/src/searcher/glue.rs:55",
+       "crates/searcher/src/searcher/glue.rs:75"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "separator_context",
+      "where": "crates/printer/src/standard.rs:404",
+      "sites": [
+       "crates/core/flags/hiargs.rs:617",
+       "crates/printer/src/standard.rs:1935",
+       "crates/printer/src/standard.rs:1966",
+       "crates/printer/src/standard.rs:2017"
+      ],
+      "callers": [
+       "context_break",
+       "context_break_multiple_heading",
+       "context_break_multiple_no_heading",
+       "printer_standard"
+      ],
+      "calls": [
+       "new"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:617",
+       "crates/printer/src/standard.rs:1486",
+       "crates/printer/src/standard.rs:1935",
+       "crates/printer/src/standard.rs:1966",
+       "crates/printer/src/standard.rs:2017",
+       "crates/printer/src/standard.rs:404",
+       "crates/printer/src/standard.rs:408",
+       "crates/printer/src/standard.rs:54",
+       "crates/printer/src/standard.rs:80"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "heap_limit",
+      "where": "crates/searcher/src/searcher/mod.rs:454",
+      "sites": [
+       "crates/printer/src/json.rs:908",
+       "crates/searcher/src/searcher/glue.rs:664",
+       "crates/searcher/src/searcher/glue.rs:685",
+       "crates/searcher/src/searcher/mod.rs:1021",
+       "crates/searcher/src/testutil.rs:548",
+       "crates/searcher/src/testutil.rs:556",
+       "crates/searcher/src/testutil.rs:634",
+       "crates/searcher/src/testutil.rs:642",
+       "crates/searcher/src/testutil.rs:666",
+       "crates/searcher/src/testutil.rs:674"
+      ],
+      "callers": [
+       "big_error_multi_line",
+       "big_error_one_line",
+       "binary_detection",
+       "config_error_heap_limit",
+       "configs"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/json.rs:908",
+       "crates/searcher/src/searcher/glue.rs:664",
+       "crates/searcher/src/searcher/glue.rs:685",
+       "crates/searcher/src/searcher/mod.rs:1021",
+       "crates/searcher/src/searcher/mod.rs:168",
+       "crates/searcher/src/searcher/mod.rs:194",
+       "crates/searcher/src/searcher/mod.rs:221",
+       "crates/searcher/src/searcher/mod.rs:454",
+       "crates/searcher/src/searcher/mod.rs:458",
+       "crates/searcher/src/searcher/mod.rs:786",
+       "crates/searcher/src/searcher/mod.rs:925",
+       "crates/searcher/src/searcher/mod.rs:952",
+       "crates/searcher/src/searcher/mod.rs:953",
+       "crates/searcher/src/searcher/mod.rs:961",
+       "crates/searcher/src/searcher/mod.rs:962",
+       "crates/searcher/src/searcher/mod.rs:968",
+       "crates/searcher/src/searcher/mod.rs:985",
+       "crates/searcher/src/searcher/mod.rs:987",
+       "crates/searcher/src/testutil.rs:548",
+       "crates/searcher/src/testutil.rs:556",
+       "crates/searcher/src/testutil.rs:634",
+       "crates/searcher/src/testutil.rs:642",
+       "crates/searcher/src/testutil.rs:666",
+       "crates/searcher/src/testutil.rs:674"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "has_implicit_path",
+      "where": "crates/core/flags/hiargs.rs:347",
+      "sites": [
+       "crates/core/main.rs:143",
+       "crates/core/main.rs:219"
+      ],
+      "callers": [
+       "search",
+       "search_parallel"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:1054",
+       "crates/core/flags/hiargs.rs:1095",
+       "crates/core/flags/hiargs.rs:1124",
+       "crates/core/flags/hiargs.rs:347",
+       "crates/core/flags/hiargs.rs:348",
+       "crates/core/flags/hiargs.rs:357",
+       "crates/core/main.rs:143",
+       "crates/core/main.rs:219"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-holdout",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "total_count",
+      "where": "crates/printer/src/counter.rs:30",
+      "sites": [
+       "crates/printer/src/json.rs:531",
+       "crates/printer/src/standard.rs:1440",
+       "crates/printer/src/standard.rs:616",
+       "crates/printer/src/summary.rs:460"
+      ],
+      "callers": [
+       "has_written",
+       "write_search_prelude"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/counter.rs:11",
+       "crates/printer/src/counter.rs:16",
+       "crates/printer/src/counter.rs:30",
+       "crates/printer/src/counter.rs:31",
+       "crates/printer/src/counter.rs:37",
+       "crates/printer/src/json.rs:531",
+       "crates/printer/src/standard.rs:1440",
+       "crates/printer/src/standard.rs:616",
+       "crates/printer/src/summary.rs:460"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "from_db_path",
+      "where": "src/dependency.rs:60",
+      "sites": [
+       "src/pulse/diff.rs:208",
+       "src/pulse/diff.rs:209"
+      ],
+      "callers": [
+       "compute_diff"
+      ],
+      "calls": [
+       "into"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/dependency.rs:60",
+       "src/pulse/diff.rs:208",
+       "src/pulse/diff.rs:209"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "detect_modules",
+      "where": "src/pulse/wiki.rs:88",
+      "sites": [
+       "src/cli/pulse.rs:374",
+       "src/pulse/map.rs:246",
+       "src/pulse/map.rs:56",
+       "src/pulse/site.rs:229",
+       "src/pulse/wiki.rs:265",
+       "src/pulse/wiki.rs:309"
+      ],
+      "callers": [
+       "generate_all_pages",
+       "generate_all_pages_structural",
+       "generate_layered_map",
+       "generate_repo_map",
+       "generate_site",
+       "handle_pulse_onboard"
+      ],
+      "calls": [
+       "any",
+       "build_module_def",
+       "clone",
+       "cmp",
+       "collect",
+       "context",
+       "discover_sub_modules",
+       "extract",
+       "iter",
+       "join",
+       "map",
+       "new",
+       "open",
+       "path",
+       "push",
+       "sort_by",
+       "trim_end_matches"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/pulse.rs:374",
+       "src/pulse/map.rs:246",
+       "src/pulse/map.rs:56",
+       "src/pulse/site.rs:229",
+       "src/pulse/wiki.rs:265",
+       "src/pulse/wiki.rs:309",
+       "src/pulse/wiki.rs:88"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_ts_import_to_path",
+      "where": "src/parsers/typescript.rs:1475",
+      "sites": [
+       "src/indexer.rs:1200",
+       "src/indexer.rs:1640",
+       "src/indexer.rs:1785",
+       "src/parsers/typescript.rs:1644",
+       "src/parsers/typescript.rs:1662",
+       "src/parsers/typescript.rs:1672",
+       "src/parsers/typescript.rs:1686",
+       "src/parsers/typescript.rs:1697",
+       "src/parsers/typescript.rs:1706",
+       "src/parsers/typescript.rs:1714",
+       "src/parsers/typescript.rs:1723"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_absolute_import_not_supported_without_alias_map",
+       "test_node_modules_import_not_supported",
+       "test_resolve_index_file",
+       "test_resolve_nested_directory_structure",
+       "test_resolve_relative_import_multiple_parents",
+       "test_resolve_relative_import_parent_directory",
+       "test_resolve_relative_import_same_directory",
+       "test_resolve_without_current_file"
+      ],
+      "calls": [
+       "collect",
+       "components",
+       "ends_with",
+       "fold",
+       "is_some",
+       "iter",
+       "join",
+       "len",
+       "map",
+       "new",
+       "parent",
+       "pop",
+       "push",
+       "replace",
+       "resolve_alias",
+       "resolve_relative_to_config",
+       "starts_with",
+       "to_string_lossy"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1200",
+       "src/indexer.rs:1640",
+       "src/indexer.rs:1785",
+       "src/parsers/typescript.rs:1475",
+       "src/parsers/typescript.rs:1644",
+       "src/parsers/typescript.rs:1662",
+       "src/parsers/typescript.rs:1672",
+       "src/parsers/typescript.rs:1686",
+       "src/parsers/typescript.rs:1697",
+       "src/parsers/typescript.rs:1706",
+       "src/parsers/typescript.rs:1714",
+       "src/parsers/typescript.rs:1723"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "from_extension",
+      "where": "src/models.rs:83",
+      "sites": [
+       "src/ast_query.rs:162",
+       "src/background_indexer.rs:495",
+       "src/indexer.rs:1992",
+       "src/indexer.rs:439",
+       "src/interactive/app.rs:851",
+       "src/query/mod.rs:1429",
+       "src/query/mod.rs:1620",
+       "src/query/mod.rs:1939",
+       "src/query/mod.rs:2104",
+       "src/query/mod.rs:2223",
+       "src/query/mod.rs:2438",
+       "src/query/mod.rs:985",
+       "src/watcher.rs:113",
+       "src/watcher.rs:234"
+      ],
+      "callers": [
+       "enrich_with_symbols",
+       "execute_ast_query",
+       "find_regex_matches_in_file",
+       "get_all_language_files",
+       "get_trigram_candidates",
+       "index_with_callback",
+       "linear_scan_candidates",
+       "parse_symbols",
+       "search_ast_all_files",
+       "should_index_lang",
+       "should_watch_file",
+       "show_file_preview",
+       "watch"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061",
+       "E0593"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/ast_query.rs:162",
+       "src/background_indexer.rs:495",
+       "src/indexer.rs:1992",
+       "src/indexer.rs:439",
+       "src/interactive/app.rs:851",
+       "src/models.rs:83",
+       "src/query/mod.rs:1429",
+       "src/query/mod.rs:1620",
+       "src/query/mod.rs:1939",
+       "src/query/mod.rs:2104",
+       "src/query/mod.rs:2223",
+       "src/query/mod.rs:2438",
+       "src/query/mod.rs:985",
+       "src/watcher.rs:113",
+       "src/watcher.rs:234"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "center_line",
+      "where": "src/interactive/app.rs:1442",
+      "sites": [
+       "src/interactive/ui.rs:827"
+      ],
+      "callers": [
+       "render_file_preview"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:1442",
+       "src/interactive/app.rs:1443",
+       "src/interactive/app.rs:857",
+       "src/interactive/app.rs:94",
+       "src/interactive/ui.rs:827"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "effects",
+      "where": "src/interactive/app.rs:1373",
+      "sites": [
+       "src/interactive/ui.rs:334",
+       "src/interactive/ui.rs:369",
+       "src/interactive/ui.rs:486",
+       "src/interactive/ui.rs:74"
+      ],
+      "callers": [
+       "render_header",
+       "render_results_area"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:1373",
+       "src/interactive/app.rs:1374",
+       "src/interactive/app.rs:16",
+       "src/interactive/app.rs:219",
+       "src/interactive/app.rs:446",
+       "src/interactive/app.rs:450",
+       "src/interactive/app.rs:46",
+       "src/interactive/app.rs:532",
+       "src/interactive/mod.rs:3",
+       "src/interactive/ui.rs:334",
+       "src/interactive/ui.rs:369",
+       "src/interactive/ui.rs:486",
+       "src/interactive/ui.rs:74"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "parse_all_python_packages",
+      "where": "src/parsers/python.rs:1055",
+      "sites": [
+       "src/indexer.rs:796",
+       "src/parsers/python.rs:1672",
+       "src/parsers/python.rs:1706",
+       "src/parsers/python.rs:1775"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_parse_all_python_packages",
+       "test_resolve_python_import_absolute",
+       "test_resolve_python_import_not_found"
+      ],
+      "calls": [
+       "find_all_python_configs",
+       "find_python_package_name",
+       "is_empty",
+       "len",
+       "new",
+       "ok_or_else",
+       "parent",
+       "push",
+       "replace",
+       "strip_prefix",
+       "to_path_buf",
+       "to_string_lossy",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:796",
+       "src/parsers/python.rs:1055",
+       "src/parsers/python.rs:1672",
+       "src/parsers/python.rs:1706",
+       "src/parsers/python.rs:1775"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "preview_content",
+      "where": "src/interactive/app.rs:1393",
+      "sites": [
+       "src/interactive/ui.rs:824"
+      ],
+      "callers": [
+       "render_file_preview"
+      ],
+      "calls": [
+       "as_ref"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:1393",
+       "src/interactive/app.rs:1394",
+       "src/interactive/app.rs:228",
+       "src/interactive/app.rs:609",
+       "src/interactive/app.rs:64",
+       "src/interactive/app.rs:854",
+       "src/interactive/app.rs:867",
+       "src/interactive/app.rs:875",
+       "src/interactive/app.rs:938",
+       "src/interactive/ui.rs:824"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_ruby_require_to_path",
+      "where": "src/parsers/ruby.rs:913",
+      "sites": [
+       "src/indexer.rs:1419",
+       "src/parsers/ruby.rs:1597",
+       "src/parsers/ruby.rs:1615",
+       "src/parsers/ruby.rs:1630",
+       "src/parsers/ruby.rs:1644",
+       "src/parsers/ruby.rs:1673",
+       "src/parsers/ruby.rs:1679",
+       "src/parsers/ruby.rs:1685"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_ruby_require_hyphen_underscore_conversion",
+       "test_resolve_ruby_require_lib_structure",
+       "test_resolve_ruby_require_monorepo",
+       "test_resolve_ruby_require_no_match",
+       "test_resolve_ruby_require_root_structure"
+      ],
+      "calls": [
+       "canonicalize",
+       "display",
+       "gem_name_to_require_paths",
+       "into_iter",
+       "join",
+       "new",
+       "next",
+       "parent",
+       "replace",
+       "split",
+       "starts_with",
+       "to_string",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1419",
+       "src/parsers/ruby.rs:1597",
+       "src/parsers/ruby.rs:1615",
+       "src/parsers/ruby.rs:1630",
+       "src/parsers/ruby.rs:1644",
+       "src/parsers/ruby.rs:1673",
+       "src/parsers/ruby.rs:1679",
+       "src/parsers/ruby.rs:1685",
+       "src/parsers/ruby.rs:913"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_rust_use_to_path",
+      "where": "src/parsers/rust.rs:1379",
+      "sites": [
+       "src/indexer.rs:1274",
+       "src/parsers/rust.rs:1564",
+       "src/parsers/rust.rs:1579",
+       "src/parsers/rust.rs:1594",
+       "src/parsers/rust.rs:1609",
+       "src/parsers/rust.rs:1624",
+       "src/parsers/rust.rs:1642",
+       "src/parsers/rust.rs:1655",
+       "src/parsers/rust.rs:1667",
+       "src/parsers/rust.rs:1707",
+       "src/parsers/rust.rs:1720",
+       "src/parsers/rust.rs:1734",
+       "src/parsers/rust.rs:1744",
+       "src/parsers/rust.rs:1759"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_external_import_not_supported",
+       "test_module_only_import_still_resolves",
+       "test_resolution_is_cwd_independent",
+       "test_resolve_crate_import",
+       "test_resolve_mod_declaration",
+       "test_resolve_nested_crate_import",
+       "test_resolve_self_import",
+       "test_resolve_super_import",
+       "test_resolve_without_current_file",
+       "test_stdlib_import_not_supported",
+       "test_super_trailing_item",
+       "test_trailing_item_nested_module",
+       "test_trailing_item_single_module"
+      ],
+      "calls": [
+       "as_path",
+       "collect",
+       "contains",
+       "exists",
+       "file_name",
+       "find_crate_root",
+       "from",
+       "is_empty",
+       "is_relative",
+       "join",
+       "map",
+       "new",
+       "or_else",
+       "parent",
+       "resolve_longest_module_prefix",
+       "split",
+       "starts_with",
+       "strip_prefix",
+       "to_string",
+       "to_string_lossy",
+       "unwrap"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1274",
+       "src/parsers/rust.rs:1379",
+       "src/parsers/rust.rs:1564",
+       "src/parsers/rust.rs:1579",
+       "src/parsers/rust.rs:1594",
+       "src/parsers/rust.rs:1609",
+       "src/parsers/rust.rs:1624",
+       "src/parsers/rust.rs:1642",
+       "src/parsers/rust.rs:1655",
+       "src/parsers/rust.rs:1667",
+       "src/parsers/rust.rs:1707",
+       "src/parsers/rust.rs:1720",
+       "src/parsers/rust.rs:1734",
+       "src/parsers/rust.rs:1744",
+       "src/parsers/rust.rs:1759"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "focus_state",
+      "where": "src/interactive/app.rs:1381",
+      "sites": [
+       "src/interactive/ui.rs:156",
+       "src/interactive/ui.rs:49",
+       "src/interactive/ui.rs:580",
+       "src/interactive/ui.rs:972"
+      ],
+      "callers": [
+       "render_filters",
+       "render_footer",
+       "render_header",
+       "render_results_area"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:1381",
+       "src/interactive/app.rs:1382",
+       "src/interactive/app.rs:224",
+       "src/interactive/app.rs:360",
+       "src/interactive/app.rs:362",
+       "src/interactive/app.rs:56",
+       "src/interactive/app.rs:612",
+       "src/interactive/app.rs:618",
+       "src/interactive/app.rs:623",
+       "src/interactive/app.rs:636",
+       "src/interactive/app.rs:654",
+       "src/interactive/app.rs:659",
+       "src/interactive/app.rs:816",
+       "src/interactive/app.rs:827",
+       "src/interactive/app.rs:835",
+       "src/interactive/app.rs:963",
+       "src/interactive/ui.rs:156",
+       "src/interactive/ui.rs:49",
+       "src/interactive/ui.rs:580",
+       "src/interactive/ui.rs:972"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "parse_all_go_modules",
+      "where": "src/parsers/go.rs:1305",
+      "sites": [
+       "src/indexer.rs:767",
+       "src/parsers/go.rs:1008",
+       "src/parsers/go.rs:880",
+       "src/parsers/go.rs:917",
+       "src/parsers/go.rs:947",
+       "src/parsers/go.rs:975"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_parse_all_go_modules",
+       "test_resolve_go_import",
+       "test_resolve_go_import_module_root",
+       "test_resolve_go_import_not_found",
+       "test_resolve_go_import_root_module_no_leading_slash"
+      ],
+      "calls": [
+       "find_all_go_mods",
+       "is_empty",
+       "len",
+       "lines",
+       "new",
+       "ok_or_else",
+       "parent",
+       "push",
+       "read_to_string",
+       "replace",
+       "starts_with",
+       "strip_prefix",
+       "to_path_buf",
+       "to_string",
+       "to_string_lossy",
+       "trim",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:767",
+       "src/parsers/go.rs:1008",
+       "src/parsers/go.rs:1305",
+       "src/parsers/go.rs:880",
+       "src/parsers/go.rs:917",
+       "src/parsers/go.rs:947",
+       "src/parsers/go.rs:975"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "resolve_go_import_to_path",
+      "where": "src/parsers/go.rs:1372",
+      "sites": [
+       "src/indexer.rs:1148",
+       "src/parsers/go.rs:1014",
+       "src/parsers/go.rs:1026",
+       "src/parsers/go.rs:923",
+       "src/parsers/go.rs:950",
+       "src/parsers/go.rs:978",
+       "src/parsers/go.rs:990"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_go_import",
+       "test_resolve_go_import_module_root",
+       "test_resolve_go_import_not_found",
+       "test_resolve_go_import_relative",
+       "test_resolve_go_import_root_module_no_leading_slash"
+      ],
+      "calls": [
+       "into_iter",
+       "is_empty",
+       "next",
+       "next_back",
+       "split",
+       "starts_with",
+       "strip_prefix",
+       "to_string",
+       "trim_start_matches",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1148",
+       "src/parsers/go.rs:1014",
+       "src/parsers/go.rs:1026",
+       "src/parsers/go.rs:1372",
+       "src/parsers/go.rs:923",
+       "src/parsers/go.rs:950",
+       "src/parsers/go.rs:978",
+       "src/parsers/go.rs:990"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "truncate_preview",
+      "where": "src/cli/query.rs:10",
+      "sites": [
+       "src/cli/query.rs:422",
+       "src/cli/query.rs:506",
+       "src/mcp.rs:1014",
+       "src/mcp.rs:1132",
+       "src/mcp.rs:1786",
+       "src/mcp.rs:1829",
+       "src/mcp.rs:907"
+      ],
+      "callers": [
+       "handle_call_tool",
+       "handle_query"
+      ],
+      "calls": [
+       "char_indices",
+       "filter",
+       "is_whitespace",
+       "last",
+       "len",
+       "map",
+       "min",
+       "push",
+       "take",
+       "to_string",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/mod.rs:19",
+       "src/cli/query.rs:10",
+       "src/cli/query.rs:422",
+       "src/cli/query.rs:506",
+       "src/mcp.rs:1014",
+       "src/mcp.rs:1132",
+       "src/mcp.rs:1786",
+       "src/mcp.rs:1829",
+       "src/mcp.rs:907"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "extract_trigrams_from_regex",
+      "where": "src/regex_trigrams.rs:68",
+      "sites": [
+       "src/query/mod.rs:2322",
+       "src/regex_trigrams.rs:347",
+       "src/regex_trigrams.rs:354",
+       "src/regex_trigrams.rs:361",
+       "src/regex_trigrams.rs:369",
+       "src/regex_trigrams.rs:376"
+      ],
+      "callers": [
+       "get_regex_candidates",
+       "test_extract_trigrams_complex_pattern",
+       "test_extract_trigrams_multiple_literals",
+       "test_extract_trigrams_no_literals",
+       "test_extract_trigrams_simple_literal",
+       "test_extract_trigrams_with_wildcard"
+      ],
+      "calls": [
+       "dedup",
+       "extend",
+       "extract_literal_sequences",
+       "extract_trigrams",
+       "is_empty",
+       "len",
+       "new",
+       "sort_unstable"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/query/mod.rs:22",
+       "src/query/mod.rs:2322",
+       "src/regex_trigrams.rs:347",
+       "src/regex_trigrams.rs:354",
+       "src/regex_trigrams.rs:361",
+       "src/regex_trigrams.rs:369",
+       "src/regex_trigrams.rs:376",
+       "src/regex_trigrams.rs:68"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-holdout",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "key": {
+      "name": "to_query_filter",
+      "where": "src/semantic/executor.rs:196",
+      "sites": [
+       "src/semantic/executor.rs:327",
+       "src/semantic/executor.rs:473",
+       "src/semantic/executor.rs:484",
+       "src/semantic/tools.rs:144"
+      ],
+      "callers": [
+       "execute_explore_codebase",
+       "execute_queries",
+       "test_to_query_filter",
+       "test_to_query_filter_with_kind"
+      ],
+      "calls": [
+       "as_str",
+       "chain",
+       "chars",
+       "clone",
+       "collect",
+       "context",
+       "default",
+       "flat_map",
+       "is_some",
+       "new",
+       "next",
+       "ok",
+       "or_else",
+       "parse",
+       "to_lowercase",
+       "to_string",
+       "to_uppercase"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/semantic/executor.rs:196",
+       "src/semantic/executor.rs:327",
+       "src/semantic/executor.rs:473",
+       "src/semantic/executor.rs:484",
+       "src/semantic/tools.rs:144"
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

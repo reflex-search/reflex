@@ -21,10 +21,10 @@ and the checklist: `.context/AGENT_EDGE_PLAN.md`. It supersedes backlog §1 D (g
 trimming) and absorbs backlog §2.
 
 Open follow-ups (2026-11-10):
-- [ ] `rfx refs X` binds no use to a definition: on tokio `explain` it labelled another
-  `waker_ref` "the definition" and the agent went back to grep. Candidate: `--at
-  path:line` (imports, `self.` / `Type::` qualifiers, the file's own items). Score it
-  on the `explain` / `impact` sessions first. AGENT_EDGE_RESEARCH.md.
+- [ ] `rfx refs X --at path:line` (MCP `find_references` `at`, hidden): built
+  (`src/bind.rs`, Rust only), scored offline: site F1 0.989 tuning, 0.953 and 0.951 on
+  two blind held-out sets (0.663 / 0.734 without `--at`). In the skill and the SessionStart hook. Next: a
+  light live run (tokio explain + impact, arm S) — ask first. AGENT_EDGE_RESEARCH.md.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:
