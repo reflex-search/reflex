@@ -363,3 +363,27 @@ One trial: within noise.
   name has more than one definition, `rfx refs X` (and `find_references`) lists them
   and says `pass --at PATH:LINE for the uses of one`; plain `rfx refs` could print
   `[in f]` for every use too.
+
+### Live run 2: `definitions` + hint, `[in f]` on every use — 2026-11-11, Sonnet 5.5, 1 trial
+
+`d1ae6dc`, `results-sessions/sonnet55-at2/` (A: the same-day `sonnet55-phase0-compiled`
+run). Spend: $0.38 plus a warm-up.
+
+| Arm | Session | Turns | rfx calls | grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | explain | 30 | 0 | 11 | 106,244 | 0.239 | 1.000 |
+| A | impact | 24 | 0 | 9 | 79,182 | 0.178 | 1.000 |
+| S | explain | 26 | 8 | 0 | 82,366 | 0.197 | 1.000 |
+| S | impact | 23 | 1 | 11 | 82,023 | 0.184 | 1.000 |
+
+- **explain: 0.78× A's weighted tokens, 0.82× its cost.** One `rfx refs X tokio/src/`
+  per question, then the answer: no grep, no `awk`/`grep -n "fn "` to find callers
+  (the `[in f]` column answered that). Still 0 calls with `--at`: with the callers
+  shown and the definitions listed, the agent did not need it.
+- **impact: 1.04× weighted, 1.03× cost.** After one `rfx locations X --preview` the
+  agent used `grep -rnw` for every other question (the routing line for "where does
+  X occur" points at `locations`, which keeps comment lines; it then filtered with
+  `grep -v`). Same as the first S run on impact? No: run 1 kept `rfx refs` (8 calls).
+  One trial each: routing on impact varies between runs.
+- **Reading:** first single-trial result under D5's 0.85× cost line on a headline
+  workflow (explain). Needs more trials (A and S) before it counts.
