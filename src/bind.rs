@@ -195,6 +195,70 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
     Ok(Binding { target, lines: out })
 }
 
+/// What plain `rfx refs X` knows of one line, from the Rust syntax tree.
+#[derive(Clone, Debug, Default)]
+pub struct LineFn {
+    /// The function the line's first `name` is in (`[in f]`).
+    pub caller: Option<String>,
+    /// The line defines a function named `name`: `Some("Method")` in an `impl` or a
+    /// trait, else `Some("Function")`. It sees definitions inside item-level macros
+    /// (`cfg_rt! { … }`), which the symbol cache misses.
+    pub defines: Option<&'static str>,
+}
+
+/// [`LineFn`] for each line (default: not Rust, or the file cannot be read).
+pub fn enclosing_fns(root: &Path, name: &str, lines: &[(String, usize)]) -> Vec<LineFn> {
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .is_err()
+    {
+        return vec![LineFn::default(); lines.len()];
+    }
+    let mut parsed: HashMap<String, Option<(String, Tree)>> = HashMap::new();
+    lines
+        .iter()
+        .map(|(p, line)| {
+            if !p.ends_with(".rs") {
+                return LineFn::default();
+            }
+            let entry = parsed.entry(p.clone()).or_insert_with(|| {
+                let src = std::fs::read_to_string(root.join(p)).ok()?;
+                parse_flat(&mut parser, src)
+            });
+            let Some((src, tree)) = entry.as_ref() else {
+                return LineFn::default();
+            };
+            let start: usize = src.split('\n').take(line - 1).map(|l| l.len() + 1).sum();
+            let Some(row) = src.split('\n').nth(line - 1) else {
+                return LineFn::default();
+            };
+            let col = row.find(name).unwrap_or(row.len() - row.trim_start().len());
+            let a = start + col;
+            let Some(n) = tree.root_node().descendant_for_byte_range(a, a) else {
+                return LineFn::default();
+            };
+            let mut out = LineFn::default();
+            let mut cur = Some(n);
+            while let Some(c) = cur {
+                if matches!(c.kind(), "function_item" | "function_signature_item")
+                    && let Some(nm) = c.child_by_field_name("name")
+                {
+                    if nm.start_byte() == a && &src[nm.start_byte()..nm.end_byte()] == name {
+                        let method = ancestor(c, &["impl_item", "trait_item"]).is_some();
+                        out.defines = Some(if method { "Method" } else { "Function" });
+                    } else if c.kind() == "function_item" {
+                        out.caller = Some(src[nm.start_byte()..nm.end_byte()].to_string());
+                        break;
+                    }
+                }
+                cur = c.parent();
+            }
+            out
+        })
+        .collect()
+}
+
 /// Parse, with item-level brace macros opened up: `cfg_rt! { fn a() {} }` holds
 /// tokens, not items, for tree-sitter, and tokio wraps most of its code in such
 /// blocks. `name! {` and its `}` become spaces (same byte offsets and lines), so the

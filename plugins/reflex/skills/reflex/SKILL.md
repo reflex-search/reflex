@@ -29,7 +29,9 @@ cheapest answer (`src/a.rs:4,128,193`, one line per file). `--preview` gives
 `path:line:text` for each matching line.
 
 For uses in code only (no comments or strings), use `rfx refs X`; it drops those lines
-exactly, so do not re-check. It prints the definition, then `path:line:text` per use.
+exactly, so do not re-check. It prints the definition, then `path:line:text  [in caller]`
+per use. When several functions share the name, it lists them all; `--at PATH:LINE`
+keeps the uses of one.
 
 | Question | Command |
 | --- | --- |

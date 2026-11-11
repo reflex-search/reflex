@@ -2901,7 +2901,8 @@ fn dispatch_tool(
                 kind: parsed_kind,
                 use_ast: false,
                 use_regex: false,
-                limit: Some(5),
+                // Room to see every function with this name (`definitions` below).
+                limit: Some(20),
                 symbols_mode: true,
                 expand: false,
                 file_pattern: None,
@@ -2948,6 +2949,27 @@ fn dispatch_tool(
                     })
                 });
 
+            // Every function or method with exactly this name. A name search mixes
+            // their uses: tokio has three `waker_ref` functions.
+            let mut definitions: Vec<serde_json::Value> = Vec::new();
+            let mut rust_definitions = 0usize;
+            for fg in &def_response.results {
+                for m in &fg.matches {
+                    if matches!(m.kind, SymbolKind::Function | SymbolKind::Method)
+                        && m.symbol.as_deref() == Some(pattern.as_str())
+                    {
+                        if fg.language == Language::Rust {
+                            rust_definitions += 1;
+                        }
+                        definitions.push(json!({
+                            "path": fg.path,
+                            "line": m.span.start_line,
+                            "kind": m.kind,
+                        }));
+                    }
+                }
+            }
+
             // Search 2: Find all textual references (symbols_mode=false)
             let ref_filter = QueryFilter {
                 language,
@@ -2990,7 +3012,7 @@ fn dispatch_tool(
 
             // Flatten references to compact {path, line, preview} array,
             // excluding matches inside string literals or comments (unless include_strings).
-            let references: Vec<serde_json::Value> = ref_response.results.iter()
+            let mut references: Vec<serde_json::Value> = ref_response.results.iter()
                 .flat_map(|fg| {
                     let file = if include_strings { None } else { file_regions(root, fg) };
                     let pattern = &pattern;
@@ -3033,6 +3055,45 @@ fn dispatch_tool(
                 );
                 return Ok(response);
             }
+
+            // The function each use is in (Rust: the syntax tree), so an agent does not
+            // read the file to find the caller.
+            let lines: Vec<(String, usize)> = references
+                .iter()
+                .filter_map(|r| {
+                    Some((
+                        r["path"].as_str()?.to_string(),
+                        r["line"].as_u64()? as usize,
+                    ))
+                })
+                .collect();
+            for (r, f) in references
+                .iter_mut()
+                .zip(crate::bind::enclosing_fns(root, &pattern, &lines))
+            {
+                if let Some(c) = f.caller {
+                    r["in"] = json!(c);
+                }
+                // A definition the symbol cache missed (inside `cfg_rt! { … }`).
+                if let Some(kind) = f.defines {
+                    let path = r["path"].clone();
+                    let line = r["line"].as_u64().unwrap_or(0);
+                    let known = definitions.iter().any(|d| {
+                        d["path"] == path
+                            && d["line"]
+                                .as_u64()
+                                .is_some_and(|l| l <= line && line <= l + 3)
+                    });
+                    if !known {
+                        rust_definitions += 1;
+                        definitions.push(json!({"path": path, "line": line, "kind": kind}));
+                    }
+                }
+            }
+            definitions.sort_by(|a, b| {
+                (a["path"].as_str(), a["line"].as_u64())
+                    .cmp(&(b["path"].as_str(), b["line"].as_u64()))
+            });
 
             // Count consistency. These were three different numbers reported under
             // names that all read like "total", which looked like an off-by-one:
@@ -3080,6 +3141,27 @@ fn dispatch_tool(
                 engine_reason,
                 engine_excluded,
             );
+            if definitions.len() > 1 {
+                if rust_definitions > 1 {
+                    let hint = format!(
+                        "{} functions are named {pattern}; these references are uses of the \
+                         NAME. For the uses of one, pass at: \"path:line\" (CLI: rfx refs \
+                         {pattern} --at path:line).",
+                        definitions.len()
+                    );
+                    match response.get("hint") {
+                        None => response["hint"] = json!(hint),
+                        Some(_) => {
+                            if let Some(w) = response["warnings"].as_array_mut() {
+                                w.push(json!(hint));
+                            } else {
+                                response["warnings"] = json!([hint]);
+                            }
+                        }
+                    }
+                }
+                response["definitions"] = json!(definitions);
+            }
 
             Ok(response)
         }

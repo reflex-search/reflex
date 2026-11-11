@@ -33,6 +33,9 @@
   type, `std` and dependency types). Each use names its caller (`[in f]`); lines the
   rules cannot decide are listed apart as possible. On compiler answer keys, the uses
   found match the compiler's at F1 0.95 on two sets of unseen names (0.66 and 0.73 without `--at`).
+- **`rfx refs X` shows each use's caller** (`[in f]`; JSON `in`) in Rust, and, when
+  several functions share the name, lists them all (`definitions`) with a hint to pass
+  `--at` (MCP: `at`). Definitions inside item-level macros (`cfg_rt! { … }`) count too.
 - **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
   instruction names (default `mcp__reflex__`). A plugin's tools are
   `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.

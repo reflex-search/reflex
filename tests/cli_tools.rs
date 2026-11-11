@@ -168,8 +168,8 @@ fn refs_text_lists_uses_in_code_only() {
         stdout(&out),
         "definition src/lib.rs:3 Function alpha\n\
          src/lib.rs:3:pub fn alpha() -> u32 {\n\
-         src/lib.rs:9:    alpha() + alpha()\n\
-         src/util.rs:6:    crate::alpha()\n"
+         src/lib.rs:9:    alpha() + alpha()  [in beta]\n\
+         src/util.rs:6:    crate::alpha()  [in gamma]\n"
     );
     assert!(
         stderr(&out).contains("3 references in code; 2 lines only in comments or strings left out"),
@@ -379,6 +379,38 @@ fn refs_at_binds_uses_to_one_definition() {
     assert_eq!(b["references"][0]["path"], "src/b.rs", "{b}");
     assert_eq!(b["references"][0]["line"], 6, "{b}");
     assert_eq!(b["returned_count"], 1, "{b}");
+
+    // Without --at: both definitions, and how to keep the uses of one.
+    let plain = json_out(root, &["refs", "run", "--json"]);
+    assert_eq!(
+        plain["definitions"].as_array().map(|d| d.len()),
+        Some(2),
+        "{plain}"
+    );
+    assert!(
+        plain["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("at: \"path:line\"")),
+        "{plain}"
+    );
+    let out = rfx(root, &["refs", "run"]);
+    let text = stdout(&out);
+    assert!(text.starts_with("2 definitions of run;"), "{text}");
+    assert!(text.contains("definition src/a.rs:3 "), "{text}");
+    assert!(text.contains("definition src/b.rs:3 "), "{text}");
+    assert!(
+        text.contains("For the uses of one: rfx refs run --at PATH:LINE"),
+        "{text}"
+    );
+    assert!(
+        text.contains("src/a.rs:6:    x.run()  [in use_a]"),
+        "{text}"
+    );
+    assert!(
+        !stderr(&out).contains("Hint:"),
+        "said once: {}",
+        stderr(&out)
+    );
 
     // Text form: the caller in brackets.
     let out = rfx(root, &["refs", "run", "--at", "src/a.rs:3"]);

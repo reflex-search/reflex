@@ -269,16 +269,26 @@ pub(super) fn handle_refs(filters: ToolFilters, opts: RefsOptions, no_update: bo
     if let Some(n) = offset {
         args.insert("offset".into(), json!(n));
     }
-    let data = call("find_references", args, no_update)?;
+    let mut data = call("find_references", args, no_update)?;
     if filters.json {
         return print_json(&data, filters.pretty);
+    }
+    // The several-definitions hint names the MCP `at`; the text form says it with
+    // the CLI flag, on stdout, above the uses (`refs_text`).
+    let several = data["definitions"].as_array().is_some_and(|d| d.len() > 1);
+    let at_hint = several
+        && data["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("pass at:"));
+    if at_hint {
+        data.as_object_mut().map(|o| o.remove("hint"));
     }
     report_notes(&data);
     if count {
         println!("{}", data["count"]);
         return Ok(());
     }
-    print!("{}", refs_text(&data));
+    print!("{}", refs_text(&data, at_hint));
     if at.is_some() {
         let n = |k: &str| data[k].as_array().map_or(0, |a| a.len());
         eprintln!(
@@ -302,11 +312,34 @@ pub(super) fn handle_refs(filters: ToolFilters, opts: RefsOptions, no_update: bo
     Ok(())
 }
 
-/// `definition path:line kind name`, then one `path:line:text` per reference.
-fn refs_text(data: &Value) -> String {
+/// `definition path:line kind name`, then one `path:line:text` per reference. With
+/// several functions of that name: each one, and how to keep the uses of one.
+fn refs_text(data: &Value, at_hint: bool) -> String {
     let mut out = String::new();
     let def = &data["definition"];
-    if def.is_object() {
+    let defs = data["definitions"]
+        .as_array()
+        .map_or(&[][..], |a| a.as_slice());
+    let symbol = def["symbol"].as_str().unwrap_or("");
+    if defs.len() > 1 {
+        out.push_str(&format!(
+            "{} definitions of {symbol}; the uses below are of the name:\n",
+            defs.len()
+        ));
+        for d in defs {
+            out.push_str(&format!(
+                "definition {}:{} {} {symbol}\n",
+                d["path"].as_str().unwrap_or(""),
+                d["line"],
+                d["kind"].as_str().unwrap_or(""),
+            ));
+        }
+        if at_hint {
+            out.push_str(&format!(
+                "For the uses of one: rfx refs {symbol} --at PATH:LINE\n"
+            ));
+        }
+    } else if def.is_object() {
         let line = if def["line"].is_null() {
             &def["span"]["start_line"]
         } else {
@@ -437,10 +470,10 @@ mod tests {
             "references": [{"path": "src/b.rs", "line": 12, "preview": "    alpha();"}]
         });
         assert_eq!(
-            refs_text(&data),
+            refs_text(&data, false),
             "definition src/a.rs:3 Function alpha\nsrc/b.rs:12:    alpha();\n"
         );
         let no_def = json!({"definition": null, "references": []});
-        assert_eq!(refs_text(&no_def), "");
+        assert_eq!(refs_text(&no_def, false), "");
     }
 }

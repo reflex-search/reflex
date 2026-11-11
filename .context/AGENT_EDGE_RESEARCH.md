@@ -336,3 +336,30 @@ definition" at 0.95 F1 on two blind sets (0.99 on the tuning set), with 3 and 18
 `Possible` lines in 48 questions. Next: a light live
 run (tokio explain + impact, arm S with `--at` in the skill and hook) to see whether
 agents use it and stop re-reading hits.
+
+### Live run: arm S with `--at` in the skill and hook — 2026-11-11, Sonnet 5.5, 1 trial
+
+`8eb8376`, Claude Code 2.1.318, `results-sessions/sonnet55-at/` (A copied from the
+`sonnet55-phase0-compiled` run the same day). Spend: $0.41 plus a warm-up.
+
+| Arm | Session | Turns | rfx calls | grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | explain | 30 | 0 | 11 | 106,244 | 0.239 | 1.000 |
+| A | impact | 24 | 0 | 9 | 79,182 | 0.178 | 1.000 |
+| S | explain | 30 | 8 | 5 | 100,865 | 0.232 | 1.000 |
+| S | impact | 21 | 8 | 3 | 77,048 | 0.180 | 1.000 |
+
+S vs A: 0.96× weighted, 0.99× cost (was 1.10× / 1.11× without the flag in the text).
+One trial: within noise.
+
+- **0 of 16 `rfx refs` calls passed `--at`**, though the SessionStart hook text named
+  it (checked in both transcripts) and every question gives the definition's
+  `path:line`. The agent ran `rfx refs X tokio/src/`, then found each caller by hand
+  (`awk 'NR<=339 && /fn /…'`, `grep -n "fn " file`): the `[in f]` that `--at` prints.
+- S stayed on `rfx refs` in `explain` this time (8 calls; it fell back to grep after 2
+  before). Reason unknown (one trial).
+- **Reading:** a flag named once in the preamble is not found. Agents follow what a
+  tool's own output tells them (the zero-result `hint` pattern). Candidate: when the
+  name has more than one definition, `rfx refs X` (and `find_references`) lists them
+  and says `pass --at PATH:LINE for the uses of one`; plain `rfx refs` could print
+  `[in f]` for every use too.
