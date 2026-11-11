@@ -252,6 +252,10 @@ pub fn enclosing_fns(root: &Path, name: &str, lines: &[(String, usize)]) -> Vec<
                         break;
                     }
                 }
+                if let Some(m) = macro_name(c, src) {
+                    out.caller = Some(m);
+                    break;
+                }
                 cur = c.parent();
             }
             out
@@ -626,6 +630,9 @@ fn module_of(f: &File, n: Node) -> Vec<String> {
 fn caller(f: &File, n: Node) -> Option<String> {
     let mut cur = n.parent();
     while let Some(c) = cur {
+        if let Some(m) = macro_name(c, &f.src) {
+            return Some(m);
+        }
         if c.kind() == "function_item"
             && let Some(nm) = c.child_by_field_name("name")
             && nm != n
@@ -635,6 +642,19 @@ fn caller(f: &File, n: Node) -> Option<String> {
         cur = c.parent();
     }
     None
+}
+
+/// `macro_rules! name { … }`: `macro_rules! name`. A use in a macro body runs where
+/// the macro is invoked, so the caller is not a function here.
+fn macro_name(n: Node, src: &str) -> Option<String> {
+    if n.kind() != "macro_definition" {
+        return None;
+    }
+    let nm = n.child_by_field_name("name")?;
+    Some(format!(
+        "macro_rules! {}",
+        &src[nm.start_byte()..nm.end_byte()]
+    ))
 }
 
 fn enclosing_impl_type(f: &File, n: Node) -> Option<String> {
@@ -1580,6 +1600,34 @@ mod tests {
             get("src/other.rs:7"),
             Some(Verdict::Other),
             "dependency chain"
+        );
+    }
+
+    #[test]
+    fn enclosing_fns_names_callers_macros_and_definitions() {
+        let root = tree(&[
+            CARGO,
+            (
+                "src/lib.rs",
+                "fn add(x: u8) -> u8 { x }\nfn run() {\n    add(1);\n}\nmacro_rules! many {\n    () => { add(2) };\n}\nstruct S;\nimpl S {\n    fn add(&self) {}\n}\n",
+            ),
+        ]);
+        let lines: Vec<(String, usize)> = [1, 3, 6, 10]
+            .iter()
+            .map(|l| ("src/lib.rs".to_string(), *l))
+            .collect();
+        let got: Vec<(Option<String>, Option<&str>)> = enclosing_fns(root.path(), "add", &lines)
+            .into_iter()
+            .map(|f| (f.caller, f.defines))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (None, Some("Function")),
+                (Some("run".to_string()), None),
+                (Some("macro_rules! many".to_string()), None),
+                (None, Some("Method")),
+            ]
         );
     }
 

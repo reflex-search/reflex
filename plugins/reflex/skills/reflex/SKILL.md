@@ -37,7 +37,7 @@ keeps the uses of one.
 | --- | --- |
 | Where does X occur | `rfx locations X` (add `--preview` for the line text) |
 | Every use of X in code, not comments or strings | `rfx refs X` (`--count` for the number) |
-| Every use of the X defined at one line (Rust; other items share the name) | `rfx refs X --at src/a.rs:35` (each use names its caller) |
+| Callers of the X defined at one line, or what breaks if it changes (Rust) | `rfx refs X --at src/a.rs:35` (only that definition's uses; `[import]` lines marked) |
 | Where is X defined | `rfx query X --symbols --json` (narrow with `--kind function`) |
 | The full body of a definition | `rfx query X --symbols --expand --json` |
 | Lines around each match | `rfx query X -C 3 --json` |

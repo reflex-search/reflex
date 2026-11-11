@@ -36,6 +36,7 @@
 - **`rfx refs X` shows each use's caller** (`[in f]`; JSON `in`) in Rust, and, when
   several functions share the name, lists them all (`definitions`) with a hint to pass
   `--at` (MCP: `at`). Definitions inside item-level macros (`cfg_rt! { … }`) count too.
+  A use inside a `macro_rules!` body shows `[in macro_rules! name]`.
 - **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
   instruction names (default `mcp__reflex__`). A plugin's tools are
   `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.

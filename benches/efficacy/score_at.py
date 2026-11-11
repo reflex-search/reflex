@@ -81,7 +81,8 @@ def main() -> None:
             bound = [r for r in at["references"] if not r.get("import")]
             at_sites = {loc(r) for r in bound}
             poss = {loc(r) for r in at.get("possible", []) if not r.get("import")}
-            callers = {r["in"] for r in bound if r.get("in")}
+            # `in: "macro_rules! m"`: a use in a macro body, not a calling function.
+            callers = {r["in"] for r in bound if r.get("in") and not r["in"].startswith("macro_rules!")}
             row = dict(repo=s["repo"], kind=s["kind"], name=k["name"],
                        plain=f1(plain_sites, want_sites), at=f1(at_sites, want_sites),
                        at_poss=f1(at_sites | poss, want_sites), callers=f1(callers, want_callers),
