@@ -410,3 +410,29 @@ Vs L (1 trial, $0.244, 0 LSP calls): 0.79×.
 - **D5:** explain meets the cost line (≤0.85× at equal accuracy) vs A, and vs L on
   1 trial of L. Workflow 1 of the 2 needed. Not yet: Opus, other corpora (ripgrep,
   reflex have explain keys), impact (≈1.0×, routing varies).
+
+### Explain on ripgrep and reflex: A and S, 1 trial — 2026-11-11, Sonnet 5.5, `d1ae6dc`
+
+`results-sessions/sonnet55-explain-xrepo/`. Spend: $0.89 plus warm-ups.
+
+| Corpus | Arm | Turns | rfx calls | grep calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ripgrep | A | 33 | 0 | 10 | 110,459 | 0.239 | 0.993 |
+| ripgrep | S | 25 | 8 | 1 | 73,994 | 0.182 | 0.984 |
+| reflex | A | 30 | 0 | 8 | 101,227 | 0.246 | 1.000 |
+| reflex | S | 27 | 8 | 1 | 88,774 | 0.223 | 1.000 |
+
+Per corpus, S vs A cost: ripgrep 0.76×, reflex 0.91×, tokio 0.82× (3 vs 3).
+**All explain trials pooled (5 vs 5, three corpora): S $0.981 vs A $1.189 = 0.83×
+cost; accuracy S 0.997, A 0.999.**
+
+- Accuracy: each arm lost points on one ripgrep question. A named two extra callees
+  (`find_iter_at_in_context`). S named `matched` as a caller of `add_def`: the use at
+  `types.rs:514` is inside a `macro_rules! matched` body, `rfx refs` printed no
+  `[in f]` for it, the agent read the file and named the macro (the key leaves macro
+  bodies out). Candidate: print `[in macro matched!]` for a line in a
+  `macro_rules!` body.
+- reflex is the weakest corpus (0.91×): `search_with_metadata` and
+  `to_prompt_string` have many uses; S used one grep and more reads there.
+- **D5 on explain:** 0.83× pooled at accuracy within 0.002 of A (one disputed
+  macro caller). Below the 0.85× line, by a small margin; reflex alone is above it.
