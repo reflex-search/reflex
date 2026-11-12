@@ -382,7 +382,13 @@ pub fn enclosing_fns(root: &Path, name: &str, lines: &[(String, usize)]) -> Vec<
 /// tokens, not items, for tree-sitter, and tokio wraps most of its code in such
 /// blocks. `name! {` and its `}` become spaces (same byte offsets and lines), so the
 /// items sit in the enclosing module or impl, where the cfg macro puts them.
-fn parse_flat(parser: &mut Parser, mut src: String) -> Option<(String, Tree)> {
+fn parse_flat(parser: &mut Parser, src: String) -> Option<(String, Tree)> {
+    let (src, tree) = parse_items(parser, src)?;
+    open_expr_macros(parser, src, tree)
+}
+
+/// `parse_flat`'s first step: item-level brace macros opened up.
+fn parse_items(parser: &mut Parser, mut src: String) -> Option<(String, Tree)> {
     for _ in 0..8 {
         let tree = parser.parse(&src, None)?;
         let mut spans = Vec::new();
@@ -429,6 +435,103 @@ fn parse_flat(parser: &mut Parser, mut src: String) -> Option<(String, Tree)> {
     }
     let tree = parser.parse(&src, None)?;
     Some((src, tree))
+}
+
+/// Macros whose arguments are not all expressions: left as tokens.
+const PATTERN_MACROS: &[&str] = &[
+    "matches",
+    "assert_matches",
+    "debug_assert_matches",
+    "select",
+];
+
+/// Expression macros with arguments opened up: `ready!(self.a().b(cx))` holds
+/// tokens for tree-sitter, so a receiver chain inside it is not typed. Its `!`
+/// becomes `_` (`ready_(..)`, same byte offsets), and the arguments parse as a call's.
+/// A macro whose arguments do not parse as expressions (`vec![x; n]`, a `let` in
+/// `pin!`) is put back. The macro's own name is no longer a word of the line, so a
+/// fn named like a macro is not matched by the macro's use.
+fn open_expr_macros(
+    parser: &mut Parser,
+    mut src: String,
+    mut tree: Tree,
+) -> Option<(String, Tree)> {
+    let mut tried = HashSet::new();
+    // Each round opens the macros the last one exposed (`assert_eq!(ready!(x), y)`).
+    for _ in 0..4 {
+        let bangs: Vec<usize> = expr_macro_bangs(&tree, &src)
+            .into_iter()
+            .filter(|i| tried.insert(*i))
+            .collect();
+        if bangs.is_empty() {
+            break;
+        }
+        let mut bytes = src.into_bytes();
+        for &i in &bangs {
+            bytes[i] = b'_';
+        }
+        src = String::from_utf8(bytes).ok()?;
+        tree = parser.parse(&src, None)?;
+        // Put back each macro whose arguments did not parse.
+        let bad: Vec<usize> = bangs
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let call = tree
+                    .root_node()
+                    .descendant_for_byte_range(i, i + 1)
+                    .and_then(|x| ancestor(x, &["call_expression"]));
+                call.is_none_or(|c| {
+                    c.has_error()
+                        || c.child_by_field_name("function")
+                            .is_none_or(|g| g.end_byte() != i + 1)
+                })
+            })
+            .collect();
+        if !bad.is_empty() {
+            let mut bytes = src.into_bytes();
+            for i in bad {
+                bytes[i] = b'!';
+            }
+            src = String::from_utf8(bytes).ok()?;
+            tree = parser.parse(&src, None)?;
+        }
+    }
+    Some((src, tree))
+}
+
+/// The `!` of each expression macro `name!(..)` in a fn body (`open_expr_macros`).
+fn expr_macro_bangs(tree: &Tree, src: &str) -> Vec<usize> {
+    let mut bangs = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        let mut c = n.walk();
+        stack.extend(n.named_children(&mut c));
+        if n.kind() != "macro_invocation"
+            || n.parent().is_none_or(|p| {
+                matches!(p.kind(), "source_file" | "declaration_list" | "token_tree")
+            })
+        {
+            continue;
+        }
+        let Some(name) = n.child_by_field_name("macro") else {
+            continue;
+        };
+        let last = text(name, src).rsplit("::").next().unwrap_or("");
+        if PATTERN_MACROS.contains(&last) || last == "macro_rules" {
+            continue;
+        }
+        let Some(body) = n.named_children(&mut n.walk()).last() else {
+            continue;
+        };
+        if body.kind() != "token_tree" || src.as_bytes().get(body.start_byte()) != Some(&b'(') {
+            continue;
+        }
+        if let Some(i) = src[name.end_byte()..body.start_byte()].find('!') {
+            bangs.push(name.end_byte() + i);
+        }
+    }
+    bangs
 }
 
 /// A macro body of labelled arms (tokio `cfg_metrics_variant! { stable: { .. },
@@ -1360,10 +1463,19 @@ impl Cx<'_> {
     /// The declared type of `field` of the struct `t` (tagged), read where `t` is
     /// defined: its home module when the name is shared, else `f`, else any file.
     fn field_type(&self, f: &File, t: &str, field: &str) -> Option<String> {
+        self.field_type_as(f, t, field, false)
+    }
+
+    /// `field_type`, or with `elem` the element type of the field's collection
+    /// (`Box<[UnsafeCell<T>; N]>` → `UnsafeCell`).
+    fn field_type_as(&self, f: &File, t: &str, field: &str, elem: bool) -> Option<String> {
         let home = t.split_once(TAG).map(|(_, h)| h.to_string());
         let owner = bare(&type_name(t)).to_string();
-        let field_in =
-            |g: &File| field_decl(g, &owner, field).map(|(t, m)| self.tag(g, &m, None, &t));
+        let field_in = |g: &File| {
+            let (t, m) = field_decl(g, &owner, field)?;
+            let t = if elem { element_type(&t)? } else { t };
+            Some(self.tag(g, &m, None, &t))
+        };
         // A shared type name with a known home: that module's struct.
         if home.as_deref() == Some("?") {
             return None; // two structs of that name, and not known which
@@ -1881,18 +1993,32 @@ impl Cx<'_> {
                 }
                 Some(t)
             }
-            "index_expression" => {
-                // `self.levels[i]`: the element type of the field's declared type.
-                let v = r.named_child(0)?;
-                if v.kind() != "field_expression"
-                    || v.child_by_field_name("value")
-                        .is_none_or(|x| x.kind() != "self")
-                {
+            "binary_expression" => {
+                // `direction.mask() & Ready::from_usize(..)`: an operator on two values
+                // of one type gives that type (tokio's `Ready`, `Interest`).
+                let op = r.child_by_field_name("operator").map(|o| text(o, &f.src))?;
+                if !matches!(op, "&" | "|" | "^" | "-" | "+") {
                     return None;
                 }
+                let a = self.receiver_type(f, r.child_by_field_name("left")?, at)?;
+                let b = self.receiver_type(f, r.child_by_field_name("right")?, at)?;
+                (a == b).then_some(a)
+            }
+            "index_expression" => {
+                // `self.levels[i]`, `dst.inner.buffer[i]`: the element type of the
+                // field's declared type.
+                let v = r.named_child(0)?;
+                if v.kind() != "field_expression" {
+                    return None;
+                }
+                let x = v.child_by_field_name("value")?;
                 let field = text(v.child_by_field_name("field")?, &f.src);
-                let owner = enclosing_impl_type(f, at)?;
-                element_type(&field_type_text(f, &owner, field)?).map(|e| self.tag_bare(e))
+                let t = if x.kind() == "self" {
+                    self.impl_tag(f, at)?
+                } else {
+                    self.receiver_type(f, x, at)?
+                };
+                self.field_type_as(f, &t, field, true)
             }
             _ => None,
         }
@@ -2699,11 +2825,11 @@ fn first_generic(g: &str) -> &str {
 
 /// The element of `Box<[T; N]>`, `[T]`, `Vec<T>`, `VecDeque<T>`: `T`.
 fn element_type(t: &str) -> Option<String> {
-    let mut t = t
-        .trim()
-        .trim_start_matches('&')
-        .trim_start_matches("mut ")
-        .trim();
+    let mut t = t.trim().trim_start_matches('&').trim_start();
+    if t.starts_with('\'') {
+        t = t.split_once(' ').map_or("", |(_, r)| r).trim_start(); // `&'a [T; N]`
+    }
+    t = t.trim_start_matches("mut ").trim();
     for w in ["Box<", "Arc<", "Rc<"] {
         if let Some(inner) = t.strip_prefix(w) {
             t = inner.strip_suffix('>')?.trim();
@@ -4240,6 +4366,58 @@ mod tests {
         let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
         assert_eq!(get("src/user.rs:3"), Some(Verdict::This));
         assert_eq!(get("src/user.rs:4"), Some(Verdict::Other));
+    }
+
+    #[test]
+    fn calls_inside_expression_macros() {
+        // tokio buf_reader.rs:110: `ready!(self.as_mut().get_pin_mut().poll_read(cx, buf))`.
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod a;\nmod b;\nmod user;\n"),
+            (
+                "src/a.rs",
+                "pub struct Aa;\nimpl Aa {\n    pub fn get(&self) -> &Aa {\n        self\n    }\n    pub fn header(&self) -> u8 {\n        0\n    }\n}\n",
+            ),
+            (
+                "src/b.rs",
+                "pub struct Bb;\nimpl Bb {\n    pub fn header(&self) -> u8 {\n        0\n    }\n}\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::a::Aa;\nuse crate::b::Bb;\nfn f(a: &Aa, b: &Bb) {\n    assert_eq!(a.get().header(), 0);\n    assert_eq!(b.header(), dbg!(a.get().header()));\n    let _ = vec![b.header(); 2];\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/a.rs:6", "header");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/user.rs:4"), Some(Verdict::This));
+        assert_eq!(get("src/user.rs:5"), Some(Verdict::This));
+        assert_ne!(get("src/user.rs:6"), Some(Verdict::This));
+    }
+
+    #[test]
+    fn indexed_field_paths_and_operators() {
+        // tokio queue.rs:389 `self.inner.buffer[idx].with(..)`; scheduled_io.rs:315
+        // `let ready = direction.mask() & Ready::from_usize(..)`.
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod cell;\nmod other;\nmod user;\n"),
+            (
+                "src/cell.rs",
+                "pub struct Slot;\nimpl Slot {\n    pub fn with(&self) {}\n    pub fn mask(&self) -> Slot {\n        Slot\n    }\n}\nimpl std::ops::BitAnd for Slot {\n    type Output = Slot;\n    fn bitand(self, o: Slot) -> Slot {\n        o\n    }\n}\n",
+            ),
+            (
+                "src/other.rs",
+                "pub struct Other;\nimpl Other {\n    pub fn with(&self) {}\n}\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::cell::Slot;\nstruct Inner {\n    buffer: Box<[Slot; 4]>,\n}\nstruct Queue {\n    inner: Inner,\n}\nimpl Queue {\n    fn f(&self, s: Slot) {\n        self.inner.buffer[0].with();\n        let both = s.mask() & s.mask();\n        both.with();\n    }\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/cell.rs:3", "with");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/user.rs:10"), Some(Verdict::This));
+        assert_eq!(get("src/user.rs:12"), Some(Verdict::This));
     }
 
     #[test]

@@ -793,8 +793,81 @@ Before this round (old key, tokio dev): exact 13/24, precision 0.735, recall 0.7
 Caveats: the ripgrep and reflex keys were fixed after their misses were read (key
 defects: `use` groups, `aarch64` blocks); one reflex binder case (`open(..).context(..)?`)
 was fixed after it was seen. A fresh tokio set (questions 49–72) was not looked at
-before scoring: see below. The two tokio dev "extras" (`tests/queue.rs:15, 28`) call the
-`cfg_metrics_variant!` twin of `WorkerMetrics::new` that the no-cfg build compiles:
-the binder treats cfg twins as the target, the key does not.
+before scoring: see the next section. Correction (2026-11-12): the two tokio dev
+"extras" (`tests/queue.rs:15, 28`) were key defects, not cfg twins. `in_use` read a
+statement after a `use` line as part of it; the key now ends a `use` at `;` or `}`.
 Left as "possible" on purpose: closure parameters (`with_inner(|inner| inner.list..)`),
 a value from a generic cell (`ctx.get()` in a `match`), trait dispatch.
+
+### Binder round 2 and an unseen tokio set — 2026-11-12, 2.3.1 + `--at` (`5bad2c0`)
+
+Binder changes (`src/bind.rs`), each with a unit test:
+- Wrapper-named types: an inherent `impl<T> UnsafeCell<T>` is the crate's own type, a
+  trait `impl X for Arc<Handle>` is Handle's. The target's own wrapper-named type is
+  not unwrapped (tokio's loom `UnsafeCell`, its async `Mutex`).
+- Labelled macro arms (`cfg_metrics_variant! { stable: {..}, unstable: {..} }`) are
+  blanked before parsing, so the enclosing `impl` parses.
+- Closure parameters: written type, a struct pattern, or the callee's bound
+  (`F: FnOnce(&mut Inner)`). Match arms, `if let`, `while let`: `Some`/`Ok` of the
+  scrutinee, a tuple variant or tuple struct field. Later `let`s shadow them.
+- `Self` in a written type is the impl type. A `receiver_type` depth guard (64) turns
+  a missed cycle into "unknown", never a stack overflow (`watch.rs:992` overflowed).
+- Another crate (or the package's `tests/`) reaches only a plain `pub` fn of a plain
+  `pub` type: tokio-util's `buf.is_empty()` is Other for `pub(crate)`
+  `LinkedList::is_empty`. Dependencies are not checked (ripgrep core reaches
+  grep-printer through the `grep` facade).
+- `use a::b::{self as c}` is an alias of `b`. A lifetime is not a generic's type
+  (`MutexGuard<'_, InnerState>` → InnerState).
+- A chain reaching a type that no input file declares the method for reads the file
+  that defines the type: the tagged home module, or the only file defining that name
+  (`lock.wheel.poll(now)` → `TimerHandle`). Reading every file of that name merged
+  tokio's many `Handle`/`Inner` methods and lost true lines: do not widen it.
+- A method returning another module's type of the same name resolves the written
+  path (`scheduler::Handle::driver() -> &driver::Handle`); it was read as `-> Self`.
+
+Key fix: `impact_keys.py` `in_use` ends a `use` at `;`/`}` (the old rule dropped
+`oneshot.rs:1433`, `tests/queue.rs:15,28`). `--after PATH:LINE` continues a set.
+
+| Set | Exact /24 | Sure precision | Sure recall | +possible recall | Possible lines (grep) |
+| --- | --- | --- | --- | --- | --- |
+| tokio dev (seen) | 23 | 1.000 | 0.981 | 1.000 | 199 (6,463) |
+| tokio holdout (seen this round) | 19 | 1.000 | 0.889 | 1.000 | 212 (3,415) |
+| tokio fresh, 49–72 (seen this round) | 22 | 0.993 | 0.986 | 1.000 | 198 (4,304) |
+| **tokio unseen, 73–96 (scored before any miss was read)** | **18** | **1.000** | **0.853** | **1.000** | 172 (3,103) |
+| ripgrep | 24 | 1.000 | 1.000 | 1.000 | 20 (2,943) |
+| reflex | 24 | 1.000 | 1.000 | 1.000 | 110 (4,383) |
+
+Reading: on names the binder has not been tuned on, a "sure" line is always a true
+site, and sure lines hold 85 % of the sites; the rest are in the "possible" lines
+(172 against grep's 3,103). The fresh set went 20 → 22 exact, recall 0.801 → 0.986,
+but only after its misses were read: the unseen set is the honest number.
+Still "possible" by design or not yet handled: std `thread_local!` `with`, a call in
+`write!`, an `Err((x, ..))` arm (needs the `Err` type), `let (c, r) = ctx.enter(.., || ..)`.
+
+**After the unseen score** (the set is now seen): calls inside expression macros
+(`ready!(..)`, `assert_eq!(..)`, `write!(..)`: `!` → `_`, same offsets, put back when the
+arguments do not parse), indexing on any field path (`dst.inner.buffer[i]`), and
+`a & b` / `a | b` of one known type. Unseen set 18 → 19 exact, recall 0.853 → 0.894;
+holdout 19 → 20, 0.889 → 0.894; dev, fresh, ripgrep, reflex unchanged.
+
+### Live: impact-wide on the unseen keys — 2026-11-12, Sonnet 5.5, 3 trials, `5bad2c0`
+
+8 questions (the first 8 of the unseen set: `reset`, `with` (18 sites), `async_io` (24),
+`wake_rx`, `instant_to_tick`, `poll_write_vectored_priv`, `new` (4 sites in ~1,146 grep
+lines), `is_error`), `--warm-tree`, arms A, Askills, Lforce, S. Graded by F1 vs the key.
+
+| Arm | Turns | Calls | Weighted tokens | Cost (API-equivalent) | Accuracy | Cost vs A |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 22 | 14 | 102,670 | $0.246 | 1.000 | — |
+| Askills | 24 | 16 | 107,146 | $0.263 | 1.000 | 1.07× |
+| Lforce | 28 | 20 | 99,939 | $0.210 | 0.925 | 0.85× |
+| S | 19 | 11 | 106,223 | $0.250 | 1.000 | 1.01× |
+
+Reading: Grep agents are already exact here. They read the `\bname\b` lines and filter
+them in their head (`with`: one 6 KB grep, 18/18; `new`: grep the type name
+`MetricAtomicU64`, not `new`). Every arm needs 2–4 turns per question, and the fixed
+prefix decides the cost. S uses fewer calls (11 vs 14) but carries the skill text: parity.
+The binder's offline gains do not show up as accuracy, because the baseline has none
+to lose. D5 is not met on impact (needs ≤0.85× at equal accuracy). Do not tune the
+binder further for this workflow; a win has to come from questions where the grep
+answer is too large to filter by reading (hundreds of lines, many files).
