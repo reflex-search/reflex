@@ -557,3 +557,30 @@ the walk scored about 0.43.
 - Still 0: trait dispatch (`copy_to` via `poll_read`, 0 of 8), `is_cancelled`.
 - Held-out 2 misses are unchanged (`as_u64` unknown receiver, `with_current`): those
   receivers are locals with no written type and no chain.
+
+### Tests for a change, live: arm A, 1 trial, tokio — 2026-11-11, `384449d`
+
+`results-sessions/sonnet55-tests/`, `session_bench.py generate-tests` (prompt: "Which
+unit tests under `tokio/src/` run it, directly or through other functions? List each
+test function by the line of its `fn`"). Grade: F1 against the test-run key; an
+attribute line counts as its `fn` line; tests in files the key build never compiled
+count neither way. Spend: **$1.116** (estimate was $0.20: 59 turns, 51 tool calls).
+
+| Question | Key tests | Answered | F1 | Turns |
+| --- | --- | --- | --- | --- |
+| spawn_named | 2 | 15 | 0.00 | 10 |
+| is_cancelled | 1 | 3 | 1.00 | 3 |
+| globals | 4 | 3 | 0.86 | 9 |
+| async_trace_leaf | 9 | 16 | 0.80 | 15 |
+| instant_to_tick | 8 | 9 | 1.00 | 6 |
+| set_thread_id | 18 | 43 | 1.00 | 6 |
+| copy_to | 8 | 8 | 1.00 | 6 |
+| waker_ref | 14 | 22 | 1.00 | 4 |
+
+Accuracy **0.832**; the offline `--at` walk scored 0.482 on the same keys. Answer
+counts include `cfg(loom)` tests (they count neither way).
+- No test runs: `grep`, `sed` and reads only. The agent reasons where a walk cannot:
+  `File::read` → `poll_read` → `copy_to` (trait dispatch, walk 0 of 8, agent 8 of 8);
+  which runtime tests turn the signal driver on (`globals`).
+- So a `--tests` walk does not beat a grep agent on accuracy. Reflex can only win
+  this workflow on cost, by shortening the caller-following part of those 59 turns.

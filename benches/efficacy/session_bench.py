@@ -467,6 +467,63 @@ def compiled_sessions(repo: str, scope: str, per_kind: int = 8) -> list[dict]:
             {"id": f"{repo}-session-impact", "repo": repo, "kind": "impact", "steps": impact}]
 
 
+def generate_tests() -> None:
+    """Add (or replace) the `tests` sessions ("find the tests for a change") from
+    tasks/tests_keys.json (tests_keys.py: a test run, not any arm's tool)."""
+    data = json.loads(SESSIONS_JSON.read_text())
+    keyed = json.loads((HERE / "tasks" / "tests_keys.json").read_text())["sessions"]
+    new = []
+    for s in keyed:
+        scope = SCOPES[s["repo"]]
+        steps = [{
+            "kind": "tests",
+            "prompt": f"I plan to change the function `{st['key']['name']}` defined at "
+                      f"`{st['key']['where']}`. Which unit tests under `{scope}/` run it, directly "
+                      f"or through other functions? List each test function (`#[test]`, "
+                      f"`#[tokio::test]` and the like) by the line of its `fn`. Do not run the "
+                      f"tests, edit files or build the project. {FORMAT_LIST}",
+            "expected": st["key"]["tests"], "key": st["key"],
+        } for st in s["steps"]]
+        new.append({"id": s["id"], "repo": s["repo"], "kind": "tests", "steps": steps})
+    ids = {s["id"] for s in new}
+    data["sessions"] = [s for s in data["sessions"] if s["id"] not in ids] + new
+    SESSIONS_JSON.write_text(json.dumps(data, indent=1) + "\n")
+    print(f"wrote {SESSIONS_JSON}: {len(new)} tests sessions")
+
+
+def grade_tests(step: dict, ans, tree: Path, repo: str) -> float:
+    """F1 of the tests answered against the test-run key. An answer line on a test's
+    attributes counts as its `fn` line. Tests in files the key's test build never
+    compiled (`cfg(loom)`, Windows) never run, so they count neither way."""
+    import compiler_keys as ck
+    want = set(step["expected"])
+    compiled = ck.compiled_files(repo, ck.KEYS_WORK / repo)
+    got = set()
+    for a in ans if isinstance(ans, list) else []:
+        loc = norm_loc(a)
+        if ":" not in loc:
+            continue
+        path, line = loc.rsplit(":", 1)
+        if path not in compiled:
+            continue
+        try:
+            lines = (tree / path).read_text(errors="replace").split("\n")
+        except OSError:
+            got.add(loc)
+            continue
+        n = int(line)
+        # The `fn` at or within 6 lines below an attribute line.
+        for k in range(n, min(n + 7, len(lines) + 1)):
+            if re.search(r"\bfn\s+\w+", lines[k - 1]):
+                n = k
+                break
+        got.add(f"{path}:{n}")
+    if not want and not got:
+        return 1.0
+    tp = len(want & got)
+    return 0.0 if tp == 0 else 2 * tp / (len(got) + len(want))
+
+
 def generate_compiled(repos: list[str]) -> None:
     """Add (or replace) the explain and impact sessions in tasks/sessions.json."""
     data = json.loads(SESSIONS_JSON.read_text())
@@ -706,6 +763,9 @@ def grade(step: dict, ans, tree: Path, scope: str) -> float:
         return 1.0 if ans == len(rg(tree, *step["oracle"])) else 0.0
     if kind == "refs_count":
         return 1.0 if ans == len(code_refs(tree, step["name"], scope)) else 0.0
+    if kind == "tests":
+        repo = next(r for r, sc in SCOPES.items() if sc == scope)
+        return grade_tests(step, ans, tree, repo)
     if kind == "explain":
         if not isinstance(ans, dict):
             return 0.0
@@ -815,6 +875,7 @@ def main() -> None:
     sub.add_parser("generate")
     g = sub.add_parser("generate-compiled")
     g.add_argument("--repos", nargs="+", default=list(SCOPES))
+    sub.add_parser("generate-tests")
     r = sub.add_parser("run")
     r.add_argument("--arms", nargs="+", default=["A", "B", "Beager"])
     r.add_argument("--sessions", nargs="*")
@@ -826,7 +887,7 @@ def main() -> None:
     s = sub.add_parser("score")
     s.add_argument("--results", default=str(runner.RESULTS_DIR))
     args = p.parse_args()
-    {"generate": lambda: generate(), "generate-compiled": lambda: generate_compiled(args.repos), "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
+    {"generate": lambda: generate(), "generate-compiled": lambda: generate_compiled(args.repos), "generate-tests": generate_tests, "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
 
 
 if __name__ == "__main__":
