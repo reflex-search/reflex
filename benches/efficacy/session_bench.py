@@ -562,7 +562,8 @@ def trial_dir(arm: str, sid: str, trial: int) -> Path:
     return WORK / f"{RESULTS.name}-{arm}-{sid}-{trial:02d}"
 
 
-def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, tmp: Path) -> str:
+def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, tmp: Path,
+            warm_tree: bool = False) -> str:
     out = RESULTS / arm / session["id"] / f"trial_{trial:02d}.ndjson"
     if out.exists() and sum(1 for l in out.open() if '"type":"result"' in l.replace(" ", "")) >= len(session["steps"]):
         return f"skip {out}"
@@ -578,12 +579,22 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
         mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
     )
     cmd = session_cmd(arm, cfg, mcp_cfg, model)
+    warm = None
+    if warm_tree:
+        # The system prompt holds the working directory, and every trial has its own
+        # tree path: text after it (arm S: the skill listing and the hook, ~3K tokens)
+        # missed the per-arm warm-up and was written again in every trial (checked
+        # 2026-11-12: S read 11,208 / wrote 5,998 in a new directory, read 17,206 /
+        # wrote 0 in the same one; A 16,848 / 2,915). One uncounted call in the trial's
+        # own tree models a developer who used Claude Code in this repo recently.
+        warm = warm_call(cmd, tree, cfg, rfx)
     out.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     with out.open("w") as f:
         f.write(json.dumps({
             "type": "harness_metadata", "arm": arm, "task_id": session["id"], "trial": trial,
             "model": model, "tree": str(tree), "steps": len(session["steps"]),
+            "warm_tree": warm,
         }) + "\n")
         f.flush()
         # One message at a time: a message queued while the agent is still working
@@ -627,7 +638,12 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
         rfx_bin, tmp, f"warm-{arm}",
         mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
     )
-    proc = subprocess.run(session_cmd(arm, cfg, mcp_cfg, model), cwd=tree, text=True, env=arm_env(cfg, rfx),
+    return f"warm-up {arm} " + warm_call(session_cmd(arm, cfg, mcp_cfg, model), tree, cfg, rfx)
+
+
+def warm_call(cmd: list[str], tree: Path, cfg: dict, rfx: Path) -> str:
+    """One "Reply OK" call with a trial's command line, in `tree`; its usage line."""
+    proc = subprocess.run(cmd, cwd=tree, text=True, env=arm_env(cfg, rfx),
                           input=user_message("Reply with the word OK and nothing else."),
                           capture_output=True, timeout=300)
     usage = {}
@@ -638,7 +654,7 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
             continue
         if e.get("type") == "result":
             usage = e.get("usage") or {}
-    return (f"warm-up {arm} exit={proc.returncode} cache write={usage.get('cache_creation_input_tokens')}"
+    return (f"exit={proc.returncode} cache write={usage.get('cache_creation_input_tokens')}"
             f" read={usage.get('cache_read_input_tokens')}")
 
 
@@ -687,7 +703,8 @@ def run(args) -> None:
         if not args.no_warm_up:
             for line in pool.map(lambda a: warm_up(a, args.model, rfx, Path(tmp)), args.arms):
                 print(line, flush=True)
-        futs = [pool.submit(run_one, a, s, t, args.model, rfx, Path(tmp)) for a, s, t in jobs]
+        futs = [pool.submit(run_one, a, s, t, args.model, rfx, Path(tmp), args.warm_tree)
+                for a, s, t in jobs]
         for fut in cf.as_completed(futs):
             try:
                 print(fut.result(), flush=True)
@@ -884,6 +901,8 @@ def main() -> None:
     r.add_argument("--model", default="claude-sonnet-5")
     r.add_argument("--jobs", type=int, default=24)
     r.add_argument("--no-warm-up", action="store_true", help="skip the per-arm cache warm-up call")
+    r.add_argument("--warm-tree", action="store_true",
+                   help="one uncounted warm-up call in each trial's own tree (the cwd is in the prompt)")
     s = sub.add_parser("score")
     s.add_argument("--results", default=str(runner.RESULTS_DIR))
     args = p.parse_args()

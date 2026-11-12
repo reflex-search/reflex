@@ -111,8 +111,16 @@ fn session_start_hook_routes_to_rfx() {
         "the hook must stay silent without rfx"
     );
     let text = std::fs::read_to_string(dir.join("routing.md")).expect("routing.md");
-    // Every session pays for this text: keep it short.
-    assert!(text.len() < 1200, "routing.md is {} bytes", text.len());
+    // Every session pays for this text: keep it short. 1200 → 1300 (2026-11-12): the
+    // tests line ("repeat `--at` … up to the tests") folded into the callers line cost
+    // the impact sessions their `--at` use (16 of 16 → 0 of 16), so both stay whole.
+    assert!(text.len() < 1300, "routing.md is {} bytes", text.len());
+    for needle in [
+        "Callers of a function, or what breaks if it changes: `rfx refs X --at FILE:LINE` (its definition) lists only its uses.",
+        "Tests that run it: repeat `--at` on each `[in CALLER:LINE]` up to the tests.",
+    ] {
+        assert!(text.contains(needle), "lost: {needle}");
+    }
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
         "prefer `rfx` over Grep, Glob, ripgrep, or shell grep",
