@@ -1,0 +1,6 @@
+# Claude Code and bash read these files on every OS. A Windows checkout with
+# core.autocrlf=true would write CRLF: bash then fails on `$'\r'`, and the skill's
+# front matter no longer starts with "---\n".
+*.sh            text eol=lf
+plugins/**      text eol=lf
+.claude-plugin/** text eol=lf
