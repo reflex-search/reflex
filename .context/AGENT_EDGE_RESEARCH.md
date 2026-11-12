@@ -605,3 +605,33 @@ S vs A: 0.98× cost, 0.97× weighted, +0.138 accuracy. Per question (F1, S/A):
 - One `--at` call failed: run in `tokio/src` with a path relative to it
   (`--at runtime/scheduler/…`); `--at` read paths from the index root. Fixed: a path
   that exists from the working directory is taken relative to it.
+
+### Tests for a change, live: A, S, L — 2026-11-11, Sonnet 5.5, `9239357`
+
+`--plan tokio-session-tests:3 ripgrep-session-tests:2`, arms A S L (tokio trial 1 of A
+and S is the run above). API-equivalent cost (Max plan usage, not a bill).
+
+| Corpus | Arm | Cost $ (per trial) | Mean cost | Acc (per trial) | Mean acc |
+| --- | --- | --- | --- | --- | --- |
+| tokio | A | 1.116, 0.972, 1.063 | 1.050 | 0.832, 0.961, 0.905 | 0.900 |
+| tokio | S | 1.098, 0.890, 1.241 | 1.076 | 0.970, 0.912, 0.863 | 0.915 |
+| tokio | L | 1.161, 1.039, 1.081 | 1.094 | 0.925, 0.738, 0.887 | 0.850 |
+| ripgrep | A | 0.272, 0.259 | 0.265 | 0.917, 1.000 | 0.958 |
+| ripgrep | S | 0.297, 0.277 | 0.287 | 1.000, 1.000 | 1.000 |
+| ripgrep | L | 0.335, 0.251 | 0.293 | 1.000, 1.000 | 1.000 |
+
+- S vs A: tokio 1.02× cost, +0.015 accuracy; ripgrep 1.08× cost, +0.042.
+  Pooled ratio of medians: 1.06× cost, 1.05× weighted tokens.
+- S vs L: tokio 0.98× cost, +0.065; ripgrep 0.98× cost, +0.000.
+- **D5: not met vs A** (gain < 0.05 and cost > 1.0× on both corpora). Vs L the tokio
+  gain qualifies, but L is not a real LSP arm here (next point).
+- **Arm L made 0 LSP calls in all 5 sessions**, though the tool was listed in every
+  init. On this workflow L is arm A plus a larger tool list; its numbers say nothing
+  about LSP call hierarchy.
+- The spread is one question: `spawn_named` (tokio q0). F1 per trial: A 0.0, 1.0, 1.0;
+  S 1.0, 0.67, 0.0; L 0.67, 0.0, 1.0. S trial 3 ran `rfx refs spawn_named` without
+  `--at` and listed only `cfg(loom)` tests, A trial 1's miss. `--at` use varies per
+  trial (tokio: about 12, 14 and 7 calls). The other 7 tokio questions are within ±0.1 across arms,
+  except `globals` (A3 0.40, L2 0.00) and `async_trace_leaf` (L3 0.17).
+- Turns: tokio A 51–59, S 50–65, L 52–61. Reflex replaces some grep calls
+  (S 25–38 vs A 39–43) but agents still read the code to trace each path.
