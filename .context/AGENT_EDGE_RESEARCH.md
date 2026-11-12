@@ -671,3 +671,32 @@ API-equivalent cost (Max plan usage, not a bill). A and S are the earlier runs
 - **D5 vs LSP (Lforce):** explain met (0.61–0.75×), tests met (tokio +0.181 at 0.86×,
   ripgrep 0.58× at equal accuracy), impact not (0.88×, needs ≤ 0.85×). Against A only
   explain is met, so "both A and L on 2 of 3" is not yet met.
+
+## Caller walk (`[in f:LINE]` + tests routing line): S, 2 more A trials — 2026-11-12, Sonnet 5.5, `5f3a98e`
+
+`[in spawn:188]` on each use (JSON `in_line`), and the hook/skill route "which tests
+reach X" to walking callers with `--at`. S: tokio tests ×5, ripgrep tests ×2, tokio
+explain ×3, impact ×2 (`results-sessions/sonnet55-walk`); A: tokio tests ×2 more
+(`sonnet55-walk-A`; pooled with the 3 in `sonnet55-tests`). API-equivalent cost.
+
+| Session | A | S (walk) | Lforce |
+| --- | --- | --- | --- |
+| tokio tests, cost mean / median | 1.095 / 1.116 (n=5) | 1.100 / 1.105 (n=5) | 1.252 / 1.274 (n=3) |
+| tokio tests, acc mean / median | 0.881 / 0.875 | **0.937 / 0.940** | 0.734 / 0.704 |
+| ripgrep tests, cost / acc | 0.265 / 0.958 (n=2) | 0.319 / 0.938 (n=2) | 0.496 / 1.000 |
+| tokio explain, cost / acc | 0.235 / 1.000 | 0.192 / 0.985 (n=3) | 0.315 / 1.000 |
+| tokio impact, cost / acc | 0.172 / 1.000 | 0.185 / 1.000 (n=2) | 0.215 / 1.000 |
+
+- Routing took: every `rfx refs` in the tests sessions passed `--at` (12–17 per
+  session; before: 7–14 of 22–30). `spawn_named` 1.0 in 4 of 5 trials (before 1 of 3,
+  A 2 of 5).
+- tokio tests vs A: +0.056 accuracy (mean), +0.065 (median); cost 1.005× (mean), 0.99×
+  (median). **D5's accuracy rule is met on medians and missed by 0.5 % on means.**
+- ripgrep tests got worse: 1.20× A's cost (walk adds calls: 11–12 rfx vs 1–8 before),
+  and trial 2 missed `trim_ascii_prefix` by giving each `fn` line + 1 (2287 for
+  `fn trim_ascii` at 2286): an agent error, the grader is right.
+- Explain and impact unchanged (explain 0.82× A; impact 1.08× A; agents still use
+  grep for 8–10 of the impact lookups).
+- **D5 by workflow now:** explain met vs A and Lforce; tests met vs Lforce on tokio
+  (0.88×, +0.20), vs A borderline on tokio and not met on ripgrep; impact met by
+  neither (vs A 1.08×, vs Lforce 0.88×).

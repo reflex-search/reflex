@@ -32,8 +32,11 @@ Open follow-ups (2026-11-10):
   cost, 5 v 5 pooled); **impact** does not (S ≈ 1.13× A); **tests for a change** does
   not (tokio 3 trials: S 1.02× A cost, +0.015 accuracy; ripgrep 2 trials: 1.08×,
   +0.042). One question (`spawn_named`) decides the tests spread; S used `--at` on it in
-  1 of 3 trials. Vs L is not measured: L made 0 LSP calls in every session. D5 verdict
-  is the user's.
+  1 of 3 trials. D5 verdict is the user's.
+  Update 2026-11-12: arm Lforce (LSP forced) measured; caller walk (`[in f:LINE]`) built.
+  Explain met vs A and Lforce. Tests: vs Lforce met on tokio; vs A borderline on tokio
+  (median 0.99×, +0.065; mean 1.005×), ripgrep 1.20×. Impact met by neither
+  (1.08× A, 0.88× Lforce). AGENT_EDGE_RESEARCH.md.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:
