@@ -47,7 +47,9 @@ Open follow-ups (2026-11-10):
   18/24, sure precision 1.000, recall 0.853. Live `impact-wide` (3 trials, unseen
   keys): A, Askills, S all 1.000 accuracy; S 1.01× A's cost, Lforce 0.85× at 0.925.
   Grep agents are already exact on these names, so impact-wide does not meet D5
-  either. Binder tuning for impact stops here. AGENT_EDGE_RESEARCH.md.
+  either on Sonnet. Haiku 5.5 (3 trials): S 0.63× A's cost, 0.45× turns, accuracy
+  1.000 vs 0.986 (Askills 1.03×, 1.000): **meets D5 on Haiku**, no trial overlap.
+  Binder tuning for impact stops here. AGENT_EDGE_RESEARCH.md.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:

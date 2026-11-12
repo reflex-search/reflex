@@ -871,3 +871,24 @@ The binder's offline gains do not show up as accuracy, because the baseline has 
 to lose. D5 is not met on impact (needs ≤0.85× at equal accuracy). Do not tune the
 binder further for this workflow; a win has to come from questions where the grep
 answer is too large to filter by reading (hundreds of lines, many files).
+
+### Live: impact-wide on Haiku 5.5 — 2026-11-12, 3 trials, `ef7e74c`
+
+Same 8 unseen-key questions, `--warm-tree`, arms A, Askills, S (no Lforce).
+
+| Arm | Turns | Calls | Weighted tokens | Cost (API-equivalent) | Accuracy |
+| --- | --- | --- | --- | --- | --- |
+| A | 49 | 41 | 248,452 | $0.038 | 0.986 |
+| Askills | 58 | 50 | 244,008 | $0.039 | 1.000 |
+| S | 22 | 14 | 152,846 | $0.024 | 1.000 |
+
+Ratios vs A (median of sessions): S cost 0.63×, weighted 0.62×, turns 0.45×; Askills
+cost 1.03×. Per trial, S cost $0.0234 / $0.0239 / $0.0247; A $0.0380 / $0.0349 /
+$0.0444; Askills $0.0349 / $0.0465 / $0.0392: no overlap. Accuracy: S 1.000 in every
+trial; A lost one question in trial 3 (0.958).
+
+Reading: Haiku with grep does not filter in its head as Sonnet does: it reads files
+(41 calls for 8 questions, 16 of them greps). With `--at` it takes the answer
+(14 calls, 9 of them `rfx`). Impact-wide meets D5 on Haiku vs A and Askills
+(≤0.85× cost at equal or better accuracy). On Sonnet it is parity (above). The edge
+is the model's, not the corpus's: the weaker the filter, the larger the win.
