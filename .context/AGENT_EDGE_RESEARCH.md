@@ -584,3 +584,24 @@ counts include `cfg(loom)` tests (they count neither way).
   which runtime tests turn the signal driver on (`globals`).
 - So a `--tests` walk does not beat a grep agent on accuracy. Reflex can only win
   this workflow on cost, by shortening the caller-following part of those 59 turns.
+
+### Tests for a change, live: arm S, 1 trial, tokio — 2026-11-11, `7e32028`
+
+Same session as arm A above. Spend: $1.098.
+
+| Arm | Turns | Calls | rfx | grep | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | 59 | 51 | 0 | 43 | 549,335 | 1.116 | 0.832 |
+| S | 63 | 55 | 15 | 32 | 535,251 | 1.098 | **0.970** |
+
+S vs A: 0.98× cost, 0.97× weighted, +0.138 accuracy. Per question (F1, S/A):
+`spawn_named` 1.00/0.00, `async_trace_leaf` 0.90/0.80, the rest equal.
+- The gain is mostly one question: `spawn_named`. S's `rfx refs spawn_named --at`
+  led it to both compiled tests (`idle_notified_set.rs:501`,
+  `task_combinations.rs:69`); A listed only `cfg(loom)` tests, which count neither way.
+- 1 trial: one question decides most of the gap, so it needs a repeat.
+- **D5:** meets the accuracy rule vs A (≥ 0.05 at ≤ 1.0× cost) on this one trial. Not
+  run vs L.
+- One `--at` call failed: run in `tokio/src` with a path relative to it
+  (`--at runtime/scheduler/…`); `--at` read paths from the index root. Fixed: a path
+  that exists from the working directory is taken relative to it.

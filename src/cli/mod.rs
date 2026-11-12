@@ -1353,6 +1353,15 @@ impl Cli {
                             *p = rel.join(&*p).to_string_lossy().into_owned();
                         }
                     }
+                    // `--at runtime/x.rs:12` run in `tokio/src`: a path that exists from
+                    // here is relative to here; anything else is relative to the root.
+                    if let Command::Refs { at: Some(at), .. } = command
+                        && let Some((path, line)) = at.rsplit_once(':')
+                        && std::path::Path::new(path).is_relative()
+                        && cwd.join(path).is_file()
+                    {
+                        *at = format!("{}:{line}", rel.join(path).to_string_lossy());
+                    }
                 }
                 std::env::set_current_dir(&root)?;
                 eprintln!(
