@@ -60,6 +60,9 @@ pub struct BoundLine {
     pub verdict: Verdict,
     /// The function the use is in.
     pub caller: Option<String>,
+    /// The line of that function's name (`[in f:LINE]`): the next `--at` when an
+    /// agent walks callers up. None for a `macro_rules!` body.
+    pub caller_line: Option<usize>,
     /// A `use` line: it names the function but does not call it.
     pub import: bool,
 }
@@ -182,7 +185,7 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
         if *p == target.path && *line == target.line {
             continue;
         }
-        let (verdict, caller, import) = match files.get(p) {
+        let (verdict, at, import) = match files.get(p) {
             Some(f) => cx.line(p, f, *line),
             None => (Verdict::Other, None, false), // not Rust: not a use of a Rust function
         };
@@ -190,7 +193,8 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
             path: p.clone(),
             line: *line,
             verdict,
-            caller,
+            caller: at.as_ref().map(|(c, _)| c.clone()),
+            caller_line: at.and_then(|(_, l)| l),
             import,
         });
     }
@@ -202,6 +206,8 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
 pub struct LineFn {
     /// The function the line's first `name` is in (`[in f]`).
     pub caller: Option<String>,
+    /// The line of that function's name. None for a macro.
+    pub caller_line: Option<usize>,
     /// The line defines a function named `name`: `Some("Method")` in an `impl` or a
     /// trait, else `Some("Function")`. It sees definitions inside item-level macros
     /// (`cfg_rt! { … }`), which the symbol cache misses.
@@ -251,6 +257,7 @@ pub fn enclosing_fns(root: &Path, name: &str, lines: &[(String, usize)]) -> Vec<
                         out.defines = Some(if method { "Method" } else { "Function" });
                     } else if c.kind() == "function_item" {
                         out.caller = Some(src[nm.start_byte()..nm.end_byte()].to_string());
+                        out.caller_line = Some(nm.start_position().row + 1);
                         break;
                     }
                 }
@@ -631,17 +638,24 @@ fn module_of(f: &File, n: Node) -> Vec<String> {
     m
 }
 
-fn caller(f: &File, n: Node) -> Option<String> {
+/// A caller's name and the line of its name (None for a `macro_rules!` body).
+type Caller = (String, Option<usize>);
+
+/// The function (or `macro_rules!` body) `n` is in, with the line of its name.
+fn caller(f: &File, n: Node) -> Option<Caller> {
     let mut cur = n.parent();
     while let Some(c) = cur {
         if let Some(m) = macro_name(c, &f.src) {
-            return Some(m);
+            return Some((m, None));
         }
         if c.kind() == "function_item"
             && let Some(nm) = c.child_by_field_name("name")
             && nm != n
         {
-            return Some(text(nm, &f.src).to_string());
+            return Some((
+                text(nm, &f.src).to_string(),
+                Some(nm.start_position().row + 1),
+            ));
         }
         cur = c.parent();
     }
@@ -713,12 +727,12 @@ struct Cx<'a> {
 
 impl Cx<'_> {
     /// The verdict of one line: the strongest of its occurrences of the name.
-    fn line(&self, path: &str, f: &File, line: usize) -> (Verdict, Option<String>, bool) {
+    fn line(&self, path: &str, f: &File, line: usize) -> (Verdict, Option<Caller>, bool) {
         let Some(row) = f.src.split('\n').nth(line - 1) else {
             return (Verdict::Other, None, false);
         };
         let start: usize = f.src.split('\n').take(line - 1).map(|l| l.len() + 1).sum();
-        let mut best: Option<(Verdict, Option<String>, bool)> = None;
+        let mut best: Option<(Verdict, Option<Caller>, bool)> = None;
         for (col, _) in row.match_indices(self.name) {
             let a = start + col;
             let b = a + self.name.len();

@@ -366,10 +366,13 @@ fn refs_text(data: &Value, at_hint: bool) -> String {
         let caller = if r["import"] == json!(true) {
             "  [import]".to_string()
         } else {
-            r["in"]
-                .as_str()
-                .map(|c| format!("  [in {c}]"))
-                .unwrap_or_default()
+            // `[in spawn:156]`: the caller and the line of its name, so walking callers
+            // up is `rfx refs spawn --at <same file>:156`.
+            match (r["in"].as_str(), r["in_line"].as_u64()) {
+                (Some(c), Some(l)) => format!("  [in {c}:{l}]"),
+                (Some(c), None) => format!("  [in {c}]"),
+                _ => String::new(),
+            }
         };
         out.push_str(&format!(
             "{}:{}:{}{caller}\n",

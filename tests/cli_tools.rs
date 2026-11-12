@@ -168,8 +168,8 @@ fn refs_text_lists_uses_in_code_only() {
         stdout(&out),
         "definition src/lib.rs:3 Function alpha\n\
          src/lib.rs:3:pub fn alpha() -> u32 {\n\
-         src/lib.rs:9:    alpha() + alpha()  [in beta]\n\
-         src/util.rs:6:    crate::alpha()  [in gamma]\n"
+         src/lib.rs:9:    alpha() + alpha()  [in beta:7]\n\
+         src/util.rs:6:    crate::alpha()  [in gamma:5]\n"
     );
     assert!(
         stderr(&out).contains("3 references in code; 2 lines only in comments or strings left out"),
@@ -372,6 +372,8 @@ fn refs_at_binds_uses_to_one_definition() {
         })
         .collect();
     assert_eq!(refs, vec![("src/a.rs".to_string(), 6, "use_a".to_string())]);
+    // The caller's own line: the next `--at` when walking callers up.
+    assert_eq!(cli["references"][0]["in_line"], 5);
     assert_eq!(cli["possible"].as_array().map_or(0, |p| p.len()), 0);
     // The lines left out, with their text: b.rs's definition and its use.
     let left: Vec<(String, u64)> = cli["left_out"]
@@ -420,7 +422,7 @@ fn refs_at_binds_uses_to_one_definition() {
         "{text}"
     );
     assert!(
-        text.contains("src/a.rs:6:    x.run()  [in use_a]"),
+        text.contains("src/a.rs:6:    x.run()  [in use_a:5]"),
         "{text}"
     );
     assert!(
@@ -429,11 +431,11 @@ fn refs_at_binds_uses_to_one_definition() {
         stderr(&out)
     );
 
-    // Text form: the caller in brackets.
+    // Text form: the caller in brackets, with the line of its name (the next --at).
     let out = rfx(root, &["refs", "run", "--at", "src/a.rs:3"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("src/a.rs:6:"), "{}", stdout(&out));
-    assert!(stdout(&out).contains("[in use_a]"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("[in use_a:5]"), "{}", stdout(&out));
     assert!(
         stdout(&out).contains("left out (these name another item called run):\nsrc/b.rs:3:"),
         "{}",

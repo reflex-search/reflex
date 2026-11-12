@@ -3077,6 +3077,9 @@ fn dispatch_tool(
                 if let Some(c) = f.caller {
                     r["in"] = json!(c);
                 }
+                if let Some(l) = f.caller_line {
+                    r["in_line"] = json!(l);
+                }
                 // A definition the symbol cache missed (inside `cfg_rt! { … }`).
                 if let Some(kind) = f.defines {
                     let path = r["path"].clone();
@@ -3216,6 +3219,9 @@ fn bind_references(
         });
         if let Some(c) = &l.caller {
             row["in"] = json!(c);
+        }
+        if let Some(n) = l.caller_line {
+            row["in_line"] = json!(n);
         }
         if l.import {
             row["import"] = json!(true);

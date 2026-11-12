@@ -29,8 +29,8 @@ cheapest answer (`src/a.rs:4,128,193`, one line per file). `--preview` gives
 `path:line:text` for each matching line.
 
 For uses in code only (no comments or strings), use `rfx refs X`; it drops those lines
-exactly, so do not re-check. It prints the definition, then `path:line:text  [in caller]`
-per use. When several functions share the name, it lists them all; `--at PATH:LINE`
+exactly, so do not re-check. It prints the definition, then `path:line:text  [in caller:LINE]`
+per use (`LINE` is where the caller is defined, in the same file). When several functions share the name, it lists them all; `--at PATH:LINE`
 keeps the uses of one.
 
 | Question | Command |
@@ -38,6 +38,7 @@ keeps the uses of one.
 | Where does X occur | `rfx locations X` (add `--preview` for the line text) |
 | Every use of X in code, not comments or strings | `rfx refs X` (`--count` for the number) |
 | Callers of the X defined at one line, or what breaks if it changes (Rust) | `rfx refs X --at src/a.rs:35` (only that definition's uses; `[import]` lines marked) |
+| Which tests reach X (Rust) | Walk callers up: for each `[in f:LINE]`, run `rfx refs f --at <that file>:LINE`, until the callers are test functions |
 | Where is X defined | `rfx query X --symbols --json` (narrow with `--kind function`) |
 | The full body of a definition | `rfx query X --symbols --expand --json` |
 | Lines around each match | `rfx query X -C 3 --json` |
