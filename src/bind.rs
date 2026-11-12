@@ -214,11 +214,26 @@ pub fn bind(
     };
     cx.find_type_homes();
     let mut out = Vec::new();
+    let home = files.get(&target.path);
+    let exported = home.is_some_and(|f| exported(root, f, &target, type_defs));
     for (p, line) in lines {
         if *p == target.path && *line == target.line {
             continue;
         }
         let (verdict, at, import) = match files.get(p) {
+            // Another crate (or the package's `tests/`) reaches only a `pub` item:
+            // tokio-util's `buf.is_empty()` is not tokio's `pub(crate)`
+            // `LinkedList::is_empty`. Dependencies are not checked: ripgrep's core
+            // reaches grep-printer through the `grep` facade.
+            Some(f)
+                if !exported
+                    && home.is_some_and(|h| {
+                        f.krate != h.krate || !root.join(&f.rel).starts_with(&h.base)
+                    }) =>
+            {
+                let (_, at, import) = cx.line(p, f, *line);
+                (Verdict::Other, at, import)
+            }
             Some(f) => cx.line(p, f, *line),
             None => (Verdict::Other, None, false), // not Rust: not a use of a Rust function
         };
@@ -232,6 +247,63 @@ pub fn bind(
         });
     }
     Ok(Binding { target, lines: out })
+}
+
+/// The target can be named outside its crate: a plain `pub` fn, and for a method a
+/// plain `pub` type (or a trait method). `pub(crate)`, `pub(super)` and private items
+/// cannot. A `pub` item of a private module counts as exported (not checked).
+fn exported(
+    root: &Path,
+    f: &File,
+    target: &Def,
+    type_defs: &dyn Fn(&str) -> Vec<(String, usize)>,
+) -> bool {
+    let row = target.line - 1;
+    let mut stack = vec![f.tree.root_node()];
+    let mut func = None;
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "function_item" | "function_signature_item")
+            && n.child_by_field_name("name")
+                .is_some_and(|x| x.start_position().row == row)
+        {
+            func = Some(n);
+            break;
+        }
+        if n.start_position().row <= row && row <= n.end_position().row {
+            let mut w = n.walk();
+            stack.extend(n.named_children(&mut w));
+        }
+    }
+    let Some(func) = func else {
+        return true;
+    };
+    let plain_pub = |n: Node, src: &str| {
+        let mut w = n.walk();
+        n.named_children(&mut w)
+            .any(|c| c.kind() == "visibility_modifier" && text(c, src).trim() == "pub")
+    };
+    if target.in_trait {
+        return true; // a trait's visibility is not checked
+    }
+    if !plain_pub(func, &f.src) {
+        return false;
+    }
+    let Some(t) = &target.impl_type else {
+        return true;
+    };
+    // Any definition of that type name written plain `pub` (unknown: exported).
+    let defs = type_defs(t);
+    defs.is_empty()
+        || defs.iter().any(|(rel, line)| {
+            std::fs::read_to_string(root.join(rel)).map_or(true, |src| {
+                // The declaration: past doc comments and attributes.
+                src.split('\n')
+                    .skip(line - 1)
+                    .map(str::trim_start)
+                    .find(|l| !(l.is_empty() || l.starts_with("//") || l.starts_with("#[")))
+                    .is_none_or(|l| l.starts_with("pub "))
+            })
+        })
 }
 
 /// What plain `rfx refs X` knows of one line, from the Rust syntax tree.
@@ -3983,6 +4055,49 @@ mod tests {
         let v = verdicts(&files, "src/list.rs:3", "is_empty");
         let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
         assert_eq!(get("src/a.rs:4"), Some(Verdict::This));
+    }
+
+    #[test]
+    fn other_crates_reach_only_exported_items() {
+        let files = [
+            CARGO,
+            (
+                "src/lib.rs",
+                "pub(crate) struct List;\nimpl List {\n    pub fn is_empty(&self) {}\n}\n/// Doc.\n#[derive(Debug)]\npub struct Pub;\nimpl Pub {\n    pub fn is_empty(&self) {}\n}\n",
+            ),
+            ("tests/it.rs", "fn t(x: X) {\n    x.is_empty();\n}\n"),
+            (
+                "user/Cargo.toml",
+                "[package]\nname = \"user\"\n[dependencies]\ndemo = { path = \"..\" }\n",
+            ),
+            ("user/src/lib.rs", "fn u(x: X) {\n    x.is_empty();\n}\n"),
+            ("lone/Cargo.toml", "[package]\nname = \"lone\"\n"),
+            ("lone/src/lib.rs", "fn l(x: X) {\n    x.is_empty();\n}\n"),
+        ];
+        let v = verdicts(&files, "src/lib.rs:3", "is_empty");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(
+            get("tests/it.rs:2"),
+            Some(Verdict::Other),
+            "pub(crate) type"
+        );
+        assert_eq!(
+            get("user/src/lib.rs:2"),
+            Some(Verdict::Other),
+            "pub(crate) type"
+        );
+        let v = verdicts(&files, "src/lib.rs:9", "is_empty");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(
+            get("tests/it.rs:2"),
+            Some(Verdict::Possible),
+            "the package's tests"
+        );
+        assert_eq!(
+            get("user/src/lib.rs:2"),
+            Some(Verdict::Possible),
+            "depends on demo"
+        );
     }
 
     #[test]
