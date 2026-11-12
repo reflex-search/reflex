@@ -2813,7 +2813,10 @@ fn dispatch_tool(
                         .collect()
                 })
                 .unwrap_or_default();
-            let force = arguments["force"].as_bool().unwrap_or(false);
+            // A 2-character name (`rt`, `ok`) is a whole-identifier scan: plain search
+            // runs it with a warning, so the definition lookup must not refuse it.
+            let force =
+                arguments["force"].as_bool().unwrap_or(false) || pattern.chars().count() < 3;
             let include_strings = arguments["include_strings"].as_bool().unwrap_or(false);
             // `at: "path:line"`: keep only the uses of THE function defined there
             // (`bind.rs`); every use is checked, so paging does not apply.

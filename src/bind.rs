@@ -174,6 +174,8 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
         target: &target,
         defs: &defs,
         crates: workspace_crates(root),
+        returns: method_returns(&files),
+        files: &files,
     };
     let mut out = Vec::new();
     for (p, line) in lines {
@@ -447,6 +449,23 @@ fn ancestor<'t>(n: Node<'t>, kinds: &[&str]) -> Option<Node<'t>> {
     None
 }
 
+/// Types `type_name` sees through to their first generic argument.
+const WRAPPERS: [&str; 13] = [
+    "Arc",
+    "Rc",
+    "Box",
+    "Pin",
+    "RefCell",
+    "Cell",
+    "Mutex",
+    "RwLock",
+    "MutexGuard",
+    "Ref",
+    "RefMut",
+    "ManuallyDrop",
+    "UnsafeCell",
+];
+
 /// `Arc<Mutex<Foo<T>>>` → `Foo`; `&mut self::a::Bar` → `Bar`.
 fn type_name(t: &str) -> String {
     let mut t = t.trim();
@@ -475,21 +494,6 @@ fn type_name(t: &str) -> String {
         return format!("std::{}", rest.rsplit("::").next().unwrap_or(rest));
     }
     let base = base.rsplit("::").next().unwrap_or(base).trim();
-    const WRAPPERS: [&str; 13] = [
-        "Arc",
-        "Rc",
-        "Box",
-        "Pin",
-        "RefCell",
-        "Cell",
-        "Mutex",
-        "RwLock",
-        "MutexGuard",
-        "Ref",
-        "RefMut",
-        "ManuallyDrop",
-        "UnsafeCell",
-    ];
     if let (true, Some(g)) = (WRAPPERS.contains(&base), generics) {
         // The first top-level generic argument.
         let mut depth = 0;
@@ -700,6 +704,11 @@ struct Cx<'a> {
     defs: &'a [Def],
     /// Crate names of this workspace's packages.
     crates: HashSet<String>,
+    /// (impl type, method) → the type it returns (`method_returns`); `None` when two
+    /// impls disagree or the return type says nothing.
+    returns: HashMap<(String, String), Option<String>>,
+    /// Every parsed file, for a struct declared in another file than the use.
+    files: &'a HashMap<String, File>,
 }
 
 impl Cx<'_> {
@@ -907,8 +916,10 @@ impl Cx<'_> {
                 .child_by_field_name("type")
                 .map(|t| type_name(text(t, &f.src)))
                 .or_else(|| {
-                    l.child_by_field_name("value")
-                        .and_then(|v| constructed_type(f, v))
+                    // `at: v`: only earlier `let`s, so `let x = x.f()` does not loop.
+                    l.child_by_field_name("value").and_then(|v| {
+                        constructed_type(f, v).or_else(|| self.receiver_type(f, v, v))
+                    })
                 });
             if found.is_none() {
                 return Some(String::new()); // a local, type not written
@@ -965,13 +976,19 @@ impl Cx<'_> {
                 .local_type_of(f, at, text(r, &f.src))
                 .filter(|t| !t.is_empty()),
             "field_expression" => {
+                // `self.handle.shared`: each step's declared field type.
                 let v = r.child_by_field_name("value")?;
                 let field = text(r.child_by_field_name("field")?, &f.src);
-                if v.kind() != "self" {
-                    return None;
-                }
-                let owner = enclosing_impl_type(f, at)?;
-                field_type(f, &owner, field)
+                let owner = if v.kind() == "self" {
+                    enclosing_impl_type(f, at)?
+                } else {
+                    type_name(&self.receiver_type(f, v, at)?)
+                };
+                field_type(f, &owner, field).or_else(|| {
+                    self.files
+                        .values()
+                        .find_map(|g| field_type(g, &owner, field))
+                })
             }
             "parenthesized_expression" | "reference_expression" | "unary_expression" => {
                 let mut c = r.walk();
@@ -979,12 +996,24 @@ impl Cx<'_> {
                 self.receiver_type(f, inner, at)
             }
             "call_expression" => {
-                // `b.encoding(..).bom_sniffing(..)` on an external builder `b`: the
-                // chain stays external. Any other chain's type is not known.
                 let func = r.child_by_field_name("function")?;
                 if func.kind() != "field_expression" {
-                    return constructed_type(f, r);
+                    // `Foo::new()`, or `Builder::new_current_thread()`: what the
+                    // associated fn declares it returns.
+                    return constructed_type(f, r).or_else(|| {
+                        if func.kind() != "scoped_identifier" {
+                            return None;
+                        }
+                        let segs = path_segments(text(func, &f.src));
+                        let (m, ty) = (segs.last()?, segs.get(segs.len().checked_sub(2)?)?);
+                        if !is_upper(ty) {
+                            return None;
+                        }
+                        self.ret(ty, m)
+                    });
                 }
+                // A chain `root.a(..).b(..)`: the methods, outermost first.
+                let mut methods = vec![text(func.child_by_field_name("field")?, &f.src)];
                 let mut root = func.child_by_field_name("value")?;
                 loop {
                     match root.kind() {
@@ -993,6 +1022,7 @@ impl Cx<'_> {
                             if g.kind() != "field_expression" {
                                 break;
                             }
+                            methods.push(text(g.child_by_field_name("field")?, &f.src));
                             root = g.child_by_field_name("value")?;
                         }
                         "try_expression" | "await_expression" => {
@@ -1002,8 +1032,22 @@ impl Cx<'_> {
                     }
                 }
                 let t = self.receiver_type(f, root, at)?;
-                let t = self.resolve(f, &t);
-                t.starts_with("ext::").then_some(t)
+                // `b.encoding(..).bom_sniffing(..)` on an external builder `b`: the
+                // chain stays external.
+                let resolved = self.resolve(f, &t);
+                if resolved.starts_with("ext::") {
+                    return Some(resolved);
+                }
+                // This workspace's type: each method's declared return type in turn
+                // (`Builder::new_current_thread().enable_all().build()`).
+                let mut t = type_name(&t);
+                if WRAPPERS.contains(&t.trim_start_matches("std::")) {
+                    return None; // `Arc::new(x).clone()`: the wrapped type is not known
+                }
+                for m in methods.iter().rev() {
+                    t = self.ret(&t, m)?;
+                }
+                Some(t)
             }
             "index_expression" => {
                 // `self.levels[i]`: the element type of the field's declared type.
@@ -1020,6 +1064,16 @@ impl Cx<'_> {
             }
             _ => None,
         }
+    }
+
+    /// The type `ty.m(..)` returns, from `m`'s declaration in an `impl ty` block.
+    /// `unwrap`, `expect` and `clone` keep the type (`Result`/`Option` are already
+    /// unwrapped by `return_type`).
+    fn ret(&self, ty: &str, m: &str) -> Option<String> {
+        if matches!(m, "unwrap" | "expect" | "clone" | "unwrap_or_default") {
+            return Some(ty.to_string());
+        }
+        self.returns.get(&(ty.to_string(), m.to_string()))?.clone()
     }
 
     /// A type path as `of_type` reads it: `std::T` for a standard type, `ext::T` for
@@ -1471,6 +1525,89 @@ fn constructed_type(f: &File, v: Node) -> Option<String> {
     }
 }
 
+/// Every method of every `impl T` block in `files`: (T, name) → the type it returns
+/// (`return_type`). Two impls that disagree (generic impls, cfg twins) give `None`.
+fn method_returns(files: &HashMap<String, File>) -> HashMap<(String, String), Option<String>> {
+    let mut out: HashMap<(String, String), Option<String>> = HashMap::new();
+    for f in files.values() {
+        let mut stack = vec![f.tree.root_node()];
+        while let Some(n) = stack.pop() {
+            let mut c = n.walk();
+            stack.extend(n.named_children(&mut c));
+            if n.kind() != "function_item" {
+                continue;
+            }
+            let Some(imp) = ancestor(n, &["impl_item", "function_item"]) else {
+                continue;
+            };
+            if imp.kind() != "impl_item" {
+                continue;
+            }
+            let (Some(ty), Some(nm)) = (
+                imp.child_by_field_name("type"),
+                n.child_by_field_name("name"),
+            ) else {
+                continue;
+            };
+            let ty = type_name(text(ty, &f.src));
+            let ret = n
+                .child_by_field_name("return_type")
+                .and_then(|r| return_type(text(r, &f.src), &ty));
+            let key = (ty, text(nm, &f.src).to_string());
+            match out.get(&key) {
+                Some(prev) if *prev != ret => {
+                    out.insert(key, None);
+                }
+                Some(_) => {}
+                None => {
+                    out.insert(key, ret);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A declared return type as a receiver type: `&mut Self` → `impl_ty`,
+/// `io::Result<Runtime>` → `Runtime`, `Option<Arc<Handle>>` → `Handle`. `None` for a
+/// type that says nothing (`()`, `impl Trait`, a generic `T`).
+fn return_type(ret: &str, impl_ty: &str) -> Option<String> {
+    let t = ret.trim();
+    if let Some(i) = t.find('<') {
+        let base = t[..i].trim().trim_start_matches('&').trim();
+        let last = base.rsplit("::").next().unwrap_or(base);
+        if matches!(last, "Result" | "Option") {
+            let inner = &t[i + 1..t.rfind('>')?];
+            return return_type(first_generic(inner), impl_ty);
+        }
+    }
+    if t.starts_with("impl ") || t.starts_with('(') {
+        return None;
+    }
+    let n = type_name(t);
+    if n == "Self" {
+        return Some(impl_ty.to_string());
+    }
+    // A standard type or a primitive (`of_type`: never this crate's method). A
+    // one-letter name is a type parameter.
+    (n.starts_with("std::") || STD_TYPES.contains(&n.as_str()) || (n.len() > 1 && is_upper(&n)))
+        .then_some(n)
+}
+
+/// The first top-level argument of a generic list `A, B<C, D>`.
+fn first_generic(g: &str) -> &str {
+    let mut depth = 0;
+    for (i, c) in g.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => return &g[..i],
+            _ => {}
+        }
+    }
+    g
+}
+
 /// The declared type of `field` in `struct owner { … }` in the same file.
 fn field_type(f: &File, owner: &str, field: &str) -> Option<String> {
     field_type_text(f, owner, field).map(|t| type_name(&t))
@@ -1679,6 +1816,48 @@ mod tests {
             get("src/sched.rs:11"),
             Some(Verdict::Other),
             "the other module"
+        );
+    }
+
+    #[test]
+    fn chains_and_field_paths_bind_by_declared_types() {
+        let src = "pub struct Builder;\npub struct Runtime;\npub struct Other;\nimpl Builder {\n    pub fn new_current_thread() -> Builder {\n        Builder\n    }\n    pub fn enable_all(&mut self) -> &mut Self {\n        self\n    }\n    pub fn build(&mut self) -> std::io::Result<Runtime> {\n        Ok(Runtime)\n    }\n}\nimpl Other {\n    pub fn build(&self) -> u8 {\n        1\n    }\n}\nstruct Handle {\n    shared: Shared,\n}\nimpl Handle {\n    fn go(&mut self) {\n        self.shared.builder.build();\n    }\n}\nfn rt() -> Runtime {\n    Builder::new_current_thread().enable_all().build().unwrap()\n}\nfn other(o: Other) {\n    o.build();\n    let s = std::sync::Arc::new(Builder);\n    s.clone().build();\n    let b = Builder::new_current_thread();\n    b.build();\n}\n";
+        // `Shared` is declared in another file than its use.
+        let files = [
+            CARGO,
+            ("src/lib.rs", src),
+            (
+                "src/shared.rs",
+                "pub struct Shared {\n    pub builder: crate::Builder,\n}\n",
+            ),
+        ];
+        let line = |needle: &str| src.lines().position(|l| l.contains(needle)).unwrap() + 1;
+        let at = format!("src/lib.rs:{}", line("pub fn build(&mut self)"));
+        let v = verdicts(&files, &at, "build");
+        let get = |needle: &str| {
+            let k = format!("src/lib.rs:{}", line(needle));
+            v.iter().find(|(p, _)| *p == k).map(|x| x.1)
+        };
+        assert_eq!(
+            get("self.shared.builder"),
+            Some(Verdict::This),
+            "field of a field"
+        );
+        assert_eq!(
+            get("enable_all().build()"),
+            Some(Verdict::This),
+            "builder chain"
+        );
+        assert_eq!(get("o.build()"), Some(Verdict::Other), "another type");
+        assert_eq!(
+            get("s.clone().build()"),
+            Some(Verdict::Possible),
+            "Arc of unknown"
+        );
+        assert_eq!(
+            get("b.build()"),
+            Some(Verdict::This),
+            "let from an associated fn"
         );
     }
 

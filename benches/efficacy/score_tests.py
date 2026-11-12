@@ -95,11 +95,15 @@ def main() -> None:
     rows = []
     for s in json.loads(Path(args.keys).read_text())["sessions"]:
         tree = ck.KEYS_WORK / s["repo"]
+        # Tests in files the test build never compiles (`cfg(loom)`, Windows) never
+        # run, so the key cannot judge them: they count neither way.
+        compiled = ck.compiled_files(s["repo"], tree)
         for st in s["steps"]:
             k = st["key"]
             want = set(k["tests"])
             got, calls, seen = walk(args.rfx, tree, SCOPES[s["repo"]], k["name"], k["where"],
                                     args.depth, args.poss, args.plain)
+            got = {g for g in got if g.rsplit(":", 1)[0] in compiled}
             rows.append((s["repo"], k["name"], f1(got, want), len(want), len(got), calls,
                          sorted(want - got), sorted(got - want)))
     print(f"{'repo':8} {'name':32} {'F1':>5} {'want':>4} {'got':>4} {'calls':>5}")

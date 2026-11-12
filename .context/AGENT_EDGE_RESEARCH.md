@@ -522,3 +522,38 @@ is an answer.
   - extras from tests the key never runs: `cfg(loom)`, `signal/windows/sys.rs`.
 - So this workflow needs receiver types from field declarations (and trait impls),
   which is type inference. rust-analyzer (arm L) has it.
+
+### Declared types for chains and field paths — 2026-11-11, 2.3.1 + `--at`
+
+`bind.rs` now types three more receiver shapes, from declarations in the parsed files
+(the files that name X, plus the `--at` file):
+- a chain `Builder::new_current_thread().enable_all().build()`: each method's declared
+  return type in turn (`method_returns`; `-> &mut Self` → the impl type,
+  `io::Result<T>` / `Option<T>` → `T`; `unwrap`, `expect`, `clone` keep the type);
+- `T::f()` with no `new`/`default` name: `f`'s declared return type;
+- `x.a.b` for any typed `x`, with the struct in any parsed file (was: `self.a`, struct
+  in the same file); `let v = <chain>;` gets the chain's type.
+A wrapper root with no known inner type (`Arc::new(x).clone()`) stays unknown.
+
+`find_references` no longer refuses a 2-character name (`rt`): it forces the symbol
+lookup that refused it. `rfx refs rt` failed outright before.
+
+| Set | `--at` F1 before | after |
+| --- | --- | --- |
+| tuning 48 | 0.989 | 0.989 |
+| held-out 1 | 0.997 | 0.997 |
+| held-out 2 | 0.951 | 0.951 |
+| tests walk 16 (`score_tests.py`) | 0.410 | **0.482** (6 exact) |
+
+The tests scorer now drops answers in files the test build never compiles
+(`cfg(loom)`, Windows): the key cannot judge them. Before the change, with that rule,
+the walk scored about 0.43.
+- `set_thread_id` 0.00 → 0.91: `Builder::build` went from 0 uses / 37 possible to 29
+  uses / 6 possible, so the walk reaches the runtime tests.
+- Over-reach is the new error: a walk that reaches `Builder::build` reaches every
+  runtime test, but `globals` runs only with the signal driver on (`enable_all`).
+  Static reach is "may run"; the key is "did run". ripgrep `quit_byte` / `binary_data`
+  reach 101 printer tests the same way (key: 6).
+- Still 0: trait dispatch (`copy_to` via `poll_read`, 0 of 8), `is_cancelled`.
+- Held-out 2 misses are unchanged (`as_u64` unknown receiver, `with_current`): those
+  receivers are locals with no written type and no chain.
