@@ -700,3 +700,39 @@ explain ×3, impact ×2 (`results-sessions/sonnet55-walk`); A: tokio tests ×2 m
 - **D5 by workflow now:** explain met vs A and Lforce; tests met vs Lforce on tokio
   (0.88×, +0.20), vs A borderline on tokio and not met on ripgrep; impact met by
   neither (vs A 1.08×, vs Lforce 0.88×).
+
+## Fair baseline: `--warm-tree` and arm Askills — 2026-11-12, Sonnet 5.5, `f28a03f`
+
+Two bench asymmetries, both against arm S, found in the impact transcripts:
+1. **Working directory in the prompt.** Each trial has its own tree path; text after it
+   missed the per-arm warm-up. Same "Reply OK" call: S in a new directory read 11,208 /
+   wrote 5,998, in the same directory read 17,206 / wrote 0; A 16,848 / 2,915.
+   `session_bench.py run --warm-tree` makes one uncounted call in each trial's tree.
+   Effect: small (first message reads +1.7K in both arms). S still wrote 4,331 in its
+   first message vs A's 1,284: the skill listing and the hook sit in the first user
+   message, which every new session writes once.
+2. **A ran with skills disabled** (`--disable-slash-commands`); a default install lists
+   19 bundled skills (S lists them + `reflex:reflex`). Arm **Askills** = A with them
+   (user skills still out). Its first message writes 3,726.
+
+Also in this run: the impact routing line restored (`--at` on 8 of 8 impact questions
+again; the folded callers+tests line had dropped it to 0 of 16).
+
+tokio, API-equivalent cost (mean of trials), all with `--warm-tree`:
+
+| Session | A | Askills | S | S vs Askills |
+| --- | --- | --- | --- | --- |
+| explain (2 each) | 0.231, 1.000 | 0.237, 1.000 | 0.189, 1.000 | **0.79×** (weighted 0.74×) |
+| impact (3 each) | 0.171, 1.000 | 0.182, 1.000 | 0.185, 1.000 | 1.02× (weighted 1.00×) |
+| tests (3 each) | 1.048, 0.843 | 1.035, 0.905 | 1.185, 0.905 | 1.14×, ±0.000 |
+
+- The skill listing costs Askills only +$0.006–0.011 per session, less than estimated.
+- tests, every tokio trial since the caller walk (`sonnet55-tests`, `-walk`, `-walk-A`,
+  `-warmtree`): Grep arms n=11 cost 1.066, acc 0.877 (sd 0.050); S n=8 cost 1.132, acc
+  0.925 (sd 0.046). **S vs Grep: 1.06× cost, +0.047 accuracy.**
+- Impact is one lookup per question in both arms (21–23 turns per 8 questions); grep
+  answers it in one call, so `--at` cannot save turns there.
+
+**D5 (Sonnet 5.5, tokio-led):** explain met vs Grep (0.79×) and LSP (Lforce 0.61×);
+tests met vs LSP only (vs Grep 1.06×, +0.047: both conditions missed, narrowly);
+impact met by neither (1.02× Grep, 0.88× Lforce). 1 of 3 workflows; D5 needs 2.

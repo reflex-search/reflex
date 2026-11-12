@@ -37,6 +37,9 @@ Open follow-ups (2026-11-10):
   Explain met vs A and Lforce. Tests: vs Lforce met on tokio; vs A borderline on tokio
   (median 0.99×, +0.065; mean 1.005×), ripgrep 1.20×. Impact met by neither
   (1.08× A, 0.88× Lforce). AGENT_EDGE_RESEARCH.md.
+  Fair baseline 2026-11-12 (`--warm-tree`, arm Askills = A with the default skill
+  listing): explain 0.79×; impact 1.02×; tests (pooled n=11 v 8) 1.06× cost, +0.047.
+  **1 of 3 workflows meets D5 → the kill criterion applies. Verdict is the user's.**
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:

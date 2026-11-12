@@ -112,6 +112,19 @@ ARMS = {
         "allowed_tools": BUILTIN_TOOLS_MCP_ARMS,
         "append_system_prompt": None,
     },
+    "Askills": {
+        "description": "Arm A with Claude Code's bundled skills listed, as in a default install (arm S has them too)",
+        "mcp_command": None,
+        # A passes --disable-slash-commands, so its first message lacks the ~19 bundled
+        # skill names every default session carries; S cannot drop them (its skill must
+        # load). That listing was ~2.6K of S's ~3K extra cache-write tokens per session
+        # (2026-11-12, AGENT_EDGE_RESEARCH.md). User skills stay out (--setting-sources "").
+        "skills": True,
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions"],
+        "disallowed_tools": [],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + ["Skill"],
+        "append_system_prompt": None,
+    },
     "B": {
         "description": "Realistic: Reflex MCP enabled + built-ins available; Reflex-first nudge via MCP initialize instructions field",
         "mcp_command": "TARGET_RELEASE_RFX",
