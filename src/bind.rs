@@ -199,6 +199,7 @@ pub fn bind(
         defs: &defs,
         crates: workspace_crates(root),
         returns,
+        more_returns: RefCell::new(HashMap::new()),
         ret_decls,
         files: &files,
         root,
@@ -718,21 +719,7 @@ fn type_name(t: &str) -> String {
     }
     let base = base.rsplit("::").next().unwrap_or(base).trim();
     if let (true, Some(g)) = (unwraps(base), generics) {
-        // The first top-level generic argument.
-        let mut depth = 0;
-        let mut end = g.len();
-        for (i, c) in g.char_indices() {
-            match c {
-                '<' | '(' | '[' => depth += 1,
-                '>' | ')' | ']' => depth -= 1,
-                ',' if depth == 0 => {
-                    end = i;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        return type_name(&g[..end]);
+        return type_name(first_generic(g));
     }
     base.to_string()
 }
@@ -1085,7 +1072,10 @@ struct Cx<'a> {
     crates: HashSet<String>,
     /// (impl type, method) → the type it returns (`method_returns`); `None` when two
     /// impls disagree or the return type says nothing.
-    returns: HashMap<(String, String), Option<String>>,
+    returns: Returns,
+    /// `returns` of a file that defines a type, read from disk when a chain reaches
+    /// a type no input file declares the method for (tokio's `Wheel::poll`).
+    more_returns: RefCell<HashMap<String, Option<Rc<FileReturns>>>>,
     /// (impl type, method) → where its return type is written: (file, module, the
     /// type with `&`, `Result` and `Option` removed). For a shared type name.
     ret_decls: RetDecls,
@@ -1916,7 +1906,13 @@ impl Cx<'_> {
             return Some(ty.to_string());
         }
         let b = bare(ty);
-        let Some(r) = self.returns.get(&(type_name(b), m.to_string())) else {
+        let key = (type_name(b), m.to_string());
+        let found = self
+            .returns
+            .get(&key)
+            .cloned()
+            .or_else(|| self.returns_elsewhere(ty, &key));
+        let Some(r) = found else {
             // Not declared on `ty`: a pin projection or a guard (`self.project()`,
             // `x.lock()`) derefs to the same type, in this crate's code. `ty` is
             // already out of its `Result`/`Option`, so `.context(..)?` keeps it too.
@@ -1947,8 +1943,17 @@ impl Cx<'_> {
             return (same && !b.starts_with("std::") && !STD_TYPES.contains(&b))
                 .then(|| ty.to_string());
         };
-        let r = r.clone()?;
+        let r = r?;
         if r == type_name(b) {
+            // A tagged type's method that returns another module's type of the same
+            // name: tokio's `scheduler::Handle::driver() -> &driver::Handle`.
+            if let Some(home) = self.home_returns(ty)
+                && let Some((rel, module, written)) = home.1.get(&key)
+                && type_name(written) != "Self"
+                && let Some(t) = self.with_file(rel, |g| self.tag(g, module, None, written))
+            {
+                return Some(t);
+            }
             return Some(ty.to_string()); // `-> Self`: the same type, the same tag
         }
         // A shared type name: resolve the written path where the method declares it.
@@ -1959,6 +1964,57 @@ impl Cx<'_> {
             return Some(t);
         }
         Some(self.tag_bare(r))
+    }
+
+    /// What `ty.m(..)` returns, declared in the file that defines `ty` when no input
+    /// file declares it (no line there names the target).
+    fn returns_elsewhere(&self, ty: &str, key: &(String, String)) -> Option<Option<String>> {
+        if ty.contains(TAG) {
+            return self.home_returns(ty)?.0.get(key).cloned();
+        }
+        if key.0.starts_with("std::") || STD_TYPES.contains(&key.0.as_str()) {
+            return None;
+        }
+        // Untagged: only when one file defines a type of that name. tokio has many
+        // `Handle`s and `Inner`s, and their methods are not this one's.
+        let rels: HashSet<String> = (self.type_defs)(&key.0)
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect();
+        if rels.len() != 1 {
+            return None;
+        }
+        self.returns_of(rels.into_iter().next()?)?
+            .0
+            .get(key)
+            .cloned()
+    }
+
+    /// The methods declared in the module file of a tagged type `ty`.
+    fn home_returns(&self, ty: &str) -> Option<Rc<FileReturns>> {
+        let (_, h) = ty.split_once(TAG)?;
+        if h == "?" {
+            return None;
+        }
+        let mut it = h.split('/');
+        let k = it.next()?;
+        let m: Vec<String> = it.map(String::from).collect();
+        self.returns_of(self.module_file(k, &m)?)
+    }
+
+    /// `file_returns` of the file at `rel`, read once.
+    fn returns_of(&self, rel: String) -> Option<Rc<FileReturns>> {
+        let cached = self.more_returns.borrow().get(&rel).cloned();
+        if let Some(m) = cached {
+            return m;
+        }
+        let m = self.with_file(&rel, |g| {
+            let (mut out, mut decls) = (Returns::new(), RetDecls::new());
+            file_returns(g, &mut out, &mut decls);
+            Rc::new((out, decls))
+        });
+        self.more_returns.borrow_mut().insert(rel, m.clone());
+        m
     }
 
     /// A type path as `of_type` reads it: `std::T` for a standard type, `ext::T` for
@@ -2518,55 +2574,63 @@ type RetDecls = HashMap<(String, String), (String, Vec<String>, String)>;
 /// Every method of every `impl T` block in `files`: (T, name) → the type it returns
 /// (`return_type`). Two impls that disagree (generic impls, cfg twins) give `None`.
 /// Also where each return type is written (`RetDecls`).
-fn method_returns(
-    files: &HashMap<String, File>,
-) -> (HashMap<(String, String), Option<String>>, RetDecls) {
-    let mut out: HashMap<(String, String), Option<String>> = HashMap::new();
+type Returns = HashMap<(String, String), Option<String>>;
+
+/// One file's `file_returns`: return types and where they are written.
+type FileReturns = (Returns, RetDecls);
+
+fn method_returns(files: &HashMap<String, File>) -> (Returns, RetDecls) {
+    let mut out = Returns::new();
     let mut decls = RetDecls::new();
     for f in files.values() {
-        let mut stack = vec![f.tree.root_node()];
-        while let Some(n) = stack.pop() {
-            let mut c = n.walk();
-            stack.extend(n.named_children(&mut c));
-            if n.kind() != "function_item" {
-                continue;
+        file_returns(f, &mut out, &mut decls);
+    }
+    (out, decls)
+}
+
+/// `method_returns` for one file.
+fn file_returns(f: &File, out: &mut Returns, decls: &mut RetDecls) {
+    let mut stack = vec![f.tree.root_node()];
+    while let Some(n) = stack.pop() {
+        let mut c = n.walk();
+        stack.extend(n.named_children(&mut c));
+        if n.kind() != "function_item" {
+            continue;
+        }
+        let Some(imp) = ancestor(n, &["impl_item", "function_item"]) else {
+            continue;
+        };
+        if imp.kind() != "impl_item" {
+            continue;
+        }
+        let (Some(ty), Some(nm)) = (
+            imp.child_by_field_name("type"),
+            n.child_by_field_name("name"),
+        ) else {
+            continue;
+        };
+        let ty = type_name(impl_written(imp, ty, &f.src));
+        let written = n
+            .child_by_field_name("return_type")
+            .map(|r| text(r, &f.src));
+        let ret = written.and_then(|r| return_type(r, &ty));
+        let key = (ty, text(nm, &f.src).to_string());
+        if let Some(w) = written {
+            decls.insert(
+                key.clone(),
+                (f.rel.clone(), module_of(f, n), unwrap_ret(w).to_string()),
+            );
+        }
+        match out.get(&key) {
+            Some(prev) if *prev != ret => {
+                out.insert(key, None);
             }
-            let Some(imp) = ancestor(n, &["impl_item", "function_item"]) else {
-                continue;
-            };
-            if imp.kind() != "impl_item" {
-                continue;
-            }
-            let (Some(ty), Some(nm)) = (
-                imp.child_by_field_name("type"),
-                n.child_by_field_name("name"),
-            ) else {
-                continue;
-            };
-            let ty = type_name(impl_written(imp, ty, &f.src));
-            let written = n
-                .child_by_field_name("return_type")
-                .map(|r| text(r, &f.src));
-            let ret = written.and_then(|r| return_type(r, &ty));
-            let key = (ty, text(nm, &f.src).to_string());
-            if let Some(w) = written {
-                decls.insert(
-                    key.clone(),
-                    (f.rel.clone(), module_of(f, n), unwrap_ret(w).to_string()),
-                );
-            }
-            match out.get(&key) {
-                Some(prev) if *prev != ret => {
-                    out.insert(key, None);
-                }
-                Some(_) => {}
-                None => {
-                    out.insert(key, ret);
-                }
+            Some(_) => {}
+            None => {
+                out.insert(key, ret);
             }
         }
     }
-    (out, decls)
 }
 
 /// `&mut io::Result<Foo<T>>` → `Foo<T>`: the written type a method's caller holds.
@@ -2611,17 +2675,26 @@ fn return_type(ret: &str, impl_ty: &str) -> Option<String> {
 }
 
 /// The first top-level argument of a generic list `A, B<C, D>`.
+/// Lifetimes are skipped: `'_, InnerState` → `InnerState` (tokio's
+/// `MutexGuard<'_, InnerState>`).
 fn first_generic(g: &str) -> &str {
     let mut depth = 0;
+    let mut from = 0;
     for (i, c) in g.char_indices() {
         match c {
             '<' | '(' | '[' => depth += 1,
             '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => return &g[..i],
+            ',' if depth == 0 => {
+                let arg = g[from..i].trim();
+                if !arg.starts_with('\'') {
+                    return arg;
+                }
+                from = i + 1;
+            }
             _ => {}
         }
     }
-    g
+    g[from..].trim()
 }
 
 /// The element of `Box<[T; N]>`, `[T]`, `Vec<T>`, `VecDeque<T>`: `T`.
@@ -2814,6 +2887,10 @@ fn use_items(f: &File) -> Vec<UseItem> {
                 };
                 let mut full = prefix.to_vec();
                 full.extend(path_segments(text(path, &f.src)));
+                // `use a::b::{self as c}`: the module `b`.
+                if full.len() > 1 && full.last().is_some_and(|l| l == "self") {
+                    full.pop();
+                }
                 push(text(alias, &f.src).to_string(), full);
             }
             "use_wildcard" => {
@@ -4098,6 +4175,95 @@ mod tests {
             Some(Verdict::Possible),
             "depends on demo"
         );
+    }
+
+    #[test]
+    fn guard_lifetime_is_not_the_wrapped_type() {
+        // tokio time/mod.rs: `let lock = self.inner.lock()` → `MutexGuard<'_, InnerState>`.
+        assert_eq!(first_generic("'_, InnerState"), "InnerState");
+        assert_eq!(first_generic("'a, 'b, Vec<u8>, X"), "Vec<u8>");
+        assert_eq!(type_name("MutexGuard<'_, InnerState>"), "InnerState");
+        assert_eq!(type_name("Arc<Mutex<Foo<T>>>"), "Foo");
+    }
+
+    #[test]
+    fn while_let_through_a_guard() {
+        // tokio time/mod.rs:270: `while let Some(entry) = lock.wheel.poll(now)`.
+        let files = [
+            CARGO,
+            (
+                "src/lib.rs",
+                "mod sync;\nmod entry;\nmod wheel;\nmod time;\n",
+            ),
+            (
+                "src/sync.rs",
+                "pub struct Mutex<T>(T);\npub struct MutexGuard<'a, T>(&'a T);\nimpl<T> Mutex<T> {\n    pub fn lock(&self) -> MutexGuard<'_, T> {\n        todo!()\n    }\n}\n",
+            ),
+            (
+                "src/entry.rs",
+                "pub struct TimerHandle;\nimpl TimerHandle {\n    pub unsafe fn fire(self, r: u8) -> Option<u8> {\n        None\n    }\n}\npub struct Other;\nimpl Other {\n    pub fn fire(self, r: u8) {}\n}\n",
+            ),
+            (
+                "src/wheel.rs",
+                "use crate::entry::TimerHandle;\npub struct Wheel;\nimpl Wheel {\n    pub fn poll(&mut self, now: u64) -> Option<TimerHandle> {\n        None\n    }\n}\n",
+            ),
+            (
+                "src/time.rs",
+                "use crate::sync::Mutex;\nuse crate::wheel;\nstruct Inner {\n    state: Mutex<InnerState>,\n}\nstruct InnerState {\n    wheel: wheel::Wheel,\n}\nimpl Inner {\n    fn lock(&self) -> crate::sync::MutexGuard<'_, InnerState> {\n        self.state.lock()\n    }\n}\nstruct Handle {\n    inner: Inner,\n}\nimpl Handle {\n    fn process(&self, now: u64) {\n        let mut lock = self.inner.lock();\n        while let Some(entry) = lock.wheel.poll(now) {\n            if let Some(w) = unsafe { entry.fire(1) } {\n            }\n        }\n    }\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/entry.rs:3", "fire");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/time.rs:21"), Some(Verdict::This));
+    }
+
+    #[test]
+    fn a_method_returning_a_same_named_type() {
+        // tokio: `scheduler::Handle::driver() -> &driver::Handle`, then `.time()`.
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod sched;\nmod driver;\nmod user;\n"),
+            (
+                "src/sched.rs",
+                "use crate::driver;\npub struct Handle(driver::Handle);\nimpl Handle {\n    pub fn driver(&self) -> &driver::Handle {\n        &self.0\n    }\n    pub fn time(&self) {}\n}\n",
+            ),
+            (
+                "src/driver.rs",
+                "pub struct Handle;\nimpl Handle {\n    pub fn time(&self) {}\n}\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::sched::Handle;\nfn f(h: &Handle) {\n    h.driver().time();\n    h.time();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/driver.rs:3", "time");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/user.rs:3"), Some(Verdict::This));
+        assert_eq!(get("src/user.rs:4"), Some(Verdict::Other));
+    }
+
+    #[test]
+    fn self_as_alias_in_a_use_group() {
+        // tokio mpsc/bounded.rs: `use crate::sync::batch_semaphore::{self as semaphore, ..}`.
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod sem;\nmod other;\nmod user;\n"),
+            (
+                "src/sem.rs",
+                "pub struct Semaphore;\nimpl Semaphore {\n    pub fn new() -> Self {\n        Semaphore\n    }\n}\n",
+            ),
+            (
+                "src/other.rs",
+                "pub struct Semaphore;\nimpl Semaphore {\n    pub fn new() -> Self {\n        Semaphore\n    }\n}\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::sem::{self as semaphore};\nfn f() {\n    let _ = semaphore::Semaphore::new();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/sem.rs:3", "new");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/user.rs:3"), Some(Verdict::This));
     }
 
     #[test]
