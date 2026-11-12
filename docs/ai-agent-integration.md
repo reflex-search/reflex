@@ -4,6 +4,12 @@ Run Reflex as an MCP server inside Claude Code. This page covers setup, a quick
 check that it works, the tools Claude uses most, how to handle a stale index, and
 common problems. The last section covers the CLI `--json` mode for scripts.
 
+> **For Claude Code, the `reflex` plugin is the recommended route:**
+> `claude plugin marketplace add reflex-search/reflex`, then
+> `claude plugin install reflex@reflex`. It has no server; the agent runs `rfx` through
+> Bash, and it cost less than the MCP server in every session measured (2026-11-10).
+> Use this page when your agent cannot run shell commands, or for other MCP clients.
+
 ---
 
 ## Prerequisites

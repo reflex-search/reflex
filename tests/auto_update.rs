@@ -8,7 +8,7 @@
 
 #![cfg(unix)]
 
-use reflex::auto_update::{UpdateOptions, Updated, update_if_stale};
+use reflex::auto_update::{SelfHeal, UpdateOptions, Updated, update_if_stale};
 use reflex::cache::CacheManager;
 use reflex::indexer::Indexer;
 use reflex::models::{IndexConfig, IndexStatus};
@@ -193,17 +193,18 @@ fn a_gitignore_edit_runs_a_full_index() {
     assert_eq!(answers(root), fresh_answers(root));
 }
 
-#[test]
-fn another_versions_cache_is_left_alone_by_a_server() {
-    let temp = repo();
-    let root = temp.path();
-    update(root);
+/// Stamp the cache as written by `version`; `schema` also changes its format hash
+/// (the `Foreign` plan), else only the stamp differs (the writer refuses it).
+fn stamp(root: &Path, version: &str, schema: bool) {
     let conn = reflex::cache::open_meta_db(root.join(".reflex/meta.db")).unwrap();
-    for (k, v) in [
-        ("schema_hash", "deadbeefdeadbeef"),
-        ("writer_version", "0.0.1"),
+    let mut rows = vec![
+        ("writer_version", version),
         ("writer_git_sha", "abc1234def5678"),
-    ] {
+    ];
+    if schema {
+        rows.push(("schema_hash", "deadbeefdeadbeef"));
+    }
+    for (k, v) in rows {
         conn.execute(
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, 0)",
             [k, v],
@@ -212,18 +213,87 @@ fn another_versions_cache_is_left_alone_by_a_server() {
     }
     drop(conn);
     reflex::query::invalidate_caches(root);
-    assert!(matches!(update(root), Updated::Skipped(_)));
+}
 
-    let cli = UpdateOptions {
+fn with_heal(heal: SelfHeal) -> UpdateOptions {
+    UpdateOptions {
         spawn_symbol_pass: false,
-        self_heal_version: true,
+        self_heal_version: heal,
         progress: false,
-    };
-    assert_eq!(
-        update_if_stale(&CacheManager::new(root), &cli).unwrap(),
-        Updated::Built
-    );
+    }
+}
+
+fn update_with(root: &Path, heal: SelfHeal) -> Updated {
+    reflex::query::invalidate_caches(root);
+    update_if_stale(&CacheManager::new(root), &with_heal(heal)).unwrap()
+}
+
+#[test]
+fn another_versions_cache_is_rebuilt_by_the_cli_not_by_a_library_caller() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    stamp(root, "99.0.0", true);
+    assert!(matches!(update(root), Updated::Skipped(_)));
+    assert_eq!(update_with(root, SelfHeal::Any), Updated::Built);
     assert_eq!(status(root), IndexStatus::Fresh);
+}
+
+#[test]
+fn a_server_rebuilds_an_older_releases_cache() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    stamp(root, "0.0.1", true);
+    assert_eq!(update_with(root, SelfHeal::OlderOnly), Updated::Built);
+    assert_eq!(status(root), IndexStatus::Fresh);
+    assert_eq!(answers(root), fresh_answers(root));
+}
+
+/// The field case (2026-11-09): 2.2.0 wrote the cache, 2.3.1 has the same format,
+/// a file changed. The writer refused the stamp, so every `rfx mcp` answer was
+/// `stale` until a manual `rfx index`.
+#[test]
+fn a_server_rebuilds_an_older_releases_cache_of_the_same_format() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    stamp(root, "0.0.1", false);
+    write(root, "src/m1.rs", "pub fn token_new() {}\n");
+    assert!(matches!(update(root), Updated::Skipped(_)));
+    assert_eq!(update_with(root, SelfHeal::OlderOnly), Updated::Built);
+    assert_eq!(status(root), IndexStatus::Fresh);
+    assert_eq!(answers(root), fresh_answers(root));
+}
+
+#[test]
+fn a_server_leaves_a_newer_releases_cache_alone_and_names_rfx_index() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    stamp(root, "99.0.0", false);
+    write(root, "src/m1.rs", "pub fn token_new() {}\n");
+    let Updated::Skipped(reason) = update_with(root, SelfHeal::OlderOnly) else {
+        panic!("a newer release's cache was written");
+    };
+    assert!(
+        reason.contains("99.0.0") && reason.contains("newer"),
+        "{reason}"
+    );
+    assert!(reason.contains("`rfx index`"), "{reason}");
+    assert!(!reason.contains("force"), "{reason}");
+    assert_eq!(status(root), IndexStatus::Stale);
+}
+
+/// A fresh index from an older release is answered from, not rebuilt: nothing
+/// has to be written, and a rebuild per upgrade is paid only when a file changes.
+#[test]
+fn a_fresh_older_cache_is_not_rebuilt() {
+    let temp = repo();
+    let root = temp.path();
+    update(root);
+    stamp(root, "0.0.1", false);
+    assert_eq!(update_with(root, SelfHeal::OlderOnly), Updated::Nothing);
 }
 
 #[test]

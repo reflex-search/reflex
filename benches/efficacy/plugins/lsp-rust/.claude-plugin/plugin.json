@@ -1,0 +1,11 @@
+{
+  "name": "lsp-rust",
+  "version": "1.0.0",
+  "description": "Bench arm L: rust-analyzer for Claude Code's LSP tool (the official rust-analyzer-lsp plugin's server entry, loaded with --plugin-dir)",
+  "lspServers": {
+    "rust-analyzer": {
+      "command": "rust-analyzer",
+      "extensionToLanguage": { ".rs": "rust" }
+    }
+  }
+}

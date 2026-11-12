@@ -168,12 +168,7 @@ fn handle_analyze_summary(
             "warnings": deps_index.low_resolution_warnings().unwrap_or_default(),
         });
 
-        let json_str = if pretty_json {
-            serde_json::to_string_pretty(&summary)?
-        } else {
-            serde_json::to_string(&summary)?
-        };
-        println!("{}", json_str);
+        print_graph_json(summary, pretty_json)?;
     } else if count_only {
         // Just show counts without any extra formatting
         println!("{} circular dependencies", cycles.len());
@@ -249,6 +244,13 @@ pub(super) fn handle_deps(
     use crate::dependency::DependencyIndex;
 
     log::info!("Starting deps command");
+    // Reverse lists direct importers only; the depth used to be ignored without a word
+    // (the MCP `get_dependencies` refuses the pair too).
+    if reverse && depth != 1 {
+        anyhow::bail!(
+            "--reverse and --depth cannot be combined: --reverse lists the files that import this one directly"
+        );
+    }
 
     let cache = CacheManager::new(".");
 
@@ -511,10 +513,10 @@ fn handle_deps_circular(
 
     if all_cycles.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else {
             println!("No circular dependencies found.");
         }
@@ -532,10 +534,10 @@ fn handle_deps_circular(
 
     if cycles.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else {
             println!("No circular dependencies found at offset {}.", offset_val);
         }
@@ -574,12 +576,7 @@ fn handle_deps_circular(
                 "results": results,
             });
 
-            let json_str = if pretty_json {
-                serde_json::to_string_pretty(&output)?
-            } else {
-                serde_json::to_string(&output)?
-            };
-            println!("{}", json_str);
+            print_graph_json(output, pretty_json)?;
         }
         "tree" => {
             println!("Circular Dependencies Found:");
@@ -689,10 +686,10 @@ fn handle_deps_hotspots(
 
     if all_hotspots.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else {
             println!("No hotspots found.");
         }
@@ -710,10 +707,10 @@ fn handle_deps_hotspots(
 
     if hotspots.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else {
             println!("No hotspots found at offset {}.", offset_val);
         }
@@ -751,12 +748,7 @@ fn handle_deps_hotspots(
                 "results": results,
             });
 
-            let json_str = if pretty_json {
-                serde_json::to_string_pretty(&output)?
-            } else {
-                serde_json::to_string(&output)?
-            };
-            println!("{}", json_str);
+            print_graph_json(output, pretty_json)?;
         }
         "tree" => {
             println!("Hotspots (Most-Imported Files):");
@@ -824,10 +816,10 @@ fn handle_deps_unused(
 
     if all_unused.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": 0, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else {
             println!("No unused files found (all files have incoming dependencies).");
         }
@@ -840,10 +832,10 @@ fn handle_deps_unused(
 
     if unused.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": total_count, "count": 0, "offset": offset_val, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else {
             println!("No unused files found at offset {}.", offset_val);
         }
@@ -879,12 +871,7 @@ fn handle_deps_unused(
                 "results": results,
             });
 
-            let json_str = if pretty_json {
-                serde_json::to_string_pretty(&output)?
-            } else {
-                serde_json::to_string(&output)?
-            };
-            println!("{}", json_str);
+            print_graph_json(output, pretty_json)?;
         }
         "tree" => {
             println!("Unused Files (No Incoming Dependencies):");
@@ -1009,10 +996,10 @@ fn handle_deps_islands(
         islands = islands.into_iter().skip(offset_val).collect();
     } else if offset_val >= islands.len() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": islands.len(), "count": 0, "offset": offset_val, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": islands.len(), "count": 0, "offset": offset_val, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else if filtered_count > 0 {
             println!("No islands at offset {}{}", offset_val, filter_note);
         } else {
@@ -1028,10 +1015,10 @@ fn handle_deps_islands(
 
     if islands.is_empty() {
         if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": offset_val, "has_more": false}, "results": []})
-            );
+            print_graph_json(
+                serde_json::json!({"pagination": {"total": 0, "count": 0, "offset": offset_val, "has_more": false}, "results": []}),
+                pretty_json,
+            )?;
         } else if filtered_count > 0 {
             println!("No islands found{}", filter_note);
         } else {
@@ -1091,12 +1078,7 @@ fn handle_deps_islands(
                 });
             }
 
-            let json_str = if pretty_json {
-                serde_json::to_string_pretty(&output)?
-            } else {
-                serde_json::to_string(&output)?
-            };
-            println!("{}", json_str);
+            print_graph_json(output, pretty_json)?;
         }
         "tree" => {
             println!("Islands (Disconnected Components):");
@@ -1157,5 +1139,24 @@ fn handle_deps_islands(
         }
     }
 
+    Ok(())
+}
+
+/// Print an `rfx analyze --json` answer with the freshness fields the MCP `analyze`
+/// answer carries (`status`, `can_trust_results`): the freshness contract.
+fn print_graph_json(mut output: serde_json::Value, pretty_json: bool) -> Result<()> {
+    if let Some(obj) = output.as_object_mut()
+        && let Ok((status, trusted, _)) =
+            super::engine(CacheManager::new("."), true).get_index_status()
+    {
+        obj.insert("status".to_string(), serde_json::json!(status));
+        obj.insert("can_trust_results".to_string(), serde_json::json!(trusted));
+    }
+    let json_str = if pretty_json {
+        serde_json::to_string_pretty(&output)?
+    } else {
+        serde_json::to_string(&output)?
+    };
+    println!("{}", json_str);
     Ok(())
 }

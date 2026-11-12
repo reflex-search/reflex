@@ -10,6 +10,7 @@ at the end of the trial.
 
   session_bench.py generate                 write tasks/sessions.json from the pinned corpora
   session_bench.py run --arms A B Beager --n 4 --model claude-sonnet-5 [--jobs 24]
+  session_bench.py generate-compiled        add the explain and impact sessions (runs cargo check)
   session_bench.py score [--results DIR]    per-arm totals and ratios vs arm A
 
 Session kinds (one of each per corpus):
@@ -25,6 +26,13 @@ Session kinds (one of each per corpus):
                rust_code.py (a Rust lexer written apart from Reflex)
   aware-large  `aware` on names with 100-400 grep lines, where grep over-fetches:
                6 lists, 6 counts
+  explain      8 questions "what does fn X do, what does it call, what calls it?",
+               graded on the two name lists (mean F1). Callers key: the compiler
+               (compiler_keys.py: add a parameter to X, the fn around each error);
+               callees key: the calls in X's body text. `generate-compiled` builds it
+  impact       8 questions "I will add a required parameter to fn X: which lines must
+               change?", graded by F1 on path:line. Key: the compiler's error lines
+               (compiler_keys.py). Nothing is edited or built in the trial
   regex        12 questions that give a regular expression: every matching line
                (8, 3-80 lines each) and how many lines match (4, 10-400). Half
                the pool has no brackets, so a search without regex:true runs as
@@ -70,6 +78,10 @@ FORMAT_LIST = (
 FORMAT_ONE = 'End your answer with a JSON code block {"answer": ["path:line"]}.'
 FORMAT_NUMBER = 'End your answer with a JSON code block {"answer": <number>}.'
 FORMAT_DONE = 'End your answer with a JSON code block {"answer": "done"}.'
+FORMAT_EXPLAIN = (
+    'End your answer with a JSON code block {"answer": {"calls": ["name", ...], '
+    '"callers": ["name", ...]}} with bare function and method names.'
+)
 
 
 def rg(repo_dir: Path, *args: str) -> list[str]:
@@ -408,6 +420,120 @@ def regex_session(repo: str, scope: str) -> dict:
     return {"id": f"{repo}-session-regex", "repo": repo, "kind": "regex", "steps": steps}
 
 
+def compiled_sessions(repo: str, scope: str, per_kind: int = 8) -> list[dict]:
+    """The `explain` and `impact` sessions of one corpus, keyed by the compiler."""
+    import compiler_keys as ck
+    tree = ck.scratch_copy(repo, runner.CORPUS_REPOS[repo])
+    if ck.cargo_errors(repo, tree):
+        raise SystemExit(f"{repo}: the unchanged corpus does not build; no compiler keys")
+    compiled = ck.compiled_files(repo, tree)
+    print(f"  {repo}: {len(compiled)} source files compiled", flush=True)
+    explain, impact = [], []
+    for name, _, _, where in candidates(repo):
+        if len(explain) >= per_kind and len(impact) >= per_kind:
+            break
+        path, line = where.rsplit(":", 1)
+        if f"fn {name}" not in (tree / path).read_text().split("\n")[int(line) - 1]:
+            continue
+        k = ck.probe(repo, tree, scope, name, where, compiled)
+        if not k or not k["sites"]:
+            continue
+        print(f"  {repo} {name}: {len(k['sites'])} sites, callers {k['callers']}, "
+              f"{len(k['calls'])} calls, codes {k['codes']}", flush=True)
+        if len(impact) < per_kind and 3 <= len(k["sites"]) <= 25:
+            impact.append({
+                "kind": "impact",
+                "prompt": f"I plan to add a new required parameter to the function `{name}` defined at "
+                          f"`{where}`. Without editing any file or building the project, list every line "
+                          f"under `{scope}/` that will then fail to compile and must change: each call of "
+                          f"this function, and each place it is used as a value. Leave out its definition. "
+                          f"{FORMAT_LIST}",
+                "expected": k["sites"], "key": k,
+            })
+        elif len(explain) < per_kind and 2 <= len(k["calls"]) <= 12 and 1 <= len(k["callers"]) <= 8:
+            explain.append({
+                "kind": "explain",
+                "prompt": f"Explain the function `{name}` defined at `{where}`: what it does (two sentences), "
+                          f"every function and method its body calls directly, by name, standard-library ones "
+                          f"too (such as `map`, `collect` or `new`; leave out macros and constructors such "
+                          f"as `Some`), and which functions under "
+                          f"`{scope}/` call it directly (tests included). Do not edit files or build the "
+                          f"project. {FORMAT_EXPLAIN}",
+                "calls": k["calls"], "callers": k["callers"], "key": k,
+            })
+    if len(explain) < per_kind or len(impact) < per_kind:
+        raise SystemExit(f"{repo}: only {len(explain)} explain and {len(impact)} impact questions")
+    return [{"id": f"{repo}-session-explain", "repo": repo, "kind": "explain", "steps": explain},
+            {"id": f"{repo}-session-impact", "repo": repo, "kind": "impact", "steps": impact}]
+
+
+def generate_tests() -> None:
+    """Add (or replace) the `tests` sessions ("find the tests for a change") from
+    tasks/tests_keys.json (tests_keys.py: a test run, not any arm's tool)."""
+    data = json.loads(SESSIONS_JSON.read_text())
+    keyed = json.loads((HERE / "tasks" / "tests_keys.json").read_text())["sessions"]
+    new = []
+    for s in keyed:
+        scope = SCOPES[s["repo"]]
+        steps = [{
+            "kind": "tests",
+            "prompt": f"I plan to change the function `{st['key']['name']}` defined at "
+                      f"`{st['key']['where']}`. Which unit tests under `{scope}/` run it, directly "
+                      f"or through other functions? List each test function (`#[test]`, "
+                      f"`#[tokio::test]` and the like) by the line of its `fn`. Do not run the "
+                      f"tests, edit files or build the project. {FORMAT_LIST}",
+            "expected": st["key"]["tests"], "key": st["key"],
+        } for st in s["steps"]]
+        new.append({"id": s["id"], "repo": s["repo"], "kind": "tests", "steps": steps})
+    ids = {s["id"] for s in new}
+    data["sessions"] = [s for s in data["sessions"] if s["id"] not in ids] + new
+    SESSIONS_JSON.write_text(json.dumps(data, indent=1) + "\n")
+    print(f"wrote {SESSIONS_JSON}: {len(new)} tests sessions")
+
+
+def grade_tests(step: dict, ans, tree: Path, repo: str) -> float:
+    """F1 of the tests answered against the test-run key. An answer line on a test's
+    attributes counts as its `fn` line. Tests in files the key's test build never
+    compiled (`cfg(loom)`, Windows) never run, so they count neither way."""
+    import compiler_keys as ck
+    want = set(step["expected"])
+    compiled = ck.compiled_files(repo, ck.KEYS_WORK / repo)
+    got = set()
+    for a in ans if isinstance(ans, list) else []:
+        loc = norm_loc(a)
+        if ":" not in loc:
+            continue
+        path, line = loc.rsplit(":", 1)
+        if path not in compiled:
+            continue
+        try:
+            lines = (tree / path).read_text(errors="replace").split("\n")
+        except OSError:
+            got.add(loc)
+            continue
+        n = int(line)
+        # The `fn` at or within 6 lines below an attribute line.
+        for k in range(n, min(n + 7, len(lines) + 1)):
+            if re.search(r"\bfn\s+\w+", lines[k - 1]):
+                n = k
+                break
+        got.add(f"{path}:{n}")
+    if not want and not got:
+        return 1.0
+    tp = len(want & got)
+    return 0.0 if tp == 0 else 2 * tp / (len(got) + len(want))
+
+
+def generate_compiled(repos: list[str]) -> None:
+    """Add (or replace) the explain and impact sessions in tasks/sessions.json."""
+    data = json.loads(SESSIONS_JSON.read_text())
+    new = [s for repo in repos for s in compiled_sessions(repo, SCOPES[repo])]
+    ids = {s["id"] for s in new}
+    data["sessions"] = [s for s in data["sessions"] if s["id"] not in ids] + new
+    SESSIONS_JSON.write_text(json.dumps(data, indent=1) + "\n")
+    print(f"wrote {SESSIONS_JSON}: {len(new)} compiled sessions")
+
+
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
@@ -444,8 +570,8 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
     fresh_copy(session["repo"], tree)
     cfg = runner.ARMS[arm]
     rfx_bin = rfx if cfg["mcp_command"] == "TARGET_RELEASE_RFX" else None
-    if rfx_bin:
-        subprocess.run([str(rfx_bin), "index", "--quiet"], cwd=tree, check=True,
+    if rfx_bin or cfg.get("cli_rfx"):
+        subprocess.run([str(rfx), "index", "--quiet"], cwd=tree, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     mcp_cfg = runner.make_mcp_config(
         rfx_bin, tmp, f"{arm}-{session['id']}-{trial}",
@@ -464,7 +590,8 @@ def run_one(arm: str, session: dict, trial: int, model: str, rfx: Path | None, t
         # is merged into the running turn, so the next one is sent only after the
         # previous answer's result event.
         proc = subprocess.Popen(cmd, cwd=tree, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                                stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                env=arm_env(cfg, rfx))
         for step in session["steps"]:
             proc.stdin.write(user_message(step["prompt"]))
             proc.stdin.flush()
@@ -500,7 +627,7 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
         rfx_bin, tmp, f"warm-{arm}",
         mcp_env=cfg.get("mcp_env"), always_load=cfg.get("mcp_always_load", False),
     )
-    proc = subprocess.run(session_cmd(arm, cfg, mcp_cfg, model), cwd=tree, text=True,
+    proc = subprocess.run(session_cmd(arm, cfg, mcp_cfg, model), cwd=tree, text=True, env=arm_env(cfg, rfx),
                           input=user_message("Reply with the word OK and nothing else."),
                           capture_output=True, timeout=300)
     usage = {}
@@ -513,6 +640,15 @@ def warm_up(arm: str, model: str, rfx: Path, tmp: Path) -> str:
             usage = e.get("usage") or {}
     return (f"warm-up {arm} exit={proc.returncode} cache write={usage.get('cache_creation_input_tokens')}"
             f" read={usage.get('cache_read_input_tokens')}")
+
+
+def arm_env(cfg: dict, rfx: Path) -> dict:
+    """The agent's environment. A CLI arm (S) gets the target rfx first on PATH, so
+    its Bash calls run the build under test, not an installed release."""
+    env = dict(os.environ)
+    if cfg.get("cli_rfx"):
+        env["PATH"] = f"{rfx.parent}{os.pathsep}{env.get('PATH', '')}"
+    return env
 
 
 def session_cmd(arm: str, cfg: dict, mcp_cfg, model: str) -> list[str]:
@@ -564,6 +700,12 @@ def run(args) -> None:
 # ---------------------------------------------------------------------------
 
 
+# A Bash call that runs rfx (arm S) counts as a Reflex call; one that runs grep,
+# rg, find or ls counts on the grep side.
+RFX_CMD = re.compile(r"(^|[;&|(]\s*|\s)(\S*/)?rfx\s")
+GREP_CMD = re.compile(r"(^|[;&|(]\s*)(\S*/)?(grep|rg|egrep|find|ls)\s")
+
+
 def answer_of(text: str):
     """The last {"answer": ...} object in the reply, fenced or bare."""
     text = text or ""
@@ -589,6 +731,21 @@ def rg_files(tree: Path, args: list[str]) -> set[str]:
     return set(out.split())
 
 
+def bare_name(x) -> str:
+    """`Foo::bar()`, `self.bar`, `bar()` -> `bar`."""
+    x = re.sub(r"\(.*$", "", str(x).strip().strip("`"))
+    return re.split(r"::|\.", x)[-1].strip()
+
+
+def name_f1(got, want: list[str]) -> float:
+    got = {bare_name(g) for g in got} if isinstance(got, list) else set()
+    want = set(want)
+    if not want and not got:
+        return 1.0
+    tp = len(want & got)
+    return 0.0 if tp == 0 else 2 * tp / (len(got) + len(want))
+
+
 def grade(step: dict, ans, tree: Path, scope: str) -> float:
     """1.0 = exact; lists are scored by F1 against the oracle on the final tree."""
     kind = step["kind"]
@@ -606,6 +763,13 @@ def grade(step: dict, ans, tree: Path, scope: str) -> float:
         return 1.0 if ans == len(rg(tree, *step["oracle"])) else 0.0
     if kind == "refs_count":
         return 1.0 if ans == len(code_refs(tree, step["name"], scope)) else 0.0
+    if kind == "tests":
+        repo = next(r for r, sc in SCOPES.items() if sc == scope)
+        return grade_tests(step, ans, tree, repo)
+    if kind == "explain":
+        if not isinstance(ans, dict):
+            return 0.0
+        return (name_f1(ans.get("calls"), step["calls"]) + name_f1(ans.get("callers"), step["callers"])) / 2
     if kind == "files":
         want = rg_files(tree, step["oracle"])
         got = {str(a).strip().lstrip("./") for a in ans} if isinstance(ans, list) else set()
@@ -645,6 +809,11 @@ def score(args) -> None:
                 for c in e["message"].get("content", []):
                     if c.get("type") == "tool_use":
                         calls[c["name"]] += 1
+                        cmd = str((c.get("input") or {}).get("command", "")) if c["name"] == "Bash" else ""
+                        if RFX_CMD.search(cmd):
+                            calls["Bash:rfx"] += 1
+                        elif GREP_CMD.search(cmd):
+                            calls["Bash:grep"] += 1
         s = sessions[meta["task_id"]]
         tree = Path(meta["tree"])
         u = collections.Counter()
@@ -662,7 +831,9 @@ def score(args) -> None:
         rows.append({
             "arm": meta["arm"], "session": s["id"], "trial": meta["trial"],
             "complete": len(results) >= len(s["steps"]), "turns": sum(r.get("num_turns", 0) for r in results),
-            "tool_calls": sum(calls.values()), "reflex_calls": sum(v for k, v in calls.items() if "reflex" in k),
+            "tool_calls": sum(v for k, v in calls.items() if ":" not in k), "reflex_calls": sum(v for k, v in calls.items() if "reflex" in k) + calls["Bash:rfx"],
+            "grep_calls": calls["Grep"] + calls["Glob"] + calls["Bash:grep"],
+            "lsp_calls": calls["LSP"],
             "toolsearch": calls["ToolSearch"], "raw": raw, "weighted": weighted, "cost": cost,
             "accuracy": statistics.mean(scores),
         })
@@ -679,11 +850,11 @@ def score(args) -> None:
     for r in rows:
         by[(r["arm"], r["session"])].append(r)
     print(f"{len(rows)} sessions ({sum(not r['complete'] for r in rows)} incomplete) -> {out_csv}\n")
-    print(f"{'arm':<8}{'sessions':>9}{'turns':>7}{'calls':>7}{'reflex':>7}{'raw tok':>10}{'weighted':>10}{'cost $':>8}{'acc':>6}")
+    print(f"{'arm':<8}{'sessions':>9}{'turns':>7}{'calls':>7}{'reflex':>7}{'grep':>6}{'lsp':>5}{'raw tok':>10}{'weighted':>10}{'cost $':>8}{'acc':>6}")
     for arm in arms:
         rs = [r for r in rows if r["arm"] == arm]
         med = lambda k: statistics.median(r[k] for r in rs)  # noqa: E731
-        print(f"{arm:<8}{len(rs):>9}{med('turns'):>7.0f}{med('tool_calls'):>7.0f}{med('reflex_calls'):>7.0f}"
+        print(f"{arm:<8}{len(rs):>9}{med('turns'):>7.0f}{med('tool_calls'):>7.0f}{med('reflex_calls'):>7.0f}{med('grep_calls'):>6.0f}{med('lsp_calls'):>5.0f}"
               f"{med('raw'):>10.0f}{med('weighted'):>10.0f}{med('cost'):>8.3f}{statistics.mean(r['accuracy'] for r in rs):>6.3f}")
     print("\nratio vs A (median over sessions of per-session medians):")
     for arm in arms[1:]:
@@ -702,6 +873,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("generate")
+    g = sub.add_parser("generate-compiled")
+    g.add_argument("--repos", nargs="+", default=list(SCOPES))
+    sub.add_parser("generate-tests")
     r = sub.add_parser("run")
     r.add_argument("--arms", nargs="+", default=["A", "B", "Beager"])
     r.add_argument("--sessions", nargs="*")
@@ -713,7 +887,7 @@ def main() -> None:
     s = sub.add_parser("score")
     s.add_argument("--results", default=str(runner.RESULTS_DIR))
     args = p.parse_args()
-    {"generate": lambda: generate(), "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
+    {"generate": lambda: generate(), "generate-compiled": lambda: generate_compiled(args.repos), "generate-tests": generate_tests, "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
 
 
 if __name__ == "__main__":

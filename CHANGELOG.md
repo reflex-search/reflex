@@ -1,5 +1,83 @@
 ## [Unreleased]
 
+### Added
+
+- **`rfx mcp` and `rfx serve` say at startup which version wrote the index.** One stderr
+  line (Claude Code keeps it in its MCP logs), for example
+  `reflex-mcp index: root=/repo writer=2.2.0 (89acce5) binary=2.3.1 -> reflex 2.2.0 is
+  older; rebuilt for reflex 2.3.1 at the first update`. When the index is newer than the
+  binary (an `rfx` left behind on PATH), the line starts with `WARNING` and says to
+  upgrade the binary or run `rfx index`.
+- **Claude Code plugins.** The repository is a plugin marketplace
+  (`.claude-plugin/marketplace.json`) with two plugins; install one:
+  - `reflex`: a skill that teaches the agent the `rfx` CLI through Bash, and a
+    SessionStart hook that adds the routing rules (965 chars) when `rfx` is on PATH.
+    No MCP server (its instructions and schemas are ~7.8K chars on every call). The
+    skill alone did not fire: Sonnet 5.5 used Grep for 12 of 12 searches; with the
+    hook, `rfx` for 13 of 13.
+  - `reflex-mcp`: the `rfx mcp` server.
+
+  Both need `rfx` on `PATH` (`npm install -g reflex-search`). `cargo release` bumps
+  their versions with the crate.
+- **`rfx refs <name>` and `rfx locations <pattern>`** (alias `rfx loc`): the MCP tools
+  `find_references` and `list_locations` on the CLI, for agents that search through a
+  shell. `rfx refs` prints the definition and every use in code, without the lines
+  where the name is only in a comment or a string. `rfx locations` prints every
+  matching line, grouped by file (`src/a.rs:4,128,193`; `--preview` adds the text).
+  `--json` prints the MCP answer exactly.
+- **`rfx refs X --at path:line`** (MCP: `find_references` with `at`): only the uses of
+  the Rust function or method defined at that line, when other items share its name.
+  tokio has three `waker_ref` functions; `rfx refs waker_ref` lists every use of the
+  name. With `--at`, each line is bound by Rust's name rules read from the syntax tree
+  (imports, `Self::` / `Type::` / `module::` paths, locals, the receiver's written
+  type, `std` and dependency types). Each use names its caller (`[in f]`); lines the
+  rules cannot decide are listed apart as possible. On compiler answer keys, the uses
+  found match the compiler's at F1 0.95 on two sets of unseen names (0.66 and 0.73 without `--at`).
+- **`rfx refs X` shows each use's caller** (`[in f]`; JSON `in`) in Rust, and, when
+  several functions share the name, lists them all (`definitions`) with a hint to pass
+  `--at` (MCP: `at`). Definitions inside item-level macros (`cfg_rt! { … }`) count too.
+  A use inside a `macro_rules!` body shows `[in macro_rules! name]`.
+- **`rfx refs X --at` lists the lines it leaves out**, with their text, under
+  `left out (these name another item called X)` (JSON `left_out`). Agents ran a second
+  search on every question to see them.
+- **`REFLEX_MCP_TOOL_PREFIX`** sets the tool prefix that the server's ToolSearch
+  instruction names (default `mcp__reflex__`). A plugin's tools are
+  `mcp__plugin_<plugin>_<server>__…`, so the `reflex-mcp` plugin sets it.
+- **Path arguments on `rfx query`, `rfx refs` and `rfx locations`**, as in grep:
+  `rfx locations X src/ lib/a.rs`. A directory covers everything under it, a file only
+  itself, `.` the whole index; from a subdirectory a path is relative to it. Agents
+  passed one (`rfx locations spawn_named tokio/src/`), got "unexpected argument", and
+  went back to Grep for the rest of the session.
+- **Linux musl binaries** (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
+  static). `npm install -g reflex-search` and the shell installer now work on Alpine;
+  they failed with "Platform ... is not supported". A glibc older than the build's
+  also gets the static musl binary.
+
+### Changed
+
+- **`rfx` in a subdirectory uses the project's index.** A search command (`query`,
+  `refs`, `locations`, `stats`, `list-files`, `analyze`, `deps`, `context`) run in a
+  directory with no `.reflex/` answers from the nearest parent directory's index,
+  without leaving the git repository, and says so on stderr. It used to build a
+  second index in the subdirectory. Paths and globs stay relative to the index root;
+  a relative `rfx deps` path is rebased.
+- **`rfx query --count --json` and `rfx analyze --json` carry `status` and
+  `can_trust_results`**, like every other JSON answer.
+- **`rfx deps --reverse --depth N` is an error.** `--reverse` lists direct importers
+  only; the depth was ignored without a word.
+
+### Fixed
+
+- **`rfx mcp` and `rfx serve` no longer answer `stale` forever after an upgrade.** A
+  `.reflex/` written by an older release was never rebuilt by a server: every answer
+  said `can_trust_results: false` until someone ran `rfx index` by hand, and the
+  warning told the agent to "rebuild with force", which no listed tool can do. A server
+  now rebuilds a cache an older release wrote, once, at its first update. It still
+  leaves a newer release's cache alone (two servers of different versions would
+  rebuild it in turns), and the warning names `rfx index`. The automatic update of a
+  CLI command had the same gap when the cache format had not changed; it now rebuilds
+  another version's cache as `rfx index` does.
+
 ## [2.3.1] - 2026-10-31
 
 ### Changed

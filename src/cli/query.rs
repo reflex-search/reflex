@@ -486,6 +486,11 @@ pub(super) fn handle_query(
                 "count": total_results.unwrap_or(flat_results.len()),
                 "timing_ms": elapsed.as_millis()
             });
+            // The freshness contract: every JSON-object answer says whether to trust it.
+            if let Some(r) = query_response.as_ref() {
+                count_response["status"] = serde_json::json!(r.status);
+                count_response["can_trust_results"] = serde_json::json!(r.can_trust_results);
+            }
             if !engine_warnings.is_empty() {
                 count_response["warnings"] = serde_json::json!(engine_warnings);
             }

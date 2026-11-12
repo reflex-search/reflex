@@ -139,10 +139,10 @@ pub(super) fn handle_index_build(
     let show_progress = !quiet;
 
     // A human at a terminal should not have to learn a flag to recover from a version
-    // skew, so the CLI self-heals: say who owns the cache, then rebuild it. The MCP
-    // server deliberately does NOT do this — an agent gets the refusal and decides,
-    // because N servers all "self-healing" the same cache at once is the stampede
-    // this guard exists to prevent.
+    // skew, so the CLI self-heals: say who owns the cache, then rebuild it, whichever
+    // version wrote it. Servers rebuild only an OLDER release's cache
+    // (`auto_update::SelfHeal::OlderOnly`): two servers of different versions
+    // "self-healing" the same cache in turns is the stampede this guard prevents.
     let stats = match indexer.index(path, show_progress) {
         Err(e)
             if matches!(

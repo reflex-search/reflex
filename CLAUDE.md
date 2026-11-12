@@ -88,7 +88,8 @@ See `.context/BINARY_FORMAT_RESEARCH.md` for the on-disk formats and
   behaviour. `QueryEngine::new` has no update (library default); front ends build engines
   through `cli::engine` / `mcp::engine_in` (a test fails on any other `QueryEngine::new` in `src/`).
 - Never fails the command: `Updated::Skipped(reason)` → answer from the current index,
-  `stale`, reason in `warnings`. The CLI rebuilds another version's cache; servers skip it.
+  `stale`, reason in `warnings`. The CLI rebuilds another version's cache; servers
+  rebuild an older release's cache (an upgrade) and skip a newer one (`auto_update::SelfHeal`).
   Waits for `index.lock` forever (`LOCK_WAIT_FOREVER`). A failed plan over the same bytes is
   not retried.
 - Rule files: an index run records the blake3 of `.reflex/config.toml`, the root ignore
@@ -117,6 +118,13 @@ rfx watch                        # Auto-reindex on file changes
 ```bash
 # Full-text search (finds all occurrences)
 rfx query "extract_symbols"
+
+# Every matching line, grouped by file (the MCP list_locations): src/a.rs:4,128,193
+rfx locations "extract_symbols"            # --preview adds the line text
+
+# Definition + every use in code, not in comments or strings (the MCP find_references)
+rfx refs "extract_symbols"                 # --count, --json
+rfx refs "run" --at src/a.rs:3              # Rust: only the uses of the `run` defined at that line
 
 # Symbol definitions only (--symbols finds DEFINITIONS, not usages)
 rfx query "extract_symbols" --symbols
@@ -165,6 +173,21 @@ When using Reflex as an MCP server (`rfx mcp`), the following tools are availabl
 Claude Code may register MCP tools as *deferred*: their schemas are not in context until loaded.
 If Reflex tools appear in a deferred-tools list, load them first with
 `ToolSearch("select:mcp__reflex__search_code,mcp__reflex__find_references")`.
+Installed from the `reflex-mcp` plugin, the tools are `mcp__plugin_reflex-mcp_reflex__<name>`;
+the plugin sets `REFLEX_MCP_TOOL_PREFIX` so that ToolSearch line names them.
+
+**Claude Code plugins** (`.claude-plugin/marketplace.json`, `plugins/`): `reflex` is a
+skill that teaches the `rfx` CLI through Bash (no server) plus a SessionStart hook
+(`plugins/reflex/hooks/routing.md`) that puts the routing rules in context: the skill
+alone never fired (0 of 12 searches, 2026-11-10); `reflex-mcp` is the server. The
+`reflex` plugin is the primary route for Claude Code (D2, 2026-11-10: 0.80× Grep's cost
+on code-only questions, MCP 0.95×).
+Versions live only in each `plugin.json`; `release.toml` bumps them and
+`tests/plugin_manifest.rs` checks them. `rfx refs` / `rfx locations` run the MCP tools
+(`mcp::call_tool_data`), so their `--json` is the MCP answer (`tests/cli_tools.rs`).
+When the routing sentences of `MCP_INSTRUCTIONS`
+change, change `plugins/reflex/skills/reflex/SKILL.md` and `hooks/routing.md` too.
+
 The required argument is always `pattern` (never `query`, `symbol`, `text`); the result cap is `limit`
 (never `max_results`); the path filter is `file` (substring) or `glob` (array), never `path`. The
 server accepts those wrong names as aliases and returns a `warnings` field; unknown keys are rejected with a
@@ -246,7 +269,7 @@ Five listed tools (since 2026-10-30; 6 from 2026-10-27, 10 from 2026-09-30, 17 b
 every listed schema on every turn, so `tools/list` is kept small (~5.9 KB, guarded by
 `tests/mcp_tool_surface.rs`). The search schemas leave out `HIDDEN_PARAMS` (`exclude`,
 `force`, `dependencies`, `preview_length`, `expand`, `exact`: no agent passed them in
-5,914 calls); the server still accepts them; the shared matching / coverage / freshness rules live in
+5,914 calls; and `at`, below); the server still accepts them; the shared matching / coverage / freshness rules live in
 `MCP_INSTRUCTIONS`, said once. Four more tools (`HIDDEN_TOOLS`) are callable by name but
 listed only on request: `[mcp] extra_tools = ["search_ast", ...]` in
 `~/.reflex/config.toml`. `rfx mcp --no-update` lists `index_project` and
@@ -257,7 +280,7 @@ the instructions follows the listing (`instructions()`).
 |------|--------|---------|
 | `search_code` | yes | Literal search with previews (default limit 200); `regex: true` = regex search (`->`, `::`, alternation); `mode: "count"` → `{count, files}` |
 | `list_locations` | yes | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
-| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200) |
+| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200); hidden `at: "path:line"` (Rust) keeps only the uses of that one definition (`src/bind.rs`; CLI `rfx refs X --at path:line`). Rust: each reference carries `in` (its caller); several same-name functions → `definitions` + a `hint` naming `at` |
 | `get_dependencies` | yes | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
 | `analyze` | yes | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
 | `search_ast` | `extra_tools` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |

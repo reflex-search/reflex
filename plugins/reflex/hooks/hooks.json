@@ -1,0 +1,15 @@
+{
+  "description": "Tell the agent at session start that rfx is installed and when to use it (the skill alone did not fire: 0 of 12 searches, 2026-11-10)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

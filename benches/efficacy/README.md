@@ -72,6 +72,20 @@ few NDJSON transcripts.
 | **B**  | ✅ Reflex | ✅ active     | ✅ allowed | Realistic: Reflex MCP + nudge |
 | **C**  | ✅ Reflex | ✅ active     | ❌ blocked | Reflex-forced |
 | **B'** | ✅ Reflex | ❌ neutralized | ✅ allowed | No-nudge (secondary) |
+| **Beager** | ✅ Reflex, `alwaysLoad` | ✅ active | ✅ allowed | Arm B with the schemas loaded at session start |
+| **S**  | ❌ None | hook | ✅ allowed | CLI route: the `reflex` plugin (skill + SessionStart hook) by `--plugin-dir`, the built `rfx` first on PATH |
+| **L**  | ❌ None | — | ✅ allowed | LSP: Claude Code's `LSP` tool with rust-analyzer (`plugins/lsp-rust`); no Reflex |
+
+> **Arm S:** slash commands stay on (the skill needs them), so Claude Code's ~20
+> bundled skills are listed too; deny rules do not hide them. The tree is indexed before
+> the trial, as in the MCP arms. Bash calls that run `rfx` count as Reflex calls.
+>
+> **Arm L:** `plugins/lsp-rust` carries the `lspServers` entry of the official
+> `rust-analyzer-lsp` plugin. Needs `rust-analyzer` on PATH and every corpus's crates in
+> the Cargo cache: run `cargo fetch` on a copy of each corpus first (not in
+> `corpus/`: a `Cargo.lock` written there would change the grep answer keys).
+> rust-analyzer starts with each session and indexes the fresh copy; that warm-up is
+> wall time, not tokens. Its time per corpus is in `.context/AGENT_EDGE_RESEARCH.md`.
 
 > **Note on arm A:** `--strict-mcp-config` is passed so the project `.mcp.json`
 > (which configures Reflex MCP) cannot load — the control arm truly has no MCP.
@@ -244,6 +258,30 @@ scoring). `analyze.py` reads this as an optional CSV keyed by
 
 When the table is absent, H2 degrades to a clearly-labelled "pending answer
 scoring" note and H3 still reports task-success rate from the metrics table.
+
+## Compiler answer keys (`explain`, `impact` sessions)
+
+`session_bench.py generate-compiled` adds the `explain` and `impact` sessions to
+`tasks/sessions.json`. `compiler_keys.py` adds a required parameter to one function in a
+scratch copy (`COMPILER_KEYS_WORK`, default `/scratch/cache/compiler-keys`), runs
+`cargo check`, and reads the error lines (the `impact` key) and the functions around
+them (the `explain` callers key). It needs the Rust toolchain and the corpora's crates
+in the Cargo cache. Questions whose uses the compiler cannot see (`cfg(windows)`, unit
+tests cargo skips, macro bodies) are dropped. Findings:
+`.context/AGENT_EDGE_RESEARCH.md`.
+
+### Offline score of `rfx refs --at` (no agent runs)
+
+`score_at.py` runs `rfx refs X` with and without `--at` on the scratch copies the keys
+were built from, and prints F1 against each key (sites; callers from `in`).
+`holdout_keys.py --per-repo 16 --out FILE [--exclude EARLIER]` builds impact keys for
+names not used before (a blind set: score it once before changing `src/bind.rs`).
+
+```bash
+python3 score_at.py -v                                   # the 48 tuning questions
+python3 holdout_keys.py --out tasks/at_holdout_1.json
+python3 score_at.py --sessions tasks/at_holdout_1.json -v
+```
 
 ## File layout
 

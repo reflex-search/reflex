@@ -22,7 +22,8 @@ Thumbs.db
 # Logs
 *.log
 
-reflex
+# A root binary named reflex (anchored: a bare name hid plugins/reflex/)
+/reflex
 
 # cargo-dist artifacts
 /target/distrib/

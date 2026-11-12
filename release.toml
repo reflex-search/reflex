@@ -7,3 +7,8 @@ pre-release-commit-message = "chore: bump version to {{version}}"
 publish = false
 # Update CHANGELOG.md from commit history before each release commit
 pre-release-hook = ["git-cliff", "--output", "CHANGELOG.md", "--tag", "{{version}}"]
+# The Claude Code plugins carry the crate version (tests/plugin_manifest.rs checks it)
+pre-release-replacements = [
+  { file = "plugins/reflex/.claude-plugin/plugin.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
+  { file = "plugins/reflex-mcp/.claude-plugin/plugin.json", search = '"version": "[^"]+"', replace = '"version": "{{version}}"', exactly = 1 },
+]

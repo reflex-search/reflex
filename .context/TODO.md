@@ -1,6 +1,6 @@
 # Reflex TODO
 
-**Last Updated:** 2026-10-27 (Reflex 2.2.0 + main)
+**Last Updated:** 2026-11-09 (Reflex 2.3.1)
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md`.
 > Update this file as you work. Keep it to LIVE work: open tasks, current policy, open
@@ -9,6 +9,35 @@
 > **History:** the pre-2026-09 roadmap (MVP plan, per-module task lists, 2025 status
 > summaries, old benchmarks) was removed on 2026-09-28 because it described an
 > architecture that no longer exists. Read it with `git show fc8da6b:.context/TODO.md`.
+
+---
+
+## 🎯 Agent edge plan (2026-11-09) — IN PROGRESS, decisions D1–D8 made; Phase 1 done (1.1–1.6, musl targets added); D2 decided: the `reflex` plugin (CLI + skill + hook) is primary; arm L built (agents ignore LSP: L ≈ A) (branch `feat/agent-edge-phase1`)
+
+Make Reflex a clear win over built-in Grep and the LSP tool for coding agents: code-only
+capabilities (outline, symbol body, scope, impact of a diff, call graph, tests for X),
+measured on three headline workflows, with a kill criterion. Spec, decisions (D1–D7)
+and the checklist: `.context/AGENT_EDGE_PLAN.md`. It supersedes backlog §1 D (grep-parity
+trimming) and absorbs backlog §2.
+
+Open follow-ups (2026-11-10):
+- [ ] `rfx refs X --at path:line` (MCP `find_references` `at`, hidden): built
+  (`src/bind.rs`, Rust only), scored offline: site F1 0.989 tuning, 0.953 and 0.951 on
+  two blind held-out sets (0.663 / 0.734 without `--at`). In the skill and the SessionStart hook. Live
+  (2026-11-11): agents never pass `--at`; what moved cost was `[in f]` on every use and
+  the `definitions` list (`d1ae6dc`). tokio explain, 3 vs 3 trials: S 0.82× A's cost,
+  accuracy 1.000 (meets D5 on 1 workflow). Next: explain on ripgrep/reflex, Opus;
+  impact routing (agent drifts to grep after `rfx locations`). AGENT_EDGE_RESEARCH.md.
+- [ ] D5 status by workflow (2026-11-11, Sonnet 5.5): **explain** meets vs A (0.83×
+  cost, 5 v 5 pooled); **impact** does not (S ≈ 1.13× A); **tests for a change** does
+  not (tokio 3 trials: S 1.02× A cost, +0.015 accuracy; ripgrep 2 trials: 1.08×,
+  +0.042). One question (`spawn_named`) decides the tests spread; S used `--at` on it in
+  1 of 3 trials. Vs L is not measured: L made 0 LSP calls in every session. D5 verdict
+  is the user's.
+- [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
+  `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
+  calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:
+  `.context/AGENT_EDGE_RESEARCH.md`.
 
 ---
 
@@ -93,6 +122,10 @@ failed Zola build still exits 0.
 
 ## 📐 Current policy (decisions still in force)
 
+From the agent edge plan (2026-11-10): **the `reflex` plugin (CLI + skill + SessionStart
+hook) is the primary route for Claude Code** (D2); `reflex-mcp` is for clients without a
+shell. Docs recommend the plugin first. The skill alone does not fire: keep the hook.
+
 From the 1.7.2 MCP correctness release (2026-09-22):
 
 1. **Auto-update everywhere (decided 2026-09-29; replaces "honest staleness over
@@ -103,7 +136,9 @@ From the 1.7.2 MCP correctness release (2026-09-22):
 2. **Stale always means `can_trust_results: false`**, including a zero-result search.
    Scope (did a changed file appear in the results?) only sharpens the warning text.
 3. **Readers degrade, writers refuse.** Refuse only when a different released version
-   owns the cache. Refusing on the schema hash alone breaks every upgrade.
+   owns the cache. Refusing on the schema hash alone breaks every upgrade. Since
+   2026-11-09 (D8 in `AGENT_EDGE_PLAN.md`): servers take over an OLDER release's cache
+   (an upgrade) and still refuse a NEWER one; the CLI takes over any version's.
 4. **The symbol pass yields rather than holding the lock.** It stops at its next batch
    on a cancel sentinel, so `index_project` is never blocked for the whole pass.
 5. **Text tier on by default** (`[index] text_tier = false` opts out), and exempt from
@@ -191,6 +226,15 @@ MCP:
   deferred tools, in a consumer project.
 
 Tests:
+- After a version bump, a `tests/corpus/.reflex/` left by an older build fails 70 tests
+  (`corpus_test`, `query_early_termination`, …) with "this .reflex/ was written by
+  reflex 2.3.0 …": `test_helpers` indexes through `Indexer::index`, which refuses another
+  version's cache. Fix: the helper clears the fixture cache first, or builds in a temp
+  dir. Workaround: `rm -rf tests/corpus/.reflex` (found 2026-11-09).
+- `git::tests::test_is_git_repo` fails on a machine where `is_git_repo("/tmp")` is true
+  (seen 2026-11-09 although `git -C /tmp rev-parse` says no repo); use a fresh temp dir.
+- A skipped update over MCP leaves `action_required: null` (seen 2026-11-09 with a
+  newer release's cache); the advice is only in `warnings`.
 - `estimate_is_within_band_on_synthetic_corpus` is `#[ignore]` (builds the 30 MB corpus):
   `cargo test --release --test query_early_termination -- --ignored`.
 

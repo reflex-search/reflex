@@ -23,6 +23,10 @@ pub(super) fn handle_serve(port: u16, host: String, no_update: bool) -> Result<(
     // Start the server using tokio runtime
     let runtime = tokio::runtime::Runtime::new()?;
     let update = (!no_update).then(crate::auto_update::UpdateOptions::server);
+    eprintln!(
+        "{}",
+        crate::auto_update::startup_index_line("reflex-serve", &CacheManager::new("."), update)
+    );
     runtime.block_on(async { run_server(port, host, update).await })
 }
 

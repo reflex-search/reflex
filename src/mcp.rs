@@ -267,6 +267,34 @@ const FRESHNESS_TEXT: &str = "The index updates itself before every call and is 
 /// must be told not to call them after edits (Sonnet 5 made 33 such calls before
 /// that sentence, 0 after); under `--no-update` they are how the index is refreshed.
 fn instructions(listing: &ToolListing) -> std::borrow::Cow<'static, str> {
+    with_tool_prefix(
+        instructions_for(listing),
+        std::env::var("REFLEX_MCP_TOOL_PREFIX").ok().as_deref(),
+    )
+}
+
+/// The prefix the ToolSearch line of [`MCP_INSTRUCTIONS`] gives the tool names: what
+/// Claude Code calls the tools of a server registered as `reflex`.
+const DEFAULT_TOOL_PREFIX: &str = "mcp__reflex__";
+
+/// Claude Code names a tool `mcp__<server>__<tool>`, and a plugin's server
+/// `mcp__plugin_<plugin>_<server>__<tool>`. The server cannot see its registered name,
+/// so a plugin passes the prefix in `REFLEX_MCP_TOOL_PREFIX`; with the default, the
+/// ToolSearch line would select tools that do not exist.
+fn with_tool_prefix(
+    text: std::borrow::Cow<'static, str>,
+    prefix: Option<&str>,
+) -> std::borrow::Cow<'static, str> {
+    match prefix.map(str::trim) {
+        Some(p) if !p.is_empty() && p != DEFAULT_TOOL_PREFIX => {
+            std::borrow::Cow::Owned(text.replace(DEFAULT_TOOL_PREFIX, p))
+        }
+        _ => text,
+    }
+}
+
+/// [`instructions`] before the tool prefix is applied.
+fn instructions_for(listing: &ToolListing) -> std::borrow::Cow<'static, str> {
     let freshness = if !listing.auto_update {
         "This server does not update the index (--no-update): after edits, call index_project before you search. can_trust_results: false means the index is stale."
     } else if listing.lists("index_project") || listing.lists("check_index_status") {
@@ -332,13 +360,15 @@ const HIDDEN_TOOLS: [&str; 4] = [
 /// were ~1.2K of the 8,054 characters of the six listed schemas. The server still
 /// accepts them: [`tool_specs`] validates against the full schemas in [`tool_list`].
 /// `offset` stays listed, because the `search_code` description pages with it.
-const HIDDEN_PARAMS: [&str; 6] = [
+const HIDDEN_PARAMS: [&str; 7] = [
     "exclude",
     "force",
     "dependencies",
     "preview_length",
     "expand",
     "exact",
+    // `find_references` `at` (task 2.x, `bind.rs`): unlisted until it is measured.
+    "at",
 ];
 
 /// The tools whose listed schemas drop [`HIDDEN_PARAMS`]. `search_ast` and
@@ -443,6 +473,7 @@ fn tool_list() -> Vec<Value> {
                 "contains": contains,
                 "kind": {"type": "string", "description": "Symbol kind of the definition"},
                 "include_strings": {"type": "boolean", "description": "Keep matches in strings and comments"},
+                "at": {"type": "string", "description": "path:line of one Rust fn: only uses of that fn, each with its caller (in); unsure lines in possible"},
                 "mode": mode,
                 "limit": limit,
                 "offset": offset
@@ -680,25 +711,29 @@ fn finish_tool_result(data: Value, warnings: Vec<String>) -> Value {
             result
         }
         mut other => {
-            if !warnings.is_empty()
-                && let Some(obj) = other.as_object_mut()
-            {
-                // Merge, don't overwrite: a handler may have already attached its own
-                // warnings (for example, a bracket pattern rewritten to a regex).
-                let mut all = obj
-                    .get("warnings")
-                    .and_then(|w| w.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                all.extend(warnings);
-                obj.insert("warnings".to_string(), json!(all));
-            }
+            merge_warnings(&mut other, warnings);
             make_tool_result(other)
         }
+    }
+}
+
+/// Add `warnings` to a JSON-object answer's `warnings[]`. Merge, don't overwrite: a
+/// handler may have already attached its own (a bracket pattern rewritten to a regex).
+fn merge_warnings(data: &mut Value, warnings: Vec<String>) {
+    if !warnings.is_empty()
+        && let Some(obj) = data.as_object_mut()
+    {
+        let mut all = obj
+            .get("warnings")
+            .and_then(|w| w.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        all.extend(warnings);
+        obj.insert("warnings".to_string(), json!(all));
     }
 }
 
@@ -773,7 +808,9 @@ const BOOL_ARG_KEYS: &[&str] = &[
 ];
 
 /// Keys that must be strings when present.
-const STRING_ARG_KEYS: &[&str] = &["pattern", "lang", "kind", "mode", "file", "path", "sort"];
+const STRING_ARG_KEYS: &[&str] = &[
+    "pattern", "lang", "kind", "mode", "file", "path", "sort", "at",
+];
 
 /// Keys that must be arrays of strings when present.
 const STRING_ARRAY_ARG_KEYS: &[&str] = &["glob", "exclude", "languages"];
@@ -1556,11 +1593,39 @@ fn handle_call_tool(
     let name = params["name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
-
-    let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
-    let (arguments, warnings) = normalize_arguments(name, spec, params["arguments"].clone())?;
-
     let index_tool = listing.lists("index_project");
+    let (data, warnings) =
+        call_tool_inner(name, params["arguments"].clone(), root, update, index_tool)?;
+    Ok(finish_tool_result(data, warnings))
+}
+
+/// One tool call for the CLI (`rfx refs`, `rfx query --locations`): the tool's data
+/// exactly as `tools/call` returns it in `content[0].text`, with the warnings in
+/// `warnings[]`. A JSON-object answer only (the tools the CLI routes here). Error
+/// advice names `rfx index`.
+pub fn call_tool_data(
+    name: &str,
+    arguments: Value,
+    root: &Path,
+    update: Option<UpdateOptions>,
+) -> Result<Value> {
+    let (mut data, warnings) = call_tool_inner(name, arguments, root, update, false)?;
+    merge_warnings(&mut data, warnings);
+    Ok(data)
+}
+
+/// The body of `tools/call`: the tool's data and the warnings to attach to it.
+/// `index_tool`: `tools/list` shows `index_project` (else advice names `rfx index`).
+fn call_tool_inner(
+    name: &str,
+    raw_arguments: Value,
+    root: &Path,
+    update: Option<UpdateOptions>,
+    index_tool: bool,
+) -> Result<(Value, Vec<String>)> {
+    let spec = tool_spec(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
+    let (arguments, warnings) = normalize_arguments(name, spec, raw_arguments)?;
+
     // Tools that read the index without the engine bring it up to date here.
     let mut warnings = warnings;
     if let Some(opts) = update
@@ -1589,7 +1654,7 @@ fn handle_call_tool(
     }
     warnings.extend(graph_warnings(handler, &arguments, root));
 
-    Ok(finish_tool_result(data, warnings))
+    Ok((data, warnings))
 }
 
 /// Point `action_required` (top level, or in the stale `warning`) at `rfx index`
@@ -2748,8 +2813,14 @@ fn dispatch_tool(
                         .collect()
                 })
                 .unwrap_or_default();
-            let force = arguments["force"].as_bool().unwrap_or(false);
+            // A 2-character name (`rt`, `ok`) is a whole-identifier scan: plain search
+            // runs it with a warning, so the definition lookup must not refuse it.
+            let force =
+                arguments["force"].as_bool().unwrap_or(false) || pattern.chars().count() < 3;
             let include_strings = arguments["include_strings"].as_bool().unwrap_or(false);
+            // `at: "path:line"`: keep only the uses of THE function defined there
+            // (`bind.rs`); every use is checked, so paging does not apply.
+            let at = arguments["at"].as_str().map(|s| s.to_string());
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -2757,7 +2828,7 @@ fn dispatch_tool(
             let mode = arguments["mode"].as_str().unwrap_or("list");
 
             // Count mode: skip the definition lookup and just count textual references.
-            if mode == "count" {
+            if mode == "count" && at.is_none() {
                 let count_filter = QueryFilter {
                     language,
                     kind: None,
@@ -2833,7 +2904,8 @@ fn dispatch_tool(
                 kind: parsed_kind,
                 use_ast: false,
                 use_regex: false,
-                limit: Some(5),
+                // Room to see every function with this name (`definitions` below).
+                limit: Some(20),
                 symbols_mode: true,
                 expand: false,
                 file_pattern: None,
@@ -2880,6 +2952,27 @@ fn dispatch_tool(
                     })
                 });
 
+            // Every function or method with exactly this name. A name search mixes
+            // their uses: tokio has three `waker_ref` functions.
+            let mut definitions: Vec<serde_json::Value> = Vec::new();
+            let mut rust_definitions = 0usize;
+            for fg in &def_response.results {
+                for m in &fg.matches {
+                    if matches!(m.kind, SymbolKind::Function | SymbolKind::Method)
+                        && m.symbol.as_deref() == Some(pattern.as_str())
+                    {
+                        if fg.language == Language::Rust {
+                            rust_definitions += 1;
+                        }
+                        definitions.push(json!({
+                            "path": fg.path,
+                            "line": m.span.start_line,
+                            "kind": m.kind,
+                        }));
+                    }
+                }
+            }
+
             // Search 2: Find all textual references (symbols_mode=false)
             let ref_filter = QueryFilter {
                 language,
@@ -2888,7 +2981,11 @@ fn dispatch_tool(
                 use_regex: false,
                 // REF-191: default to the one-call page size so "find all callers"
                 // returns the full set instead of paginating at 50.
-                limit: limit.map(|l| l.min(500)).or(Some(DEFAULT_MCP_RESULT_LIMIT)),
+                limit: if at.is_some() {
+                    None
+                } else {
+                    limit.map(|l| l.min(500)).or(Some(DEFAULT_MCP_RESULT_LIMIT))
+                },
                 symbols_mode: false,
                 expand: false,
                 file_pattern: None,
@@ -2904,7 +3001,7 @@ fn dispatch_tool(
                 glob_patterns,
                 exclude_patterns,
                 paths_only: false,
-                offset,
+                offset: if at.is_some() { None } else { offset },
                 force,
                 suppress_output: true,
                 include_dependencies: false,
@@ -2918,7 +3015,7 @@ fn dispatch_tool(
 
             // Flatten references to compact {path, line, preview} array,
             // excluding matches inside string literals or comments (unless include_strings).
-            let references: Vec<serde_json::Value> = ref_response.results.iter()
+            let mut references: Vec<serde_json::Value> = ref_response.results.iter()
                 .flat_map(|fg| {
                     let file = if include_strings { None } else { file_regions(root, fg) };
                     let pattern = &pattern;
@@ -2942,6 +3039,64 @@ fn dispatch_tool(
                         })
                 })
                 .collect();
+
+            if let Some(at) = &at {
+                let mut response = bind_references(root, at, &pattern, &references)?;
+                response["status"] = json!(ref_response.status);
+                if mode == "count" {
+                    let count = response["references"].as_array().map_or(0, |r| r.len());
+                    let mut result = json!({"count": count, "pattern": pattern, "at": at});
+                    annotate_literal_result(&mut result, &ref_response);
+                    return Ok(result);
+                }
+                annotate_literal_fields(
+                    &mut response,
+                    &ref_response.warnings,
+                    ref_response.hint.as_deref(),
+                    ref_response.excluded_reason,
+                    ref_response.excluded_by_default,
+                );
+                return Ok(response);
+            }
+
+            // The function each use is in (Rust: the syntax tree), so an agent does not
+            // read the file to find the caller.
+            let lines: Vec<(String, usize)> = references
+                .iter()
+                .filter_map(|r| {
+                    Some((
+                        r["path"].as_str()?.to_string(),
+                        r["line"].as_u64()? as usize,
+                    ))
+                })
+                .collect();
+            for (r, f) in references
+                .iter_mut()
+                .zip(crate::bind::enclosing_fns(root, &pattern, &lines))
+            {
+                if let Some(c) = f.caller {
+                    r["in"] = json!(c);
+                }
+                // A definition the symbol cache missed (inside `cfg_rt! { … }`).
+                if let Some(kind) = f.defines {
+                    let path = r["path"].clone();
+                    let line = r["line"].as_u64().unwrap_or(0);
+                    let known = definitions.iter().any(|d| {
+                        d["path"] == path
+                            && d["line"]
+                                .as_u64()
+                                .is_some_and(|l| l <= line && line <= l + 3)
+                    });
+                    if !known {
+                        rust_definitions += 1;
+                        definitions.push(json!({"path": path, "line": line, "kind": kind}));
+                    }
+                }
+            }
+            definitions.sort_by(|a, b| {
+                (a["path"].as_str(), a["line"].as_u64())
+                    .cmp(&(b["path"].as_str(), b["line"].as_u64()))
+            });
 
             // Count consistency. These were three different numbers reported under
             // names that all read like "total", which looked like an off-by-one:
@@ -2989,11 +3144,107 @@ fn dispatch_tool(
                 engine_reason,
                 engine_excluded,
             );
+            if definitions.len() > 1 {
+                if rust_definitions > 1 {
+                    let hint = format!(
+                        "{} functions are named {pattern}; these references are uses of the \
+                         NAME. For the uses of one, pass at: \"path:line\" (CLI: rfx refs \
+                         {pattern} --at path:line).",
+                        definitions.len()
+                    );
+                    match response.get("hint") {
+                        None => response["hint"] = json!(hint),
+                        Some(_) => {
+                            if let Some(w) = response["warnings"].as_array_mut() {
+                                w.push(json!(hint));
+                            } else {
+                                response["warnings"] = json!([hint]);
+                            }
+                        }
+                    }
+                }
+                response["definitions"] = json!(definitions);
+            }
 
             Ok(response)
         }
         _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }
+}
+
+/// `find_references` with `at`: the code lines that name `pattern`, sorted by
+/// `bind::bind` into the uses of the function at `at` (`references`), the lines it
+/// cannot place (`possible`), and a count of lines that name other items.
+fn bind_references(
+    root: &Path,
+    at: &str,
+    pattern: &str,
+    references: &[serde_json::Value],
+) -> Result<serde_json::Value> {
+    let lines: Vec<(String, usize)> = references
+        .iter()
+        .filter_map(|r| {
+            Some((
+                r["path"].as_str()?.to_string(),
+                r["line"].as_u64()? as usize,
+            ))
+        })
+        .collect();
+    let binding = crate::bind::bind(root, at, pattern, &lines)?;
+    let preview: std::collections::HashMap<(String, usize), &serde_json::Value> = references
+        .iter()
+        .filter_map(|r| {
+            Some((
+                (
+                    r["path"].as_str()?.to_string(),
+                    r["line"].as_u64()? as usize,
+                ),
+                &r["preview"],
+            ))
+        })
+        .collect();
+    let mut bound = Vec::new();
+    let mut possible = Vec::new();
+    // The lines that name other items, with their text: an agent checks what was
+    // left out, and fetched these with a second search when only the count was given.
+    let mut left_out = Vec::new();
+    for l in &binding.lines {
+        let mut row = json!({
+            "path": l.path,
+            "line": l.line,
+            "preview": preview.get(&(l.path.clone(), l.line)).copied().cloned().unwrap_or(json!("")),
+        });
+        if let Some(c) = &l.caller {
+            row["in"] = json!(c);
+        }
+        if l.import {
+            row["import"] = json!(true);
+        }
+        match l.verdict {
+            crate::bind::Verdict::This => bound.push(row),
+            crate::bind::Verdict::Possible => possible.push(row),
+            crate::bind::Verdict::Other => left_out.push(row),
+        }
+    }
+    let t = &binding.target;
+    let mut definition = json!({
+        "path": t.path,
+        "line": t.line,
+        "symbol": pattern,
+        "kind": if t.has_self || !t.free { "Method" } else { "Function" },
+    });
+    if let Some(ty) = &t.impl_type {
+        definition["impl"] = json!(ty);
+    }
+    Ok(json!({
+        "definition": definition,
+        "references": bound,
+        "returned_count": bound.len(),
+        "possible": possible,
+        "elsewhere": left_out.len(),
+        "left_out": left_out,
+        "has_more": false,
+    }))
 }
 
 /// Process a single JSON-RPC request
@@ -3152,6 +3403,12 @@ fn run_mcp_server_io_impl<R: BufRead, W: Write>(
     eprintln!(
         "{}",
         startup_flags_line(columnar_enabled(), &listing, grouped_locations_enabled())
+    );
+    // Which version wrote the index, and what this binary will do about it: an `rfx`
+    // older than the index shows up here, not only as `stale` answers.
+    eprintln!(
+        "{}",
+        crate::auto_update::startup_index_line("reflex-mcp", &CacheManager::new(root), update)
     );
 
     for line in reader.lines() {
@@ -3781,6 +4038,23 @@ mod tests {
 
         let e = anyhow::anyhow!("Query too broad - would be expensive to execute");
         assert!(mcp_facing_message(&e, false).contains("\"force\": true"));
+    }
+
+    /// A plugin's server has another tool prefix; the ToolSearch line follows it.
+    #[test]
+    fn test_tool_prefix_renames_the_tool_search_line() {
+        let base = || std::borrow::Cow::Borrowed(MCP_INSTRUCTIONS);
+        assert_eq!(with_tool_prefix(base(), None), MCP_INSTRUCTIONS);
+        assert_eq!(with_tool_prefix(base(), Some("  ")), MCP_INSTRUCTIONS);
+        assert_eq!(
+            with_tool_prefix(base(), Some(DEFAULT_TOOL_PREFIX)),
+            MCP_INSTRUCTIONS
+        );
+        let text = with_tool_prefix(base(), Some("mcp__plugin_reflex-mcp_reflex__"));
+        assert!(text.contains(
+            "ToolSearch(\"select:mcp__plugin_reflex-mcp_reflex__search_code,mcp__plugin_reflex-mcp_reflex__find_references\")"
+        ));
+        assert!(!text.contains("select:mcp__reflex__"), "{text}");
     }
 
     /// The freshness paragraph names the index tools only when they are listed.

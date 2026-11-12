@@ -18,6 +18,9 @@ Reflex is a local-first, full-text code search engine. Use it from the command l
 # Via NPM
 npm install -g reflex-search
 
+# Or the native binary (no Node wrapper: ~240 ms faster per call), into ~/.cargo/bin
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.sh | sh
+
 # Or via Cargo
 cargo install reflex-search
 ```
@@ -38,9 +41,27 @@ rfx query "CacheManager" --symbols
 rfx query "TODO" --json --limit 20
 ```
 
-### 3. (Optional) Connect to an AI agent via MCP
+### 3. (Optional) Connect to an AI agent
 
-With Claude Code:
+**Claude Code plugin (recommended).** This repository is a plugin marketplace. Install
+the `reflex` plugin (it needs `rfx` on `PATH`, step 1):
+
+```bash
+claude plugin marketplace add reflex-search/reflex
+claude plugin install reflex@reflex
+```
+
+In a session, `/plugin marketplace add reflex-search/reflex` and
+`/plugin install reflex@reflex` do the same. The plugin has no server: the agent runs
+`rfx` through Bash. A SessionStart hook adds about 1 KB of routing rules to the session,
+and a skill holds the full command list. It costs less than the MCP server, which adds
+about 7.8 KB of instructions and tool schemas to every call (see
+[Measured efficiency](#measured-efficiency-ab-vs-built-in-ai-search)).
+
+`claude plugin install reflex-mcp@reflex` installs the MCP server (`rfx mcp`) instead.
+Use it when your agent cannot run shell commands.
+
+**MCP server by hand.** With Claude Code:
 
 ```bash
 # every project
@@ -92,7 +113,19 @@ schemas, so the first Reflex call costs an extra ToolSearch turn; Sonnet 5 also 
 control (1.04–1.07×); trials that used it cost 1.55–1.68×. Columnar results already save
 about 20% of bytes per call, which the extra turns outweigh.
 
-**Honest reading.** Reflex does not save tokens over built-in search in these agent runs.
+**The CLI route (2.3.1 + the `reflex` plugin, 2026-11-10, Sonnet 5.5, 1 trial per task
+and corpus, 12-question sessions).** Built-in Grep/Glob = 1.00:
+
+| Sessions | `reflex` plugin (CLI) | MCP server (`alwaysLoad`) | Accuracy |
+|---|---|---|---|
+| 12 find-every-occurrence / where-defined / how-many-files | 0.96× weighted tokens, 0.98× cost | 1.11×, 1.07× | 1.000 in every arm |
+| 12 every use in code, not in comments or strings | **0.82× weighted tokens, 0.80× cost** | 1.04×, 0.95× | 1.000 in every arm |
+
+The CLI route costs less than MCP on every session measured: its fixed text is a 1 KB
+hook, not 7.8 KB of schemas. Method and per-session numbers:
+`.context/AGENT_EDGE_RESEARCH.md`.
+
+**Honest reading (2.0.3, MCP).** Reflex does not save tokens over built-in search in these agent runs.
 Its value is capability: symbol-aware search, dependency analysis, `find_references` in one
 call, exact counts without loading content, and more complete answers from weaker models on
 large result sets. Full method, per-task tables and limits: `.context/EFFICACY-2.0.3.md`.
@@ -169,6 +202,12 @@ Reflex also works as a standalone CLI for humans and shell scripts.
 ```bash
 # Full-text search (finds every occurrence)
 rfx query "extract_symbols"
+
+# Every matching line, grouped by file (the MCP list_locations): src/a.rs:4,128,193
+rfx locations "extract_symbols"            # --preview adds the line text
+
+# Definition + every use in code, not in comments or strings (the MCP find_references)
+rfx refs "extract_symbols"                 # --count, --json
 
 # Symbol definitions only (faster, uses tree-sitter)
 rfx query "extract_symbols" --symbols
@@ -263,11 +302,28 @@ support. A GitHub Action is included. See [docs/features/PULSE.md](docs/features
 npm install -g reflex-search
 ```
 
+The npm `rfx` is a Node wrapper around the binary. It adds about 240 ms to each call
+(measured 2026-11-10). That is paid once per `rfx mcp` start, but on every call when an
+agent runs `rfx` through a shell (the `reflex` skill). npm 12 blocks the install
+script; `rfx` then downloads the binary at its first run.
+
+### Shell installer (native binary)
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/reflex-search/reflex/releases/latest/download/reflex-search-installer.sh | sh
+```
+
+It installs `rfx` into `~/.cargo/bin`; put that on `PATH` (`source $HOME/.cargo/env`).
+Windows: `reflex-search-installer.ps1` from the same release.
+
 ### Cargo
 
 ```bash
 cargo install reflex-search
 ```
+
+Alpine and other musl systems: from the next release, npm and the shell installer pick
+the static musl binary. Until then, use Cargo.
 
 **Setup note:** run `rfx` commands from your project root directory. Add `.reflex/` to your `.gitignore` to exclude the search index from version control.
 

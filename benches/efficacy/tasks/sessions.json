@@ -3019,6 +3019,3000 @@
      ]
     }
    ]
+  },
+  {
+   "id": "reflex-session-explain",
+   "repo": "reflex",
+   "kind": "explain",
+   "steps": [
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `to_prompt_string` defined at `src/semantic/context.rs:89`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "as_str",
+      "collect",
+      "is_empty",
+      "iter",
+      "join",
+      "map",
+      "new",
+      "push",
+      "take",
+      "to_string"
+     ],
+     "callers": [
+      "build_assessment_prompt",
+      "build_generation_prompt",
+      "build_prompt",
+      "build_refinement_prompt",
+      "execute_query_async",
+      "handle_ask"
+     ],
+     "key": {
+      "name": "to_prompt_string",
+      "where": "src/semantic/context.rs:89",
+      "sites": [
+       "src/cli/ask.rs:290",
+       "src/semantic/chat_tui.rs:1480",
+       "src/semantic/prompt.rs:68",
+       "src/semantic/prompt_agentic.rs:144",
+       "src/semantic/prompt_agentic.rs:241",
+       "src/semantic/prompt_agentic.rs:40"
+      ],
+      "callers": [
+       "build_assessment_prompt",
+       "build_generation_prompt",
+       "build_prompt",
+       "build_refinement_prompt",
+       "execute_query_async",
+       "handle_ask"
+      ],
+      "calls": [
+       "as_str",
+       "collect",
+       "is_empty",
+       "iter",
+       "join",
+       "map",
+       "new",
+       "push",
+       "take",
+       "to_string"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/ask.rs:290",
+       "src/semantic/chat_tui.rs:1480",
+       "src/semantic/context.rs:89",
+       "src/semantic/prompt.rs:68",
+       "src/semantic/prompt_agentic.rs:144",
+       "src/semantic/prompt_agentic.rs:241",
+       "src/semantic/prompt_agentic.rs:40"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `parse_all_rust_crates` defined at `src/parsers/rust.rs:1783`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "build",
+      "exists",
+      "extract_crate_name",
+      "file_name",
+      "git_ignore",
+      "join",
+      "new",
+      "parent",
+      "path",
+      "push",
+      "read_to_string",
+      "to_path_buf"
+     ],
+     "callers": [
+      "index_with_callback",
+      "test_parse_all_rust_crates",
+      "test_parse_all_rust_crates_non_rust_project",
+      "test_resolve_rust_workspace_path"
+     ],
+     "key": {
+      "name": "parse_all_rust_crates",
+      "where": "src/parsers/rust.rs:1783",
+      "sites": [
+       "src/indexer.rs:823",
+       "src/parsers/rust.rs:1979",
+       "src/parsers/rust.rs:1991",
+       "src/parsers/rust.rs:2022"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_parse_all_rust_crates",
+       "test_parse_all_rust_crates_non_rust_project",
+       "test_resolve_rust_workspace_path"
+      ],
+      "calls": [
+       "build",
+       "exists",
+       "extract_crate_name",
+       "file_name",
+       "git_ignore",
+       "join",
+       "new",
+       "parent",
+       "path",
+       "push",
+       "read_to_string",
+       "to_path_buf"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:823",
+       "src/parsers/rust.rs:1783",
+       "src/parsers/rust.rs:1979",
+       "src/parsers/rust.rs:1991",
+       "src/parsers/rust.rs:2022"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `branch_exists` defined at `src/cache.rs:1347`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "context",
+      "exists",
+      "get",
+      "join",
+      "open",
+      "query_row",
+      "unwrap_or"
+     ],
+     "callers": [
+      "check_index_freshness",
+      "get_index_status",
+      "test_branch_exists"
+     ],
+     "key": {
+      "name": "branch_exists",
+      "where": "src/cache.rs:1347",
+      "sites": [
+       "src/cache.rs:2093",
+       "src/cache.rs:2101",
+       "src/cache.rs:2102",
+       "src/query/mod.rs:2497",
+       "src/query/mod.rs:2610"
+      ],
+      "callers": [
+       "check_index_freshness",
+       "get_index_status",
+       "test_branch_exists"
+      ],
+      "calls": [
+       "context",
+       "exists",
+       "get",
+       "join",
+       "open",
+       "query_row",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cache.rs:1347",
+       "src/cache.rs:2093",
+       "src/cache.rs:2101",
+       "src/cache.rs:2102",
+       "src/query/mod.rs:2497",
+       "src/query/mod.rs:2610"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `detect_circular_dependencies` defined at `src/dependency.rs:357`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "collect",
+      "contains",
+      "dfs_cycle_detect",
+      "entry",
+      "get",
+      "get_all_file_ids",
+      "new",
+      "open_conn",
+      "or_default",
+      "prepare",
+      "push",
+      "query_map"
+     ],
+     "callers": [
+      "build_circular_deps_section",
+      "compute_diff",
+      "execute_analyze_structure",
+      "execute_get_analysis_summary",
+      "handle_analyze_summary",
+      "handle_call_tool",
+      "handle_deps_circular"
+     ],
+     "key": {
+      "name": "detect_circular_dependencies",
+      "where": "src/dependency.rs:357",
+      "sites": [
+       "src/cli/deps.rs:138",
+       "src/cli/deps.rs:482",
+       "src/mcp.rs:1364",
+       "src/mcp.rs:1604",
+       "src/pulse/diff.rs:223",
+       "src/pulse/diff.rs:226",
+       "src/pulse/wiki.rs:553",
+       "src/semantic/tools.rs:211",
+       "src/semantic/tools.rs:685"
+      ],
+      "callers": [
+       "build_circular_deps_section",
+       "compute_diff",
+       "execute_analyze_structure",
+       "execute_get_analysis_summary",
+       "handle_analyze_summary",
+       "handle_call_tool",
+       "handle_deps_circular"
+      ],
+      "calls": [
+       "collect",
+       "contains",
+       "dfs_cycle_detect",
+       "entry",
+       "get",
+       "get_all_file_ids",
+       "new",
+       "open_conn",
+       "or_default",
+       "prepare",
+       "push",
+       "query_map"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/deps.rs:138",
+       "src/cli/deps.rs:482",
+       "src/dependency.rs:357",
+       "src/mcp.rs:1364",
+       "src/mcp.rs:1604",
+       "src/pulse/diff.rs:223",
+       "src/pulse/diff.rs:226",
+       "src/pulse/wiki.rs:553",
+       "src/semantic/tools.rs:211",
+       "src/semantic/tools.rs:685"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `generate_ai_instruction` defined at `src/query/mod.rs:2689`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "contains",
+      "to_string"
+     ],
+     "callers": [
+      "handle_call_tool",
+      "handle_query"
+     ],
+     "key": {
+      "name": "generate_ai_instruction",
+      "where": "src/query/mod.rs:2689",
+      "sites": [
+       "src/cli/query.rs:464",
+       "src/cli/query.rs:603",
+       "src/mcp.rs:1022",
+       "src/mcp.rs:915"
+      ],
+      "callers": [
+       "handle_call_tool",
+       "handle_query"
+      ],
+      "calls": [
+       "contains",
+       "to_string"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/query.rs:464",
+       "src/cli/query.rs:603",
+       "src/mcp.rs:1022",
+       "src/mcp.rs:915",
+       "src/query/mod.rs:2689"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `resolve_cpp_include_to_path` defined at `src/parsers/cpp.rs:1216`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "canonicalize",
+      "join",
+      "new",
+      "parent",
+      "replace",
+      "to_string_lossy"
+     ],
+     "callers": [
+      "index_with_callback",
+      "test_resolve_cpp_include_h_extension",
+      "test_resolve_cpp_include_no_current_file",
+      "test_resolve_cpp_include_parent_directory",
+      "test_resolve_cpp_include_same_directory",
+      "test_resolve_cpp_include_subdirectory"
+     ],
+     "key": {
+      "name": "resolve_cpp_include_to_path",
+      "where": "src/parsers/cpp.rs:1216",
+      "sites": [
+       "src/indexer.rs:1512",
+       "src/parsers/cpp.rs:1252",
+       "src/parsers/cpp.rs:1261",
+       "src/parsers/cpp.rs:1271",
+       "src/parsers/cpp.rs:1280",
+       "src/parsers/cpp.rs:1289"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_cpp_include_h_extension",
+       "test_resolve_cpp_include_no_current_file",
+       "test_resolve_cpp_include_parent_directory",
+       "test_resolve_cpp_include_same_directory",
+       "test_resolve_cpp_include_subdirectory"
+      ],
+      "calls": [
+       "canonicalize",
+       "join",
+       "new",
+       "parent",
+       "replace",
+       "to_string_lossy"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1512",
+       "src/parsers/cpp.rs:1216",
+       "src/parsers/cpp.rs:1252",
+       "src/parsers/cpp.rs:1261",
+       "src/parsers/cpp.rs:1271",
+       "src/parsers/cpp.rs:1280",
+       "src/parsers/cpp.rs:1289"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `get_current_branch` defined at `src/git.rs:45`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "arg",
+      "args",
+      "as_ref",
+      "context",
+      "from_utf8",
+      "from_utf8_lossy",
+      "new",
+      "output",
+      "success",
+      "to_string",
+      "trim"
+     ],
+     "callers": [
+      "check_index_freshness",
+      "enrich_with_symbols",
+      "get_git_state",
+      "get_index_status",
+      "test_get_current_branch"
+     ],
+     "key": {
+      "name": "get_current_branch",
+      "where": "src/git.rs:45",
+      "sites": [
+       "src/git.rs:131",
+       "src/git.rs:175",
+       "src/query/mod.rs:1372",
+       "src/query/mod.rs:2494",
+       "src/query/mod.rs:2608"
+      ],
+      "callers": [
+       "check_index_freshness",
+       "enrich_with_symbols",
+       "get_git_state",
+       "get_index_status",
+       "test_get_current_branch"
+      ],
+      "calls": [
+       "arg",
+       "args",
+       "as_ref",
+       "context",
+       "from_utf8",
+       "from_utf8_lossy",
+       "new",
+       "output",
+       "success",
+       "to_string",
+       "trim"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/git.rs:131",
+       "src/git.rs:175",
+       "src/git.rs:45",
+       "src/query/mod.rs:1372",
+       "src/query/mod.rs:2494",
+       "src/query/mod.rs:2608"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `search_with_metadata` defined at `src/query/mod.rs:260`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "clone",
+      "exists",
+      "get_index_status",
+      "group_and_load_dependencies",
+      "len",
+      "search_internal",
+      "unwrap_or",
+      "validate"
+     ],
+     "callers": [
+      "build_key_symbols_section",
+      "execute_explore_codebase",
+      "execute_queries",
+      "execute_search",
+      "handle_call_tool",
+      "handle_query",
+      "handle_query_endpoint",
+      "test_search_with_metadata"
+     ],
+     "key": {
+      "name": "search_with_metadata",
+      "where": "src/query/mod.rs:260",
+      "sites": [
+       "src/cli/query.rs:371",
+       "src/cli/serve.rs:191",
+       "src/interactive/app.rs:1146",
+       "src/mcp.rs:1008",
+       "src/mcp.rs:1775",
+       "src/mcp.rs:1820",
+       "src/mcp.rs:700",
+       "src/mcp.rs:788",
+       "src/mcp.rs:902",
+       "src/pulse/wiki.rs:1479",
+       "src/query/mod.rs:3407",
+       "src/semantic/executor.rs:331",
+       "src/semantic/tools.rs:151"
+      ],
+      "callers": [
+       "build_key_symbols_section",
+       "execute_explore_codebase",
+       "execute_queries",
+       "execute_search",
+       "handle_call_tool",
+       "handle_query",
+       "handle_query_endpoint",
+       "test_search_with_metadata"
+      ],
+      "calls": [
+       "clone",
+       "exists",
+       "get_index_status",
+       "group_and_load_dependencies",
+       "len",
+       "search_internal",
+       "unwrap_or",
+       "validate"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/query.rs:371",
+       "src/cli/serve.rs:191",
+       "src/interactive/app.rs:1146",
+       "src/mcp.rs:1008",
+       "src/mcp.rs:1775",
+       "src/mcp.rs:1820",
+       "src/mcp.rs:700",
+       "src/mcp.rs:788",
+       "src/mcp.rs:902",
+       "src/pulse/wiki.rs:1479",
+       "src/query/mod.rs:260",
+       "src/query/mod.rs:3407",
+       "src/semantic/executor.rs:331",
+       "src/semantic/tools.rs:151"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "reflex-session-impact",
+   "repo": "reflex",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `set_value` defined at `src/interactive/input.rs:33`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/interactive/app.rs:796",
+      "src/interactive/app.rs:804",
+      "src/interactive/input.rs:265",
+      "src/interactive/input.rs:290",
+      "src/interactive/input.rs:300"
+     ],
+     "key": {
+      "name": "set_value",
+      "where": "src/interactive/input.rs:33",
+      "sites": [
+       "src/interactive/app.rs:796",
+       "src/interactive/app.rs:804",
+       "src/interactive/input.rs:265",
+       "src/interactive/input.rs:290",
+       "src/interactive/input.rs:300"
+      ],
+      "callers": [
+       "handle_key_event_with_editor",
+       "test_input_field_backspace",
+       "test_input_field_basic",
+       "test_input_field_cursor_movement"
+      ],
+      "calls": [
+       "len"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:796",
+       "src/interactive/app.rs:804",
+       "src/interactive/input.rs:265",
+       "src/interactive/input.rs:290",
+       "src/interactive/input.rs:300",
+       "src/interactive/input.rs:33"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `index_status` defined at `src/interactive/app.rs:1377`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/interactive/ui.rs:346",
+      "src/interactive/ui.rs:59",
+      "src/interactive/ui.rs:78"
+     ],
+     "key": {
+      "name": "index_status",
+      "where": "src/interactive/app.rs:1377",
+      "sites": [
+       "src/interactive/ui.rs:346",
+       "src/interactive/ui.rs:59",
+       "src/interactive/ui.rs:78"
+      ],
+      "callers": [
+       "render_header",
+       "render_results_area"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/interactive/app.rs:1158",
+       "src/interactive/app.rs:1165",
+       "src/interactive/app.rs:1266",
+       "src/interactive/app.rs:1377",
+       "src/interactive/app.rs:1378",
+       "src/interactive/app.rs:172",
+       "src/interactive/app.rs:222",
+       "src/interactive/app.rs:254",
+       "src/interactive/app.rs:398",
+       "src/interactive/app.rs:404",
+       "src/interactive/app.rs:420",
+       "src/interactive/app.rs:428",
+       "src/interactive/app.rs:491",
+       "src/interactive/app.rs:52",
+       "src/interactive/ui.rs:346",
+       "src/interactive/ui.rs:59",
+       "src/interactive/ui.rs:78"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `resolve_rust_workspace_path` defined at `src/parsers/rust.rs:1837`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/indexer.rs:1280",
+      "src/parsers/rust.rs:2025",
+      "src/parsers/rust.rs:2030",
+      "src/parsers/rust.rs:2035",
+      "src/parsers/rust.rs:2040"
+     ],
+     "key": {
+      "name": "resolve_rust_workspace_path",
+      "where": "src/parsers/rust.rs:1837",
+      "sites": [
+       "src/indexer.rs:1280",
+       "src/parsers/rust.rs:2025",
+       "src/parsers/rust.rs:2030",
+       "src/parsers/rust.rs:2035",
+       "src/parsers/rust.rs:2040"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_rust_workspace_path"
+      ],
+      "calls": [
+       "collect",
+       "exists",
+       "is_empty",
+       "join",
+       "len",
+       "new",
+       "resolve_rust_module_path",
+       "split",
+       "starts_with",
+       "strip_prefix",
+       "to_string",
+       "to_string_lossy",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1280",
+       "src/parsers/rust.rs:1837",
+       "src/parsers/rust.rs:2025",
+       "src/parsers/rust.rs:2030",
+       "src/parsers/rust.rs:2035",
+       "src/parsers/rust.rs:2040"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `index_file` defined at `src/trigram.rs:355`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/indexer.rs:635",
+      "src/query/result.rs:36",
+      "src/trigram.rs:1458",
+      "src/trigram.rs:1481",
+      "src/trigram.rs:1482",
+      "src/trigram.rs:1506",
+      "src/trigram.rs:1507",
+      "src/trigram.rs:1541",
+      "src/trigram.rs:1557"
+     ],
+     "key": {
+      "name": "index_file",
+      "where": "src/trigram.rs:355",
+      "sites": [
+       "src/indexer.rs:635",
+       "src/query/result.rs:36",
+       "src/trigram.rs:1458",
+       "src/trigram.rs:1481",
+       "src/trigram.rs:1482",
+       "src/trigram.rs:1506",
+       "src/trigram.rs:1507",
+       "src/trigram.rs:1541",
+       "src/trigram.rs:1557"
+      ],
+      "callers": [
+       "index_with_callback",
+       "rebuild_trigram_index",
+       "test_persistence_write",
+       "test_posting_list_cap_enforced",
+       "test_posting_list_cap_zero_means_unlimited",
+       "test_search_multifile",
+       "test_trigram_index_basic"
+      ],
+      "calls": [
+       "entry",
+       "extract_trigrams_with_locations",
+       "or_insert_with",
+       "push"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:635",
+       "src/query/result.rs:36",
+       "src/trigram.rs:1458",
+       "src/trigram.rs:1481",
+       "src/trigram.rs:1482",
+       "src/trigram.rs:1506",
+       "src/trigram.rs:1507",
+       "src/trigram.rs:1541",
+       "src/trigram.rs:1557",
+       "src/trigram.rs:355"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `parse_concepts_response` defined at `src/pulse/glossary.rs:374`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/cli/pulse.rs:470",
+      "src/pulse/glossary.rs:605",
+      "src/pulse/glossary.rs:618",
+      "src/pulse/glossary.rs:628",
+      "src/pulse/glossary.rs:636",
+      "src/pulse/site.rs:526"
+     ],
+     "key": {
+      "name": "parse_concepts_response",
+      "where": "src/pulse/glossary.rs:374",
+      "sites": [
+       "src/cli/pulse.rs:470",
+       "src/pulse/glossary.rs:605",
+       "src/pulse/glossary.rs:618",
+       "src/pulse/glossary.rs:628",
+       "src/pulse/glossary.rs:636",
+       "src/pulse/site.rs:526"
+      ],
+      "callers": [
+       "generate_site",
+       "handle_pulse_glossary",
+       "test_parse_concepts_response_extracts_embedded_json",
+       "test_parse_concepts_response_rejects_malformed",
+       "test_parse_concepts_response_strips_markdown_fence",
+       "test_parse_concepts_response_valid_json"
+      ],
+      "calls": [
+       "context",
+       "find",
+       "from_str",
+       "rfind",
+       "starts_with",
+       "strip_prefix",
+       "trim",
+       "trim_end_matches",
+       "trim_start"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/cli/pulse.rs:470",
+       "src/pulse/glossary.rs:374",
+       "src/pulse/glossary.rs:605",
+       "src/pulse/glossary.rs:618",
+       "src/pulse/glossary.rs:628",
+       "src/pulse/glossary.rs:636",
+       "src/pulse/site.rs:526"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `resolve_model` defined at `src/semantic/config.rs:488`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/semantic/agentic.rs:579",
+      "src/semantic/chat_tui.rs:1236",
+      "src/semantic/chat_tui.rs:1413",
+      "src/semantic/chat_tui.rs:1515",
+      "src/semantic/chat_tui.rs:1623",
+      "src/semantic/chat_tui.rs:1751",
+      "src/semantic/config.rs:932",
+      "src/semantic/config.rs:939",
+      "src/semantic/config.rs:954",
+      "src/semantic/mod.rs:58"
+     ],
+     "key": {
+      "name": "resolve_model",
+      "where": "src/semantic/config.rs:488",
+      "sites": [
+       "src/semantic/agentic.rs:579",
+       "src/semantic/chat_tui.rs:1236",
+       "src/semantic/chat_tui.rs:1413",
+       "src/semantic/chat_tui.rs:1515",
+       "src/semantic/chat_tui.rs:1623",
+       "src/semantic/chat_tui.rs:1751",
+       "src/semantic/config.rs:932",
+       "src/semantic/config.rs:939",
+       "src/semantic/config.rs:954",
+       "src/semantic/mod.rs:58"
+      ],
+      "callers": [
+       "ask_question",
+       "execute_query_async",
+       "handle_compact",
+       "initialize_provider",
+       "resolve_model_falls_back_to_project_config",
+       "resolve_model_prefers_override",
+       "resolve_model_returns_none_when_unset",
+       "triage_question"
+      ],
+      "calls": [
+       "as_deref",
+       "resolve_model_for"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/semantic/agentic.rs:579",
+       "src/semantic/chat_tui.rs:1236",
+       "src/semantic/chat_tui.rs:1413",
+       "src/semantic/chat_tui.rs:1515",
+       "src/semantic/chat_tui.rs:1623",
+       "src/semantic/chat_tui.rs:1751",
+       "src/semantic/config.rs:488",
+       "src/semantic/config.rs:932",
+       "src/semantic/config.rs:939",
+       "src/semantic/config.rs:954",
+       "src/semantic/mod.rs:58"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `resolve_zig_import_to_path` defined at `src/parsers/zig.rs:308`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/indexer.rs:1597",
+      "src/parsers/zig.rs:696",
+      "src/parsers/zig.rs:705",
+      "src/parsers/zig.rs:716",
+      "src/parsers/zig.rs:725",
+      "src/parsers/zig.rs:728",
+      "src/parsers/zig.rs:735",
+      "src/parsers/zig.rs:738"
+     ],
+     "key": {
+      "name": "resolve_zig_import_to_path",
+      "where": "src/parsers/zig.rs:308",
+      "sites": [
+       "src/indexer.rs:1597",
+       "src/parsers/zig.rs:696",
+       "src/parsers/zig.rs:705",
+       "src/parsers/zig.rs:716",
+       "src/parsers/zig.rs:725",
+       "src/parsers/zig.rs:728",
+       "src/parsers/zig.rs:735",
+       "src/parsers/zig.rs:738"
+      ],
+      "callers": [
+       "index_with_callback",
+       "test_resolve_zig_import_external_returns_none",
+       "test_resolve_zig_import_parent_directory",
+       "test_resolve_zig_import_same_directory",
+       "test_resolve_zig_import_stdlib_returns_none",
+       "test_resolve_zig_import_subdirectory"
+      ],
+      "calls": [
+       "canonicalize",
+       "display",
+       "join",
+       "new",
+       "parent",
+       "starts_with",
+       "to_string"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/indexer.rs:1597",
+       "src/parsers/zig.rs:308",
+       "src/parsers/zig.rs:696",
+       "src/parsers/zig.rs:705",
+       "src/parsers/zig.rs:716",
+       "src/parsers/zig.rs:725",
+       "src/parsers/zig.rs:728",
+       "src/parsers/zig.rs:735",
+       "src/parsers/zig.rs:738"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `context_usage` defined at `src/semantic/chat_session.rs:246`. Without editing any file or building the project, list every line under `src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "src/semantic/chat_session.rs:255",
+      "src/semantic/chat_session.rs:260",
+      "src/semantic/chat_session.rs:438",
+      "src/semantic/chat_session.rs:444",
+      "src/semantic/chat_tui.rs:499"
+     ],
+     "key": {
+      "name": "context_usage",
+      "where": "src/semantic/chat_session.rs:246",
+      "sites": [
+       "src/semantic/chat_session.rs:255",
+       "src/semantic/chat_session.rs:260",
+       "src/semantic/chat_session.rs:438",
+       "src/semantic/chat_session.rs:444",
+       "src/semantic/chat_tui.rs:499"
+      ],
+      "callers": [
+       "is_near_limit",
+       "render_stats",
+       "should_compact",
+       "test_context_usage"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "src/semantic/chat_session.rs:246",
+       "src/semantic/chat_session.rs:255",
+       "src/semantic/chat_session.rs:260",
+       "src/semantic/chat_session.rs:438",
+       "src/semantic/chat_session.rs:444",
+       "src/semantic/chat_tui.rs:499"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-explain",
+   "repo": "ripgrep",
+   "kind": "explain",
+   "steps": [
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `trim_ascii_prefix` defined at `crates/printer/src/util.rs:446`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "as_bytes",
+      "contains",
+      "count",
+      "is_space",
+      "iter",
+      "start",
+      "take_while",
+      "with_start"
+     ],
+     "callers": [
+      "trim_ascii_prefix",
+      "write_line"
+     ],
+     "key": {
+      "name": "trim_ascii_prefix",
+      "where": "crates/printer/src/util.rs:446",
+      "sites": [
+       "crates/printer/src/standard.rs:1264",
+       "crates/printer/src/standard.rs:1625"
+      ],
+      "callers": [
+       "trim_ascii_prefix",
+       "write_line"
+      ],
+      "calls": [
+       "as_bytes",
+       "contains",
+       "count",
+       "is_space",
+       "iter",
+       "start",
+       "take_while",
+       "with_start"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/standard.rs:1119",
+       "crates/printer/src/standard.rs:1141",
+       "crates/printer/src/standard.rs:1203",
+       "crates/printer/src/standard.rs:1264",
+       "crates/printer/src/standard.rs:1297",
+       "crates/printer/src/standard.rs:1620",
+       "crates/printer/src/standard.rs:1625",
+       "crates/printer/src/standard.rs:26",
+       "crates/printer/src/util.rs:446"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `pattern_from_bytes` defined at `crates/cli/src/pattern.rs:67`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "escape",
+      "from_utf8",
+      "map_err",
+      "valid_up_to"
+     ],
+     "callers": [
+      "bytes",
+      "patterns_from_reader"
+     ],
+     "key": {
+      "name": "pattern_from_bytes",
+      "where": "crates/cli/src/pattern.rs:67",
+      "sites": [
+       "crates/cli/src/pattern.rs:146",
+       "crates/cli/src/pattern.rs:167"
+      ],
+      "callers": [
+       "bytes",
+       "patterns_from_reader"
+      ],
+      "calls": [
+       "escape",
+       "from_utf8",
+       "map_err",
+       "valid_up_to"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/cli/src/lib.rs:143",
+       "crates/cli/src/pattern.rs:146",
+       "crates/cli/src/pattern.rs:167",
+       "crates/cli/src/pattern.rs:67"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `preceding` defined at `crates/searcher/src/lines.rs:157`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "len",
+      "preceding_by_pos"
+     ],
+     "callers": [
+      "before_context_by_line",
+      "roll"
+     ],
+     "key": {
+      "name": "preceding",
+      "where": "crates/searcher/src/lines.rs:157",
+      "sites": [
+       "crates/searcher/src/searcher/core.rs:143",
+       "crates/searcher/src/searcher/core.rs:198"
+      ],
+      "callers": [
+       "before_context_by_line",
+       "roll"
+      ],
+      "calls": [
+       "len",
+       "preceding_by_pos"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/searcher/src/lines.rs:157",
+       "crates/searcher/src/searcher/core.rs:143",
+       "crates/searcher/src/searcher/core.rs:198"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `trim_line_terminator` defined at `crates/printer/src/util.rs:527`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "end",
+      "get",
+      "is_crlf",
+      "is_suffix",
+      "line_terminator",
+      "with_end"
+     ],
+     "callers": [
+      "find_iter_at_in_context",
+      "replace_all",
+      "trim_line_terminator"
+     ],
+     "key": {
+      "name": "trim_line_terminator",
+      "where": "crates/printer/src/util.rs:527",
+      "sites": [
+       "crates/printer/src/standard.rs:1562",
+       "crates/printer/src/util.rs:511",
+       "crates/printer/src/util.rs:72"
+      ],
+      "callers": [
+       "find_iter_at_in_context",
+       "replace_all",
+       "trim_line_terminator"
+      ],
+      "calls": [
+       "end",
+       "get",
+       "is_crlf",
+       "is_suffix",
+       "line_terminator",
+       "with_end"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/standard.rs:1140",
+       "crates/printer/src/standard.rs:1202",
+       "crates/printer/src/standard.rs:1320",
+       "crates/printer/src/standard.rs:1561",
+       "crates/printer/src/standard.rs:1562",
+       "crates/printer/src/standard.rs:26",
+       "crates/printer/src/util.rs:511",
+       "crates/printer/src/util.rs:527",
+       "crates/printer/src/util.rs:72"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `find_iter_at_in_context` defined at `crates/printer/src/util.rs:467`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "end",
+      "find_iter_at",
+      "len",
+      "map_err",
+      "multi_line_with_matcher",
+      "new",
+      "start",
+      "trim_line_terminator"
+     ],
+     "callers": [
+      "matched",
+      "record_matches"
+     ],
+     "key": {
+      "name": "find_iter_at_in_context",
+      "where": "crates/printer/src/util.rs:467",
+      "sites": [
+       "crates/printer/src/json.rs:625",
+       "crates/printer/src/standard.rs:732",
+       "crates/printer/src/summary.rs:665"
+      ],
+      "callers": [
+       "matched",
+       "record_matches"
+      ],
+      "calls": [
+       "end",
+       "find_iter_at",
+       "len",
+       "map_err",
+       "multi_line_with_matcher",
+       "new",
+       "start",
+       "trim_line_terminator"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/printer/src/json.rs:16",
+       "crates/printer/src/json.rs:625",
+       "crates/printer/src/standard.rs:26",
+       "crates/printer/src/standard.rs:732",
+       "crates/printer/src/summary.rs:20",
+       "crates/printer/src/summary.rs:665",
+       "crates/printer/src/util.rs:467"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `add_defaults` defined at `crates/ignore/src/types.rs:482`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "add",
+      "expect"
+     ],
+     "callers": [
+      "types"
+     ],
+     "key": {
+      "name": "add_defaults",
+      "where": "crates/ignore/src/types.rs:482",
+      "sites": [
+       "crates/core/flags/hiargs.rs:1179"
+      ],
+      "callers": [
+       "types"
+      ],
+      "calls": [
+       "add",
+       "expect"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:1179",
+       "crates/ignore/src/types.rs:482"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `add_def` defined at `crates/ignore/src/types.rs:442`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "add",
+      "any",
+      "clone",
+      "collect",
+      "contains_key",
+      "get",
+      "is_empty",
+      "len",
+      "split",
+      "unwrap"
+     ],
+     "callers": [
+      "test_invalid_defs",
+      "types"
+     ],
+     "key": {
+      "name": "add_def",
+      "where": "crates/ignore/src/types.rs:442",
+      "sites": [
+       "crates/core/flags/hiargs.rs:1186",
+       "crates/ignore/src/types.rs:514",
+       "crates/ignore/src/types.rs:567",
+       "crates/ignore/src/types.rs:579"
+      ],
+      "callers": [
+       "test_invalid_defs",
+       "types"
+      ],
+      "calls": [
+       "add",
+       "any",
+       "clone",
+       "collect",
+       "contains_key",
+       "get",
+       "is_empty",
+       "len",
+       "split",
+       "unwrap"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:1186",
+       "crates/ignore/src/types.rs:442",
+       "crates/ignore/src/types.rs:514",
+       "crates/ignore/src/types.rs:567",
+       "crates/ignore/src/types.rs:579"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `generate_digits` defined at `crates/core/flags/doc/version.rs:13`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `crates/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "to_string",
+      "unwrap_or"
+     ],
+     "callers": [
+      "generate",
+      "generate_long",
+      "generate_short"
+     ],
+     "key": {
+      "name": "generate_digits",
+      "where": "crates/core/flags/doc/version.rs:13",
+      "sites": [
+       "crates/core/flags/doc/help.rs:122",
+       "crates/core/flags/doc/help.rs:38",
+       "crates/core/flags/doc/man.rs:37",
+       "crates/core/flags/doc/version.rs:23"
+      ],
+      "callers": [
+       "generate",
+       "generate_long",
+       "generate_short"
+      ],
+      "calls": [
+       "to_string",
+       "unwrap_or"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/doc/help.rs:122",
+       "crates/core/flags/doc/help.rs:38",
+       "crates/core/flags/doc/man.rs:37",
+       "crates/core/flags/doc/version.rs:13",
+       "crates/core/flags/doc/version.rs:23"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-impact",
+   "repo": "ripgrep",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `walk_builder` defined at `crates/core/flags/hiargs.rs:868`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/core/main.rs:111",
+      "crates/core/main.rs:175",
+      "crates/core/main.rs:238",
+      "crates/core/main.rs:295"
+     ],
+     "key": {
+      "name": "walk_builder",
+      "where": "crates/core/flags/hiargs.rs:868",
+      "sites": [
+       "crates/core/main.rs:111",
+       "crates/core/main.rs:175",
+       "crates/core/main.rs:238",
+       "crates/core/main.rs:295"
+      ],
+      "callers": [
+       "files",
+       "files_parallel",
+       "search",
+       "search_parallel"
+      ],
+      "calls": [
+       "add",
+       "add_custom_ignore_filename",
+       "add_ignore",
+       "clone",
+       "cmp",
+       "follow_links",
+       "git_exclude",
+       "git_global",
+       "git_ignore",
+       "hidden",
+       "ignore",
+       "ignore_case_insensitive",
+       "iter",
+       "max_depth",
+       "max_filesize",
+       "new",
+       "overrides",
+       "parents",
+       "require_git",
+       "same_file_system",
+       "skip",
+       "skip_stdout",
+       "sort_by_file_name",
+       "threads",
+       "types"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:868",
+       "crates/core/main.rs:111",
+       "crates/core/main.rs:175",
+       "crates/core/main.rs:238",
+       "crates/core/main.rs:295"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `haystack_builder` defined at `crates/core/flags/hiargs.rs:355`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/core/main.rs:109",
+      "crates/core/main.rs:164",
+      "crates/core/main.rs:236",
+      "crates/core/main.rs:280"
+     ],
+     "key": {
+      "name": "haystack_builder",
+      "where": "crates/core/flags/hiargs.rs:355",
+      "sites": [
+       "crates/core/main.rs:109",
+       "crates/core/main.rs:164",
+       "crates/core/main.rs:236",
+       "crates/core/main.rs:280"
+      ],
+      "callers": [
+       "files",
+       "files_parallel",
+       "search",
+       "search_parallel"
+      ],
+      "calls": [
+       "new",
+       "strip_dot_prefix"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/flags/hiargs.rs:355",
+       "crates/core/main.rs:109",
+       "crates/core/main.rs:113",
+       "crates/core/main.rs:164",
+       "crates/core/main.rs:180",
+       "crates/core/main.rs:184",
+       "crates/core/main.rs:236",
+       "crates/core/main.rs:240",
+       "crates/core/main.rs:280",
+       "crates/core/main.rs:296",
+       "crates/core/main.rs:301"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `set_pos` defined at `crates/searcher/src/searcher/core.rs:77`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/searcher/src/searcher/core.rs:156",
+      "crates/searcher/src/searcher/core.rs:289",
+      "crates/searcher/src/searcher/core.rs:340",
+      "crates/searcher/src/searcher/core.rs:351",
+      "crates/searcher/src/searcher/core.rs:365",
+      "crates/searcher/src/searcher/core.rs:370",
+      "crates/searcher/src/searcher/glue.rs:206",
+      "crates/searcher/src/searcher/glue.rs:257",
+      "crates/searcher/src/searcher/glue.rs:331",
+      "crates/searcher/src/searcher/glue.rs:334"
+     ],
+     "key": {
+      "name": "set_pos",
+      "where": "crates/searcher/src/searcher/core.rs:77",
+      "sites": [
+       "crates/searcher/src/searcher/core.rs:156",
+       "crates/searcher/src/searcher/core.rs:289",
+       "crates/searcher/src/searcher/core.rs:340",
+       "crates/searcher/src/searcher/core.rs:351",
+       "crates/searcher/src/searcher/core.rs:365",
+       "crates/searcher/src/searcher/core.rs:370",
+       "crates/searcher/src/searcher/glue.rs:206",
+       "crates/searcher/src/searcher/glue.rs:257",
+       "crates/searcher/src/searcher/glue.rs:331",
+       "crates/searcher/src/searcher/glue.rs:334"
+      ],
+      "callers": [
+       "advance",
+       "match_by_line_fast",
+       "match_by_line_fast_invert",
+       "match_by_line_slow",
+       "roll",
+       "sink",
+       "sink_matched_inverted"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/searcher/src/searcher/core.rs:156",
+       "crates/searcher/src/searcher/core.rs:289",
+       "crates/searcher/src/searcher/core.rs:340",
+       "crates/searcher/src/searcher/core.rs:351",
+       "crates/searcher/src/searcher/core.rs:365",
+       "crates/searcher/src/searcher/core.rs:370",
+       "crates/searcher/src/searcher/core.rs:77",
+       "crates/searcher/src/searcher/glue.rs:206",
+       "crates/searcher/src/searcher/glue.rs:257",
+       "crates/searcher/src/searcher/glue.rs:331",
+       "crates/searcher/src/searcher/glue.rs:334"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `before_context_by_line` defined at `crates/searcher/src/searcher/core.rs:185`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/searcher/src/searcher/core.rs:293",
+      "crates/searcher/src/searcher/core.rs:336",
+      "crates/searcher/src/searcher/core.rs:381",
+      "crates/searcher/src/searcher/glue.rs:311"
+     ],
+     "key": {
+      "name": "before_context_by_line",
+      "where": "crates/searcher/src/searcher/core.rs:185",
+      "sites": [
+       "crates/searcher/src/searcher/core.rs:293",
+       "crates/searcher/src/searcher/core.rs:336",
+       "crates/searcher/src/searcher/core.rs:381",
+       "crates/searcher/src/searcher/glue.rs:311"
+      ],
+      "callers": [
+       "match_by_line_fast",
+       "match_by_line_fast_invert",
+       "match_by_line_slow",
+       "sink_context"
+      ],
+      "calls": [
+       "as_byte",
+       "end",
+       "is_empty",
+       "new",
+       "next_match",
+       "preceding",
+       "sink_before_context",
+       "sink_break_context",
+       "start"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/searcher/src/searcher/core.rs:185",
+       "crates/searcher/src/searcher/core.rs:293",
+       "crates/searcher/src/searcher/core.rs:336",
+       "crates/searcher/src/searcher/core.rs:381",
+       "crates/searcher/src/searcher/glue.rs:311"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `bytes_printed` defined at `crates/printer/src/stats.rs:52`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/core/main.rs:477",
+      "crates/printer/src/standard.rs:1889",
+      "crates/printer/src/standard.rs:1926"
+     ],
+     "key": {
+      "name": "bytes_printed",
+      "where": "crates/printer/src/stats.rs:52",
+      "sites": [
+       "crates/core/main.rs:477",
+       "crates/printer/src/standard.rs:1889",
+       "crates/printer/src/standard.rs:1926"
+      ],
+      "callers": [
+       "print_stats",
+       "reports_stats",
+       "reports_stats_multiple"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/main.rs:477",
+       "crates/printer/src/standard.rs:1889",
+       "crates/printer/src/standard.rs:1926",
+       "crates/printer/src/stats.rs:125",
+       "crates/printer/src/stats.rs:144",
+       "crates/printer/src/stats.rs:166",
+       "crates/printer/src/stats.rs:18",
+       "crates/printer/src/stats.rs:52",
+       "crates/printer/src/stats.rs:53",
+       "crates/printer/src/stats.rs:93"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `detect_binary` defined at `crates/searcher/src/searcher/core.rs:160`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/searcher/src/searcher/core.rs:459",
+      "crates/searcher/src/searcher/core.rs:493",
+      "crates/searcher/src/searcher/core.rs:524",
+      "crates/searcher/src/searcher/core.rs:554",
+      "crates/searcher/src/searcher/glue.rs:113",
+      "crates/searcher/src/searcher/glue.rs:162"
+     ],
+     "key": {
+      "name": "detect_binary",
+      "where": "crates/searcher/src/searcher/core.rs:160",
+      "sites": [
+       "crates/searcher/src/searcher/core.rs:459",
+       "crates/searcher/src/searcher/core.rs:493",
+       "crates/searcher/src/searcher/core.rs:524",
+       "crates/searcher/src/searcher/core.rs:554",
+       "crates/searcher/src/searcher/glue.rs:113",
+       "crates/searcher/src/searcher/glue.rs:162"
+      ],
+      "callers": [
+       "run",
+       "sink_after_context",
+       "sink_before_context",
+       "sink_matched",
+       "sink_other_context"
+      ],
+      "calls": [
+       "binary_data",
+       "find_byte",
+       "is_some",
+       "quit_byte",
+       "start"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/searcher/src/searcher/core.rs:160",
+       "crates/searcher/src/searcher/core.rs:459",
+       "crates/searcher/src/searcher/core.rs:493",
+       "crates/searcher/src/searcher/core.rs:524",
+       "crates/searcher/src/searcher/core.rs:554",
+       "crates/searcher/src/searcher/glue.rs:113",
+       "crates/searcher/src/searcher/glue.rs:162"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `with_start` defined at `crates/matcher/src/lib.rs:111`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/standard.rs:1155",
+      "crates/printer/src/standard.rs:1165",
+      "crates/printer/src/standard.rs:1212",
+      "crates/printer/src/standard.rs:1216",
+      "crates/printer/src/standard.rs:1220",
+      "crates/printer/src/standard.rs:1342",
+      "crates/printer/src/standard.rs:1347",
+      "crates/printer/src/util.rs:464"
+     ],
+     "key": {
+      "name": "with_start",
+      "where": "crates/matcher/src/lib.rs:111",
+      "sites": [
+       "crates/printer/src/standard.rs:1155",
+       "crates/printer/src/standard.rs:1165",
+       "crates/printer/src/standard.rs:1212",
+       "crates/printer/src/standard.rs:1216",
+       "crates/printer/src/standard.rs:1220",
+       "crates/printer/src/standard.rs:1342",
+       "crates/printer/src/standard.rs:1347",
+       "crates/printer/src/util.rs:464"
+      ],
+      "callers": [
+       "sink_slow_multi_line_only_matching",
+       "sink_slow_multi_per_match",
+       "trim_ascii_prefix",
+       "write_colored_matches"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/matcher/src/lib.rs:111",
+       "crates/printer/src/standard.rs:1155",
+       "crates/printer/src/standard.rs:1165",
+       "crates/printer/src/standard.rs:1212",
+       "crates/printer/src/standard.rs:1216",
+       "crates/printer/src/standard.rs:1220",
+       "crates/printer/src/standard.rs:1342",
+       "crates/printer/src/standard.rs:1347",
+       "crates/printer/src/util.rs:464"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `searches_with_match` defined at `crates/printer/src/stats.rs:42`. Without editing any file or building the project, list every line under `crates/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/core/main.rs:475",
+      "crates/printer/src/standard.rs:1887",
+      "crates/printer/src/standard.rs:1924"
+     ],
+     "key": {
+      "name": "searches_with_match",
+      "where": "crates/printer/src/stats.rs:42",
+      "sites": [
+       "crates/core/main.rs:475",
+       "crates/printer/src/standard.rs:1887",
+       "crates/printer/src/standard.rs:1924"
+      ],
+      "callers": [
+       "print_stats",
+       "reports_stats",
+       "reports_stats_multiple"
+      ],
+      "calls": [],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "crates/core/main.rs:475",
+       "crates/printer/src/standard.rs:1887",
+       "crates/printer/src/standard.rs:1924",
+       "crates/printer/src/stats.rs:122",
+       "crates/printer/src/stats.rs:123",
+       "crates/printer/src/stats.rs:142",
+       "crates/printer/src/stats.rs:16",
+       "crates/printer/src/stats.rs:163",
+       "crates/printer/src/stats.rs:42",
+       "crates/printer/src/stats.rs:43",
+       "crates/printer/src/stats.rs:83"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-explain",
+   "repo": "tokio",
+   "kind": "explain",
+   "steps": [
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `read_to_string` defined at `tokio/src/io/util/read_to_string.rs:33`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "into_bytes",
+      "new",
+      "take"
+     ],
+     "callers": [
+      "read_to_string"
+     ],
+     "key": {
+      "name": "read_to_string",
+      "where": "tokio/src/io/util/read_to_string.rs:33",
+      "sites": [
+       "tokio/src/io/util/async_read_ext.rs:1387"
+      ],
+      "callers": [
+       "read_to_string"
+      ],
+      "calls": [
+       "into_bytes",
+       "new",
+       "take"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/fs/mod.rs:250",
+       "tokio/src/fs/mod.rs:251",
+       "tokio/src/fs/read_to_string.rs:27",
+       "tokio/src/fs/read_to_string.rs:29",
+       "tokio/src/io/util/async_read_ext.rs:13",
+       "tokio/src/io/util/async_read_ext.rs:1383",
+       "tokio/src/io/util/async_read_ext.rs:1387",
+       "tokio/src/io/util/mod.rs:60",
+       "tokio/src/io/util/read_to_string.rs:33"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `waker_ref` defined at `tokio/src/util/wake.rs:35`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "as_ptr",
+      "cast",
+      "from_raw",
+      "new",
+      "waker_vtable"
+     ],
+     "callers": [
+      "waker_ref",
+      "with_value_and_context"
+     ],
+     "key": {
+      "name": "waker_ref",
+      "where": "tokio/src/util/wake.rs:35",
+      "sites": [
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:567",
+       "tokio/src/util/idle_notified_set.rs:408"
+      ],
+      "callers": [
+       "waker_ref",
+       "with_value_and_context"
+      ],
+      "calls": [
+       "as_ptr",
+       "cast",
+       "from_raw",
+       "new",
+       "waker_vtable"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:13",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:563",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:567",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:730",
+       "tokio/src/runtime/task/harness.rs:208",
+       "tokio/src/runtime/task/harness.rs:209",
+       "tokio/src/runtime/task/harness.rs:4",
+       "tokio/src/runtime/task/waker.rs:16",
+       "tokio/src/util/idle_notified_set.rs:17",
+       "tokio/src/util/idle_notified_set.rs:408",
+       "tokio/src/util/mod.rs:73",
+       "tokio/src/util/wake.rs:35"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `observed_tail_position` defined at `tokio/src/sync/mpsc/block.rs:272`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "load",
+      "with"
+     ],
+     "callers": [
+      "reclaim_blocks"
+     ],
+     "key": {
+      "name": "observed_tail_position",
+      "where": "tokio/src/sync/mpsc/block.rs:272",
+      "sites": [
+       "tokio/src/sync/mpsc/list.rs:339"
+      ],
+      "callers": [
+       "reclaim_blocks"
+      ],
+      "calls": [
+       "load",
+       "with"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/sync/mpsc/block.rs:115",
+       "tokio/src/sync/mpsc/block.rs:248",
+       "tokio/src/sync/mpsc/block.rs:272",
+       "tokio/src/sync/mpsc/block.rs:278",
+       "tokio/src/sync/mpsc/block.rs:38",
+       "tokio/src/sync/mpsc/list.rs:339",
+       "tokio/src/sync/mpsc/list.rs:341"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `write_to` defined at `tokio/src/io/blocking.rs:270`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "clear",
+      "write_all"
+     ],
+     "callers": [
+      "poll_write",
+      "poll_write_vectored"
+     ],
+     "key": {
+      "name": "write_to",
+      "where": "tokio/src/io/blocking.rs:270",
+      "sites": [
+       "tokio/src/fs/file.rs:750",
+       "tokio/src/fs/file.rs:752",
+       "tokio/src/fs/file.rs:821",
+       "tokio/src/fs/file.rs:823",
+       "tokio/src/io/blocking.rs:126"
+      ],
+      "callers": [
+       "poll_write",
+       "poll_write_vectored"
+      ],
+      "calls": [
+       "clear",
+       "write_all"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/fs/file.rs:750",
+       "tokio/src/fs/file.rs:752",
+       "tokio/src/fs/file.rs:821",
+       "tokio/src/fs/file.rs:823",
+       "tokio/src/io/blocking.rs:126",
+       "tokio/src/io/blocking.rs:270"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `new_unnamed` defined at `tokio/src/util/trace.rs:35`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "capture"
+     ],
+     "callers": [
+      "block_on",
+      "spawn",
+      "spawn_blocking",
+      "spawn_local",
+      "spawn_mandatory_blocking"
+     ],
+     "key": {
+      "name": "new_unnamed",
+      "where": "tokio/src/util/trace.rs:35",
+      "sites": [
+       "tokio/src/runtime/blocking/pool.rs:308",
+       "tokio/src/runtime/blocking/pool.rs:315",
+       "tokio/src/runtime/blocking/pool.rs:346",
+       "tokio/src/runtime/blocking/pool.rs:353",
+       "tokio/src/runtime/handle.rs:195",
+       "tokio/src/runtime/handle.rs:197",
+       "tokio/src/runtime/handle.rs:303",
+       "tokio/src/runtime/handle.rs:305",
+       "tokio/src/runtime/local_runtime/runtime.rs:153",
+       "tokio/src/runtime/local_runtime/runtime.rs:222",
+       "tokio/src/runtime/runtime.rs:238",
+       "tokio/src/runtime/runtime.rs:241",
+       "tokio/src/runtime/runtime.rs:328",
+       "tokio/src/runtime/runtime.rs:330",
+       "tokio/src/task/local.rs:377",
+       "tokio/src/task/local.rs:379",
+       "tokio/src/task/local.rs:573",
+       "tokio/src/task/local.rs:575",
+       "tokio/src/task/spawn.rs:173",
+       "tokio/src/task/spawn.rs:175"
+      ],
+      "callers": [
+       "block_on",
+       "spawn",
+       "spawn_blocking",
+       "spawn_local",
+       "spawn_mandatory_blocking"
+      ],
+      "calls": [
+       "capture"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/blocking/pool.rs:308",
+       "tokio/src/runtime/blocking/pool.rs:315",
+       "tokio/src/runtime/blocking/pool.rs:346",
+       "tokio/src/runtime/blocking/pool.rs:353",
+       "tokio/src/runtime/handle.rs:195",
+       "tokio/src/runtime/handle.rs:197",
+       "tokio/src/runtime/handle.rs:303",
+       "tokio/src/runtime/handle.rs:305",
+       "tokio/src/runtime/local_runtime/runtime.rs:153",
+       "tokio/src/runtime/local_runtime/runtime.rs:222",
+       "tokio/src/runtime/runtime.rs:238",
+       "tokio/src/runtime/runtime.rs:241",
+       "tokio/src/runtime/runtime.rs:328",
+       "tokio/src/runtime/runtime.rs:330",
+       "tokio/src/task/local.rs:377",
+       "tokio/src/task/local.rs:379",
+       "tokio/src/task/local.rs:573",
+       "tokio/src/task/local.rs:575",
+       "tokio/src/task/spawn.rs:173",
+       "tokio/src/task/spawn.rs:175",
+       "tokio/src/util/trace.rs:35"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `into_panic` defined at `tokio/src/runtime/task/error.rs:90`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "expect",
+      "try_into_panic"
+     ],
+     "callers": [
+      "join_all"
+     ],
+     "key": {
+      "name": "into_panic",
+      "where": "tokio/src/runtime/task/error.rs:90",
+      "sites": [
+       "tokio/src/task/join_set.rs:438"
+      ],
+      "callers": [
+       "join_all"
+      ],
+      "calls": [
+       "expect",
+       "try_into_panic"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/task/error.rs:90",
+       "tokio/src/task/join_set.rs:438"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `is_writable` defined at `tokio/src/io/ready.rs:143`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "contains",
+      "is_write_closed"
+     ],
+     "callers": [
+      "fmt",
+      "wake"
+     ],
+     "key": {
+      "name": "is_writable",
+      "where": "tokio/src/io/ready.rs:143",
+      "sites": [
+       "tokio/src/io/ready.rs:312",
+       "tokio/src/runtime/io/scheduled_io.rs:251"
+      ],
+      "callers": [
+       "fmt",
+       "wake"
+      ],
+      "calls": [
+       "contains",
+       "is_write_closed"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/interest.rs:103",
+       "tokio/src/io/interest.rs:221",
+       "tokio/src/io/interest.rs:298",
+       "tokio/src/io/ready.rs:143",
+       "tokio/src/io/ready.rs:246",
+       "tokio/src/io/ready.rs:312",
+       "tokio/src/io/ready.rs:75",
+       "tokio/src/runtime/io/scheduled_io.rs:251"
+      ]
+     }
+    },
+    {
+     "kind": "explain",
+     "prompt": "Explain the function `poll_time_histogram_num_buckets` defined at `tokio/src/runtime/metrics/runtime.rs:801`: what it does (two sentences), every function and method its body calls directly, by name, standard-library ones too (such as `map`, `collect` or `new`; leave out macros and constructors such as `Some`), and which functions under `tokio/src/` call it directly (tests included). Do not edit files or build the project. End your answer with a JSON code block {\"answer\": {\"calls\": [\"name\", ...], \"callers\": [\"name\", ...]}} with bare function and method names.",
+     "calls": [
+      "as_ref",
+      "map",
+      "num_buckets",
+      "unwrap_or_default",
+      "worker_metrics"
+     ],
+     "callers": [
+      "poll_count_histogram_num_buckets"
+     ],
+     "key": {
+      "name": "poll_time_histogram_num_buckets",
+      "where": "tokio/src/runtime/metrics/runtime.rs:801",
+      "sites": [
+       "tokio/src/runtime/metrics/runtime.rs:817"
+      ],
+      "callers": [
+       "poll_count_histogram_num_buckets"
+      ],
+      "calls": [
+       "as_ref",
+       "map",
+       "num_buckets",
+       "unwrap_or_default",
+       "worker_metrics"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/metrics/runtime.rs:801",
+       "tokio/src/runtime/metrics/runtime.rs:817"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-impact",
+   "repo": "tokio",
+   "kind": "impact",
+   "steps": [
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `async_trace_leaf` defined at `tokio/src/lib.rs:576`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/sync/barrier.rs:140",
+      "tokio/src/sync/mpsc/bounded.rs:1264",
+      "tokio/src/sync/mutex.rs:652",
+      "tokio/src/sync/once_cell.rs:351",
+      "tokio/src/sync/once_cell.rs:401",
+      "tokio/src/sync/watch.rs:1243",
+      "tokio/src/sync/watch.rs:915"
+     ],
+     "key": {
+      "name": "async_trace_leaf",
+      "where": "tokio/src/lib.rs:576",
+      "sites": [
+       "tokio/src/sync/barrier.rs:140",
+       "tokio/src/sync/mpsc/bounded.rs:1264",
+       "tokio/src/sync/mutex.rs:652",
+       "tokio/src/sync/once_cell.rs:351",
+       "tokio/src/sync/once_cell.rs:401",
+       "tokio/src/sync/watch.rs:1243",
+       "tokio/src/sync/watch.rs:915"
+      ],
+      "callers": [
+       "acquire",
+       "changed_impl",
+       "closed",
+       "get_or_init",
+       "get_or_try_init",
+       "reserve_inner",
+       "wait_internal"
+      ],
+      "calls": [
+       "trace_leaf"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/lib.rs:576",
+       "tokio/src/sync/barrier.rs:140",
+       "tokio/src/sync/mpsc/bounded.rs:1264",
+       "tokio/src/sync/mutex.rs:652",
+       "tokio/src/sync/once_cell.rs:351",
+       "tokio/src/sync/once_cell.rs:401",
+       "tokio/src/sync/watch.rs:1243",
+       "tokio/src/sync/watch.rs:915"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `set_thread_id` defined at `tokio/src/runtime/metrics/worker.rs:79`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/runtime/scheduler/current_thread/mod.rs:137",
+      "tokio/src/runtime/scheduler/current_thread/mod.rs:199",
+      "tokio/src/runtime/scheduler/multi_thread/worker.rs:336",
+      "tokio/src/runtime/scheduler/multi_thread/worker.rs:487"
+     ],
+     "key": {
+      "name": "set_thread_id",
+      "where": "tokio/src/runtime/metrics/worker.rs:79",
+      "sites": [
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:137",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:199",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:336",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:487"
+      ],
+      "callers": [
+       "block_on",
+       "drop",
+       "new",
+       "run"
+      ],
+      "calls": [
+       "lock",
+       "unwrap"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/metrics/worker.rs:79",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:137",
+       "tokio/src/runtime/scheduler/current_thread/mod.rs:199",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:336",
+       "tokio/src/runtime/scheduler/multi_thread/worker.rs:487"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `copy_to` defined at `tokio/src/io/blocking.rs:211`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/fs/file.rs:600",
+      "tokio/src/fs/file.rs:621",
+      "tokio/src/io/blocking.rs:68",
+      "tokio/src/io/blocking.rs:88"
+     ],
+     "key": {
+      "name": "copy_to",
+      "where": "tokio/src/io/blocking.rs:211",
+      "sites": [
+       "tokio/src/fs/file.rs:600",
+       "tokio/src/fs/file.rs:621",
+       "tokio/src/io/blocking.rs:68",
+       "tokio/src/io/blocking.rs:88"
+      ],
+      "callers": [
+       "poll_read"
+      ],
+      "calls": [
+       "bytes",
+       "len",
+       "min",
+       "put_slice",
+       "remaining",
+       "truncate"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/fs/file.rs:600",
+       "tokio/src/fs/file.rs:621",
+       "tokio/src/io/blocking.rs:211",
+       "tokio/src/io/blocking.rs:68",
+       "tokio/src/io/blocking.rs:88"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `checked_add` defined at `tokio/src/time/instant.rs:141`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/time/interval.rs:483",
+      "tokio/src/time/sleep.rs:126",
+      "tokio/src/time/timeout.rs:92"
+     ],
+     "key": {
+      "name": "checked_add",
+      "where": "tokio/src/time/instant.rs:141",
+      "sites": [
+       "tokio/src/time/interval.rs:483",
+       "tokio/src/time/sleep.rs:126",
+       "tokio/src/time/timeout.rs:92"
+      ],
+      "callers": [
+       "poll_tick",
+       "sleep",
+       "timeout"
+      ],
+      "calls": [
+       "checked_add",
+       "map"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/read_buf.rs:203",
+       "tokio/src/runtime/thread_id.rs:14",
+       "tokio/src/sync/batch_semaphore.rs:424",
+       "tokio/src/sync/broadcast.rs:936",
+       "tokio/src/time/instant.rs:141",
+       "tokio/src/time/instant.rs:142",
+       "tokio/src/time/interval.rs:483",
+       "tokio/src/time/sleep.rs:126",
+       "tokio/src/time/timeout.rs:92"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `increment` defined at `tokio/src/util/metric_atomics.rs:74`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/runtime/blocking/pool.rs:52",
+      "tokio/src/runtime/blocking/pool.rs:60",
+      "tokio/src/runtime/blocking/pool.rs:68",
+      "tokio/src/util/sharded_list.rs:142"
+     ],
+     "key": {
+      "name": "increment",
+      "where": "tokio/src/util/metric_atomics.rs:74",
+      "sites": [
+       "tokio/src/runtime/blocking/pool.rs:52",
+       "tokio/src/runtime/blocking/pool.rs:60",
+       "tokio/src/runtime/blocking/pool.rs:68",
+       "tokio/src/util/sharded_list.rs:142"
+      ],
+      "callers": [
+       "inc_num_idle_threads",
+       "inc_num_threads",
+       "inc_queue_depth",
+       "push"
+      ],
+      "calls": [
+       "fetch_add"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/blocking/pool.rs:52",
+       "tokio/src/runtime/blocking/pool.rs:60",
+       "tokio/src/runtime/blocking/pool.rs:68",
+       "tokio/src/util/metric_atomics.rs:74",
+       "tokio/src/util/sharded_list.rs:142"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `put_slice` defined at `tokio/src/io/read_buf.rs:250`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/io/async_read.rs:103",
+      "tokio/src/io/async_read.rs:127",
+      "tokio/src/io/blocking.rs:213",
+      "tokio/src/io/util/buf_reader.rs:116",
+      "tokio/src/io/util/mem.rs:255",
+      "tokio/src/io/util/read_to_end.rs:96"
+     ],
+     "key": {
+      "name": "put_slice",
+      "where": "tokio/src/io/read_buf.rs:250",
+      "sites": [
+       "tokio/src/io/async_read.rs:103",
+       "tokio/src/io/async_read.rs:127",
+       "tokio/src/io/blocking.rs:213",
+       "tokio/src/io/util/buf_reader.rs:116",
+       "tokio/src/io/util/mem.rs:255",
+       "tokio/src/io/util/read_to_end.rs:96"
+      ],
+      "callers": [
+       "copy_to",
+       "poll_read",
+       "poll_read_internal",
+       "poll_read_to_end"
+      ],
+      "calls": [
+       "as_mut_ptr",
+       "as_ptr",
+       "cast",
+       "copy_from_nonoverlapping",
+       "len",
+       "remaining"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/io/async_read.rs:103",
+       "tokio/src/io/async_read.rs:127",
+       "tokio/src/io/blocking.rs:213",
+       "tokio/src/io/read_buf.rs:250",
+       "tokio/src/io/util/buf_reader.rs:116",
+       "tokio/src/io/util/mem.rs:255",
+       "tokio/src/io/util/read_to_end.rs:96"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `next_expiration` defined at `tokio/src/runtime/time/wheel/level.rs:51`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/runtime/time/wheel/mod.rs:109",
+      "tokio/src/runtime/time/wheel/mod.rs:182",
+      "tokio/src/runtime/time/wheel/mod.rs:205"
+     ],
+     "key": {
+      "name": "next_expiration",
+      "where": "tokio/src/runtime/time/wheel/level.rs:51",
+      "sites": [
+       "tokio/src/runtime/time/wheel/mod.rs:109",
+       "tokio/src/runtime/time/wheel/mod.rs:182",
+       "tokio/src/runtime/time/wheel/mod.rs:205"
+      ],
+      "callers": [
+       "insert",
+       "next_expiration",
+       "no_expirations_before"
+      ],
+      "calls": [
+       "next_occupied_slot"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/runtime/time/wheel/level.rs:51",
+       "tokio/src/runtime/time/wheel/mod.rs:109",
+       "tokio/src/runtime/time/wheel/mod.rs:139",
+       "tokio/src/runtime/time/wheel/mod.rs:149",
+       "tokio/src/runtime/time/wheel/mod.rs:170",
+       "tokio/src/runtime/time/wheel/mod.rs:182",
+       "tokio/src/runtime/time/wheel/mod.rs:197",
+       "tokio/src/runtime/time/wheel/mod.rs:205"
+      ]
+     }
+    },
+    {
+     "kind": "impact",
+     "prompt": "I plan to add a new required parameter to the function `with_value_and_context` defined at `tokio/src/util/idle_notified_set.rs:403`. Without editing any file or building the project, list every line under `tokio/src/` that will then fail to compile and must change: each call of this function, and each place it is used as a value. Leave out its definition. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/task/join_set.rs:269",
+      "tokio/src/task/join_set.rs:314",
+      "tokio/src/task/join_set.rs:343",
+      "tokio/src/task/join_set.rs:501",
+      "tokio/src/task/join_set.rs:560"
+     ],
+     "key": {
+      "name": "with_value_and_context",
+      "where": "tokio/src/util/idle_notified_set.rs:403",
+      "sites": [
+       "tokio/src/task/join_set.rs:269",
+       "tokio/src/task/join_set.rs:314",
+       "tokio/src/task/join_set.rs:343",
+       "tokio/src/task/join_set.rs:501",
+       "tokio/src/task/join_set.rs:560"
+      ],
+      "callers": [
+       "insert",
+       "poll_join_next",
+       "poll_join_next_with_id",
+       "try_join_next",
+       "try_join_next_with_id"
+      ],
+      "calls": [
+       "from_waker",
+       "waker_ref",
+       "with_mut"
+      ],
+      "codes": [
+       "E0061"
+      ],
+      "errors_outside_scope": 0,
+      "text_sites": [
+       "tokio/src/task/join_set.rs:269",
+       "tokio/src/task/join_set.rs:314",
+       "tokio/src/task/join_set.rs:343",
+       "tokio/src/task/join_set.rs:501",
+       "tokio/src/task/join_set.rs:560",
+       "tokio/src/util/idle_notified_set.rs:403"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep-session-tests",
+   "repo": "ripgrep",
+   "kind": "tests",
+   "steps": [
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `quit_byte` defined at `crates/searcher/src/searcher/mod.rs:102`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/json.rs:892",
+      "crates/printer/src/standard.rs:1842",
+      "crates/searcher/src/searcher/glue.rs:693",
+      "crates/searcher/src/searcher/glue.rs:705",
+      "crates/searcher/src/searcher/glue.rs:717",
+      "crates/searcher/src/searcher/glue.rs:752"
+     ],
+     "key": {
+      "name": "quit_byte",
+      "where": "crates/searcher/src/searcher/mod.rs:102",
+      "tests": [
+       "crates/printer/src/json.rs:892",
+       "crates/printer/src/standard.rs:1842",
+       "crates/searcher/src/searcher/glue.rs:693",
+       "crates/searcher/src/searcher/glue.rs:705",
+       "crates/searcher/src/searcher/glue.rs:717",
+       "crates/searcher/src/searcher/glue.rs:752"
+      ],
+      "test_names": [
+       "json::tests::binary_detection",
+       "searcher::glue::tests::binary1",
+       "searcher::glue::tests::binary2",
+       "searcher::glue::tests::binary3",
+       "searcher::glue::tests::binary4",
+       "standard::tests::reports_binary"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `auto_heap_limit` defined at `crates/searcher/src/testutil.rs:417`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/searcher/src/searcher/glue.rs:717",
+      "crates/searcher/src/searcher/glue.rs:752"
+     ],
+     "key": {
+      "name": "auto_heap_limit",
+      "where": "crates/searcher/src/testutil.rs:417",
+      "tests": [
+       "crates/searcher/src/searcher/glue.rs:717",
+       "crates/searcher/src/searcher/glue.rs:752"
+      ],
+      "test_names": [
+       "searcher::glue::tests::binary3",
+       "searcher::glue::tests::binary4"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `separator_field_context` defined at `crates/printer/src/standard.rs:436`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/standard.rs:2086"
+     ],
+     "key": {
+      "name": "separator_field_context",
+      "where": "crates/printer/src/standard.rs:436",
+      "tests": [
+       "crates/printer/src/standard.rs:2086"
+      ],
+      "test_names": [
+       "standard::tests::separator_field"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `binary_data` defined at `crates/searcher/src/searcher/core.rs:97`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/json.rs:892",
+      "crates/printer/src/standard.rs:1842",
+      "crates/searcher/src/searcher/glue.rs:693",
+      "crates/searcher/src/searcher/glue.rs:705",
+      "crates/searcher/src/searcher/glue.rs:717",
+      "crates/searcher/src/searcher/glue.rs:752"
+     ],
+     "key": {
+      "name": "binary_data",
+      "where": "crates/searcher/src/searcher/core.rs:97",
+      "tests": [
+       "crates/printer/src/json.rs:892",
+       "crates/printer/src/standard.rs:1842",
+       "crates/searcher/src/searcher/glue.rs:693",
+       "crates/searcher/src/searcher/glue.rs:705",
+       "crates/searcher/src/searcher/glue.rs:717",
+       "crates/searcher/src/searcher/glue.rs:752"
+      ],
+      "test_names": [
+       "json::tests::binary_detection",
+       "searcher::glue::tests::binary1",
+       "searcher::glue::tests::binary2",
+       "searcher::glue::tests::binary3",
+       "searcher::glue::tests::binary4",
+       "standard::tests::reports_binary"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `elapsed` defined at `crates/printer/src/stats.rs:32`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/standard.rs:1868",
+      "crates/printer/src/standard.rs:1895"
+     ],
+     "key": {
+      "name": "elapsed",
+      "where": "crates/printer/src/stats.rs:32",
+      "tests": [
+       "crates/printer/src/standard.rs:1868",
+       "crates/printer/src/standard.rs:1895"
+      ],
+      "test_names": [
+       "standard::tests::reports_stats",
+       "standard::tests::reports_stats_multiple"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `max_filesize` defined at `crates/ignore/src/walk.rs:634`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/ignore/src/walk.rs:2153"
+     ],
+     "key": {
+      "name": "max_filesize",
+      "where": "crates/ignore/src/walk.rs:634",
+      "tests": [
+       "crates/ignore/src/walk.rs:2153"
+      ],
+      "test_names": [
+       "walk::tests::max_filesize"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `trim_ascii_prefix` defined at `crates/printer/src/util.rs:446`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/standard.rs:2286",
+      "crates/printer/src/standard.rs:2309",
+      "crates/printer/src/standard.rs:2334"
+     ],
+     "key": {
+      "name": "trim_ascii_prefix",
+      "where": "crates/printer/src/util.rs:446",
+      "tests": [
+       "crates/printer/src/standard.rs:2286",
+       "crates/printer/src/standard.rs:2309",
+       "crates/printer/src/standard.rs:2334"
+      ],
+      "test_names": [
+       "standard::tests::trim_ascii",
+       "standard::tests::trim_ascii_multi_line",
+       "standard::tests::trim_ascii_with_line_term"
+      ],
+      "seconds": 2
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `always_begin_end` defined at `crates/printer/src/json.rs:97`. Which unit tests under `crates/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "crates/printer/src/json.rs:979"
+     ],
+     "key": {
+      "name": "always_begin_end",
+      "where": "crates/printer/src/json.rs:97",
+      "tests": [
+       "crates/printer/src/json.rs:979"
+      ],
+      "test_names": [
+       "json::tests::always_begin_end_no_match"
+      ],
+      "seconds": 2
+     }
+    }
+   ]
+  },
+  {
+   "id": "tokio-session-tests",
+   "repo": "tokio",
+   "kind": "tests",
+   "steps": [
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `spawn_named` defined at `tokio/src/runtime/handle.rs:332`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/runtime/tests/task_combinations.rs:69",
+      "tokio/src/util/idle_notified_set.rs:501"
+     ],
+     "key": {
+      "name": "spawn_named",
+      "where": "tokio/src/runtime/handle.rs:332",
+      "tests": [
+       "tokio/src/runtime/tests/task_combinations.rs:69",
+       "tokio/src/util/idle_notified_set.rs:501"
+      ],
+      "test_names": [
+       "runtime::tests::task_combinations::test_combinations",
+       "util::idle_notified_set::tests::join_set_test"
+      ],
+      "seconds": 4
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `is_cancelled` defined at `tokio/src/runtime/task/error.rs:40`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/runtime/tests/task_combinations.rs:69"
+     ],
+     "key": {
+      "name": "is_cancelled",
+      "where": "tokio/src/runtime/task/error.rs:40",
+      "tests": [
+       "tokio/src/runtime/tests/task_combinations.rs:69"
+      ],
+      "test_names": [
+       "runtime::tests::task_combinations::test_combinations"
+      ],
+      "seconds": 4
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `globals` defined at `tokio/src/signal/registry.rs:162`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/process/unix/orphan.rs:297",
+      "tokio/src/process/unix/pidfd_reaper.rs:261",
+      "tokio/src/process/unix/pidfd_reaper.rs:281",
+      "tokio/src/process/unix/pidfd_reaper.rs:303"
+     ],
+     "key": {
+      "name": "globals",
+      "where": "tokio/src/signal/registry.rs:162",
+      "tests": [
+       "tokio/src/process/unix/orphan.rs:297",
+       "tokio/src/process/unix/pidfd_reaper.rs:261",
+       "tokio/src/process/unix/pidfd_reaper.rs:281",
+       "tokio/src/process/unix/pidfd_reaper.rs:303"
+      ],
+      "test_names": [
+       "process::imp::orphan::test::does_not_register_signal_if_queue_empty",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_drop",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_kill",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_poll"
+      ],
+      "seconds": 5
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `async_trace_leaf` defined at `tokio/src/lib.rs:576`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/fs/file/tests.rs:742",
+      "tokio/src/fs/file/tests.rs:773",
+      "tokio/src/fs/file/tests.rs:806",
+      "tokio/src/fs/file/tests.rs:837",
+      "tokio/src/fs/file/tests.rs:870",
+      "tokio/src/fs/file/tests.rs:886",
+      "tokio/src/fs/file/tests.rs:904",
+      "tokio/src/signal/registry.rs:181",
+      "tokio/src/sync/tests/notify.rs:105"
+     ],
+     "key": {
+      "name": "async_trace_leaf",
+      "where": "tokio/src/lib.rs:576",
+      "tests": [
+       "tokio/src/fs/file/tests.rs:742",
+       "tokio/src/fs/file/tests.rs:773",
+       "tokio/src/fs/file/tests.rs:806",
+       "tokio/src/fs/file/tests.rs:837",
+       "tokio/src/fs/file/tests.rs:870",
+       "tokio/src/fs/file/tests.rs:886",
+       "tokio/src/fs/file/tests.rs:904",
+       "tokio/src/signal/registry.rs:181",
+       "tokio/src/sync/tests/notify.rs:105"
+      ],
+      "test_names": [
+       "fs::file::tests::open_set_len_err",
+       "fs::file::tests::open_set_len_ok",
+       "fs::file::tests::partial_read_set_len_ok",
+       "fs::file::tests::sync_all_err_ordered_after_write",
+       "fs::file::tests::sync_all_ordered_after_write",
+       "fs::file::tests::sync_data_err_ordered_after_write",
+       "fs::file::tests::sync_data_ordered_after_write",
+       "signal::registry::tests::smoke",
+       "sync::tests::notify::watch_test"
+      ],
+      "seconds": 4
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `instant_to_tick` defined at `tokio/src/runtime/time/source.rs:22`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/runtime/time/tests/mod.rs:107",
+      "tokio/src/runtime/time/tests/mod.rs:140",
+      "tokio/src/runtime/time/tests/mod.rs:202",
+      "tokio/src/runtime/time/tests/mod.rs:237",
+      "tokio/src/runtime/time/tests/mod.rs:259",
+      "tokio/src/runtime/time/tests/mod.rs:44",
+      "tokio/src/runtime/time/tests/mod.rs:73",
+      "tokio/src/signal/registry.rs:181"
+     ],
+     "key": {
+      "name": "instant_to_tick",
+      "where": "tokio/src/runtime/time/source.rs:22",
+      "tests": [
+       "tokio/src/runtime/time/tests/mod.rs:107",
+       "tokio/src/runtime/time/tests/mod.rs:140",
+       "tokio/src/runtime/time/tests/mod.rs:202",
+       "tokio/src/runtime/time/tests/mod.rs:237",
+       "tokio/src/runtime/time/tests/mod.rs:259",
+       "tokio/src/runtime/time/tests/mod.rs:44",
+       "tokio/src/runtime/time/tests/mod.rs:73",
+       "tokio/src/signal/registry.rs:181"
+      ],
+      "test_names": [
+       "runtime::time::tests::change_waker",
+       "runtime::time::tests::drop_timer",
+       "runtime::time::tests::instant_to_tick_max",
+       "runtime::time::tests::poll_process_levels",
+       "runtime::time::tests::poll_process_levels_targeted",
+       "runtime::time::tests::reset_future",
+       "runtime::time::tests::single_timer",
+       "signal::registry::tests::smoke"
+      ],
+      "seconds": 4
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `set_thread_id` defined at `tokio/src/runtime/metrics/worker.rs:79`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/io/stdio_common.rs:181",
+      "tokio/src/io/stdio_common.rs:195",
+      "tokio/src/process/unix/pidfd_reaper.rs:261",
+      "tokio/src/process/unix/pidfd_reaper.rs:281",
+      "tokio/src/process/unix/pidfd_reaper.rs:303",
+      "tokio/src/runtime/tests/task_combinations.rs:69",
+      "tokio/src/runtime/time/tests/mod.rs:107",
+      "tokio/src/runtime/time/tests/mod.rs:140",
+      "tokio/src/runtime/time/tests/mod.rs:202",
+      "tokio/src/runtime/time/tests/mod.rs:237",
+      "tokio/src/runtime/time/tests/mod.rs:259",
+      "tokio/src/runtime/time/tests/mod.rs:44",
+      "tokio/src/runtime/time/tests/mod.rs:73",
+      "tokio/src/signal/registry.rs:181",
+      "tokio/src/sync/tests/notify.rs:105",
+      "tokio/src/task/local.rs:1253",
+      "tokio/src/task/local.rs:1275",
+      "tokio/src/util/idle_notified_set.rs:501"
+     ],
+     "key": {
+      "name": "set_thread_id",
+      "where": "tokio/src/runtime/metrics/worker.rs:79",
+      "tests": [
+       "tokio/src/io/stdio_common.rs:181",
+       "tokio/src/io/stdio_common.rs:195",
+       "tokio/src/process/unix/pidfd_reaper.rs:261",
+       "tokio/src/process/unix/pidfd_reaper.rs:281",
+       "tokio/src/process/unix/pidfd_reaper.rs:303",
+       "tokio/src/runtime/tests/task_combinations.rs:69",
+       "tokio/src/runtime/time/tests/mod.rs:107",
+       "tokio/src/runtime/time/tests/mod.rs:140",
+       "tokio/src/runtime/time/tests/mod.rs:202",
+       "tokio/src/runtime/time/tests/mod.rs:237",
+       "tokio/src/runtime/time/tests/mod.rs:259",
+       "tokio/src/runtime/time/tests/mod.rs:44",
+       "tokio/src/runtime/time/tests/mod.rs:73",
+       "tokio/src/signal/registry.rs:181",
+       "tokio/src/sync/tests/notify.rs:105",
+       "tokio/src/task/local.rs:1253",
+       "tokio/src/task/local.rs:1275",
+       "tokio/src/util/idle_notified_set.rs:501"
+      ],
+      "test_names": [
+       "io::stdio_common::tests::test_pseudo_text",
+       "io::stdio_common::tests::test_splitter",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_drop",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_kill",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_poll",
+       "runtime::tests::task_combinations::test_combinations",
+       "runtime::time::tests::change_waker",
+       "runtime::time::tests::drop_timer",
+       "runtime::time::tests::instant_to_tick_max",
+       "runtime::time::tests::poll_process_levels",
+       "runtime::time::tests::poll_process_levels_targeted",
+       "runtime::time::tests::reset_future",
+       "runtime::time::tests::single_timer",
+       "signal::registry::tests::smoke",
+       "sync::tests::notify::watch_test",
+       "task::local::tests::local_current_thread_scheduler",
+       "task::local::tests::wakes_to_local_queue",
+       "util::idle_notified_set::tests::join_set_test"
+      ],
+      "seconds": 5
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `copy_to` defined at `tokio/src/io/blocking.rs:211`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/fs/file/tests.rs:13",
+      "tokio/src/fs/file/tests.rs:154",
+      "tokio/src/fs/file/tests.rs:232",
+      "tokio/src/fs/file/tests.rs:39",
+      "tokio/src/fs/file/tests.rs:452",
+      "tokio/src/fs/file/tests.rs:63",
+      "tokio/src/fs/file/tests.rs:904",
+      "tokio/src/fs/file/tests.rs:99"
+     ],
+     "key": {
+      "name": "copy_to",
+      "where": "tokio/src/io/blocking.rs:211",
+      "tests": [
+       "tokio/src/fs/file/tests.rs:13",
+       "tokio/src/fs/file/tests.rs:154",
+       "tokio/src/fs/file/tests.rs:232",
+       "tokio/src/fs/file/tests.rs:39",
+       "tokio/src/fs/file/tests.rs:452",
+       "tokio/src/fs/file/tests.rs:63",
+       "tokio/src/fs/file/tests.rs:904",
+       "tokio/src/fs/file/tests.rs:99"
+      ],
+      "test_names": [
+       "fs::file::tests::incomplete_partial_read_followed_by_write",
+       "fs::file::tests::open_read",
+       "fs::file::tests::partial_read_set_len_ok",
+       "fs::file::tests::read_err_then_read_success",
+       "fs::file::tests::read_twice_before_dispatch",
+       "fs::file::tests::read_with_bigger_buf",
+       "fs::file::tests::read_with_buffer_larger_than_max",
+       "fs::file::tests::read_with_smaller_buf"
+      ],
+      "seconds": 6
+     }
+    },
+    {
+     "kind": "tests",
+     "prompt": "I plan to change the function `waker_ref` defined at `tokio/src/util/wake.rs:35`. Which unit tests under `tokio/src/` run it, directly or through other functions? List each test function (`#[test]`, `#[tokio::test]` and the like) by the line of its `fn`. Do not run the tests, edit files or build the project. End your answer with a JSON code block {\"answer\": [\"path:line\", ...]} listing every match as a path relative to the repository root and a 1-based line number (an empty list if there is none).",
+     "expected": [
+      "tokio/src/io/stdio_common.rs:181",
+      "tokio/src/io/stdio_common.rs:195",
+      "tokio/src/process/unix/pidfd_reaper.rs:261",
+      "tokio/src/process/unix/pidfd_reaper.rs:281",
+      "tokio/src/process/unix/pidfd_reaper.rs:303",
+      "tokio/src/runtime/tests/task_combinations.rs:69",
+      "tokio/src/runtime/time/tests/mod.rs:107",
+      "tokio/src/runtime/time/tests/mod.rs:140",
+      "tokio/src/runtime/time/tests/mod.rs:44",
+      "tokio/src/signal/registry.rs:181",
+      "tokio/src/sync/tests/notify.rs:105",
+      "tokio/src/task/local.rs:1253",
+      "tokio/src/task/local.rs:1275",
+      "tokio/src/util/idle_notified_set.rs:501"
+     ],
+     "key": {
+      "name": "waker_ref",
+      "where": "tokio/src/util/wake.rs:35",
+      "tests": [
+       "tokio/src/io/stdio_common.rs:181",
+       "tokio/src/io/stdio_common.rs:195",
+       "tokio/src/process/unix/pidfd_reaper.rs:261",
+       "tokio/src/process/unix/pidfd_reaper.rs:281",
+       "tokio/src/process/unix/pidfd_reaper.rs:303",
+       "tokio/src/runtime/tests/task_combinations.rs:69",
+       "tokio/src/runtime/time/tests/mod.rs:107",
+       "tokio/src/runtime/time/tests/mod.rs:140",
+       "tokio/src/runtime/time/tests/mod.rs:44",
+       "tokio/src/signal/registry.rs:181",
+       "tokio/src/sync/tests/notify.rs:105",
+       "tokio/src/task/local.rs:1253",
+       "tokio/src/task/local.rs:1275",
+       "tokio/src/util/idle_notified_set.rs:501"
+      ],
+      "test_names": [
+       "io::stdio_common::tests::test_pseudo_text",
+       "io::stdio_common::tests::test_splitter",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_drop",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_kill",
+       "process::imp::pidfd_reaper::test::test_pidfd_reaper_poll",
+       "runtime::tests::task_combinations::test_combinations",
+       "runtime::time::tests::change_waker",
+       "runtime::time::tests::reset_future",
+       "runtime::time::tests::single_timer",
+       "signal::registry::tests::smoke",
+       "sync::tests::notify::watch_test",
+       "task::local::tests::local_current_thread_scheduler",
+       "task::local::tests::wakes_to_local_queue",
+       "util::idle_notified_set::tests::join_set_test"
+      ],
+      "seconds": 5
+     }
+    }
+   ]
   }
  ]
 }
