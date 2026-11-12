@@ -43,8 +43,11 @@ Open follow-ups (2026-11-10):
   2026-11-12: `impact` is biased (only unique names; 71 % of tokio fn names are
   shared). Wide key built (`impact_keys.py`, deprecation probe + don't-care probe) and
   the binder improved on it: `--at` sure precision 1.000 on tokio holdout, ripgrep and
-  reflex; exact 16/24, 24/24, 24/24. Next: score a fresh tokio set, then live
-  `impact-wide` sessions (A, Askills, Lforce, S). AGENT_EDGE_RESEARCH.md.
+  reflex; exact 16/24, 24/24, 24/24. Unseen tokio set (scored before reading): exact
+  18/24, sure precision 1.000, recall 0.853. Live `impact-wide` (3 trials, unseen
+  keys): A, Askills, S all 1.000 accuracy; S 1.01× A's cost, Lforce 0.85× at 0.925.
+  Grep agents are already exact on these names, so impact-wide does not meet D5
+  either. Binder tuning for impact stops here. AGENT_EDGE_RESEARCH.md.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:
