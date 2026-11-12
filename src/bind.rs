@@ -21,8 +21,10 @@
 
 use anyhow::{Result, bail};
 use serde::Serialize;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use tree_sitter::{Node, Parser, Tree};
 
 /// What one line that names `X` refers to.
@@ -74,10 +76,14 @@ pub struct Binding {
 }
 
 struct File {
+    /// The path relative to the root.
+    rel: String,
     src: String,
     tree: Tree,
     krate: String,
     module: Vec<String>,
+    /// The crate's root directory (the one with `lib.rs` or `main.rs`).
+    base: PathBuf,
     /// The dependencies of the file's package (`[dependencies]` and the like).
     deps: HashSet<String>,
 }
@@ -108,7 +114,18 @@ pub fn parse_at(at: &str) -> Result<(String, usize)> {
 
 /// Sort `lines` (code lines that name `name`, relative paths) by what they refer to,
 /// for the function `name` defined at `at` (`path:line`, the line of its `fn`).
-pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Result<Binding> {
+///
+/// `type_defs(T)` lists the lines (`path`, `line`) that define a type named `T`
+/// anywhere in the index (`struct`, `enum`, `union`, `type`, `trait`). When two types
+/// share the name of the target's `impl` type, a receiver's written type path is
+/// resolved to its module (`use` lines, `pub use` re-exports) before it counts.
+pub fn bind(
+    root: &Path,
+    at: &str,
+    name: &str,
+    lines: &[(String, usize)],
+    type_defs: &dyn Fn(&str) -> Vec<(String, usize)>,
+) -> Result<Binding> {
     let (at_path, at_line) = parse_at(at)?;
     if !at_path.ends_with(".rs") {
         bail!("at: only Rust definitions can be bound for now ({at_path})");
@@ -136,7 +153,7 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
         let Some((src, tree)) = parse_flat(&mut parser, src) else {
             continue;
         };
-        let (krate, module, package) = crate_module(root, p);
+        let (krate, module, package, base) = crate_module(root, p);
         let deps = match package {
             Some(dir) => deps_of
                 .entry(dir.clone())
@@ -147,10 +164,12 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
         files.insert(
             p.clone(),
             File {
+                rel: p.clone(),
                 src,
                 tree,
                 krate,
                 module,
+                base,
                 deps,
             },
         );
@@ -172,14 +191,26 @@ pub fn bind(root: &Path, at: &str, name: &str, lines: &[(String, usize)]) -> Res
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("at: no function `{name}` is defined at {at}"))?;
 
-    let cx = Cx {
+    let (returns, ret_decls) = method_returns(&files);
+    let mut cx = Cx {
         name,
         target: &target,
         defs: &defs,
         crates: workspace_crates(root),
-        returns: method_returns(&files),
+        returns,
+        ret_decls,
         files: &files,
+        root,
+        loaded: RefCell::new(HashMap::new()),
+        uses: RefCell::new(HashMap::new()),
+        items: RefCell::new(HashMap::new()),
+        ty_homes: Vec::new(),
+        target_home: None,
+        type_defs,
+        aliases: RefCell::new(HashMap::new()),
+        homes: RefCell::new(HashMap::new()),
     };
+    cx.find_type_homes();
     let mut out = Vec::new();
     for (p, line) in lines {
         if *p == target.path && *line == target.line {
@@ -325,7 +356,7 @@ fn parse_flat(parser: &mut Parser, mut src: String) -> Option<(String, Tree)> {
 /// The crate name (`grep_printer`) and the module path (`["util", "wake"]`) of a file,
 /// from its place under the crate root (the nearest directory with `lib.rs` or
 /// `main.rs`, at or under the package's `Cargo.toml`).
-fn crate_module(root: &Path, rel: &str) -> (String, Vec<String>, Option<PathBuf>) {
+fn crate_module(root: &Path, rel: &str) -> (String, Vec<String>, Option<PathBuf>, PathBuf) {
     let file = root.join(rel);
     let mut package = None;
     let mut dir = file.parent();
@@ -358,6 +389,7 @@ fn crate_module(root: &Path, rel: &str) -> (String, Vec<String>, Option<PathBuf>
     let base = crate_root
         .or_else(|| package.as_ref().map(|p| p.join("src")))
         .unwrap_or_else(|| root.to_path_buf());
+    let crate_base = base.clone();
     let mut module: Vec<String> = file
         .strip_prefix(&base)
         .map(|r| {
@@ -373,7 +405,7 @@ fn crate_module(root: &Path, rel: &str) -> (String, Vec<String>, Option<PathBuf>
             module.push(stem);
         }
     }
-    (krate, module, package)
+    (krate, module, package, crate_base)
 }
 
 /// The crate names of every package under `root` (`Cargo.toml` files, 4 levels deep;
@@ -721,8 +753,29 @@ struct Cx<'a> {
     /// (impl type, method) → the type it returns (`method_returns`); `None` when two
     /// impls disagree or the return type says nothing.
     returns: HashMap<(String, String), Option<String>>,
+    /// (impl type, method) → where its return type is written: (file, module, the
+    /// type with `&`, `Result` and `Option` removed). For a shared type name.
+    ret_decls: RetDecls,
     /// Every parsed file, for a struct declared in another file than the use.
     files: &'a HashMap<String, File>,
+    root: &'a Path,
+    /// Module files read from disk to follow re-exports, by relative path.
+    loaded: RefCell<HashMap<String, Option<Rc<File>>>>,
+    /// Each file's `use` items, read once.
+    uses: RefCell<HashMap<String, Rc<Vec<UseItem>>>>,
+    /// Each file's module-level items (name, module), read once.
+    items: RefCell<HashMap<String, Rc<FileItems>>>,
+    /// The modules that define a type named like the target's `impl` type, when
+    /// there are two or more (else empty: the bare name is enough).
+    ty_homes: Vec<Home>,
+    /// The module of the target's `impl` type, when `ty_homes` is not empty.
+    target_home: Option<Home>,
+    /// The lines that define a type of a given name (`bind`'s `type_defs`).
+    type_defs: &'a dyn Fn(&str) -> Vec<(String, usize)>,
+    /// `type T = X;`: T → X tagged where it is written; None when T is not one alias.
+    aliases: RefCell<HashMap<String, Option<String>>>,
+    /// Each type name's defining modules (`homes_of`), read once.
+    homes: RefCell<HashMap<String, Rc<Vec<Home>>>>,
 }
 
 impl Cx<'_> {
@@ -898,9 +951,9 @@ impl Cx<'_> {
                     && p.child_by_field_name("pattern")
                         .is_some_and(|pat| pattern_binds(pat, &f.src, var))
                 {
-                    found = p
-                        .child_by_field_name("type")
-                        .map(|t| type_name(text(t, &f.src)));
+                    found = p.child_by_field_name("type").map(|t| {
+                        self.tag(f, &module_of(f, t), Some(t.start_byte()), text(t, &f.src))
+                    });
                 }
             }
         }
@@ -928,11 +981,14 @@ impl Cx<'_> {
         if let Some(l) = lets.into_iter().max_by_key(|l| l.start_byte()) {
             found = l
                 .child_by_field_name("type")
-                .map(|t| type_name(text(t, &f.src)))
+                .map(|t| self.tag(f, &module_of(f, t), Some(t.start_byte()), text(t, &f.src)))
                 .or_else(|| {
                     // `at: v`: only earlier `let`s, so `let x = x.f()` does not loop.
                     l.child_by_field_name("value").and_then(|v| {
-                        constructed_type(f, v).or_else(|| self.receiver_type(f, v, v))
+                        constructed_type(f, v)
+                            .map(|p| self.tag_path(f, &module_of(f, v), Some(v.start_byte()), &p))
+                            .or_else(|| self.fn_value_type(f, v, l, var))
+                            .or_else(|| self.receiver_type(f, v, v))
                     })
                 });
             if found.is_none() {
@@ -940,6 +996,52 @@ impl Cx<'_> {
             }
         }
         found
+    }
+
+    /// `let (tx, rx) = channel(16);`: the type a free function of this file returns,
+    /// or the tuple element at `var`'s position.
+    fn fn_value_type(&self, f: &File, v: Node, l: Node, var: &str) -> Option<String> {
+        let mut v = v;
+        while matches!(v.kind(), "try_expression" | "await_expression") {
+            v = v.named_child(0)?;
+        }
+        if v.kind() != "call_expression" {
+            return None;
+        }
+        let mut func = v.child_by_field_name("function")?;
+        if func.kind() == "generic_function" {
+            func = func.child_by_field_name("function")?;
+        }
+        if !matches!(func.kind(), "identifier" | "scoped_identifier") {
+            return None;
+        }
+        let segs = path_segments(text(func, &f.src));
+        let name = segs.last()?.clone();
+        let pat = l.child_by_field_name("pattern")?;
+        let pick = |g: &File, decl: Node| -> Option<String> {
+            let mut ret = text(decl.child_by_field_name("return_type")?, &g.src);
+            if pat.kind() == "tuple_pattern" {
+                // `_` is not a named node: count every element, not the punctuation.
+                let mut c = pat.walk();
+                let i = pat
+                    .children(&mut c)
+                    .filter(|p| !matches!(p.kind(), "(" | ")" | ","))
+                    .position(|p| pattern_binds(p, &f.src, var))?;
+                ret = tuple_elems(ret)?.get(i).copied()?;
+            }
+            return_type(ret, "")?;
+            Some(self.tag(g, &module_of(g, decl), None, unwrap_ret(ret)))
+        };
+        if segs.len() == 1
+            && let Some(decl) = free_fn(f, &name)
+        {
+            return pick(f, decl);
+        }
+        // `queue::local()`, or an imported `local()`: the fn in its module's file.
+        let (k, p) = self.absolute(f, &module_of(f, v), &segs, 6, Some(v.start_byte()))?;
+        let rel = self.module_file(&k, &p[..p.len().checked_sub(1)?])?;
+        self.with_file(&rel, |g| pick(g, free_fn(g, &name)?))
+            .flatten()
     }
 
     /// `self.items`, `self.items.iter()`, `self.items.iter_mut().enumerate()`, `&self.items`:
@@ -975,7 +1077,8 @@ impl Cx<'_> {
                     }
                     let field = text(v.child_by_field_name("field")?, &f.src);
                     let owner = enclosing_impl_type(f, at)?;
-                    return element_type(&field_type_text(f, &owner, field)?);
+                    return element_type(&field_type_text(f, &owner, field)?)
+                        .map(|e| self.tag_bare(e));
                 }
                 _ => return None,
             }
@@ -985,7 +1088,7 @@ impl Cx<'_> {
     /// `self`, a typed local, `self.field` (the field's declared type), `Foo::new()`.
     fn receiver_type(&self, f: &File, r: Node, at: Node) -> Option<String> {
         match r.kind() {
-            "self" => enclosing_impl_type(f, at),
+            "self" => self.impl_tag(f, at),
             "identifier" => self
                 .local_type_of(f, at, text(r, &f.src))
                 .filter(|t| !t.is_empty()),
@@ -993,17 +1096,32 @@ impl Cx<'_> {
                 // `self.handle.shared`: each step's declared field type.
                 let v = r.child_by_field_name("value")?;
                 let field = text(r.child_by_field_name("field")?, &f.src);
-                let owner = if v.kind() == "self" {
-                    enclosing_impl_type(f, at)?
+                let t = if v.kind() == "self" {
+                    self.impl_tag(f, at)?
                 } else {
-                    type_name(&self.receiver_type(f, v, at)?)
+                    self.receiver_type(f, v, at)?
                 };
-                field_type(f, &owner, field).or_else(|| {
-                    self.files
-                        .values()
-                        .find_map(|g| field_type(g, &owner, field))
-                })
+                let home = t.split_once(TAG).map(|(_, h)| h.to_string());
+                let owner = bare(&type_name(&t)).to_string();
+                let field_in =
+                    |g: &File| field_decl(g, &owner, field).map(|(t, m)| self.tag(g, &m, None, &t));
+                // A shared type name with a known home: that module's struct.
+                if home.as_deref() == Some("?") {
+                    return None; // two structs of that name, and not known which
+                }
+                let homed = home.and_then(|h| {
+                    let mut it = h.split('/');
+                    let k = it.next()?;
+                    let m: Vec<String> = it.map(String::from).collect();
+                    let rel = self.module_file(k, &m)?;
+                    self.with_file(&rel, field_in).flatten()
+                });
+                homed
+                    .or_else(|| field_in(f))
+                    .or_else(|| self.files.values().find_map(field_in))
             }
+            // `open(..)?`, `fut.await`: the call's type (`Result` is already unwrapped).
+            "try_expression" | "await_expression" => self.receiver_type(f, r.named_child(0)?, at),
             "parenthesized_expression" | "reference_expression" | "unary_expression" => {
                 let mut c = r.walk();
                 let inner = r.named_children(&mut c).last()?;
@@ -1014,17 +1132,21 @@ impl Cx<'_> {
                 if func.kind() != "field_expression" {
                     // `Foo::new()`, or `Builder::new_current_thread()`: what the
                     // associated fn declares it returns.
-                    return constructed_type(f, r).or_else(|| {
-                        if func.kind() != "scoped_identifier" {
-                            return None;
-                        }
-                        let segs = path_segments(text(func, &f.src));
-                        let (m, ty) = (segs.last()?, segs.get(segs.len().checked_sub(2)?)?);
-                        if !is_upper(ty) {
-                            return None;
-                        }
-                        self.ret(ty, m)
-                    });
+                    return constructed_type(f, r)
+                        .map(|p| self.tag_path(f, &module_of(f, r), Some(r.start_byte()), &p))
+                        .or_else(|| {
+                            if func.kind() != "scoped_identifier" {
+                                return None;
+                            }
+                            let segs = path_segments(text(func, &f.src));
+                            let (m, ty) = (segs.last()?, segs.get(segs.len().checked_sub(2)?)?);
+                            if !is_upper(ty) {
+                                return None;
+                            }
+                            let owner = segs[..segs.len() - 1].join("::");
+                            let at = Some(r.start_byte());
+                            self.ret(&self.tag_path(f, &module_of(f, r), at, &owner), m)
+                        });
                 }
                 // A chain `root.a(..).b(..)`: the methods, outermost first.
                 let mut methods = vec![text(func.child_by_field_name("field")?, &f.src)];
@@ -1074,7 +1196,7 @@ impl Cx<'_> {
                 }
                 let field = text(v.child_by_field_name("field")?, &f.src);
                 let owner = enclosing_impl_type(f, at)?;
-                element_type(&field_type_text(f, &owner, field)?)
+                element_type(&field_type_text(f, &owner, field)?).map(|e| self.tag_bare(e))
             }
             _ => None,
         }
@@ -1087,13 +1209,56 @@ impl Cx<'_> {
         if matches!(m, "unwrap" | "expect" | "clone" | "unwrap_or_default") {
             return Some(ty.to_string());
         }
-        self.returns.get(&(ty.to_string(), m.to_string()))?.clone()
+        let b = bare(ty);
+        let Some(r) = self.returns.get(&(type_name(b), m.to_string())) else {
+            // Not declared on `ty`: a pin projection or a guard (`self.project()`,
+            // `x.lock()`) derefs to the same type, in this crate's code. `ty` is
+            // already out of its `Result`/`Option`, so `.context(..)?` keeps it too.
+            let same = matches!(
+                m,
+                "project"
+                    | "project_ref"
+                    | "lock"
+                    | "borrow"
+                    | "borrow_mut"
+                    | "get_mut"
+                    | "read"
+                    | "write"
+                    | "as_ref"
+                    | "as_mut"
+                    | "as_deref"
+                    | "context"
+                    | "with_context"
+                    | "map_err"
+                    | "ok"
+                    | "ok_or"
+                    | "ok_or_else"
+                    | "unwrap_or"
+                    | "unwrap_or_else"
+                    | "cloned"
+                    | "copied"
+            );
+            return (same && !b.starts_with("std::") && !STD_TYPES.contains(&b))
+                .then(|| ty.to_string());
+        };
+        let r = r.clone()?;
+        if r == type_name(b) {
+            return Some(ty.to_string()); // `-> Self`: the same type, the same tag
+        }
+        // A shared type name: resolve the written path where the method declares it.
+        if self.target.impl_type.as_deref() == Some(r.as_str())
+            && let Some((rel, module, written)) = self.ret_decls.get(&(type_name(b), m.to_string()))
+            && let Some(t) = self.with_file(rel, |g| self.tag(g, module, None, written))
+        {
+            return Some(t);
+        }
+        Some(self.tag_bare(r))
     }
 
     /// A type path as `of_type` reads it: `std::T` for a standard type, `ext::T` for
     /// another crate's type, else `T`.
     fn resolve(&self, f: &File, t: &str) -> String {
-        if t.starts_with("std::") || t.starts_with("ext::") {
+        if t.starts_with("std::") || t.starts_with("ext::") || t.contains(TAG) {
             return t.to_string();
         }
         let segs: Vec<&str> = t.split("::").collect();
@@ -1149,8 +1314,12 @@ impl Cx<'_> {
         if !self.target.has_self {
             return Verdict::Other;
         }
-        let methods = self.defs.iter().filter(|d| d.has_self).count();
-        if methods == 1 && !self.target.in_trait {
+        let others = self
+            .defs
+            .iter()
+            .filter(|d| d.has_self && !self.is_target(d))
+            .count();
+        if others == 0 && !self.target.in_trait {
             Verdict::This
         } else {
             Verdict::Possible
@@ -1159,8 +1328,20 @@ impl Cx<'_> {
 
     /// A method or associated fn reached through the type `t`.
     fn of_type(&self, t: &str) -> Verdict {
+        let (t, tag) = match t.split_once(TAG) {
+            Some((b, h)) => (b, Some(h)),
+            None => (t, None),
+        };
         if self.target.impl_type.as_deref() == Some(t) {
-            return Verdict::This;
+            if self.ty_homes.is_empty() {
+                return Verdict::This;
+            }
+            // Two types share the name: the receiver's home decides.
+            return match (tag, &self.target_home) {
+                (Some(h), Some(th)) if h != "?" && h == home_key(th) => Verdict::This,
+                (Some(h), Some(_)) if h != "?" => Verdict::Other,
+                _ => Verdict::Possible,
+            };
         }
         if STD_TYPES.contains(&t) || t.starts_with("std::") {
             return Verdict::Other;
@@ -1177,12 +1358,18 @@ impl Cx<'_> {
         if self
             .defs
             .iter()
-            .any(|d| d.impl_type.as_deref() == Some(t) && d != self.target)
+            .any(|d| d.impl_type.as_deref() == Some(t) && !self.is_target(d))
         {
             return Verdict::Other;
         }
         if self.target.free {
             return Verdict::Other;
+        }
+        // `type EntryList = LinkedList<..>`: the aliased type.
+        if tag.is_none()
+            && let Some(x) = self.alias(t)
+        {
+            return self.of_type(&x);
         }
         // A type with no method of this name here: a trait impl, `Deref`, or an
         // external type.
@@ -1195,7 +1382,7 @@ impl Cx<'_> {
             return self.plain_fallback(f, n);
         };
         if last == "Self" {
-            return match enclosing_impl_type(f, n) {
+            return match self.impl_tag(f, n) {
                 Some(t) => self.of_type(&t),
                 None => Verdict::Possible,
             };
@@ -1204,13 +1391,23 @@ impl Cx<'_> {
             return Verdict::Other;
         }
         if is_upper(last) {
-            return self.of_type(&self.resolve(f, &q.join("::")));
+            let t = self.tag_path(f, &module_of(f, n), Some(n.start_byte()), &q.join("::"));
+            return self.of_type(&self.resolve(f, &t));
         }
         if !self.target.free {
             return Verdict::Other; // `module::name` reaches a free fn, not a method
         }
         let here = module_of(f, n);
         let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+        // The path read through this file's `use` lines and the modules' `pub use`
+        // re-exports: where the function is defined.
+        if let Some((k, mut p)) = self.absolute(f, &here, q, 6, Some(n.start_byte())) {
+            p.push(self.name.to_string());
+            let (k, p) = self.defined_at(&k, &p, 6);
+            if let Some((_, m)) = p.split_last() {
+                candidates.push((k, m.to_vec()));
+            }
+        }
         match q[0].as_str() {
             "crate" => candidates.push((f.krate.clone(), q[1..].to_vec())),
             "self" => {
@@ -1251,7 +1448,7 @@ impl Cx<'_> {
         if self
             .defs
             .iter()
-            .any(|d| d != t && candidates.iter().any(|c| exact(d, c)))
+            .any(|d| !self.is_target(d) && candidates.iter().any(|c| exact(d, c)))
         {
             return Verdict::Other;
         }
@@ -1265,13 +1462,13 @@ impl Cx<'_> {
             .iter()
             .filter(|d| candidates.iter().any(|c| under(d, c)))
             .collect();
-        if reexport.len() == 1 && reexport[0] == t {
+        if !reexport.is_empty() && reexport.iter().all(|d| self.is_target(d)) {
             return Verdict::This;
         }
         if q.len() == 1 && t.module.last() == Some(&q[0]) {
             return Verdict::This;
         }
-        if !reexport.is_empty() && !reexport.contains(&t) {
+        if !reexport.is_empty() && !reexport.iter().any(|d| self.is_target(d)) {
             return Verdict::Other;
         }
         // `other_crate::name`, a glob re-export, a module imported under another name.
@@ -1322,7 +1519,7 @@ impl Cx<'_> {
             .filter(|d| d.path == path && d.free && here.starts_with(&d.module))
             .collect();
         if !own.is_empty() {
-            return if own.contains(&self.target) {
+            return if own.iter().any(|d| self.is_target(d)) {
                 Verdict::This
             } else {
                 Verdict::Other
@@ -1398,12 +1595,23 @@ impl Cx<'_> {
                 }
                 let recv = prev.and_then(|p| p.prev_sibling());
                 if recv.is_some_and(|r| text(r, &f.src) == "self") {
-                    match enclosing_impl_type(f, n) {
+                    match self.impl_tag(f, n) {
                         Some(t) if self.target.has_self => self.of_type(&t),
                         _ => Verdict::Other,
                     }
                 } else if self.target.has_self {
-                    self.unknown_receiver()
+                    // `assert_eq!(x.name(), 1)`: a local `x` (not `a.x`) has the
+                    // type its `let` or parameter gives it.
+                    let local = recv.filter(|r| {
+                        r.kind() == "identifier" && r.prev_sibling().is_none_or(|p| p.kind() != ".")
+                    });
+                    match local.and_then(|r| {
+                        self.local_type_of(f, n, text(r, &f.src))
+                            .filter(|t| !t.is_empty())
+                    }) {
+                        Some(t) => self.of_type(&self.resolve(f, &t)),
+                        None => self.unknown_receiver(),
+                    }
                 } else {
                     Verdict::Other
                 }
@@ -1504,6 +1712,51 @@ fn imported_root(f: &File, name: &str) -> Option<String> {
     None
 }
 
+/// The one free function (not in an `impl` or `trait`) named `name` in `f`.
+fn free_fn<'t>(f: &'t File, name: &str) -> Option<Node<'t>> {
+    let mut found = Vec::new();
+    let mut stack = vec![f.tree.root_node()];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "impl_item" | "trait_item" => continue,
+            "function_item" => {
+                if n.child_by_field_name("name")
+                    .is_some_and(|m| text(m, &f.src) == name)
+                {
+                    found.push(n);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let mut c = n.walk();
+        stack.extend(n.named_children(&mut c));
+    }
+    (found.len() == 1).then(|| found[0])
+}
+
+/// `(Sender<T>, Receiver<T>)`: its top-level elements.
+fn tuple_elems(t: &str) -> Option<Vec<&str>> {
+    let inner = t.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let (mut depth, mut start, mut out) = (0i32, 0, Vec::new());
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = inner[start..].trim();
+    if !last.is_empty() {
+        out.push(last);
+    }
+    Some(out)
+}
+
 /// `Foo::new(…)`, `Foo { … }`, `Foo::default()`: `Foo`.
 fn constructed_type(f: &File, v: Node) -> Option<String> {
     match v.kind() {
@@ -1517,6 +1770,12 @@ fn constructed_type(f: &File, v: Node) -> Option<String> {
             }
             let segs = path_segments(text(func, &f.src));
             let (ctor, ty) = (segs.last()?, segs.get(segs.len().checked_sub(2)?)?);
+            // `Arc::new(Foo::new())`: a smart pointer derefs to its content's methods.
+            if matches!(ty.as_str(), "Arc" | "Rc" | "Box") && matches!(ctor.as_str(), "new" | "pin")
+            {
+                let args = v.child_by_field_name("arguments")?;
+                return constructed_type(f, args.named_child(0)?);
+            }
             // The type's whole path (`hir::translate::TranslatorBuilder`): `resolve`
             // reads where it comes from.
             (is_upper(ty) && matches!(ctor.as_str(), "new" | "now" | "default" | "with_capacity"))
@@ -1539,10 +1798,19 @@ fn constructed_type(f: &File, v: Node) -> Option<String> {
     }
 }
 
+/// A file's items: (name, module path).
+type FileItems = Vec<(String, Vec<String>)>;
+
+type RetDecls = HashMap<(String, String), (String, Vec<String>, String)>;
+
 /// Every method of every `impl T` block in `files`: (T, name) → the type it returns
 /// (`return_type`). Two impls that disagree (generic impls, cfg twins) give `None`.
-fn method_returns(files: &HashMap<String, File>) -> HashMap<(String, String), Option<String>> {
+/// Also where each return type is written (`RetDecls`).
+fn method_returns(
+    files: &HashMap<String, File>,
+) -> (HashMap<(String, String), Option<String>>, RetDecls) {
     let mut out: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut decls = RetDecls::new();
     for f in files.values() {
         let mut stack = vec![f.tree.root_node()];
         while let Some(n) = stack.pop() {
@@ -1564,10 +1832,17 @@ fn method_returns(files: &HashMap<String, File>) -> HashMap<(String, String), Op
                 continue;
             };
             let ty = type_name(text(ty, &f.src));
-            let ret = n
+            let written = n
                 .child_by_field_name("return_type")
-                .and_then(|r| return_type(text(r, &f.src), &ty));
+                .map(|r| text(r, &f.src));
+            let ret = written.and_then(|r| return_type(r, &ty));
             let key = (ty, text(nm, &f.src).to_string());
+            if let Some(w) = written {
+                decls.insert(
+                    key.clone(),
+                    (f.rel.clone(), module_of(f, n), unwrap_ret(w).to_string()),
+                );
+            }
             match out.get(&key) {
                 Some(prev) if *prev != ret => {
                     out.insert(key, None);
@@ -1579,7 +1854,22 @@ fn method_returns(files: &HashMap<String, File>) -> HashMap<(String, String), Op
             }
         }
     }
-    out
+    (out, decls)
+}
+
+/// `&mut io::Result<Foo<T>>` → `Foo<T>`: the written type a method's caller holds.
+fn unwrap_ret(ret: &str) -> &str {
+    let t = ret.trim().trim_start_matches('&').trim_start();
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    if let Some(i) = t.find('<') {
+        let last = t[..i].rsplit("::").next().unwrap_or(&t[..i]).trim();
+        if matches!(last, "Result" | "Option")
+            && let Some(j) = t.rfind('>')
+        {
+            return unwrap_ret(first_generic(&t[i + 1..j]));
+        }
+    }
+    t
 }
 
 /// A declared return type as a receiver type: `&mut Self` → `impl_ty`,
@@ -1622,11 +1912,6 @@ fn first_generic(g: &str) -> &str {
     g
 }
 
-/// The declared type of `field` in `struct owner { … }` in the same file.
-fn field_type(f: &File, owner: &str, field: &str) -> Option<String> {
-    field_type_text(f, owner, field).map(|t| type_name(&t))
-}
-
 /// The element of `Box<[T; N]>`, `[T]`, `Vec<T>`, `VecDeque<T>`: `T`.
 fn element_type(t: &str) -> Option<String> {
     let mut t = t
@@ -1653,6 +1938,12 @@ fn element_type(t: &str) -> Option<String> {
 }
 
 fn field_type_text(f: &File, owner: &str, field: &str) -> Option<String> {
+    field_decl(f, owner, field).map(|(t, _)| t)
+}
+
+/// The written type of `field` in `struct owner` in `f` (named or tuple field `0`),
+/// and the struct's module.
+fn field_decl(f: &File, owner: &str, field: &str) -> Option<(String, Vec<String>)> {
     let mut stack = vec![f.tree.root_node()];
     while let Some(c) = stack.pop() {
         if c.kind() == "struct_item"
@@ -1660,7 +1951,17 @@ fn field_type_text(f: &File, owner: &str, field: &str) -> Option<String> {
                 .is_some_and(|n| text(n, &f.src) == owner)
         {
             let body = c.child_by_field_name("body")?;
+            let module = module_of(f, c);
             let mut w = body.walk();
+            if body.kind() == "ordered_field_declaration_list" {
+                // `struct ReadHalf<'a>(&'a UnixStream)`: field `0` is the first type.
+                let i: usize = field.parse().ok()?;
+                let types: Vec<Node> = body
+                    .named_children(&mut w)
+                    .filter(|t| !matches!(t.kind(), "visibility_modifier" | "attribute_item"))
+                    .collect();
+                return types.get(i).map(|t| (text(*t, &f.src).to_string(), module));
+            }
             for fd in body.named_children(&mut w) {
                 if fd.kind() == "field_declaration"
                     && fd
@@ -1669,7 +1970,7 @@ fn field_type_text(f: &File, owner: &str, field: &str) -> Option<String> {
                 {
                     return fd
                         .child_by_field_name("type")
-                        .map(|t| text(t, &f.src).to_string());
+                        .map(|t| (text(t, &f.src).to_string(), module));
                 }
             }
             return None;
@@ -1678,6 +1979,688 @@ fn field_type_text(f: &File, owner: &str, field: &str) -> Option<String> {
         stack.extend(c.named_children(&mut w));
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Name resolution: which module a written path names
+// ---------------------------------------------------------------------------
+
+/// A crate and a module path: where an item is defined.
+type Home = (String, Vec<String>);
+
+/// One name a `use` declaration brings into scope.
+#[derive(Clone, Debug)]
+struct UseItem {
+    /// The name in scope (`c` for `use a::b::c`, `x` for `use a::b as x`); `*` for a glob.
+    bound: String,
+    /// The path of the item, as written (`["a", "b", "c"]`); a glob's module path.
+    full: Vec<String>,
+    /// The module the `use` sits in.
+    module: Vec<String>,
+    /// The block (`{ … }`, byte range) a `use` inside a function sits in: it
+    /// applies there only, before the module's names. None at module level.
+    scope: Option<(usize, usize)>,
+}
+
+/// A tag on a receiver type whose bare name the target's type shares with another
+/// type: `T#crate/a/b` (the module that defines it) or `T#?` (not resolved).
+const TAG: char = '#';
+
+fn bare(t: &str) -> &str {
+    t.split(TAG).next().unwrap_or(t)
+}
+
+fn home_key((k, m): &Home) -> String {
+    let mut s = k.clone();
+    for x in m {
+        s.push('/');
+        s.push_str(x);
+    }
+    s
+}
+
+/// `Arc<Mutex<a::Foo<T>>>` → `["a", "Foo"]`: the path `type_name` takes the last
+/// segment of.
+fn type_path(t: &str) -> Vec<String> {
+    let mut t = t.trim();
+    loop {
+        let before = t;
+        for p in ["&", "mut ", "dyn ", "impl ", "const ", "*"] {
+            t = t.strip_prefix(p).unwrap_or(t).trim_start();
+        }
+        if t.starts_with('\'') {
+            t = t.split_once(' ').map_or("", |(_, r)| r).trim_start();
+        }
+        if t == before {
+            break;
+        }
+    }
+    let (base, generics) = match t.find('<') {
+        Some(i) => (&t[..i], Some(&t[i + 1..t.rfind('>').unwrap_or(t.len())])),
+        None => (t, None),
+    };
+    let segs = path_segments(base.trim());
+    if let (Some(last), Some(g)) = (segs.last(), generics)
+        && WRAPPERS.contains(&last.as_str())
+    {
+        return type_path(first_generic(g));
+    }
+    segs
+}
+
+/// Every name the `use` declarations of `f` bring into scope.
+fn use_items(f: &File) -> Vec<UseItem> {
+    type Scope = Option<(usize, usize)>;
+    fn walk(
+        f: &File,
+        n: Node,
+        prefix: &[String],
+        module: &[String],
+        scope: Scope,
+        out: &mut Vec<UseItem>,
+    ) {
+        let mut push = |bound: String, full: Vec<String>| {
+            out.push(UseItem {
+                bound,
+                full,
+                module: module.to_vec(),
+                scope,
+            })
+        };
+        match n.kind() {
+            "identifier" | "crate" | "super" | "metavariable" => {
+                let mut full = prefix.to_vec();
+                full.push(text(n, &f.src).to_string());
+                push(text(n, &f.src).to_string(), full);
+            }
+            "self" => {
+                // `use a::b::{self}`: the module `b`.
+                if let Some(last) = prefix.last() {
+                    push(last.clone(), prefix.to_vec());
+                }
+            }
+            "scoped_identifier" => {
+                let mut full = prefix.to_vec();
+                full.extend(path_segments(text(n, &f.src)));
+                if let Some(last) = full.last().cloned() {
+                    if last == "self" {
+                        full.pop();
+                        if let Some(l) = full.last().cloned() {
+                            push(l, full);
+                        }
+                    } else {
+                        push(last, full);
+                    }
+                }
+            }
+            "use_as_clause" => {
+                let (Some(path), Some(alias)) = (
+                    n.child_by_field_name("path"),
+                    n.child_by_field_name("alias"),
+                ) else {
+                    return;
+                };
+                let mut full = prefix.to_vec();
+                full.extend(path_segments(text(path, &f.src)));
+                push(text(alias, &f.src).to_string(), full);
+            }
+            "use_wildcard" => {
+                let mut full = prefix.to_vec();
+                let t = text(n, &f.src).trim_end_matches('*').trim_end_matches("::");
+                full.extend(path_segments(t));
+                push("*".to_string(), full);
+            }
+            "use_list" => {
+                let mut c = n.walk();
+                for ch in n.named_children(&mut c) {
+                    walk(f, ch, prefix, module, scope, out);
+                }
+            }
+            "scoped_use_list" => {
+                let mut p = prefix.to_vec();
+                if let Some(path) = n.child_by_field_name("path") {
+                    p.extend(path_segments(text(path, &f.src)));
+                }
+                if let Some(list) = n.child_by_field_name("list") {
+                    walk(f, list, &p, module, scope, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![f.tree.root_node()];
+    while let Some(c) = stack.pop() {
+        if c.kind() == "use_declaration" {
+            if let Some(arg) = c.child_by_field_name("argument") {
+                let module = module_of(f, c);
+                let scope = ancestor(c, &["block", "mod_item", "source_file"])
+                    .filter(|b| b.kind() == "block")
+                    .map(|b| (b.start_byte(), b.end_byte()));
+                walk(f, arg, &[], &module, scope, &mut out);
+            }
+            continue;
+        }
+        let mut w = c.walk();
+        stack.extend(c.named_children(&mut w));
+    }
+    out
+}
+
+/// The module-level items of `f` (types, traits, free functions, modules, consts):
+/// (name, module).
+fn file_items(f: &File) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![f.tree.root_node()];
+    while let Some(c) = stack.pop() {
+        let mut w = c.walk();
+        stack.extend(c.named_children(&mut w));
+        if !matches!(
+            c.kind(),
+            "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "type_item"
+                | "trait_item"
+                | "function_item"
+                | "mod_item"
+                | "const_item"
+                | "static_item"
+        ) {
+            continue;
+        }
+        if ancestor(c, &["impl_item", "trait_item", "function_item"]).is_some() {
+            continue;
+        }
+        if let Some(nm) = c.child_by_field_name("name") {
+            out.push((text(nm, &f.src).to_string(), module_of(f, c)));
+        }
+    }
+    out
+}
+
+impl Cx<'_> {
+    /// Run `g` on the file at `rel`: a parsed input file, or a module file read from
+    /// disk (once) to follow a re-export.
+    fn with_file<R>(&self, rel: &str, g: impl FnOnce(&File) -> R) -> Option<R> {
+        if let Some(f) = self.files.get(rel) {
+            return Some(g(f));
+        }
+        let cached = self.loaded.borrow().get(rel).cloned();
+        let f = match cached {
+            Some(f) => f?,
+            None => {
+                let f = std::fs::read_to_string(self.root.join(rel))
+                    .ok()
+                    .and_then(|src| {
+                        let mut parser = Parser::new();
+                        parser
+                            .set_language(&tree_sitter_rust::LANGUAGE.into())
+                            .ok()?;
+                        let (src, tree) = parse_flat(&mut parser, src)?;
+                        let (krate, module, _, base) = crate_module(self.root, rel);
+                        Some(Rc::new(File {
+                            rel: rel.to_string(),
+                            src,
+                            tree,
+                            krate,
+                            module,
+                            base,
+                            deps: HashSet::new(),
+                        }))
+                    });
+                self.loaded.borrow_mut().insert(rel.to_string(), f.clone());
+                f?
+            }
+        };
+        Some(g(&f))
+    }
+
+    fn uses_of(&self, f: &File) -> Rc<Vec<UseItem>> {
+        if let Some(u) = self.uses.borrow().get(&f.rel) {
+            return u.clone();
+        }
+        let u = Rc::new(use_items(f));
+        self.uses.borrow_mut().insert(f.rel.clone(), u.clone());
+        u
+    }
+
+    fn items_of(&self, f: &File) -> Rc<FileItems> {
+        if let Some(i) = self.items.borrow().get(&f.rel) {
+            return i.clone();
+        }
+        let i = Rc::new(file_items(f));
+        self.items.borrow_mut().insert(f.rel.clone(), i.clone());
+        i
+    }
+
+    /// The file of module `m` of crate `k` (`a/b.rs`, `a/b/mod.rs`, or the file of
+    /// the nearest enclosing module for an inline `mod b { }`), relative to the root.
+    /// `type T = X;` defined once in the workspace (and T defined nowhere else): X,
+    /// tagged in the alias's module.
+    fn alias(&self, t: &str) -> Option<String> {
+        if let Some(x) = self.aliases.borrow().get(t) {
+            return x.clone();
+        }
+        self.aliases.borrow_mut().insert(t.to_string(), None); // a cycle stops here
+        let defs = (self.type_defs)(t);
+        let x = match defs.as_slice() {
+            [(rel, line)] => self
+                .with_file(rel, |g| {
+                    let src_line = g.src.split('\n').nth(line - 1)?;
+                    let col = src_line.len() - src_line.trim_start().len();
+                    let at = tree_sitter::Point::new(line - 1, col);
+                    let row = g.tree.root_node().descendant_for_point_range(at, at)?;
+                    let mut stack = vec![row];
+                    let mut n = row;
+                    while let Some(p) = n.parent() {
+                        stack.push(p);
+                        n = p;
+                    }
+                    let item = stack
+                        .into_iter()
+                        .find(|n| n.kind() == "type_item" && n.start_position().row == line - 1)?;
+                    if item.child_by_field_name("name").map(|n| text(n, &g.src)) != Some(t) {
+                        return None;
+                    }
+                    let v = item.child_by_field_name("type")?;
+                    Some(self.tag(g, &module_of(g, item), None, text(v, &g.src)))
+                })
+                .flatten(),
+            _ => None,
+        };
+        self.aliases.borrow_mut().insert(t.to_string(), x.clone());
+        x
+    }
+
+    fn module_file(&self, k: &str, m: &[String]) -> Option<String> {
+        let base = self
+            .files
+            .values()
+            .find(|f| f.krate == k)
+            .map(|f| f.base.clone())
+            .or_else(|| {
+                self.loaded
+                    .borrow()
+                    .values()
+                    .flatten()
+                    .find(|f| f.krate == k)
+                    .map(|f| f.base.clone())
+            })?;
+        for end in (0..=m.len()).rev() {
+            let part = &m[..end];
+            let cands: Vec<PathBuf> = if part.is_empty() {
+                vec![base.join("lib.rs"), base.join("main.rs")]
+            } else {
+                let mut d = base.clone();
+                for x in &part[..part.len() - 1] {
+                    d.push(x);
+                }
+                let last = &part[part.len() - 1];
+                vec![d.join(format!("{last}.rs")), d.join(last).join("mod.rs")]
+            };
+            for c in cands {
+                if c.is_file() {
+                    return c
+                        .strip_prefix(self.root)
+                        .ok()
+                        .map(|r| r.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        None
+    }
+
+    /// The absolute path (crate, segments) that `segs`, written in module `here` of
+    /// `f`, names: through `crate`/`self`/`super`, crate names, the module's `use`
+    /// lines and globs, and its own items. None when the first segment is not found.
+    fn absolute(
+        &self,
+        f: &File,
+        here: &[String],
+        segs: &[String],
+        depth: usize,
+        at: Option<usize>,
+    ) -> Option<Home> {
+        if depth == 0 || segs.is_empty() {
+            return None;
+        }
+        let first = segs[0].as_str();
+        let rest = &segs[1..];
+        let join = |mut a: Vec<String>, b: &[String]| {
+            a.extend_from_slice(b);
+            a
+        };
+        match first {
+            "crate" => return Some((f.krate.clone(), rest.to_vec())),
+            "self" => return Some((f.krate.clone(), join(here.to_vec(), rest))),
+            "super" => {
+                let mut m = here.to_vec();
+                let mut r = segs;
+                while r.first().is_some_and(|s| s == "super") {
+                    m.pop()?;
+                    r = &r[1..];
+                }
+                return Some((f.krate.clone(), join(m, r)));
+            }
+            "std" | "core" | "alloc" => return Some(("std".to_string(), rest.to_vec())),
+            "Self" => return None,
+            _ => {}
+        }
+        let uses = self.uses_of(f);
+        // The blocks around `at` (innermost first), then the module: a `use` in a
+        // function body shadows the module's names.
+        let mut scopes: Vec<Option<(usize, usize)>> = uses
+            .iter()
+            .filter_map(|u| u.scope)
+            .filter(|(a, b)| at.is_some_and(|x| *a <= x && x < *b))
+            .map(Some)
+            .collect();
+        scopes.sort_by_key(|s| s.map_or(usize::MAX, |(a, b)| b - a));
+        scopes.dedup();
+        scopes.push(None);
+        for sc in scopes {
+            let in_scope = |u: &&UseItem| u.scope == sc && (sc.is_some() || u.module == here);
+            for u in uses.iter().filter(in_scope).filter(|u| u.bound == first) {
+                if u.full.first().map(String::as_str) == Some(first) && u.full.len() == 1 {
+                    // `use name;`: a crate.
+                    return Some((first.to_string(), rest.to_vec()));
+                }
+                let inner = u.scope.map(|(a, _)| a);
+                if let Some((k, p)) = self.absolute(f, &u.module, &u.full, depth - 1, inner) {
+                    return Some((k, join(p, rest)));
+                }
+            }
+            if sc.is_none() {
+                if self
+                    .items_of(f)
+                    .iter()
+                    .any(|(n, m)| n == first && m == here)
+                {
+                    return Some((f.krate.clone(), join(here.to_vec(), segs)));
+                }
+                if first == f.krate || self.crates.contains(first) || f.deps.contains(first) {
+                    return Some((first.to_string(), rest.to_vec()));
+                }
+            }
+            // A glob (`use super::*` in a test module): the first glob whose module
+            // has the name.
+            for u in uses.iter().filter(in_scope).filter(|u| u.bound == "*") {
+                let inner = u.scope.map(|(a, _)| a);
+                let Some((k, g)) = self.absolute(f, &u.module, &u.full, depth - 1, inner) else {
+                    continue;
+                };
+                let mut p = g.clone();
+                p.push(first.to_string());
+                if self.module_has(&k, &g, first, depth - 1) {
+                    return Some((k, join(p, rest)));
+                }
+            }
+        }
+        None
+    }
+
+    /// Module `m` of crate `k` defines or imports `name`.
+    fn module_has(&self, k: &str, m: &[String], name: &str, depth: usize) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let Some(rel) = self.module_file(k, m) else {
+            return false;
+        };
+        self.with_file(&rel, |g| {
+            self.items_of(g).iter().any(|(n, gm)| n == name && gm == m)
+                || self
+                    .uses_of(g)
+                    .iter()
+                    .any(|u| u.bound == name && u.module == m && u.scope.is_none())
+        })
+        .unwrap_or(false)
+    }
+
+    /// Where the item at the absolute path `(k, p)` is defined: `pub use` re-exports
+    /// are followed through module files. A path that cannot be followed is returned
+    /// as it is.
+    fn defined_at(&self, k: &str, p: &[String], depth: usize) -> Home {
+        let unchanged = (k.to_string(), p.to_vec());
+        let Some((name, m)) = p.split_last() else {
+            return unchanged;
+        };
+        if depth == 0 || k == "std" {
+            return unchanged;
+        }
+        let Some(rel) = self.module_file(k, m) else {
+            return unchanged;
+        };
+        let next = self.with_file(&rel, |g| {
+            if self.items_of(g).iter().any(|(n, gm)| n == name && gm == m) {
+                return None; // defined here
+            }
+            let uses = self.uses_of(g);
+            let u = uses
+                .iter()
+                .find(|u| &u.bound == name && u.module == m && u.scope.is_none())?;
+            self.absolute(g, m, &u.full, depth, None)
+        });
+        match next.flatten() {
+            Some((k2, p2)) if (k2.as_str(), p2.as_slice()) != (k, p) => {
+                self.defined_at(&k2, &p2, depth - 1)
+            }
+            _ => unchanged,
+        }
+    }
+
+    /// The home (among `ty_homes`) of the type written `written` in module `here`
+    /// of `f`. None when the path cannot be followed to one home.
+    fn type_home(
+        &self,
+        f: &File,
+        here: &[String],
+        at: Option<usize>,
+        written: &str,
+    ) -> Option<Home> {
+        let segs = type_path(written);
+        let (k, p) = self.absolute(f, here, &segs, 6, at)?;
+        let (k, p) = self.defined_at(&k, &p, 6);
+        let m = p.split_last()?.1.to_vec();
+        let home = (k, m);
+        let homes = self.homes_of(&type_name(written));
+        if homes.contains(&home) {
+            return Some(home);
+        }
+        // A re-export the files did not show: one home under the module.
+        let under: Vec<&Home> = homes
+            .iter()
+            .filter(|(hk, hm)| *hk == home.0 && hm.starts_with(&home.1))
+            .collect();
+        (under.len() == 1).then(|| under[0].clone())
+    }
+
+    /// Fill `ty_homes` and `target_home` from the index's type definitions.
+    fn find_type_homes(&mut self) {
+        let Some(t) = self.target.impl_type.clone() else {
+            return;
+        };
+        if self.target.in_trait || t.starts_with("std::") {
+            return;
+        }
+        let homes = self.homes_of(&t);
+        if homes.len() < 2 {
+            return;
+        }
+        self.ty_homes = homes.to_vec();
+        self.set_target_home();
+    }
+
+    /// The modules that define a type named `t` (struct, enum, union, alias, trait),
+    /// read once.
+    fn homes_of(&self, t: &str) -> Rc<Vec<Home>> {
+        if let Some(h) = self.homes.borrow().get(t) {
+            return h.clone();
+        }
+        let mut homes: Vec<Home> = Vec::new();
+        for (path, line) in (self.type_defs)(t) {
+            let home = self
+                .with_file(&path, |g| {
+                    let row = line.checked_sub(1)?;
+                    let mut stack = vec![g.tree.root_node()];
+                    while let Some(c) = stack.pop() {
+                        if c.start_position().row > row || c.end_position().row < row {
+                            continue;
+                        }
+                        if matches!(
+                            c.kind(),
+                            "struct_item" | "enum_item" | "union_item" | "type_item" | "trait_item"
+                        ) && c
+                            .child_by_field_name("name")
+                            .is_some_and(|n| text(n, &g.src) == t && n.start_position().row == row)
+                        {
+                            return Some((g.krate.clone(), module_of(g, c)));
+                        }
+                        let mut w = c.walk();
+                        stack.extend(c.named_children(&mut w));
+                    }
+                    None
+                })
+                .flatten();
+            if let Some(h) = home
+                && !homes.contains(&h)
+            {
+                homes.push(h);
+            }
+        }
+        let homes = Rc::new(homes);
+        self.homes.borrow_mut().insert(t.to_string(), homes.clone());
+        homes
+    }
+
+    /// `target_home`: the module of the target's `impl` type.
+    fn set_target_home(&mut self) {
+        let target = self.target;
+        self.target_home = self
+            .with_file(&target.path, |f| {
+                let row = target.line.checked_sub(1)?;
+                let n = f.tree.root_node().descendant_for_point_range(
+                    tree_sitter::Point { row, column: 0 },
+                    tree_sitter::Point { row, column: 0 },
+                )?;
+                // The `fn` line: its node, then the `impl` above it.
+                let mut cur = Some(n);
+                let mut imp = None;
+                while let Some(c) = cur {
+                    if c.kind() == "impl_item" {
+                        imp = Some(c);
+                        break;
+                    }
+                    cur = c.parent();
+                }
+                let imp = imp.or_else(|| {
+                    let mut stack = vec![f.tree.root_node()];
+                    while let Some(c) = stack.pop() {
+                        if c.kind() == "impl_item"
+                            && c.start_position().row <= row
+                            && row <= c.end_position().row
+                        {
+                            return Some(c);
+                        }
+                        let mut w = c.walk();
+                        stack.extend(c.named_children(&mut w));
+                    }
+                    None
+                })?;
+                let ty = imp.child_by_field_name("type")?;
+                self.type_home(f, &module_of(f, imp), None, text(ty, &f.src))
+            })
+            .flatten();
+        if std::env::var_os("REFLEX_BIND_DEBUG").is_some() {
+            eprintln!(
+                "bind: homes of {:?}: {:?}; target {:?}",
+                self.target.impl_type, self.ty_homes, self.target_home
+            );
+        }
+    }
+
+    /// The receiver type written `written` in `f` at module `here`: its bare name,
+    /// tagged with its home when the target's type name is shared.
+    fn tag(&self, f: &File, here: &[String], at: Option<usize>, written: &str) -> String {
+        let t = type_name(written);
+        if !self.needs_home(&t) {
+            return t;
+        }
+        // Another crate's type of that name: `of_type` reads `std::` / `ext::`.
+        if let Some((k, _)) = self.absolute(f, here, &type_path(written), 6, at) {
+            if k == "std" {
+                return format!("std::{t}");
+            }
+            if k != f.krate && !self.crates.contains(&k) {
+                return format!("ext::{t}");
+            }
+        }
+        let out = match self.type_home(f, here, at, written) {
+            Some(h) => format!("{t}{TAG}{}", home_key(&h)),
+            None => format!("{t}{TAG}?"),
+        };
+        if std::env::var_os("REFLEX_BIND_DEBUG").is_some() {
+            eprintln!("bind: {} {here:?} `{written}` -> {out}", f.rel);
+        }
+        out
+    }
+
+    /// A written type path (`a::Foo`) as `resolve` reads it, tagged when its name is
+    /// the target's shared type name.
+    fn tag_path(&self, f: &File, here: &[String], at: Option<usize>, path: &str) -> String {
+        if !self.needs_home(&type_name(path)) {
+            return path.to_string();
+        }
+        self.tag(f, here, at, path)
+    }
+
+    /// A type name that needs its home in a tag: the target's `impl` type when that
+    /// name is shared (`ty_homes`), or another type name defined twice or more (its
+    /// fields are read by home, `receiver_type`).
+    fn needs_home(&self, t: &str) -> bool {
+        if self.target.impl_type.as_deref() == Some(t) {
+            return !self.ty_homes.is_empty();
+        }
+        if t.len() < 2 || !is_upper(t) || t.contains("::") || STD_TYPES.contains(&t) || t == "Self"
+        {
+            return false;
+        }
+        self.homes_of(t).len() > 1
+    }
+
+    /// A bare type name from a declared return type: tagged unknown when the
+    /// target's type name is shared.
+    fn tag_bare(&self, t: String) -> String {
+        if !self.ty_homes.is_empty() && self.target.impl_type.as_deref() == Some(t.as_str()) {
+            format!("{t}{TAG}?")
+        } else {
+            t
+        }
+    }
+
+    /// The `impl` type of the block around `n`, tagged.
+    fn impl_tag(&self, f: &File, n: Node) -> Option<String> {
+        let i = ancestor(n, &["impl_item", "trait_item"])?;
+        if i.kind() == "trait_item" {
+            return i
+                .child_by_field_name("name")
+                .map(|t| text(t, &f.src).to_string());
+        }
+        let ty = i.child_by_field_name("type")?;
+        Some(self.tag(f, &module_of(f, i), None, text(ty, &f.src)))
+    }
+
+    /// `d` is the target, or a `#[cfg]` twin of it (same file, module and type).
+    fn is_target(&self, d: &Def) -> bool {
+        let t = self.target;
+        d == t
+            || (d.path == t.path
+                && d.module == t.module
+                && d.impl_type == t.impl_type
+                && d.free == t.free
+                && d.has_self == t.has_self)
+    }
 }
 
 #[cfg(test)]
@@ -1710,15 +2693,35 @@ mod tests {
     fn verdicts(files: &[(&str, &str)], at: &str, name: &str) -> Vec<(String, Verdict)> {
         let dir = tree(files);
         let lines = lines_naming(dir.path(), files, name);
-        bind(dir.path(), at, name, &lines)
-            .unwrap()
-            .lines
-            .into_iter()
-            .map(|l| (format!("{}:{}", l.path, l.line), l.verdict))
-            .collect()
+        bind(dir.path(), at, name, &lines, &|t: &str| {
+            type_defs_in(files, t)
+        })
+        .unwrap()
+        .lines
+        .into_iter()
+        .map(|l| (format!("{}:{}", l.path, l.line), l.verdict))
+        .collect()
     }
 
     const CARGO: (&str, &str) = ("Cargo.toml", "[package]\nname = \"demo\"\n");
+
+    /// What the index's type search gives `bind`: the lines that define a type `t`.
+    fn type_defs_in(files: &[(&str, &str)], t: &str) -> Vec<(String, usize)> {
+        let re = regex::Regex::new(&format!(
+            r"\b(struct|enum|union|type|trait)\s+{}\b",
+            regex::escape(t)
+        ))
+        .unwrap();
+        let mut out = Vec::new();
+        for (p, s) in files {
+            for (i, l) in s.lines().enumerate() {
+                if p.ends_with(".rs") && re.is_match(l) {
+                    out.push((p.to_string(), i + 1));
+                }
+            }
+        }
+        out
+    }
 
     /// Held-out misses (2026-11-11): a type from `std` or a dependency, a builder
     /// chain on a dependency's type, an `if` block in a macro, a typed `self`.
@@ -1966,11 +2969,206 @@ mod tests {
         assert_eq!(v, vec![("src/lib.rs:7".to_string(), Verdict::This)]);
     }
 
+    /// Two types named `Sender` (tokio's `broadcast` and `watch`, 2026-11-12): a
+    /// receiver counts only when its written type path reaches the target's module.
+    #[test]
+    fn shared_type_names_resolve_by_module() {
+        let files = [
+            CARGO,
+            ("src/lib.rs", "pub mod sync;\n"),
+            (
+                "src/sync/mod.rs",
+                "pub mod broadcast;\npub mod watch;\npub use broadcast::Sender;\n",
+            ),
+            (
+                "src/sync/broadcast.rs",
+                "pub struct Sender<T> { t: T }\nimpl<T> Sender<T> {\n    pub fn new(t: T) -> Self { Sender { t } }\n    pub fn count(&self) -> usize { 0 }\n}\n#[cfg(test)]\nmod tests {\n    use super::*;\n    fn t() {\n        let s = Sender::<i32>::new(1);\n        s.count();\n    }\n}\n",
+            ),
+            (
+                "src/sync/watch.rs",
+                "pub struct Sender { n: u8 }\nimpl Sender {\n    pub fn count(&self) -> usize { 1 }\n    fn g(&self) -> usize { self.count() }\n}\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::sync::watch;\nuse crate::sync::Sender;\nfn a(w: &watch::Sender, b: &Sender<u8>) {\n    w.count();\n    b.count();\n}\nfn c(x: &crate::sync::broadcast::Sender<u8>) {\n    x.count();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/sync/broadcast.rs:4", "count");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(
+            get("src/sync/broadcast.rs:11"),
+            Some(Verdict::This),
+            "glob in a test module"
+        );
+        assert_eq!(
+            get("src/sync/watch.rs:4"),
+            Some(Verdict::Other),
+            "self of the other Sender"
+        );
+        assert_eq!(get("src/user.rs:4"), Some(Verdict::Other), "watch::Sender");
+        assert_eq!(
+            get("src/user.rs:5"),
+            Some(Verdict::This),
+            "a pub use re-export"
+        );
+        assert_eq!(get("src/user.rs:8"), Some(Verdict::This), "a full path");
+    }
+
+    /// `#[cfg(unix)]` and `#[cfg(not(unix))]` copies of one function are one item.
+    #[test]
+    fn cfg_twins_are_the_target() {
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod util;\nmod net;\n"),
+            (
+                "src/util/mod.rs",
+                "mod check;\npub(crate) use check::probe;\n",
+            ),
+            (
+                "src/util/check.rs",
+                "#[cfg(unix)]\npub(crate) fn probe() {}\n#[cfg(not(unix))]\npub(crate) fn probe() {}\n",
+            ),
+            (
+                "src/net.rs",
+                "use crate::util::probe;\nfn f() {\n    probe();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/util/check.rs:2", "probe");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(get("src/net.rs:3"), Some(Verdict::This));
+        assert_eq!(
+            get("src/util/check.rs:4"),
+            Some(Verdict::Other),
+            "the twin's own line"
+        );
+    }
+
+    /// A `use` in a function body shadows the file's; `Arc::new(T::new())` is a `T`;
+    /// a tuple `let` takes its element type from a free function's return type.
+    #[test]
+    fn block_uses_wrappers_and_tuple_lets() {
+        let files = [
+            CARGO,
+            (
+                "src/lib.rs",
+                "pub mod a;\npub mod b;\npub mod ch;\nmod t;\n",
+            ),
+            (
+                "src/a.rs",
+                "pub struct Sem;\nimpl Sem {\n    pub fn new() -> Self { Sem }\n    pub fn get(&self) {}\n}\n",
+            ),
+            (
+                "src/b.rs",
+                "pub struct Sem;\nimpl Sem {\n    pub fn new() -> Self { Sem }\n    pub fn get(&self) {}\n}\n",
+            ),
+            (
+                "src/ch.rs",
+                "pub struct Tx;\npub struct Rx;\nimpl Tx {\n    pub fn get(&self) {}\n}\nimpl Rx {\n    pub fn get(&self) {}\n}\npub fn pair() -> (Tx, Rx) { (Tx, Rx) }\n#[cfg(test)]\nmod tests {\n    use super::*;\n    fn t() {\n        let (tx, rx) = pair();\n        tx.get();\n        rx.get();\n    }\n}\n",
+            ),
+            (
+                "src/t.rs",
+                "use std::sync::Arc;\nuse crate::b::Sem;\nfn f() {\n    use crate::a::*;\n    let s = Arc::new(Sem::new());\n    s.get();\n}\nfn g() {\n    let s = Arc::new(Sem::new());\n    s.get();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/a.rs:4", "get");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(
+            get("src/t.rs:6"),
+            Some(Verdict::This),
+            "the block's glob use"
+        );
+        assert_eq!(get("src/t.rs:10"), Some(Verdict::Other), "the file's use");
+        let v = verdicts(&files, "src/ch.rs:4", "get");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(get("src/ch.rs:15"), Some(Verdict::This), "tuple element 0");
+        assert_eq!(get("src/ch.rs:16"), Some(Verdict::Other), "tuple element 1");
+    }
+
+    /// `T::open(..).context(..)?` is a `T`: `Result` is already unwrapped.
+    #[test]
+    fn result_adapters_keep_the_type() {
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod r;\nmod d;\nmod u;\n"),
+            (
+                "src/r.rs",
+                "pub struct R;\nimpl R {\n    pub fn open(p: &str) -> anyhow::Result<Self> { Ok(R) }\n    pub fn get(&self) {}\n}\n",
+            ),
+            (
+                "src/d.rs",
+                "pub struct D;\nimpl D {\n    pub fn get(&self) {}\n}\n",
+            ),
+            (
+                "src/u.rs",
+                "use anyhow::Context;\nuse crate::r::R;\nfn f() -> anyhow::Result<()> {\n    let r =\n        R::open(\"x\").context(\"y\")?;\n    r.get();\n    Ok(())\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/r.rs:4", "get");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(get("src/u.rs:6"), Some(Verdict::This));
+    }
+
+    /// `type L = List<u8>` is a `List`; `let (_, b) = q::pair()` reads `q`'s fn.
+    #[test]
+    fn aliases_and_tuple_lets_from_other_modules() {
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod list;\nmod q;\nmod u;\n"),
+            (
+                "src/list.rs",
+                "pub struct List<T> { t: T }\nimpl<T> List<T> {\n    pub fn is_empty(&self) -> bool { true }\n}\n",
+            ),
+            (
+                "src/q.rs",
+                "pub struct A;\npub struct B;\nimpl B {\n    pub fn is_empty(&self) -> bool { true }\n}\npub fn pair() -> (A, crate::list::List<u8>) { todo!() }\n",
+            ),
+            (
+                "src/u.rs",
+                "use crate::list::List;\nuse crate::q;\ntype Slots = List<u8>;\nstruct W { slot: [Slots; 4] }\nimpl W {\n    fn f(&self) -> bool { self.slot[0].is_empty() }\n}\nfn g() {\n    let (_, b) = q::pair();\n    b.is_empty();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/list.rs:3", "is_empty");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(get("src/u.rs:6"), Some(Verdict::This), "an alias");
+        assert_eq!(
+            get("src/u.rs:10"),
+            Some(Verdict::This),
+            "a tuple from q::pair"
+        );
+    }
+
+    /// `h.inner` where two `Handle` structs both have `inner`: the receiver's home picks.
+    #[test]
+    fn fields_of_shared_type_names_follow_the_home() {
+        let files = [
+            CARGO,
+            ("src/lib.rs", "pub mod rt;\npub mod io;\nmod u;\n"),
+            (
+                "src/rt.rs",
+                "pub struct Handle { pub inner: Core }\npub struct Core;\nimpl Core {\n    pub fn driver(&self) {}\n}\n",
+            ),
+            (
+                "src/io.rs",
+                "pub struct Handle { pub inner: Other }\npub struct Other;\nimpl Other {\n    pub fn driver(&self) {}\n}\n",
+            ),
+            (
+                "src/u.rs",
+                "use crate::rt::Handle;\nfn f(h: &Handle, g: &crate::io::Handle) {\n    h.inner.driver();\n    g.inner.driver();\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/rt.rs:4", "driver");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
+        assert_eq!(get("src/u.rs:3"), Some(Verdict::This));
+        assert_eq!(get("src/u.rs:4"), Some(Verdict::Other));
+    }
+
     #[test]
     fn at_must_name_a_function() {
         let files = [CARGO, ("src/lib.rs", "fn a() {}\n")];
         let dir = tree(&files);
-        let err = bind(dir.path(), "src/lib.rs:1", "b", &[]).err().unwrap();
+        let err = bind(dir.path(), "src/lib.rs:1", "b", &[], &|_: &str| Vec::new())
+            .err()
+            .unwrap();
         assert!(err.to_string().contains("no function `b`"), "{err}");
         assert!(parse_at("src/lib.rs").is_err());
     }

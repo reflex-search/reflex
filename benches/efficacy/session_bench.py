@@ -11,6 +11,7 @@ at the end of the trial.
   session_bench.py generate                 write tasks/sessions.json from the pinned corpora
   session_bench.py run --arms A B Beager --n 4 --model claude-sonnet-5 [--jobs 24]
   session_bench.py generate-compiled        add the explain and impact sessions (runs cargo check)
+  session_bench.py generate-impact-wide     add the impact-wide sessions (impact_keys.py)
   session_bench.py score [--results DIR]    per-arm totals and ratios vs arm A
 
 Session kinds (one of each per corpus):
@@ -32,7 +33,11 @@ Session kinds (one of each per corpus):
                callees key: the calls in X's body text. `generate-compiled` builds it
   impact       8 questions "I will add a required parameter to fn X: which lines must
                change?", graded by F1 on path:line. Key: the compiler's error lines
-               (compiler_keys.py). Nothing is edited or built in the trial
+               (compiler_keys.py). Nothing is edited or built in the trial.
+               Biased: only pub names defined once, with 5-30 grep hits
+  impact-wide  `impact` on any fn (hash order, 3-25 use sites; 71 % of tokio's fn
+               names are shared). Key: impact_keys.py (a #[deprecated] probe).
+               Lines no build compiles are don't-care: dropped from both sides
   regex        12 questions that give a regular expression: every matching line
                (8, 3-80 lines each) and how many lines match (4, 10-400). Half
                the pool has no brackets, so a search without regex:true runs as
@@ -443,11 +448,7 @@ def compiled_sessions(repo: str, scope: str, per_kind: int = 8) -> list[dict]:
         if len(impact) < per_kind and 3 <= len(k["sites"]) <= 25:
             impact.append({
                 "kind": "impact",
-                "prompt": f"I plan to add a new required parameter to the function `{name}` defined at "
-                          f"`{where}`. Without editing any file or building the project, list every line "
-                          f"under `{scope}/` that will then fail to compile and must change: each call of "
-                          f"this function, and each place it is used as a value. Leave out its definition. "
-                          f"{FORMAT_LIST}",
+                "prompt": impact_prompt(name, where, scope),
                 "expected": k["sites"], "key": k,
             })
         elif len(explain) < per_kind and 2 <= len(k["calls"]) <= 12 and 1 <= len(k["callers"]) <= 8:
@@ -465,6 +466,42 @@ def compiled_sessions(repo: str, scope: str, per_kind: int = 8) -> list[dict]:
         raise SystemExit(f"{repo}: only {len(explain)} explain and {len(impact)} impact questions")
     return [{"id": f"{repo}-session-explain", "repo": repo, "kind": "explain", "steps": explain},
             {"id": f"{repo}-session-impact", "repo": repo, "kind": "impact", "steps": impact}]
+
+
+def impact_prompt(name: str, where: str, scope: str) -> str:
+    return (f"I plan to add a new required parameter to the function `{name}` defined at "
+            f"`{where}`. Without editing any file or building the project, list every line "
+            f"under `{scope}/` that will then fail to compile and must change: each call of "
+            f"this function, and each place it is used as a value. Leave out its definition. "
+            f"{FORMAT_LIST}")
+
+
+def generate_impact_wide(repos: list[str], n: int, skip: int, keys: list[str]) -> None:
+    """Add (or replace) `<repo>-session-impact-wide`: `n` questions after `skip`, from
+    a saved impact_keys.py file (`--keys`) or built now (runs cargo check)."""
+    import compiler_keys as ck
+    import impact_keys as ik
+    saved = {}
+    for path in keys:
+        qs = json.loads(Path(path).read_text())
+        saved.setdefault(qs[0]["repo"], []).extend(qs)
+    data = json.loads(SESSIONS_JSON.read_text())
+    new = []
+    for repo in repos:
+        scope = SCOPES[repo]
+        if repo in saved:
+            qs = saved[repo][skip : skip + n]
+        else:
+            tree = ck.scratch_copy(repo, runner.CORPUS_REPOS[repo])
+            qs = ik.questions(repo, tree, scope, n, skip)
+        steps = [{"kind": "impact-wide", "prompt": impact_prompt(q["name"], q["where"], scope),
+                  "expected": q["sites"], "dontcare": q["dontcare"], "key": q} for q in qs]
+        new.append({"id": f"{repo}-session-impact-wide", "repo": repo, "kind": "impact-wide",
+                    "steps": steps})
+    ids = {x["id"] for x in new}
+    data["sessions"] = [x for x in data["sessions"] if x["id"] not in ids] + new
+    SESSIONS_JSON.write_text(json.dumps(data, indent=1) + "\n")
+    print(f"wrote {SESSIONS_JSON}: {', '.join(f'{x['id']} ({len(x['steps'])})' for x in new)}")
 
 
 def generate_tests() -> None:
@@ -796,6 +833,9 @@ def grade(step: dict, ans, tree: Path, scope: str) -> float:
     else:
         want = set(step["expected"]) if "expected" in step else set(rg(tree, *step["oracle"]))
         got = {norm_loc(a) for a in ans} if isinstance(ans, list) else set()
+        # Lines no build compiled: the key cannot say, so neither side counts them.
+        dc = set(step.get("dontcare", []))
+        want, got = want - dc, got - dc
     if not want and not got:
         return 1.0
     tp = len(want & got)
@@ -893,6 +933,11 @@ def main() -> None:
     g = sub.add_parser("generate-compiled")
     g.add_argument("--repos", nargs="+", default=list(SCOPES))
     sub.add_parser("generate-tests")
+    w = sub.add_parser("generate-impact-wide")
+    w.add_argument("--repos", nargs="+", default=list(SCOPES))
+    w.add_argument("--n", type=int, default=8)
+    w.add_argument("--skip", type=int, default=0)
+    w.add_argument("--keys", nargs="*", default=[], help="saved impact_keys.py outputs")
     r = sub.add_parser("run")
     r.add_argument("--arms", nargs="+", default=["A", "B", "Beager"])
     r.add_argument("--sessions", nargs="*")
@@ -906,7 +951,8 @@ def main() -> None:
     s = sub.add_parser("score")
     s.add_argument("--results", default=str(runner.RESULTS_DIR))
     args = p.parse_args()
-    {"generate": lambda: generate(), "generate-compiled": lambda: generate_compiled(args.repos), "generate-tests": generate_tests, "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
+    {"generate": lambda: generate(), "generate-compiled": lambda: generate_compiled(args.repos), "generate-tests": generate_tests,
+     "generate-impact-wide": lambda: generate_impact_wide(args.repos, args.n, args.skip, args.keys), "run": lambda: run(args), "score": lambda: score(args)}[args.cmd]()
 
 
 if __name__ == "__main__":

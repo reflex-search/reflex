@@ -3041,7 +3041,7 @@ fn dispatch_tool(
                 .collect();
 
             if let Some(at) = &at {
-                let mut response = bind_references(root, at, &pattern, &references)?;
+                let mut response = bind_references(root, at, &pattern, &references, &engine)?;
                 response["status"] = json!(ref_response.status);
                 if mode == "count" {
                     let count = response["references"].as_array().map_or(0, |r| r.len());
@@ -3183,6 +3183,7 @@ fn bind_references(
     at: &str,
     pattern: &str,
     references: &[serde_json::Value],
+    engine: &QueryEngine,
 ) -> Result<serde_json::Value> {
     let lines: Vec<(String, usize)> = references
         .iter()
@@ -3193,7 +3194,34 @@ fn bind_references(
             ))
         })
         .collect();
-    let binding = crate::bind::bind(root, at, pattern, &lines)?;
+    // Every line that defines a type of a given name (the binder resolves a
+    // receiver's type path when two types share the target's `impl` type name).
+    let type_defs = |t: &str| -> Vec<(String, usize)> {
+        let filter = QueryFilter {
+            language: Some(Language::Rust),
+            use_regex: true,
+            limit: None,
+            exclude_text: true,
+            suppress_output: true,
+            timeout_secs: 10,
+            ..Default::default()
+        };
+        let pat = format!(r"\b(struct|enum|union|type|trait)\s+{}\b", regex::escape(t));
+        engine
+            .search_with_metadata(&pat, filter)
+            .map(|r| {
+                r.results
+                    .iter()
+                    .flat_map(|fg| {
+                        fg.matches
+                            .iter()
+                            .map(|m| (fg.path.clone(), m.span.start_line))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let binding = crate::bind::bind(root, at, pattern, &lines, &type_defs)?;
     let preview: std::collections::HashMap<(String, usize), &serde_json::Value> = references
         .iter()
         .filter_map(|r| {

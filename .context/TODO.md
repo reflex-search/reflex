@@ -40,6 +40,11 @@ Open follow-ups (2026-11-10):
   Fair baseline 2026-11-12 (`--warm-tree`, arm Askills = A with the default skill
   listing): explain 0.79×; impact 1.02×; tests (pooled n=11 v 8) 1.06× cost, +0.047.
   **1 of 3 workflows meets D5 → the kill criterion applies. Verdict is the user's.**
+  2026-11-12: `impact` is biased (only unique names; 71 % of tokio fn names are
+  shared). Wide key built (`impact_keys.py`, deprecation probe + don't-care probe) and
+  the binder improved on it: `--at` sure precision 1.000 on tokio holdout, ripgrep and
+  reflex; exact 16/24, 24/24, 24/24. Next: score a fresh tokio set, then live
+  `impact-wide` sessions (A, Askills, Lforce, S). AGENT_EDGE_RESEARCH.md.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:

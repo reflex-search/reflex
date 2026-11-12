@@ -736,3 +736,65 @@ tokio, API-equivalent cost (mean of trials), all with `--warm-tree`:
 **D5 (Sonnet 5.5, tokio-led):** explain met vs Grep (0.79×) and LSP (Lforce 0.61×);
 tests met vs LSP only (vs Grep 1.06×, +0.047: both conditions missed, narrowly);
 impact met by neither (1.02× Grep, 0.88× Lforce). 1 of 3 workflows; D5 needs 2.
+
+## Impact is biased toward easy names; a wide key and the binder on any fn — 2026-11-12, 2.3.1 + `--at`
+
+**Bias.** The `impact` sessions take only `pub` items with a name defined once and
+5–30 grep hits (`session_bench.py candidates()`). In tokio/src, 71 % of 3,966 fn
+definitions share their name with another one (only 1,177 names are unique). Those
+are the cases where grep over-fetches and a binder can win; the benchmark leaves them out.
+Grep answers a unique name in one call, so `impact` measured the case Reflex cannot win.
+
+**Wide key** (`benches/efficacy/impact_keys.py`). Any fn in a compiled file, in hash
+order, not a trait-impl method, 3–25 use sites:
+- Sites: `#[deprecated(note = "REFLEX_PROBE")]` above the fn, `cargo check` for each
+  CHECKS entry, plus one build without the RUSTFLAGS cfgs (tokio: no `tokio_unstable`).
+  Each warning's primary span is a site. Unlike adding a parameter, the build keeps
+  going, so test code is checked too. It matched the parameter key exactly on
+  `set_thread_id` and `copy_to`. `use` lines are dropped (a `util::{` group line too).
+  A trait-impl method cannot carry the attribute: skipped.
+- Don't care: a line that names the fn, is not a site, and sits in code no build
+  compiled. Found with a live probe: an undefined name at the start of the enclosing fn
+  body, of a `#[cfg(..)] { .. }` block, or before a `#[cfg(..)]` statement (the attribute
+  is copied, so the probe and the statement share the cfg). No error → don't care.
+  Examples: `cfg_metrics_variant!` stable branches, `tokio_unstable + tracing`
+  `let s = resource_span.in_scope(|| Semaphore::new(..))`, ripgrep `aarch64` blocks.
+  Graders drop don't-care lines from both sides.
+- `session_bench.py generate-impact-wide [--keys FILE ...] [--n 8] [--skip N]` writes
+  `<repo>-session-impact-wide`; `grade` drops `dontcare`; `score_at.py` reads it.
+
+**Binder changes** (`src/bind.rs`), each with a unit test:
+- A `use` inside a block shadows the module's names (`semaphore_batch.rs:264`).
+- `Arc::new(T::new())`, `Rc::new`, `Box::new`, `Box::pin` are a `T`.
+- `let (a, b) = f()` / `q::f()` / an imported `f()`: the tuple element of `f`'s return
+  type (same file, a path, or an import). `_` counts as an element.
+- A method's return type is tagged where it is written (`-> &inject::Shared<..>`).
+- `?` and `.await` keep the receiver type; methods not declared on the type that keep
+  it: `project`, `lock`, `borrow(_mut)`, `get_mut`, `read`, `write`, `as_ref`,
+  `as_mut`, `as_deref`, `context`, `with_context`, `map_err`, `ok`, `ok_or(_else)`,
+  `unwrap_or(_else)`, `cloned`, `copied` (this crate's types only).
+- `type EntryList = LinkedList<..>`: a unique alias resolves to its type.
+- Every type name defined twice or more is tagged with its module (`homes_of`, cached),
+  not only the target's. A field read (`h.inner`, `self.shared`) reads the struct in
+  that module; a shared name with no known module gives "unknown" (was: the first
+  struct of that name in a HashMap, so random). This fixed a hidden miss (true lines
+  scored "other") that the wider tags exposed in `self.shared.inject.push(..)`.
+
+**Scores** (`--at`, sure lines vs the key; "+possible" = sure + possible lines):
+
+| Set | Exact | Sure precision | Sure recall | +possible recall | Possible lines (grep lines) |
+| --- | --- | --- | --- | --- | --- |
+| tokio dev, 24 (tuned on) | 21 | 0.980 | 0.943 | 1.000 | 464 (6,463) |
+| tokio holdout, 24 | 16 | 1.000 | 0.839 | 1.000 | 331 (3,415) |
+| ripgrep, 24 | 24 | 1.000 | 1.000 | 1.000 | 42 (2,943) |
+| reflex, 24 | 24 | 1.000 | 1.000 | 1.000 | 110 (4,383) |
+
+Before this round (old key, tokio dev): exact 13/24, precision 0.735, recall 0.714.
+Caveats: the ripgrep and reflex keys were fixed after their misses were read (key
+defects: `use` groups, `aarch64` blocks); one reflex binder case (`open(..).context(..)?`)
+was fixed after it was seen. A fresh tokio set (questions 49–72) was not looked at
+before scoring: see below. The two tokio dev "extras" (`tests/queue.rs:15, 28`) call the
+`cfg_metrics_variant!` twin of `WorkerMetrics::new` that the no-cfg build compiles:
+the binder treats cfg twins as the target, the key does not.
+Left as "possible" on purpose: closure parameters (`with_inner(|inner| inner.list..)`),
+a value from a generic cell (`ctx.get()` in a `match`), trait dispatch.
