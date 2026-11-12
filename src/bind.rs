@@ -191,6 +191,7 @@ pub fn bind(
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("at: no function `{name}` is defined at {at}"))?;
 
+    let _own = OwnWrapper::set(target.impl_type.as_deref());
     let (returns, ret_decls) = method_returns(&files);
     let mut cx = Cx {
         name,
@@ -209,6 +210,7 @@ pub fn bind(
         type_defs,
         aliases: RefCell::new(HashMap::new()),
         homes: RefCell::new(HashMap::new()),
+        depth: std::cell::Cell::new(0),
     };
     cx.find_type_homes();
     let mut out = Vec::new();
@@ -342,11 +344,75 @@ fn parse_flat(parser: &mut Parser, mut src: String) -> Option<(String, Tree)> {
                 }
             }
             bytes[close] = b' ';
+            for (x, y) in arm_marks(&bytes, b, close) {
+                for c in &mut bytes[x..y] {
+                    if *c != b'\n' {
+                        *c = b' ';
+                    }
+                }
+            }
         }
         src = String::from_utf8(bytes).ok()?;
     }
     let tree = parser.parse(&src, None)?;
     Some((src, tree))
+}
+
+/// A macro body of labelled arms (tokio `cfg_metrics_variant! { stable: { .. },
+/// unstable: { .. } }`): the byte ranges of each label with its `{`, and each `}` with
+/// its `,`. Blanked, the arms' items parse as the enclosing block's (cfg twins).
+/// Empty when the body is not such a list.
+fn arm_marks(s: &[u8], from: usize, to: usize) -> Vec<(usize, usize)> {
+    let skip_ws = |mut i: usize| {
+        while i < to && s[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    let mut out = Vec::new();
+    let mut i = from;
+    loop {
+        i = skip_ws(i);
+        if i >= to {
+            return out;
+        }
+        let a = i;
+        while i < to && (s[i].is_ascii_alphanumeric() || s[i] == b'_') {
+            i += 1;
+        }
+        let colon = skip_ws(i);
+        let open = skip_ws(colon + 1);
+        if i == a || colon >= to || s[colon] != b':' || open >= to || s[open] != b'{' {
+            return Vec::new();
+        }
+        let mut depth = 0;
+        let mut m = open;
+        while m < to {
+            match s[m] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            m += 1;
+        }
+        if m >= to {
+            return Vec::new();
+        }
+        let comma = skip_ws(m + 1);
+        let end = if comma < to && s[comma] == b',' {
+            comma + 1
+        } else {
+            m + 1
+        };
+        out.push((a, open + 1));
+        out.push((m, end));
+        i = end;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,8 +554,13 @@ fn ancestor<'t>(n: Node<'t>, kinds: &[&str]) -> Option<Node<'t>> {
     None
 }
 
+/// The deepest `receiver_type` nesting: a chain, a field path and the locals they
+/// read stay far below it.
+const MAX_DEPTH: usize = 64;
+
 /// Types `type_name` sees through to their first generic argument.
-const WRAPPERS: [&str; 13] = [
+const WRAPPERS: [&str; 14] = [
+    "NonNull",
     "Arc",
     "Rc",
     "Box",
@@ -504,6 +575,47 @@ const WRAPPERS: [&str; 13] = [
     "ManuallyDrop",
     "UnsafeCell",
 ];
+
+thread_local! {
+    /// The target's own type when it is named like a wrapper (tokio's `loom`
+    /// `UnsafeCell`, its async `Mutex`): `type_name` keeps it, not its argument.
+    static OWN_WRAPPER: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// `type_name` reads through `base<T>` to `T`.
+fn unwraps(base: &str) -> bool {
+    WRAPPERS.contains(&base) && OWN_WRAPPER.with(|o| o.borrow().as_deref() != Some(base))
+}
+
+/// Clears `OWN_WRAPPER` when a `bind` call returns.
+struct OwnWrapper;
+
+impl OwnWrapper {
+    fn set(t: Option<&str>) -> Self {
+        let t = t.filter(|t| WRAPPERS.contains(t)).map(str::to_string);
+        OWN_WRAPPER.with(|o| *o.borrow_mut() = t);
+        OwnWrapper
+    }
+}
+
+impl Drop for OwnWrapper {
+    fn drop(&mut self) {
+        OWN_WRAPPER.with(|o| *o.borrow_mut() = None);
+    }
+}
+
+/// The type an `impl` block is for, as written for `type_name`. An inherent impl
+/// (`impl<T> UnsafeCell<T>`) is of the crate's own type, so a wrapper's name is kept
+/// (tokio's `loom` `UnsafeCell`, its `Mutex`); a trait impl for `Arc<Handle>` is
+/// Handle's.
+fn impl_written<'s>(imp: Node, ty: Node, src: &'s str) -> &'s str {
+    let t = text(ty, src);
+    if imp.child_by_field_name("trait").is_some() {
+        t
+    } else {
+        t.split('<').next().unwrap_or(t).trim()
+    }
+}
 
 /// `Arc<Mutex<Foo<T>>>` → `Foo`; `&mut self::a::Bar` → `Bar`.
 fn type_name(t: &str) -> String {
@@ -533,7 +645,7 @@ fn type_name(t: &str) -> String {
         return format!("std::{}", rest.rsplit("::").next().unwrap_or(rest));
     }
     let base = base.rsplit("::").next().unwrap_or(base).trim();
-    if let (true, Some(g)) = (WRAPPERS.contains(&base), generics) {
+    if let (true, Some(g)) = (unwraps(base), generics) {
         // The first top-level generic argument.
         let mut depth = 0;
         let mut end = g.len();
@@ -554,6 +666,91 @@ fn type_name(t: &str) -> String {
 }
 
 /// Types whose methods are never this crate's functions.
+/// Method names of common std types (`Cell`, `Option`, atomics, collections,
+/// channels, I/O): a receiver of unknown type calling one may be a std value.
+const STD_METHODS: &[&str] = &[
+    "and_then",
+    "as_mut",
+    "as_ptr",
+    "as_ref",
+    "borrow",
+    "borrow_mut",
+    "cancel",
+    "clear",
+    "clone",
+    "close",
+    "cmp",
+    "compare_exchange",
+    "contains",
+    "contains_key",
+    "drain",
+    "entry",
+    "eq",
+    "extend",
+    "fetch_add",
+    "fetch_and",
+    "fetch_or",
+    "fetch_sub",
+    "fetch_update",
+    "filter",
+    "find",
+    "first",
+    "flush",
+    "fmt",
+    "get",
+    "get_mut",
+    "get_or_insert_with",
+    "hash",
+    "insert",
+    "into_inner",
+    "is_empty",
+    "is_none",
+    "is_some",
+    "iter",
+    "iter_mut",
+    "join",
+    "last",
+    "len",
+    "load",
+    "lock",
+    "map",
+    "next",
+    "poll",
+    "pop",
+    "pop_back",
+    "pop_front",
+    "push",
+    "push_back",
+    "push_front",
+    "read",
+    "recv",
+    "remove",
+    "replace",
+    "reserve",
+    "retain",
+    "send",
+    "set",
+    "shutdown",
+    "sort",
+    "split",
+    "store",
+    "swap",
+    "take",
+    "to_owned",
+    "to_string",
+    "truncate",
+    "try_lock",
+    "try_recv",
+    "try_send",
+    "unwrap",
+    "wake",
+    "wake_by_ref",
+    "with",
+    "with_mut",
+    "write",
+    "write_all",
+];
+
 const STD_TYPES: [&str; 38] = [
     "u8",
     "u16",
@@ -625,7 +822,7 @@ fn collect_defs(path: &str, f: &File, name: &str, out: &mut Vec<Def>) {
         let (impl_type, in_trait) = match owner {
             Some(o) if o.kind() == "impl_item" => (
                 o.child_by_field_name("type")
-                    .map(|t| type_name(text(t, &f.src))),
+                    .map(|t| type_name(impl_written(o, t, &f.src))),
                 o.child_by_field_name("trait").is_some(),
             ),
             Some(o) if o.kind() == "trait_item" => (
@@ -715,11 +912,75 @@ fn enclosing_impl_type(f: &File, n: Node) -> Option<String> {
             .map(|t| text(t, &f.src).to_string());
     }
     i.child_by_field_name("type")
-        .map(|t| type_name(text(t, &f.src)))
+        .map(|t| type_name(impl_written(i, t, &f.src)))
 }
 
 fn is_upper(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
+/// The bounds of the generic `name` of `func`, from its `<..>` list or `where`.
+fn generic_bound(g: &File, func: Node, name: &str) -> Option<String> {
+    let mut stack = vec![func];
+    let mut out = Vec::new();
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "constrained_type_parameter" | "where_predicate")
+            && n.child_by_field_name("left")
+                .is_some_and(|l| text(l, &g.src) == name)
+            && let Some(b) = n.child_by_field_name("bounds")
+        {
+            out.push(text(b, &g.src).to_string());
+        }
+        if n == func || matches!(n.kind(), "type_parameters" | "where_clause") {
+            let mut w = n.walk();
+            stack.extend(n.named_children(&mut w).filter(|c| c.kind() != "block"));
+        }
+    }
+    (!out.is_empty()).then(|| out.join(" + "))
+}
+
+/// The argument types of the `Fn`/`FnMut`/`FnOnce` in a bound text:
+/// `FnMut(Snapshot, &T) -> R` → `["Snapshot", "&T"]`.
+fn fn_trait_args(bound: &str) -> Option<Vec<String>> {
+    let b = bound.as_bytes();
+    let mut at = None;
+    for (i, _) in bound.match_indices("Fn") {
+        if i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') {
+            continue;
+        }
+        let rest = &bound[i + 2..];
+        let rest = rest
+            .strip_prefix("Mut")
+            .or_else(|| rest.strip_prefix("Once"))
+            .unwrap_or(rest);
+        if let Some(r) = rest.trim_start().strip_prefix('(') {
+            at = Some(bound.len() - r.len());
+            break;
+        }
+    }
+    let start = at?;
+    let mut depth = 0;
+    let mut parts = Vec::new();
+    let mut from = start;
+    for (j, ch) in bound[start..].char_indices() {
+        let j = start + j;
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' if j > 0 && b[j - 1] == b'-' => {}
+            '>' | ']' => depth -= 1,
+            ')' if depth == 0 => {
+                parts.push(bound[from..j].trim().to_string());
+                return Some(parts.into_iter().filter(|p| !p.is_empty()).collect());
+            }
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(bound[from..j].trim().to_string());
+                from = j + 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `a::<T>::b` → `["a", "b"]`.
@@ -776,6 +1037,9 @@ struct Cx<'a> {
     aliases: RefCell<HashMap<String, Option<String>>>,
     /// Each type name's defining modules (`homes_of`), read once.
     homes: RefCell<HashMap<String, Rc<Vec<Home>>>>,
+    /// `receiver_type` nesting: a cycle the rules missed gives "unknown", never a
+    /// stack overflow (that aborts `rfx mcp`).
+    depth: std::cell::Cell<usize>,
 }
 
 impl Cx<'_> {
@@ -923,12 +1187,27 @@ impl Cx<'_> {
     /// `let x = Foo::new()`); `""` for a `let` with no written type.
     fn local_type_of(&self, f: &File, n: Node, var: &str) -> Option<String> {
         // `for x in self.items.iter()`: the element type of the field.
+        // The innermost closure parameter or `match` / `if let` pattern that binds
+        // `var`: (its start, the type).
+        let mut closure: Option<(usize, String)> = None;
         let mut cur = n.parent();
         while let Some(c) = cur {
             if c.kind() == "function_item" {
                 break;
             }
-            if c.kind() == "for_expression"
+            if closure.is_none()
+                && c.kind() == "closure_expression"
+                && let Some(t) = self.closure_param_type(f, c, var)
+            {
+                closure = Some((c.start_byte(), t));
+            }
+            if closure.is_none()
+                && let Some(t) = self.arm_binding(f, c, n, var)
+            {
+                closure = Some((c.start_byte(), t)); // shadowed like a closure parameter
+            }
+            if closure.is_none()
+                && c.kind() == "for_expression"
                 && c.child_by_field_name("pattern")
                     .is_some_and(|p| pattern_binds(p, &f.src, var))
                 && c.child_by_field_name("body")
@@ -951,9 +1230,9 @@ impl Cx<'_> {
                     && p.child_by_field_name("pattern")
                         .is_some_and(|pat| pattern_binds(pat, &f.src, var))
                 {
-                    found = p.child_by_field_name("type").map(|t| {
-                        self.tag(f, &module_of(f, t), Some(t.start_byte()), text(t, &f.src))
-                    });
+                    found = p
+                        .child_by_field_name("type")
+                        .and_then(|t| self.written_type(f, t));
                 }
             }
         }
@@ -973,15 +1252,24 @@ impl Cx<'_> {
             }
             let mut w = c.walk();
             for ch in c.named_children(&mut w) {
-                if !matches!(ch.kind(), "function_item" | "closure_expression") {
+                // A closure's own `let`s count only inside that closure.
+                let holds_n = ch.start_byte() <= n.start_byte() && n.end_byte() <= ch.end_byte();
+                if ch.kind() != "function_item" && (ch.kind() != "closure_expression" || holds_n) {
                     stack.push(ch);
                 }
             }
         }
-        if let Some(l) = lets.into_iter().max_by_key(|l| l.start_byte()) {
+        let last_let = lets.into_iter().max_by_key(|l| l.start_byte());
+        // A closure parameter shadows the `let`s before the closure.
+        if let Some((start, t)) = closure
+            && last_let.is_none_or(|l| l.start_byte() < start)
+        {
+            return Some(t);
+        }
+        if let Some(l) = last_let {
             found = l
                 .child_by_field_name("type")
-                .map(|t| self.tag(f, &module_of(f, t), Some(t.start_byte()), text(t, &f.src)))
+                .and_then(|t| self.written_type(f, t))
                 .or_else(|| {
                     // `at: v`: only earlier `let`s, so `let x = x.f()` does not loop.
                     l.child_by_field_name("value").and_then(|v| {
@@ -996,6 +1284,358 @@ impl Cx<'_> {
             }
         }
         found
+    }
+
+    /// A type node as written (`&Arc<Self>`), tagged; `Self` is the enclosing impl's.
+    fn written_type(&self, f: &File, t: Node) -> Option<String> {
+        let w = text(t, &f.src);
+        if type_name(w) == "Self" {
+            return self.impl_tag(f, t);
+        }
+        Some(self.tag(f, &module_of(f, t), Some(t.start_byte()), w))
+    }
+
+    /// The declared type of `field` of the struct `t` (tagged), read where `t` is
+    /// defined: its home module when the name is shared, else `f`, else any file.
+    fn field_type(&self, f: &File, t: &str, field: &str) -> Option<String> {
+        let home = t.split_once(TAG).map(|(_, h)| h.to_string());
+        let owner = bare(&type_name(t)).to_string();
+        let field_in =
+            |g: &File| field_decl(g, &owner, field).map(|(t, m)| self.tag(g, &m, None, &t));
+        // A shared type name with a known home: that module's struct.
+        if home.as_deref() == Some("?") {
+            return None; // two structs of that name, and not known which
+        }
+        let homed = home.and_then(|h| {
+            let mut it = h.split('/');
+            let k = it.next()?;
+            let m: Vec<String> = it.map(String::from).collect();
+            let rel = self.module_file(k, &m)?;
+            self.with_file(&rel, field_in).flatten()
+        });
+        homed
+            .or_else(|| field_in(f))
+            .or_else(|| self.files.values().find_map(field_in))
+    }
+
+    /// The type of `var` bound by a parameter of the closure `c`: a typed parameter
+    /// (`|x: Foo|`), or a field of a struct pattern (`|Data { ctx, .. }|`). `Some("")`
+    /// when the closure binds it with no type written; None when it does not bind it.
+    fn closure_param_type(&self, f: &File, c: Node, var: &str) -> Option<String> {
+        let ps = c.child_by_field_name("parameters")?;
+        let mut w = ps.walk();
+        for (i, p) in ps.named_children(&mut w).enumerate() {
+            let (pat, ty) = if p.kind() == "parameter" {
+                (
+                    p.child_by_field_name("pattern")?,
+                    p.child_by_field_name("type"),
+                )
+            } else {
+                (p, None)
+            };
+            if !pattern_binds(pat, &f.src, var) {
+                continue;
+            }
+            if let Some(t) = ty {
+                return Some(self.written_type(f, t).unwrap_or_default());
+            }
+            if pat.kind() == "struct_pattern" {
+                return Some(self.struct_field_bound(f, pat, var).unwrap_or_default());
+            }
+            // `|mut next| ..` passed to `fn f<F: FnMut(Snapshot)>(&self, f: F)`.
+            let plain = pat.kind() == "identifier"
+                || (pat.kind() == "mut_pattern"
+                    && pat
+                        .named_child(pat.named_child_count().saturating_sub(1) as u32)
+                        .is_some_and(|x| x.kind() == "identifier"));
+            let t = plain.then(|| self.closure_arg_type(f, c, i)).flatten();
+            return Some(t.unwrap_or_default());
+        }
+        None
+    }
+
+    /// `c` is a `match` arm, or an `if let` / `while let`, whose pattern binds `var` for
+    /// `n`: the bound value's type (`Some(x)` / `Ok(x)` of the scrutinee; a variant's
+    /// or tuple struct's field). `Some("")` when bound with no type known.
+    fn arm_binding(&self, f: &File, c: Node, n: Node, var: &str) -> Option<String> {
+        let inside = |x: Option<Node>| {
+            x.is_some_and(|x| x.start_byte() <= n.start_byte() && n.end_byte() <= x.end_byte())
+        };
+        let (pat, value) = match c.kind() {
+            "match_arm" => {
+                if !inside(c.child_by_field_name("value")) {
+                    return None;
+                }
+                let scrut = c.parent()?.parent()?.child_by_field_name("value")?;
+                (c.child_by_field_name("pattern")?, scrut)
+            }
+            "if_expression" | "while_expression" => {
+                let body = if c.kind() == "if_expression" {
+                    "consequence"
+                } else {
+                    "body"
+                };
+                if !inside(c.child_by_field_name(body)) {
+                    return None;
+                }
+                let cond = c.child_by_field_name("condition")?;
+                let lc = if cond.kind() == "let_condition" {
+                    cond
+                } else {
+                    let mut w = cond.walk();
+                    let found = cond.named_children(&mut w).find(|x| {
+                        x.kind() == "let_condition"
+                            && x.child_by_field_name("pattern")
+                                .is_some_and(|p| pattern_binds(p, &f.src, var))
+                    });
+                    found?
+                };
+                (
+                    lc.child_by_field_name("pattern")?,
+                    lc.child_by_field_name("value")?,
+                )
+            }
+            _ => return None,
+        };
+        if !pattern_binds(pat, &f.src, var) {
+            return None;
+        }
+        // Typed where it is written: inside the arm, `match x { Some(x) => .. }` loops.
+        let scrut = self
+            .receiver_type(f, value, value)
+            .filter(|t| !t.is_empty());
+        Some(self.pattern_type(f, pat, var, scrut).unwrap_or_default())
+    }
+
+    /// The type `pat` gives `var`, when the whole value has type `whole`.
+    fn pattern_type(
+        &self,
+        f: &File,
+        pat: Node,
+        var: &str,
+        whole: Option<String>,
+    ) -> Option<String> {
+        match pat.kind() {
+            "identifier" => (text(pat, &f.src) == var).then_some(whole).flatten(),
+            "match_pattern" => self.pattern_type(f, pat.named_child(0)?, var, whole),
+            "mut_pattern" | "ref_pattern" | "reference_pattern" => {
+                let last = pat.named_child(pat.named_child_count().checked_sub(1)? as u32)?;
+                self.pattern_type(f, last, var, whole)
+            }
+            "struct_pattern" => self.struct_field_bound(f, pat, var),
+            "or_pattern" => {
+                let mut w = pat.walk();
+                let alt = pat
+                    .named_children(&mut w)
+                    .find(|p| pattern_binds(*p, &f.src, var))?;
+                self.pattern_type(f, alt, var, whole)
+            }
+            "tuple_struct_pattern" => {
+                let ty = pat.child_by_field_name("type")?;
+                let mut w = pat.walk();
+                let kids: Vec<Node> = pat.named_children(&mut w).filter(|k| *k != ty).collect();
+                let j = kids.iter().position(|k| pattern_binds(*k, &f.src, var))?;
+                let segs = path_segments(text(ty, &f.src));
+                let (v, e) = segs.split_last()?;
+                let field = match v.as_str() {
+                    "Some" | "Ok" => whole,
+                    "Err" | "None" => None,
+                    _ if e.is_empty() => self.tuple_field(f, ty, v, None, j),
+                    _ => self.tuple_field(f, ty, &e.join("::"), Some(v), j),
+                };
+                self.pattern_type(f, kids[j], var, field)
+            }
+            _ => None,
+        }
+    }
+
+    /// Field `j` of the tuple variant `E::variant`, or of the tuple struct `E` (no
+    /// variant), written `e` at `at` in `f`; tagged where the type is defined.
+    fn tuple_field(
+        &self,
+        f: &File,
+        at: Node,
+        e: &str,
+        variant: Option<&String>,
+        j: usize,
+    ) -> Option<String> {
+        let t = if e == "Self" {
+            self.impl_tag(f, at)?
+        } else {
+            self.tag(f, &module_of(f, at), Some(at.start_byte()), e)
+        };
+        let (name, home) = match t.split_once(TAG) {
+            Some((b, h)) => (b.to_string(), Some(h.to_string())),
+            None => (bare(&type_name(&t)).to_string(), None),
+        };
+        if home.as_deref() == Some("?") {
+            return None;
+        }
+        let want = home.and_then(|h| {
+            let mut it = h.split('/');
+            let k = it.next()?.to_string();
+            let m: Vec<String> = it.map(String::from).collect();
+            self.module_file(&k, &m)
+        });
+        let defs: Vec<(String, usize)> = (self.type_defs)(&name)
+            .into_iter()
+            .filter(|(rel, _)| want.as_ref().is_none_or(|w| w == rel))
+            .collect();
+        let [(rel, line)] = defs.as_slice() else {
+            return None;
+        };
+        self.with_file(rel, |g| {
+            let mut stack = vec![g.tree.root_node()];
+            while let Some(x) = stack.pop() {
+                if matches!(x.kind(), "enum_item" | "struct_item")
+                    && x.start_position().row < *line
+                    && *line <= x.end_position().row + 1
+                    && x.child_by_field_name("name")
+                        .is_some_and(|nm| text(nm, &g.src) == name)
+                {
+                    let body = x.child_by_field_name("body")?;
+                    let fields = match variant {
+                        None => body,
+                        Some(v) => {
+                            let mut w = body.walk();
+                            let found = body.named_children(&mut w).find(|ev| {
+                                ev.kind() == "enum_variant"
+                                    && ev
+                                        .child_by_field_name("name")
+                                        .is_some_and(|nm| text(nm, &g.src) == v.as_str())
+                            });
+                            found?.child_by_field_name("body")?
+                        }
+                    };
+                    if fields.kind() != "ordered_field_declaration_list" {
+                        return None;
+                    }
+                    let mut w = fields.walk();
+                    let ty = fields.children_by_field_name("type", &mut w).nth(j)?;
+                    return Some(self.tag(g, &module_of(g, x), None, text(ty, &g.src)));
+                }
+                let mut w = x.walk();
+                stack.extend(x.named_children(&mut w));
+            }
+            None
+        })
+        .flatten()
+    }
+
+    /// The type of parameter `i` of the closure `c`, from the function it is passed
+    /// to: that argument's `impl FnMut(A, ..)`, or its generic `F: FnMut(A, ..)`.
+    /// The function is looked up by name in this file, then in the files read.
+    fn closure_arg_type(&self, f: &File, c: Node, i: usize) -> Option<String> {
+        let args = c.parent().filter(|a| a.kind() == "arguments")?;
+        let call = args.parent().filter(|x| x.kind() == "call_expression")?;
+        let mut w = args.walk();
+        let k = args.named_children(&mut w).position(|a| a == c)?;
+        let func = call.child_by_field_name("function")?;
+        let (name, method) = match func.kind() {
+            "field_expression" => (text(func.child_by_field_name("field")?, &f.src), true),
+            "scoped_identifier" => (text(func.child_by_field_name("name")?, &f.src), false),
+            "identifier" => (text(func, &f.src), false),
+            _ => return None,
+        };
+        let from = |g: &File| -> Option<String> {
+            let mut found: Option<String> = None;
+            let mut stack = vec![g.tree.root_node()];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "function_item"
+                    && n.child_by_field_name("name")
+                        .is_some_and(|x| text(x, &g.src) == name)
+                {
+                    let t = self.fn_closure_param(g, n, k, method, i)?;
+                    if found.as_ref().is_some_and(|x| *x != t) {
+                        return None; // two functions of that name disagree
+                    }
+                    found = Some(t);
+                    continue;
+                }
+                let mut w = n.walk();
+                stack.extend(n.named_children(&mut w));
+            }
+            found
+        };
+        from(f).or_else(|| {
+            let mut out: Option<String> = None;
+            for g in self.files.values().filter(|g| g.rel != f.rel) {
+                if let Some(t) = from(g) {
+                    if out.as_ref().is_some_and(|x| *x != t) {
+                        return None;
+                    }
+                    out = Some(t);
+                }
+            }
+            out
+        })
+    }
+
+    /// For the function item `func`, argument `k` of a call (a method call skips
+    /// `self`): when it is a closure type, the type of its parameter `i`, tagged.
+    fn fn_closure_param(
+        &self,
+        g: &File,
+        func: Node,
+        k: usize,
+        method: bool,
+        i: usize,
+    ) -> Option<String> {
+        let ps = func.child_by_field_name("parameters")?;
+        let mut w = ps.walk();
+        let all: Vec<Node> = ps
+            .named_children(&mut w)
+            .filter(|p| p.kind() != "attribute_item")
+            .collect();
+        let has_self = all.first().is_some_and(|p| p.kind() == "self_parameter");
+        let idx = if has_self && method { k + 1 } else { k };
+        let p = all.get(idx).filter(|p| p.kind() == "parameter")?;
+        let ty = text(p.child_by_field_name("type")?, &g.src).trim();
+        let bound = if ty.starts_with("impl ") || ty.starts_with("&") || ty.starts_with("Box<") {
+            ty.to_string()
+        } else {
+            generic_bound(g, func, ty)?
+        };
+        let arg = fn_trait_args(&bound)?.into_iter().nth(i)?;
+        if type_name(&arg) == "Self" {
+            return self.impl_tag(g, func);
+        }
+        Some(self.tag(g, &module_of(g, func), None, &arg))
+    }
+
+    /// `Data { ctx, .. }` or `Data { ctx: x, .. }` binding `var`: the declared type
+    /// of that field of `Data`.
+    fn struct_field_bound(&self, f: &File, pat: Node, var: &str) -> Option<String> {
+        if pat.kind() != "struct_pattern" {
+            return None;
+        }
+        let ty = pat.child_by_field_name("type")?;
+        let owner = self.tag(
+            f,
+            &module_of(f, ty),
+            Some(ty.start_byte()),
+            text(ty, &f.src),
+        );
+        let mut w = pat.walk();
+        for fp in pat.named_children(&mut w) {
+            if fp.kind() != "field_pattern" {
+                continue;
+            }
+            let name = fp.child_by_field_name("name")?;
+            let field = text(name, &f.src);
+            match fp.child_by_field_name("pattern") {
+                // `ctx: x` (a plain name) binds `x` to the field.
+                Some(sub) if sub.kind() == "identifier" && text(sub, &f.src) == var => {
+                    return self.field_type(f, &owner, field);
+                }
+                Some(sub) if pattern_binds(sub, &f.src, var) => {
+                    return self.struct_field_bound(f, sub, var);
+                }
+                None if field == var => return self.field_type(f, &owner, field),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// `let (tx, rx) = channel(16);`: the type a free function of this file returns,
@@ -1087,6 +1727,17 @@ impl Cx<'_> {
 
     /// `self`, a typed local, `self.field` (the field's declared type), `Foo::new()`.
     fn receiver_type(&self, f: &File, r: Node, at: Node) -> Option<String> {
+        let d = self.depth.get();
+        if d >= MAX_DEPTH {
+            return None;
+        }
+        self.depth.set(d + 1);
+        let out = self.receiver_type_at(f, r, at);
+        self.depth.set(d);
+        out
+    }
+
+    fn receiver_type_at(&self, f: &File, r: Node, at: Node) -> Option<String> {
         match r.kind() {
             "self" => self.impl_tag(f, at),
             "identifier" => self
@@ -1101,24 +1752,7 @@ impl Cx<'_> {
                 } else {
                     self.receiver_type(f, v, at)?
                 };
-                let home = t.split_once(TAG).map(|(_, h)| h.to_string());
-                let owner = bare(&type_name(&t)).to_string();
-                let field_in =
-                    |g: &File| field_decl(g, &owner, field).map(|(t, m)| self.tag(g, &m, None, &t));
-                // A shared type name with a known home: that module's struct.
-                if home.as_deref() == Some("?") {
-                    return None; // two structs of that name, and not known which
-                }
-                let homed = home.and_then(|h| {
-                    let mut it = h.split('/');
-                    let k = it.next()?;
-                    let m: Vec<String> = it.map(String::from).collect();
-                    let rel = self.module_file(k, &m)?;
-                    self.with_file(&rel, field_in).flatten()
-                });
-                homed
-                    .or_else(|| field_in(f))
-                    .or_else(|| self.files.values().find_map(field_in))
+                self.field_type(f, &t, field)
             }
             // `open(..)?`, `fut.await`: the call's type (`Result` is already unwrapped).
             "try_expression" | "await_expression" => self.receiver_type(f, r.named_child(0)?, at),
@@ -1177,7 +1811,7 @@ impl Cx<'_> {
                 // This workspace's type: each method's declared return type in turn
                 // (`Builder::new_current_thread().enable_all().build()`).
                 let mut t = type_name(&t);
-                if WRAPPERS.contains(&t.trim_start_matches("std::")) {
+                if unwraps(t.trim_start_matches("std::")) {
                     return None; // `Arc::new(x).clone()`: the wrapped type is not known
                 }
                 for m in methods.iter().rev() {
@@ -1304,10 +1938,16 @@ impl Cx<'_> {
         if !self.target.has_self {
             return Verdict::Other; // `.x()` cannot call a free or associated fn
         }
-        match self.receiver_type(f, receiver, n) {
-            Some(t) => self.of_type(&self.resolve(f, &t)),
+        let t = self.receiver_type(f, receiver, n);
+        let v = match &t {
+            Some(t) => self.of_type(&self.resolve(f, t)),
             None => self.unknown_receiver(),
+        };
+        if std::env::var_os("REFLEX_BIND_DEBUG").is_some() {
+            let row = n.start_position().row + 1;
+            eprintln!("bind: {}:{row} receiver {t:?} -> {v:?}", f.rel);
         }
+        v
     }
 
     fn unknown_receiver(&self) -> Verdict {
@@ -1319,7 +1959,8 @@ impl Cx<'_> {
             .iter()
             .filter(|d| d.has_self && !self.is_target(d))
             .count();
-        if others == 0 && !self.target.in_trait {
+        // A receiver of unknown type may be a std type: `x.replace(..)` on a `Cell`.
+        if others == 0 && !self.target.in_trait && !STD_METHODS.contains(&self.name) {
             Verdict::This
         } else {
             Verdict::Possible
@@ -1366,9 +2007,7 @@ impl Cx<'_> {
             return Verdict::Other;
         }
         // `type EntryList = LinkedList<..>`: the aliased type.
-        if tag.is_none()
-            && let Some(x) = self.alias(t)
-        {
+        if let Some(x) = self.alias(t) {
             return self.of_type(&x);
         }
         // A type with no method of this name here: a trait impl, `Deref`, or an
@@ -1654,7 +2293,8 @@ fn is_called(field_expr: Node) -> bool {
 
 /// The pattern binds `name` (`x`, `mut x`, `(a, x)`, `Some(x)`).
 fn pattern_binds(p: Node, src: &str, name: &str) -> bool {
-    if p.kind() == "identifier" {
+    // `Foo { x, .. }` binds x (a shorthand field).
+    if matches!(p.kind(), "identifier" | "shorthand_field_identifier") {
         return text(p, src) == name;
     }
     let mut c = p.walk();
@@ -1831,7 +2471,7 @@ fn method_returns(
             ) else {
                 continue;
             };
-            let ty = type_name(text(ty, &f.src));
+            let ty = type_name(impl_written(imp, ty, &f.src));
             let written = n
                 .child_by_field_name("return_type")
                 .map(|r| text(r, &f.src));
@@ -2041,7 +2681,7 @@ fn type_path(t: &str) -> Vec<String> {
     };
     let segs = path_segments(base.trim());
     if let (Some(last), Some(g)) = (segs.last(), generics)
-        && WRAPPERS.contains(&last.as_str())
+        && unwraps(last)
     {
         return type_path(first_generic(g));
     }
@@ -2244,31 +2884,42 @@ impl Cx<'_> {
         }
         self.aliases.borrow_mut().insert(t.to_string(), None); // a cycle stops here
         let defs = (self.type_defs)(t);
-        let x = match defs.as_slice() {
-            [(rel, line)] => self
-                .with_file(rel, |g| {
-                    let src_line = g.src.split('\n').nth(line - 1)?;
-                    let col = src_line.len() - src_line.trim_start().len();
-                    let at = tree_sitter::Point::new(line - 1, col);
-                    let row = g.tree.root_node().descendant_for_point_range(at, at)?;
-                    let mut stack = vec![row];
-                    let mut n = row;
-                    while let Some(p) = n.parent() {
-                        stack.push(p);
-                        n = p;
-                    }
-                    let item = stack
-                        .into_iter()
-                        .find(|n| n.kind() == "type_item" && n.start_position().row == line - 1)?;
-                    if item.child_by_field_name("name").map(|n| text(n, &g.src)) != Some(t) {
-                        return None;
-                    }
-                    let v = item.child_by_field_name("type")?;
-                    Some(self.tag(g, &module_of(g, item), None, text(v, &g.src)))
-                })
-                .flatten(),
-            _ => None,
+        // Every definition must be an alias, and all of them of one type (tokio
+        // writes `type WaitList = LinkedList<..>` in two modules).
+        let one = |rel: &String, line: &usize| -> Option<String> {
+            let line = *line;
+            self.with_file(rel, |g| {
+                let src_line = g.src.split('\n').nth(line - 1)?;
+                let col = src_line.len() - src_line.trim_start().len();
+                let at = tree_sitter::Point::new(line - 1, col);
+                let row = g.tree.root_node().descendant_for_point_range(at, at)?;
+                let mut stack = vec![row];
+                let mut n = row;
+                while let Some(p) = n.parent() {
+                    stack.push(p);
+                    n = p;
+                }
+                let item = stack
+                    .into_iter()
+                    .find(|n| n.kind() == "type_item" && n.start_position().row == line - 1)?;
+                if item.child_by_field_name("name").map(|n| text(n, &g.src)) != Some(t) {
+                    return None;
+                }
+                let v = item.child_by_field_name("type")?;
+                Some(self.tag(g, &module_of(g, item), None, text(v, &g.src)))
+            })
+            .flatten()
         };
+        let mut x: Option<String> = None;
+        for (rel, line) in &defs {
+            match one(rel, line) {
+                Some(a) if x.as_ref().is_none_or(|b| *b == a) => x = Some(a),
+                _ => {
+                    x = None;
+                    break;
+                }
+            }
+        }
         self.aliases.borrow_mut().insert(t.to_string(), x.clone());
         x
     }
@@ -2569,7 +3220,7 @@ impl Cx<'_> {
                     None
                 })?;
                 let ty = imp.child_by_field_name("type")?;
-                self.type_home(f, &module_of(f, imp), None, text(ty, &f.src))
+                self.type_home(f, &module_of(f, imp), None, impl_written(imp, ty, &f.src))
             })
             .flatten();
         if std::env::var_os("REFLEX_BIND_DEBUG").is_some() {
@@ -2648,7 +3299,13 @@ impl Cx<'_> {
                 .map(|t| text(t, &f.src).to_string());
         }
         let ty = i.child_by_field_name("type")?;
-        Some(self.tag(f, &module_of(f, i), None, text(ty, &f.src)))
+        let mut w = impl_written(i, ty, &f.src);
+        // `impl<T> From<T> for Mutex<T>` with the crate's own `Mutex`: Mutex, not T.
+        let base = w.split('<').next().unwrap_or(w).trim();
+        if base != w && WRAPPERS.contains(&base) && !(self.type_defs)(base).is_empty() {
+            w = base;
+        }
+        Some(self.tag(f, &module_of(f, i), None, w))
     }
 
     /// `d` is the target, or a `#[cfg]` twin of it (same file, module and type).
@@ -3160,6 +3817,172 @@ mod tests {
         let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|(_, x)| *x);
         assert_eq!(get("src/u.rs:3"), Some(Verdict::This));
         assert_eq!(get("src/u.rs:4"), Some(Verdict::Other));
+    }
+
+    #[test]
+    fn self_in_a_trait_impl_of_another_type() {
+        // tokio `impl<T> From<T> for Mutex<T> { Self::new(s) }` with the target
+        // `UnsafeCell::new`; `Mutex` is a shared name (loom has one too).
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod cell;\nmod mutex;\nmod loom;\n"),
+            (
+                "src/cell.rs",
+                "pub struct UnsafeCell<T>(T);\nimpl<T> UnsafeCell<T> {\n    pub const fn new(d: T) -> UnsafeCell<T> {\n        UnsafeCell(d)\n    }\n    pub fn with_mut(&self) {}\n}\n",
+            ),
+            (
+                "src/mutex.rs",
+                "use crate::cell::UnsafeCell;\npub struct Mutex<T: ?Sized> {\n    c: UnsafeCell<T>,\n}\nimpl<T: ?Sized> Mutex<T> {\n    pub fn new(t: T) -> Self\n    where\n        T: Sized,\n    {\n        Mutex { c: UnsafeCell::new(t) }\n    }\n}\nimpl<T> From<T> for Mutex<T> {\n    fn from(s: T) -> Self {\n        Self::new(s)\n    }\n}\nimpl<T> Mutex<T> {\n    fn put(&self) {\n        self.c.with_mut();\n    }\n}\n",
+            ),
+            (
+                "src/loom.rs",
+                "pub struct Mutex<T>(T);\nimpl<T> Mutex<T> {\n    pub fn new(t: T) -> Self {\n        Mutex(t)\n    }\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/cell.rs:3", "new");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/mutex.rs:10"), Some(Verdict::This));
+        assert_eq!(
+            get("src/mutex.rs:15"),
+            Some(Verdict::Other),
+            "Self is Mutex"
+        );
+        let v = verdicts(&files, "src/cell.rs:6", "with_mut");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(
+            get("src/mutex.rs:20"),
+            Some(Verdict::This),
+            "c: UnsafeCell<T>"
+        );
+    }
+
+    #[test]
+    fn labelled_macro_arms_keep_the_impl() {
+        // tokio metrics/batch.rs: `cfg_metrics_variant! { stable: {..}, unstable: {..} }`
+        // inside `impl MetricsBatch` hid the impl from the parse.
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod batch;\nmod stats;\n"),
+            (
+                "src/batch.rs",
+                "pub struct Batch;\nimpl Batch {\n    cfg_variant! {\n        stable: {\n            fn park(&mut self) {}\n        },\n        unstable: {\n            fn park(&mut self) {}\n        }\n    }\n    pub fn end(&mut self) {}\n}\n",
+            ),
+            (
+                "src/stats.rs",
+                "use crate::batch::Batch;\npub struct Stats {\n    batch: Batch,\n}\nimpl Stats {\n    pub fn end(&mut self) {\n        self.batch.end();\n    }\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/batch.rs:11", "end");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/stats.rs:7"), Some(Verdict::This));
+        assert_eq!(get("src/stats.rs:6"), Some(Verdict::Other));
+        let v = verdicts(&files, "src/batch.rs:5", "park");
+        assert!(v.iter().all(|(_, x)| *x != Verdict::This), "{v:?}");
+    }
+
+    #[test]
+    fn closure_parameters_carry_types() {
+        // tokio task/local.rs: `CURRENT.with(|LocalData { ctx, .. }| ctx.replace(..))`.
+        let files = [
+            CARGO,
+            (
+                "src/lib.rs",
+                "pub struct Cell;\nimpl Cell {\n    pub fn replace(&self) {}\n}\npub struct Other;\nimpl Other {\n    pub fn replace(&self) {}\n}\nstruct Data {\n    ctx: Cell,\n    n: Other,\n}\nfn with<F: Fn(&Data)>(f: F) {}\nfn a() {\n    with(|Data { ctx, .. }| ctx.replace());\n    with(|Data { n: ctx, .. }| ctx.replace());\n    with(|x: &Cell| x.replace());\n    with(|Data { ctx, .. }| {\n        let ctx = Other {};\n        ctx.replace()\n    });\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/lib.rs:3", "replace");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/lib.rs:15"), Some(Verdict::This), "field ctx: Cell");
+        assert_eq!(get("src/lib.rs:16"), Some(Verdict::Other), "field n: Other");
+        assert_eq!(get("src/lib.rs:17"), Some(Verdict::This), "typed parameter");
+        assert_eq!(
+            get("src/lib.rs:20"),
+            Some(Verdict::Other),
+            "the let shadows it"
+        );
+    }
+
+    #[test]
+    fn closure_parameters_take_the_callee_bound() {
+        // tokio task/state.rs: `self.fetch_update_action(|mut next| { next.ref_dec(); .. })`
+        // with `fn fetch_update_action<F, T>(&self, f: F) where F: FnMut(Snapshot) -> ..`.
+        let files = [
+            CARGO,
+            (
+                "src/lib.rs",
+                "pub struct Cell;\nimpl Cell {\n    pub fn replace(&self) {}\n}\npub struct Other;\nimpl Other {\n    pub fn replace(&self) {}\n}\nstruct Holder;\nimpl Holder {\n    fn fetch<F, T>(&self, f: F) -> T\n    where\n        F: FnMut(Cell) -> (T, Option<Cell>),\n    {\n        todo!()\n    }\n    fn each(&self, f: impl Fn(u8, &Other)) {}\n}\nfn a(h: Holder) {\n    h.fetch(|mut c| (c.replace(), None));\n    h.each(|_, o| o.replace());\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/lib.rs:3", "replace");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/lib.rs:20"), Some(Verdict::This), "F: FnMut(Cell)");
+        assert_eq!(
+            get("src/lib.rs:21"),
+            Some(Verdict::Other),
+            "impl Fn(u8, &Other)"
+        );
+    }
+
+    #[test]
+    fn match_and_if_let_bindings() {
+        let files = [
+            CARGO,
+            (
+                "src/lib.rs",
+                "pub struct Cell;\nimpl Cell {\n    pub fn fire(&self) {}\n}\npub struct Other;\nimpl Other {\n    pub fn fire(&self) {}\n}\nenum Reaper {\n    Signal(Cell),\n    Pidfd(u8, Other),\n}\nstruct Wheel;\nimpl Wheel {\n    fn poll(&self) -> Option<Cell> {\n        None\n    }\n}\nimpl Reaper {\n    fn go(&self, w: Wheel) {\n        match self {\n            Self::Signal(r) => r.fire(),\n            Reaper::Pidfd(_, r) => r.fire(),\n        }\n        while let Some(e) = w.poll() {\n            e.fire();\n        }\n        if let Some(e) = w.poll() {\n            let e = Other;\n            e.fire();\n        }\n    }\n}\nfn g(w: Wheel) {\n    let e = w.poll();\n    match e {\n        Some(e) => e.fire(),\n        None => {}\n    }\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/lib.rs:3", "fire");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(
+            get("src/lib.rs:22"),
+            Some(Verdict::This),
+            "Self::Signal(Cell)"
+        );
+        assert_eq!(
+            get("src/lib.rs:23"),
+            Some(Verdict::Other),
+            "Reaper::Pidfd(_, Other)"
+        );
+        assert_eq!(
+            get("src/lib.rs:26"),
+            Some(Verdict::This),
+            "while let Some(Cell)"
+        );
+        assert_eq!(
+            get("src/lib.rs:30"),
+            Some(Verdict::Possible),
+            "the let shadows it"
+        );
+        assert_eq!(
+            get("src/lib.rs:37"),
+            Some(Verdict::This),
+            "match e {{ Some(e) => .. }}"
+        );
+    }
+
+    #[test]
+    fn identical_aliases_in_two_modules() {
+        // tokio: `type WaitList = LinkedList<..>` in sync/notify.rs and io/scheduled_io.rs.
+        let files = [
+            CARGO,
+            ("src/lib.rs", "mod list;\nmod a;\nmod b;\n"),
+            (
+                "src/list.rs",
+                "pub struct LinkedList<T>(T);\nimpl<T> LinkedList<T> {\n    pub fn is_empty(&self) -> bool {\n        true\n    }\n}\n",
+            ),
+            (
+                "src/a.rs",
+                "use crate::list::LinkedList;\ntype WaitList = LinkedList<u8>;\nfn f(w: &WaitList) -> bool {\n    w.is_empty()\n}\n",
+            ),
+            (
+                "src/b.rs",
+                "use crate::list::LinkedList;\ntype WaitList = LinkedList<u8>;\npub struct Q;\nimpl Q {\n    pub fn is_empty(&self) -> bool {\n        false\n    }\n}\n",
+            ),
+        ];
+        let v = verdicts(&files, "src/list.rs:3", "is_empty");
+        let get = |k: &str| v.iter().find(|(p, _)| p == k).map(|x| x.1);
+        assert_eq!(get("src/a.rs:4"), Some(Verdict::This));
     }
 
     #[test]

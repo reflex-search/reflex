@@ -18,6 +18,7 @@ live probe: an undefined name put in the enclosing fn body (or `#[cfg] { .. }` b
 no error means the build never saw it.
 
   python3 impact_keys.py REPO N OUT.json [SKIP]
+  python3 impact_keys.py --recheck KEYS.json      recompute a saved file's keys
 """
 from __future__ import annotations
 
@@ -38,11 +39,13 @@ FN = re.compile(r"^\s*(pub(\([a-z]+\))?\s+)?(async\s+)?(const\s+)?(unsafe\s+)?fn
 
 
 def envs(repo: str) -> list[dict]:
-    """The configured build, plus one without RUSTFLAGS cfgs (their `not(..)` branches)."""
+    """The configured build, plus one without RUSTFLAGS cfgs (their `not(..)` branches).
+    Not incremental: an incremental re-check once dropped one deprecation warning
+    (tokio `State::load`, oneshot.rs:1433, 2026-11-12) and gave it back on a re-run."""
     out = [ck.cargo_env(repo)]
     if repo in ck.RUSTFLAGS:
         out.append(dict(os.environ, CARGO_TARGET_DIR=str(ck.KEYS_WORK / f"target-{repo}-nocfg")))
-    return out
+    return [dict(e, CARGO_INCREMENTAL="0") for e in out]
 
 
 def check_messages(repo: str, tree: Path):
@@ -92,12 +95,14 @@ def deprecation_sites(repo: str, tree: Path, where: str, scope: str) -> tuple[li
 def in_use(lines: list[str], line: int) -> bool:
     """`line` (1-based) is inside a `use` declaration (a re-export, not a use site)."""
     for i in range(line - 1, max(-1, line - 30), -1):
+        t = lines[i].strip()
+        if i < line - 1 and t.endswith((";", "}")):
+            return False  # a finished statement, even a `use` (oneshot.rs:1430 → 1433)
         if USE.match(lines[i]):
             return True
-        t = lines[i].strip()
         if i < line - 1 and t.endswith("{") and re.fullmatch(r"[\w:]*::\{", t):
             continue  # `util::{` opens a group inside a `use` list
-        if i < line - 1 and t.endswith((";", "}", "{")):
+        if i < line - 1 and t.endswith("{"):
             return False
     return False
 
@@ -209,6 +214,23 @@ def live(repo: str, tree: Path, sites: list[str]) -> set[str]:
     return {s for i in hit for s in marks.get(i, [])}
 
 
+def recheck(path: str) -> None:
+    """Recompute the sites and don't-cares of a saved key file in place."""
+    qs = json.loads(Path(path).read_text())
+    for q in qs:
+        tree = ck.KEYS_WORK / q["repo"]
+        sites, errs = deprecation_sites(q["repo"], tree, q["where"], q["scope"])
+        sites = drop_uses(tree, sites)
+        text = ck.text_sites(tree, q["name"], q["scope"])
+        unreported = sorted(set(text) - set(sites) - {q["where"]})
+        seen = live(q["repo"], tree, unreported) if unreported else set()
+        dontcare = sorted(drop_uses(tree, sorted(set(unreported) - seen)))
+        added, gone = sorted(set(sites) - set(q["sites"])), sorted(set(q["sites"]) - set(sites))
+        print(f"  {q['name']} {q['where']}: +{added} -{gone} errors {len(errs)}", flush=True)
+        q["sites"], q["dontcare"] = sites, dontcare
+    Path(path).write_text(json.dumps(qs, indent=1))
+
+
 def candidates(repo: str, tree: Path, scope: str) -> list[tuple[str, str]]:
     """Every fn definition in a compiled file, in a fixed hash order: (name, path:line)."""
     compiled = ck.compiled_files(repo, tree)
@@ -224,10 +246,16 @@ def candidates(repo: str, tree: Path, scope: str) -> list[tuple[str, str]]:
 
 
 def questions(repo: str, tree: Path, scope: str, n: int, skip: int = 0,
-              lo: int = 3, hi: int = 25) -> list[dict]:
-    """`n` questions (after `skip`) with lo..hi use sites, keyed and with don't-cares."""
+              lo: int = 3, hi: int = 25, after: str | None = None) -> list[dict]:
+    """`n` questions (after `skip`) with lo..hi use sites, keyed and with don't-cares.
+    `after`: start after that candidate (the last `where` of an earlier set), with no
+    probes for the ones before it (the candidate order is fixed)."""
     out = []
     for name, where in candidates(repo, tree, scope):
+        if after is not None:
+            if where == after:
+                after = None
+            continue
         if len(out) >= n + skip:
             break
         p, ln = where.rsplit(":", 1)
@@ -262,6 +290,14 @@ def questions(repo: str, tree: Path, scope: str, n: int, skip: int = 0,
 
 if __name__ == "__main__":
     import runner
+    if sys.argv[1] == "--recheck":
+        recheck(sys.argv[2])
+        sys.exit()
+    after = None
+    if "--after" in sys.argv:  # --after PATH:LINE (the last question of an earlier set)
+        i = sys.argv.index("--after")
+        after = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
     repo, n, dest = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     skip = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     scope = {"reflex": "src", "ripgrep": "crates", "tokio": "tokio/src"}[repo]
@@ -270,4 +306,4 @@ if __name__ == "__main__":
         tree = ck.scratch_copy(repo, runner.CORPUS_REPOS[repo])
     if ck.cargo_errors(repo, tree):  # also the build `compiled_files` reads
         raise SystemExit(f"{repo}: the unchanged corpus does not build; no compiler keys")
-    json.dump(questions(repo, tree, scope, n, skip), open(dest, "w"), indent=1)
+    json.dump(questions(repo, tree, scope, n, skip, after=after), open(dest, "w"), indent=1)
