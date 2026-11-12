@@ -1161,6 +1161,25 @@ fn searches_enclosing_index(command: &Command) -> bool {
     )
 }
 
+/// `rel/p` with `/` between parts, the separator of every path in the index (on Windows
+/// `Path::join` writes `\`, and `src\util.rs` is not found).
+fn join_index_path(rel: &std::path::Path, p: &str) -> String {
+    let p = if cfg!(windows) {
+        p.replace('\\', "/")
+    } else {
+        p.to_string()
+    };
+    let rel: Vec<_> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect();
+    if rel.is_empty() {
+        p
+    } else {
+        format!("{}/{p}", rel.join("/"))
+    }
+}
+
 /// The nearest parent of `dir` whose `.reflex/` holds an index (`meta.db`), when `dir`
 /// has no `.reflex/` of its own. The walk stops at the first directory with a `.git`
 /// (the repository root), so it never leaves the repository; `dir` itself being a
@@ -1337,7 +1356,7 @@ impl Cli {
                     && file.is_relative()
                     && let Ok(rel) = cwd.strip_prefix(&root)
                 {
-                    *file = rel.join(&*file);
+                    *file = std::path::PathBuf::from(join_index_path(rel, &file.to_string_lossy()));
                 }
                 // PATH arguments are relative to where the command ran.
                 if let Ok(rel) = cwd.strip_prefix(&root) {
@@ -1350,7 +1369,7 @@ impl Cli {
                     };
                     for p in scope.into_iter().flatten() {
                         if std::path::Path::new(p.as_str()).is_relative() {
-                            *p = rel.join(&*p).to_string_lossy().into_owned();
+                            *p = join_index_path(rel, p);
                         }
                     }
                     // `--at runtime/x.rs:12` run in `tokio/src`: a path that exists from
@@ -1360,7 +1379,7 @@ impl Cli {
                         && std::path::Path::new(path).is_relative()
                         && cwd.join(path).is_file()
                     {
-                        *at = format!("{}:{line}", rel.join(path).to_string_lossy());
+                        *at = format!("{}:{line}", join_index_path(rel, path));
                     }
                 }
                 std::env::set_current_dir(&root)?;
@@ -1719,7 +1738,23 @@ impl Cli {
 
 #[cfg(test)]
 mod enclosing_index_tests {
-    use super::enclosing_index_root;
+    use super::{enclosing_index_root, join_index_path};
+
+    #[test]
+    fn rebased_paths_use_forward_slashes() {
+        let rel = std::path::Path::new("tokio").join("src");
+        assert_eq!(join_index_path(&rel, "util.rs"), "tokio/src/util.rs");
+        assert_eq!(
+            join_index_path(std::path::Path::new(""), "util.rs"),
+            "util.rs"
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                join_index_path(&rel, r"runtime\x.rs"),
+                "tokio/src/runtime/x.rs"
+            );
+        }
+    }
 
     #[test]
     fn enclosing_index_is_found_up_to_the_repository_root() {
