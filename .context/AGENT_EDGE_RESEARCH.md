@@ -635,3 +635,39 @@ and S is the run above). API-equivalent cost (Max plan usage, not a bill).
   except `globals` (A3 0.40, L2 0.00) and `async_trace_leaf` (L3 0.17).
 - Turns: tokio A 51–59, S 50–65, L 52–61. Reflex replaces some grep calls
   (S 25–38 vs A 39–43) but agents still read the code to trace each path.
+
+## Arm Lforce: text search denied, LSP routed — 2026-11-12, Sonnet 5.5, Claude Code 2.1.318
+
+L and Lnudge made 0 LSP calls in every session, so neither measured LSP. Lforce
+(`runner.py`) = L + `--disallowedTools Grep,Glob,Bash(grep:*),Bash(egrep:*),
+Bash(fgrep:*),Bash(rg:*),Bash(ag:*),Bash(ack:*),Bash(git grep:*),Bash(find:*)` + a
+system prompt routing to workspaceSymbol / findReferences / incomingCalls, with "the
+position is the line of the name, not of an attribute above it".
+- Checked first: deny rules hold under `--dangerously-skip-permissions`, also inside a
+  pipe (`cat f | grep x` denied) and in the comma-joined form the runner passes.
+- Smoke (tokio, `spawn_named`): LSP works, but `incomingCalls` on the `#[track_caller]`
+  line returns "No call hierarchy item"; on the name line it finds 2 callers. It misses
+  `Builder::spawn_on` (`task/builder.rs:108`, `cfg(tokio_unstable)`); `rfx refs --at`
+  lists all 3.
+
+API-equivalent cost (Max plan usage, not a bill). A and S are the earlier runs
+(unique trials; `sonnet55-at`/`at2`/`phase0-compiled` share A's trial).
+
+| Session | A | S | Lforce | S vs Lforce |
+| --- | --- | --- | --- | --- |
+| tokio explain (A 3, S 3, Lf 3) | 0.235, 1.000 | 0.192, 1.000 | 0.315, 1.000 | 0.61× |
+| ripgrep explain (1 each) | 0.239, 0.993 | 0.182, 0.984 | 0.281, 0.993 | 0.65×, −0.009 |
+| reflex explain (1 each) | 0.246, 1.000 | 0.223, 1.000 | 0.297, 1.000 | 0.75× |
+| tokio impact (A 3, S 2 latest, Lf 2) | 0.172, 1.000 | 0.188, 1.000 | 0.215, 1.000 | 0.88× |
+| tokio tests (3 each) | 1.050, 0.900 | 1.076, 0.915 | 1.252, 0.734 | 0.86×, +0.181 |
+| ripgrep tests (2 each) | 0.265, 0.958 | 0.287, 1.000 | 0.496, 1.000 | 0.58× |
+
+- LSP calls per session: 3–92 (tokio tests trial 3: 51 `incomingCalls`, 31
+  `findReferences`, 164 turns). 4 denied text-search attempts in that session.
+- Lforce costs more than A on every session (1.2–1.9×): a reference search needs a
+  position first, and each level of a caller walk is a call.
+- Accuracy: equal to A except tokio tests. Per question there: `is_cancelled` 0.0 in
+  all 3 trials (A and S: 1.0; trait dispatch), `globals` 0.4–1.0, `copy_to` 0.0–1.0.
+- **D5 vs LSP (Lforce):** explain met (0.61–0.75×), tests met (tokio +0.181 at 0.86×,
+  ripgrep 0.58× at equal accuracy), impact not (0.88×, needs ≤ 0.85×). Against A only
+  explain is met, so "both A and L on 2 of 3" is not yet met.

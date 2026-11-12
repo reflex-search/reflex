@@ -176,6 +176,29 @@ ARMS = {
             "at its position) over Grep. Use Grep for plain text and non-Rust files."
         ),
     },
+    "Lforce": {
+        "description": "Arm L with text search denied (Grep, Glob, shell grep/rg/find): the agent must search through the LSP tool; a system prompt says how",
+        "mcp_command": None,
+        "extra_flags": ["--strict-mcp-config", "--dangerously-skip-permissions",
+                        "--plugin-dir", str(SCRIPT_DIR / "plugins" / "lsp-rust")],
+        # Deny rules hold under --dangerously-skip-permissions, also inside pipes
+        # (`cat f | grep x` is denied; checked 2026-11-12 on 2.1.318).
+        "disallowed_tools": ["Grep", "Glob", "Bash(grep:*)", "Bash(egrep:*)", "Bash(fgrep:*)",
+                             "Bash(rg:*)", "Bash(ag:*)", "Bash(ack:*)", "Bash(git grep:*)",
+                             "Bash(find:*)"],
+        "allowed_tools": BUILTIN_TOOLS_MCP_ARMS + ["LSP"],
+        # L and Lnudge never called LSP (0 calls in every session, 2026-11-10/11), so
+        # neither measured it. The position tip comes from a smoke run: the agent asked
+        # for incomingCalls on the #[track_caller] line above the name and got nothing.
+        "append_system_prompt": (
+            "Text search is not available in this session: Grep, Glob, grep, rg and find "
+            "are denied. To find Rust code, use the LSP tool (rust-analyzer; load its schema "
+            "with ToolSearch first): workspaceSymbol to find a definition, then "
+            "findReferences, incomingCalls or outgoingCalls at its position. The position "
+            "is the line and column of the name itself, not of an attribute above it. "
+            "Read files with Read or sed."
+        ),
+    },
     "Beager_flat": {
         "description": "Arm Beager with list_locations as the flat [{path, line}] array (REFLEX_MCP_GROUPED=0), the shape before file grouping",
         "mcp_command": "TARGET_RELEASE_RFX",
