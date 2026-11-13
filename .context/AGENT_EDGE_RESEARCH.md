@@ -944,3 +944,20 @@ S 0.61× A's cost, 0.63× Askills'. Every S trial is cheaper than every grep tri
 
 **Haiku standing:** explain 0.61× (met), impact-wide 0.63× (met), tests not met.
 2 of 3 workflows → D5 met on Haiku 5.5. Sonnet 5.5: explain met, impact parity, tests ≈ parity.
+
+## Live: impact-wide on Opus 5.5 — 2026-11-13, `e2f9081`
+
+Same 8 unseen-key questions, `--warm-tree`, 3 trials, arms A, Askills, S
+(`results-sessions/opus55-impactwide-new/`). API-equivalent cost:
+
+| Arm | Turns | Calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- |
+| A | 25 | 17 | 136,399 | 0.608 | 0.972 |
+| Askills | 25 | 17 | 131,406 | 0.615 | 0.958 |
+| S | 21 | 13 (9 rfx) | 106,442 | 0.511 | **1.000** |
+
+- S 0.83× A's cost (median of sessions), 0.83× Askills' (means); weighted 0.78×.
+- Per trial: S $0.500–0.531; A $0.560–0.662; Askills $0.583–0.644. No overlap.
+- Grep arms miss part of `is_error` in 5 of 6 trials (F1 0.67); S is exact in 3 of 3.
+- **Impact meets D5 on Opus 5.5** (≤ 0.85× cost at better accuracy). Sonnet 5.5 is the
+  only model at parity: it filters grep lines in its head as well as `--at` does.

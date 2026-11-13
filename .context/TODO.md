@@ -54,6 +54,9 @@ Open follow-ups (2026-11-10):
   (tokio 0.89× at −0.035, ripgrep 1.09× at −0.229: the walk answers "may run", the key
   is "did run"; S gave up mid-session until the stop line). **Haiku: 2 of 3 met.**
   Open: tests needs a did-run judgment (the condition on the path), not a longer walk.
+  Opus 5.5 impact-wide (2026-11-13): S 0.83× A's cost, accuracy 1.000 vs 0.972 (grep
+  arms miss part of `is_error` in 5 of 6 trials): **met**. Impact: Haiku and Opus met,
+  Sonnet parity.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:
