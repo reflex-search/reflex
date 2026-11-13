@@ -442,3 +442,52 @@ fn refs_at_binds_uses_to_one_definition() {
         stdout(&out)
     );
 }
+
+/// Past 40 left-out lines, `--at` groups them by file with no text: a common name
+/// (`spawn`) left out 1,028 rows (84 KB), which the agent saw only as a preview.
+#[test]
+fn refs_at_groups_a_long_left_out_list_by_file() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub mod a;\npub mod b;\n").unwrap();
+    std::fs::write(
+        root.join("src/a.rs"),
+        "pub struct A;\n\
+         impl A {\n\
+         \x20   pub fn run(&self) -> u32 { 1 }\n\
+         }\n\
+         pub fn use_a(x: &A) -> u32 {\n\
+         \x20   x.run()\n\
+         }\n",
+    )
+    .unwrap();
+    let mut b = String::from("pub struct B;\nimpl B {\n    pub fn run(&self) -> u32 { 2 }\n}\n");
+    for i in 0..45 {
+        b.push_str(&format!(
+            "pub fn use_b{i}(y: B) -> u32 {{\n    y.run()\n}}\n"
+        ));
+    }
+    std::fs::write(root.join("src/b.rs"), b).unwrap();
+    let out = rfx(root, &["index", "--quiet"]);
+    assert!(out.status.success(), "rfx index failed: {}", stderr(&out));
+
+    let cli = json_out(root, &["refs", "run", "--json", "--at", "src/a.rs:3"]);
+    assert_eq!(cli["elsewhere"], 46, "{cli}");
+    assert!(cli.get("left_out").is_none(), "{cli}");
+    let lines = cli["left_out_by_file"]["src/b.rs"].as_array().unwrap();
+    assert_eq!(lines.len(), 46, "{cli}");
+    assert_eq!(lines[0], 3);
+    assert_eq!(lines[1], 6);
+
+    let out = rfx(root, &["refs", "run", "--at", "src/a.rs:3"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "left out (these name another item called run; lines by file):\nsrc/b.rs:3,6,9,"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("y.run()"), "no text past the cap: {text}");
+}

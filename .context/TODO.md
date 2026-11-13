@@ -50,6 +50,10 @@ Open follow-ups (2026-11-10):
   either on Sonnet. Haiku 5.5 (3 trials): S 0.63× A's cost, 0.45× turns, accuracy
   1.000 vs 0.986 (Askills 1.03×, 1.000): **meets D5 on Haiku**, no trial overlap.
   Binder tuning for impact stops here. AGENT_EDGE_RESEARCH.md.
+  Haiku 5.5, 2026-11-13: explain 0.61× A's cost at 1.000 (met); tests not met
+  (tokio 0.89× at −0.035, ripgrep 1.09× at −0.229: the walk answers "may run", the key
+  is "did run"; S gave up mid-session until the stop line). **Haiku: 2 of 3 met.**
+  Open: tests needs a did-run judgment (the condition on the path), not a longer walk.
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:

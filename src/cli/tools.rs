@@ -404,6 +404,21 @@ fn refs_text(data: &Value, at_hint: bool) -> String {
             row(&mut out, r);
         }
     }
+    // Past 40 lines: `path:line,line` per file, no text (`mcp::LEFT_OUT_ROWS`).
+    if let Some(by_file) = data["left_out_by_file"].as_object() {
+        out.push_str(&format!(
+            "left out (these name another item called {symbol}; lines by file):\n"
+        ));
+        for (path, lines) in by_file {
+            let lines: Vec<String> = lines
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|l| l.to_string())
+                .collect();
+            out.push_str(&format!("{path}:{}\n", lines.join(",")));
+        }
+    }
     out
 }
 

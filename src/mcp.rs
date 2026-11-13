@@ -3260,6 +3260,22 @@ fn bind_references(
             crate::bind::Verdict::Other => left_out.push(row),
         }
     }
+    let elsewhere = left_out.len();
+    // A common name (`spawn`, `new`) leaves out 1,000+ lines: 84 KB of rows, which
+    // Claude Code saves to a file and shows as a 2 KB preview. Haiku 5.5 then gave up
+    // walking callers (haiku55-explain-tests, 2026-11-13). Past the cap, the lines
+    // are grouped by file with no text (9 KB for `spawn`).
+    let left_out_by_file = (elsewhere > LEFT_OUT_ROWS).then(|| {
+        let mut by_file = serde_json::Map::new();
+        for r in left_out.drain(..) {
+            let path = r["path"].as_str().unwrap_or("").to_string();
+            let lines = by_file.entry(path).or_insert_with(|| json!([]));
+            if let Some(a) = lines.as_array_mut() {
+                a.push(r["line"].clone());
+            }
+        }
+        serde_json::Value::Object(by_file)
+    });
     let t = &binding.target;
     let mut definition = json!({
         "path": t.path,
@@ -3270,16 +3286,24 @@ fn bind_references(
     if let Some(ty) = &t.impl_type {
         definition["impl"] = json!(ty);
     }
-    Ok(json!({
+    let mut out = json!({
         "definition": definition,
         "references": bound,
         "returned_count": bound.len(),
         "possible": possible,
-        "elsewhere": left_out.len(),
-        "left_out": left_out,
+        "elsewhere": elsewhere,
         "has_more": false,
-    }))
+    });
+    match left_out_by_file {
+        Some(g) => out["left_out_by_file"] = g,
+        None => out["left_out"] = json!(left_out),
+    }
+    Ok(out)
 }
+
+/// The most lines `find_references` with `at` lists as rows (path, line, text) under
+/// `left_out`; past it they are `left_out_by_file` (`{path: [line, ...]}`).
+const LEFT_OUT_ROWS: usize = 40;
 
 /// Process a single JSON-RPC request
 fn process_request(

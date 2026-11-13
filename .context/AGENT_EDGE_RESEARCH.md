@@ -892,3 +892,55 @@ Reading: Haiku with grep does not filter in its head as Sonnet does: it reads fi
 (14 calls, 9 of them `rfx`). Impact-wide meets D5 on Haiku vs A and Askills
 (≤0.85× cost at equal or better accuracy). On Sonnet it is parity (above). The edge
 is the model's, not the corpus's: the weaker the filter, the larger the win.
+
+## Haiku 5.5: explain and tests — 2026-11-13, 2.3.1 + `--at` (`ef7e74c`, then `left_out_by_file`)
+
+`--warm-tree`, 3 trials per arm, API-equivalent cost (mean of trials).
+
+**Explain (tokio)** — `results-sessions/haiku55-explain-tests/`:
+
+| Arm | Cost $ | Turns | Acc |
+| --- | --- | --- | --- |
+| A | 0.024 | 41 | 1.000 |
+| Askills | 0.023 | 42 | 0.996 |
+| S | **0.015** | 25 | 1.000 |
+
+S 0.61× A's cost, 0.63× Askills'. Every S trial is cheaper than every grep trial.
+**Explain meets D5 on Haiku.**
+
+**Tests for a change** (key: tests that *did* run X; F1):
+
+| Run | Repo | Arm | Cost $ | Acc | Note |
+| --- | --- | --- | --- | --- | --- |
+| explain-tests | tokio | A | 0.975 | 0.982 | |
+| explain-tests | tokio | Askills | 0.965 | 0.878 | |
+| explain-tests | tokio | S (old line) | 0.592 | 0.769 | trial 3 gave up: 0.441, $0.053 |
+| tests-leftout | tokio | S (old line, grouped left-out) | 0.614 | 0.791 | trial 1 gave up: 0.540 |
+| tests-stop | tokio | S (stop line) | 0.868 | **0.947** | 3 of 3 finished |
+| tests-noline | tokio | S (no tests line) | 0.684 | 0.855 | trial 2 gave up: 0.611 |
+| tests-rg-grep | ripgrep | A | 0.044 | 1.000 | |
+| tests-rg-grep | ripgrep | Askills | 0.063 | 0.926 | trial 1 over-listed |
+| tests-stop | ripgrep | S (stop line) | 0.048 | 0.771 | trials 2, 3 over-listed |
+| tests-noline | ripgrep | S (no tests line) | 0.051 | 0.771 | same 3 questions, same trials |
+
+- **Giving up.** On tokio the `--at` walk reaches runtime-wide callers (`Runtime::spawn`:
+  51 uses, 61 possible; the park path through enum dispatch). Haiku then answers
+  "I did not finish, the list is partial", and repeats that on every later question in
+  3–5 turns. The grep arm reasons top-down ("every test that builds a runtime") and
+  never gives up.
+- **Output size was not the cause.** `rfx refs spawn --at runtime.rs:230` printed 127 KB
+  (1,028 left-out rows); Claude Code saved it to a file and showed a 2 KB preview. Past
+  40 left-out lines the answer now groups them by file with no text (`left_out_by_file`,
+  21.5 KB). Kept (it is 6× smaller), but a trial still gave up.
+- **The stop line fixed giving up on tokio**: "At a caller most tests reach (runtime
+  setup, `block_on`), stop the walk and list every test that uses it." 3 of 3 finished.
+  Removing the tests line brought giving up back (1 of 3). Kept.
+- **Over-listing on ripgrep is a may-run vs did-run error**, with or without the line:
+  `quit_byte` is reached statically by 132 tests (every `search_reader` test); the key
+  has 6 (the tests that set binary quit). The grep arm reads the condition; S lists the
+  static reach in 2 of 3 trials (Askills 1 of 3).
+- **Tests does not meet D5 on Haiku**: tokio 0.89× A's cost at −0.035 accuracy;
+  ripgrep 1.09× at −0.229. A walk answers "may run"; the question is "does run".
+
+**Haiku standing:** explain 0.61× (met), impact-wide 0.63× (met), tests not met.
+2 of 3 workflows → D5 met on Haiku 5.5. Sonnet 5.5: explain met, impact parity, tests ≈ parity.

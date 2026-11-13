@@ -280,7 +280,7 @@ the instructions follows the listing (`instructions()`).
 |------|--------|---------|
 | `search_code` | yes | Literal search with previews (default limit 200); `regex: true` = regex search (`->`, `::`, alternation); `mode: "count"` → `{count, files}` |
 | `list_locations` | yes | Path+line only, grouped by file (`{path: [line, ...]}`) — cheapest; `preview: true` gives `[line, text]` (120 chars); `REFLEX_MCP_GROUPED=0` = the flat `[{path, line}]` array |
-| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200); hidden `at: "path:line"` (Rust) keeps only the uses of that one definition (`src/bind.rs`; CLI `rfx refs X --at path:line`). Rust: each reference carries `in` (its caller) and `in_line` (the line of its name; the CLI prints `[in f:LINE]`); several same-name functions → `definitions` + a `hint` naming `at` |
+| `find_references` | yes | Definition + all usages in one atomic call (default limit: 200); hidden `at: "path:line"` (Rust) keeps only the uses of that one definition (`src/bind.rs`; CLI `rfx refs X --at path:line`). Rust: each reference carries `in` (its caller) and `in_line` (the line of its name; the CLI prints `[in f:LINE]`); several same-name functions → `definitions` + a `hint` naming `at`. Lines of other same-name items: `left_out` rows, or past 40 `left_out_by_file` (`{path: [line, ...]}`) |
 | `get_dependencies` | yes | What a file imports; `reverse: true` = what imports it; `depth: N` = transitive |
 | `analyze` | yes | Import graph: `kind` = summary / hotspots / circular / unused / islands (hidden with `[mcp] enable_structural_tools = false`) |
 | `search_ast` | `extra_tools` | Tree-sitter AST pattern matching (⚠️ slow — requires `glob`) |
