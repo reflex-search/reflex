@@ -3041,7 +3041,7 @@ fn dispatch_tool(
                 .collect();
 
             if let Some(at) = &at {
-                let mut response = bind_references(root, at, &pattern, &references)?;
+                let mut response = bind_references(root, at, &pattern, &references, &engine)?;
                 response["status"] = json!(ref_response.status);
                 if mode == "count" {
                     let count = response["references"].as_array().map_or(0, |r| r.len());
@@ -3076,6 +3076,9 @@ fn dispatch_tool(
             {
                 if let Some(c) = f.caller {
                     r["in"] = json!(c);
+                }
+                if let Some(l) = f.caller_line {
+                    r["in_line"] = json!(l);
                 }
                 // A definition the symbol cache missed (inside `cfg_rt! { … }`).
                 if let Some(kind) = f.defines {
@@ -3180,6 +3183,7 @@ fn bind_references(
     at: &str,
     pattern: &str,
     references: &[serde_json::Value],
+    engine: &QueryEngine,
 ) -> Result<serde_json::Value> {
     let lines: Vec<(String, usize)> = references
         .iter()
@@ -3190,7 +3194,34 @@ fn bind_references(
             ))
         })
         .collect();
-    let binding = crate::bind::bind(root, at, pattern, &lines)?;
+    // Every line that defines a type of a given name (the binder resolves a
+    // receiver's type path when two types share the target's `impl` type name).
+    let type_defs = |t: &str| -> Vec<(String, usize)> {
+        let filter = QueryFilter {
+            language: Some(Language::Rust),
+            use_regex: true,
+            limit: None,
+            exclude_text: true,
+            suppress_output: true,
+            timeout_secs: 10,
+            ..Default::default()
+        };
+        let pat = format!(r"\b(struct|enum|union|type|trait)\s+{}\b", regex::escape(t));
+        engine
+            .search_with_metadata(&pat, filter)
+            .map(|r| {
+                r.results
+                    .iter()
+                    .flat_map(|fg| {
+                        fg.matches
+                            .iter()
+                            .map(|m| (fg.path.clone(), m.span.start_line))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let binding = crate::bind::bind(root, at, pattern, &lines, &type_defs)?;
     let preview: std::collections::HashMap<(String, usize), &serde_json::Value> = references
         .iter()
         .filter_map(|r| {
@@ -3217,6 +3248,9 @@ fn bind_references(
         if let Some(c) = &l.caller {
             row["in"] = json!(c);
         }
+        if let Some(n) = l.caller_line {
+            row["in_line"] = json!(n);
+        }
         if l.import {
             row["import"] = json!(true);
         }
@@ -3226,6 +3260,22 @@ fn bind_references(
             crate::bind::Verdict::Other => left_out.push(row),
         }
     }
+    let elsewhere = left_out.len();
+    // A common name (`spawn`, `new`) leaves out 1,000+ lines: 84 KB of rows, which
+    // Claude Code saves to a file and shows as a 2 KB preview. Haiku 5.5 then gave up
+    // walking callers (haiku55-explain-tests, 2026-11-13). Past the cap, the lines
+    // are grouped by file with no text (9 KB for `spawn`).
+    let left_out_by_file = (elsewhere > LEFT_OUT_ROWS).then(|| {
+        let mut by_file = serde_json::Map::new();
+        for r in left_out.drain(..) {
+            let path = r["path"].as_str().unwrap_or("").to_string();
+            let lines = by_file.entry(path).or_insert_with(|| json!([]));
+            if let Some(a) = lines.as_array_mut() {
+                a.push(r["line"].clone());
+            }
+        }
+        serde_json::Value::Object(by_file)
+    });
     let t = &binding.target;
     let mut definition = json!({
         "path": t.path,
@@ -3236,16 +3286,24 @@ fn bind_references(
     if let Some(ty) = &t.impl_type {
         definition["impl"] = json!(ty);
     }
-    Ok(json!({
+    let mut out = json!({
         "definition": definition,
         "references": bound,
         "returned_count": bound.len(),
         "possible": possible,
-        "elsewhere": left_out.len(),
-        "left_out": left_out,
+        "elsewhere": elsewhere,
         "has_more": false,
-    }))
+    });
+    match left_out_by_file {
+        Some(g) => out["left_out_by_file"] = g,
+        None => out["left_out"] = json!(left_out),
+    }
+    Ok(out)
 }
+
+/// The most lines `find_references` with `at` lists as rows (path, line, text) under
+/// `left_out`; past it they are `left_out_by_file` (`{path: [line, ...]}`).
+const LEFT_OUT_ROWS: usize = 40;
 
 /// Process a single JSON-RPC request
 fn process_request(

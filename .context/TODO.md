@@ -32,8 +32,33 @@ Open follow-ups (2026-11-10):
   cost, 5 v 5 pooled); **impact** does not (S ≈ 1.13× A); **tests for a change** does
   not (tokio 3 trials: S 1.02× A cost, +0.015 accuracy; ripgrep 2 trials: 1.08×,
   +0.042). One question (`spawn_named`) decides the tests spread; S used `--at` on it in
-  1 of 3 trials. Vs L is not measured: L made 0 LSP calls in every session. D5 verdict
-  is the user's.
+  1 of 3 trials. D5 verdict is the user's.
+  Update 2026-11-12: arm Lforce (LSP forced) measured; caller walk (`[in f:LINE]`) built.
+  Explain met vs A and Lforce. Tests: vs Lforce met on tokio; vs A borderline on tokio
+  (median 0.99×, +0.065; mean 1.005×), ripgrep 1.20×. Impact met by neither
+  (1.08× A, 0.88× Lforce). AGENT_EDGE_RESEARCH.md.
+  Fair baseline 2026-11-12 (`--warm-tree`, arm Askills = A with the default skill
+  listing): explain 0.79×; impact 1.02×; tests (pooled n=11 v 8) 1.06× cost, +0.047.
+  **1 of 3 workflows meets D5 → the kill criterion applies. Verdict is the user's.**
+  2026-11-12: `impact` is biased (only unique names; 71 % of tokio fn names are
+  shared). Wide key built (`impact_keys.py`, deprecation probe + don't-care probe) and
+  the binder improved on it: `--at` sure precision 1.000 on tokio holdout, ripgrep and
+  reflex; exact 16/24, 24/24, 24/24. Unseen tokio set (scored before reading): exact
+  18/24, sure precision 1.000, recall 0.853. Live `impact-wide` (3 trials, unseen
+  keys): A, Askills, S all 1.000 accuracy; S 1.01× A's cost, Lforce 0.85× at 0.925.
+  Grep agents are already exact on these names, so impact-wide does not meet D5
+  either on Sonnet. Haiku 5.5 (3 trials): S 0.63× A's cost, 0.45× turns, accuracy
+  1.000 vs 0.986 (Askills 1.03×, 1.000): **meets D5 on Haiku**, no trial overlap.
+  Binder tuning for impact stops here. AGENT_EDGE_RESEARCH.md.
+  Haiku 5.5, 2026-11-13: explain 0.61× A's cost at 1.000 (met); tests not met
+  (tokio 0.89× at −0.035, ripgrep 1.09× at −0.229: the walk answers "may run", the key
+  is "did run"; S gave up mid-session until the stop line). **Haiku: 2 of 3 met.**
+  Open: tests needs a did-run judgment (the condition on the path), not a longer walk.
+  Opus 5.5 impact-wide (2026-11-13): S 0.83× A's cost, accuracy 1.000 vs 0.972 (grep
+  arms miss part of `is_error` in 5 of 6 trials): **met**. Impact: Haiku and Opus met,
+  Sonnet parity.
+  Opus 5.5 explain (2026-11-14): S 0.82× A, 0.88× Askills, accuracy 1.000 everywhere.
+  Table by model: AGENT_EDGE_RESEARCH.md "Standing by model".
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:

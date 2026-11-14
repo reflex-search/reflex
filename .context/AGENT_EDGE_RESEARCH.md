@@ -635,3 +635,353 @@ and S is the run above). API-equivalent cost (Max plan usage, not a bill).
   except `globals` (A3 0.40, L2 0.00) and `async_trace_leaf` (L3 0.17).
 - Turns: tokio A 51–59, S 50–65, L 52–61. Reflex replaces some grep calls
   (S 25–38 vs A 39–43) but agents still read the code to trace each path.
+
+## Arm Lforce: text search denied, LSP routed — 2026-11-12, Sonnet 5.5, Claude Code 2.1.318
+
+L and Lnudge made 0 LSP calls in every session, so neither measured LSP. Lforce
+(`runner.py`) = L + `--disallowedTools Grep,Glob,Bash(grep:*),Bash(egrep:*),
+Bash(fgrep:*),Bash(rg:*),Bash(ag:*),Bash(ack:*),Bash(git grep:*),Bash(find:*)` + a
+system prompt routing to workspaceSymbol / findReferences / incomingCalls, with "the
+position is the line of the name, not of an attribute above it".
+- Checked first: deny rules hold under `--dangerously-skip-permissions`, also inside a
+  pipe (`cat f | grep x` denied) and in the comma-joined form the runner passes.
+- Smoke (tokio, `spawn_named`): LSP works, but `incomingCalls` on the `#[track_caller]`
+  line returns "No call hierarchy item"; on the name line it finds 2 callers. It misses
+  `Builder::spawn_on` (`task/builder.rs:108`, `cfg(tokio_unstable)`); `rfx refs --at`
+  lists all 3.
+
+API-equivalent cost (Max plan usage, not a bill). A and S are the earlier runs
+(unique trials; `sonnet55-at`/`at2`/`phase0-compiled` share A's trial).
+
+| Session | A | S | Lforce | S vs Lforce |
+| --- | --- | --- | --- | --- |
+| tokio explain (A 3, S 3, Lf 3) | 0.235, 1.000 | 0.192, 1.000 | 0.315, 1.000 | 0.61× |
+| ripgrep explain (1 each) | 0.239, 0.993 | 0.182, 0.984 | 0.281, 0.993 | 0.65×, −0.009 |
+| reflex explain (1 each) | 0.246, 1.000 | 0.223, 1.000 | 0.297, 1.000 | 0.75× |
+| tokio impact (A 3, S 2 latest, Lf 2) | 0.172, 1.000 | 0.188, 1.000 | 0.215, 1.000 | 0.88× |
+| tokio tests (3 each) | 1.050, 0.900 | 1.076, 0.915 | 1.252, 0.734 | 0.86×, +0.181 |
+| ripgrep tests (2 each) | 0.265, 0.958 | 0.287, 1.000 | 0.496, 1.000 | 0.58× |
+
+- LSP calls per session: 3–92 (tokio tests trial 3: 51 `incomingCalls`, 31
+  `findReferences`, 164 turns). 4 denied text-search attempts in that session.
+- Lforce costs more than A on every session (1.2–1.9×): a reference search needs a
+  position first, and each level of a caller walk is a call.
+- Accuracy: equal to A except tokio tests. Per question there: `is_cancelled` 0.0 in
+  all 3 trials (A and S: 1.0; trait dispatch), `globals` 0.4–1.0, `copy_to` 0.0–1.0.
+- **D5 vs LSP (Lforce):** explain met (0.61–0.75×), tests met (tokio +0.181 at 0.86×,
+  ripgrep 0.58× at equal accuracy), impact not (0.88×, needs ≤ 0.85×). Against A only
+  explain is met, so "both A and L on 2 of 3" is not yet met.
+
+## Caller walk (`[in f:LINE]` + tests routing line): S, 2 more A trials — 2026-11-12, Sonnet 5.5, `5f3a98e`
+
+`[in spawn:188]` on each use (JSON `in_line`), and the hook/skill route "which tests
+reach X" to walking callers with `--at`. S: tokio tests ×5, ripgrep tests ×2, tokio
+explain ×3, impact ×2 (`results-sessions/sonnet55-walk`); A: tokio tests ×2 more
+(`sonnet55-walk-A`; pooled with the 3 in `sonnet55-tests`). API-equivalent cost.
+
+| Session | A | S (walk) | Lforce |
+| --- | --- | --- | --- |
+| tokio tests, cost mean / median | 1.095 / 1.116 (n=5) | 1.100 / 1.105 (n=5) | 1.252 / 1.274 (n=3) |
+| tokio tests, acc mean / median | 0.881 / 0.875 | **0.937 / 0.940** | 0.734 / 0.704 |
+| ripgrep tests, cost / acc | 0.265 / 0.958 (n=2) | 0.319 / 0.938 (n=2) | 0.496 / 1.000 |
+| tokio explain, cost / acc | 0.235 / 1.000 | 0.192 / 0.985 (n=3) | 0.315 / 1.000 |
+| tokio impact, cost / acc | 0.172 / 1.000 | 0.185 / 1.000 (n=2) | 0.215 / 1.000 |
+
+- Routing took: every `rfx refs` in the tests sessions passed `--at` (12–17 per
+  session; before: 7–14 of 22–30). `spawn_named` 1.0 in 4 of 5 trials (before 1 of 3,
+  A 2 of 5).
+- tokio tests vs A: +0.056 accuracy (mean), +0.065 (median); cost 1.005× (mean), 0.99×
+  (median). **D5's accuracy rule is met on medians and missed by 0.5 % on means.**
+- ripgrep tests got worse: 1.20× A's cost (walk adds calls: 11–12 rfx vs 1–8 before),
+  and trial 2 missed `trim_ascii_prefix` by giving each `fn` line + 1 (2287 for
+  `fn trim_ascii` at 2286): an agent error, the grader is right.
+- Explain and impact unchanged (explain 0.82× A; impact 1.08× A; agents still use
+  grep for 8–10 of the impact lookups).
+- **D5 by workflow now:** explain met vs A and Lforce; tests met vs Lforce on tokio
+  (0.88×, +0.20), vs A borderline on tokio and not met on ripgrep; impact met by
+  neither (vs A 1.08×, vs Lforce 0.88×).
+
+## Fair baseline: `--warm-tree` and arm Askills — 2026-11-12, Sonnet 5.5, `f28a03f`
+
+Two bench asymmetries, both against arm S, found in the impact transcripts:
+1. **Working directory in the prompt.** Each trial has its own tree path; text after it
+   missed the per-arm warm-up. Same "Reply OK" call: S in a new directory read 11,208 /
+   wrote 5,998, in the same directory read 17,206 / wrote 0; A 16,848 / 2,915.
+   `session_bench.py run --warm-tree` makes one uncounted call in each trial's tree.
+   Effect: small (first message reads +1.7K in both arms). S still wrote 4,331 in its
+   first message vs A's 1,284: the skill listing and the hook sit in the first user
+   message, which every new session writes once.
+2. **A ran with skills disabled** (`--disable-slash-commands`); a default install lists
+   19 bundled skills (S lists them + `reflex:reflex`). Arm **Askills** = A with them
+   (user skills still out). Its first message writes 3,726.
+
+Also in this run: the impact routing line restored (`--at` on 8 of 8 impact questions
+again; the folded callers+tests line had dropped it to 0 of 16).
+
+tokio, API-equivalent cost (mean of trials), all with `--warm-tree`:
+
+| Session | A | Askills | S | S vs Askills |
+| --- | --- | --- | --- | --- |
+| explain (2 each) | 0.231, 1.000 | 0.237, 1.000 | 0.189, 1.000 | **0.79×** (weighted 0.74×) |
+| impact (3 each) | 0.171, 1.000 | 0.182, 1.000 | 0.185, 1.000 | 1.02× (weighted 1.00×) |
+| tests (3 each) | 1.048, 0.843 | 1.035, 0.905 | 1.185, 0.905 | 1.14×, ±0.000 |
+
+- The skill listing costs Askills only +$0.006–0.011 per session, less than estimated.
+- tests, every tokio trial since the caller walk (`sonnet55-tests`, `-walk`, `-walk-A`,
+  `-warmtree`): Grep arms n=11 cost 1.066, acc 0.877 (sd 0.050); S n=8 cost 1.132, acc
+  0.925 (sd 0.046). **S vs Grep: 1.06× cost, +0.047 accuracy.**
+- Impact is one lookup per question in both arms (21–23 turns per 8 questions); grep
+  answers it in one call, so `--at` cannot save turns there.
+
+**D5 (Sonnet 5.5, tokio-led):** explain met vs Grep (0.79×) and LSP (Lforce 0.61×);
+tests met vs LSP only (vs Grep 1.06×, +0.047: both conditions missed, narrowly);
+impact met by neither (1.02× Grep, 0.88× Lforce). 1 of 3 workflows; D5 needs 2.
+
+## Impact is biased toward easy names; a wide key and the binder on any fn — 2026-11-12, 2.3.1 + `--at`
+
+**Bias.** The `impact` sessions take only `pub` items with a name defined once and
+5–30 grep hits (`session_bench.py candidates()`). In tokio/src, 71 % of 3,966 fn
+definitions share their name with another one (only 1,177 names are unique). Those
+are the cases where grep over-fetches and a binder can win; the benchmark leaves them out.
+Grep answers a unique name in one call, so `impact` measured the case Reflex cannot win.
+
+**Wide key** (`benches/efficacy/impact_keys.py`). Any fn in a compiled file, in hash
+order, not a trait-impl method, 3–25 use sites:
+- Sites: `#[deprecated(note = "REFLEX_PROBE")]` above the fn, `cargo check` for each
+  CHECKS entry, plus one build without the RUSTFLAGS cfgs (tokio: no `tokio_unstable`).
+  Each warning's primary span is a site. Unlike adding a parameter, the build keeps
+  going, so test code is checked too. It matched the parameter key exactly on
+  `set_thread_id` and `copy_to`. `use` lines are dropped (a `util::{` group line too).
+  A trait-impl method cannot carry the attribute: skipped.
+- Don't care: a line that names the fn, is not a site, and sits in code no build
+  compiled. Found with a live probe: an undefined name at the start of the enclosing fn
+  body, of a `#[cfg(..)] { .. }` block, or before a `#[cfg(..)]` statement (the attribute
+  is copied, so the probe and the statement share the cfg). No error → don't care.
+  Examples: `cfg_metrics_variant!` stable branches, `tokio_unstable + tracing`
+  `let s = resource_span.in_scope(|| Semaphore::new(..))`, ripgrep `aarch64` blocks.
+  Graders drop don't-care lines from both sides.
+- `session_bench.py generate-impact-wide [--keys FILE ...] [--n 8] [--skip N]` writes
+  `<repo>-session-impact-wide`; `grade` drops `dontcare`; `score_at.py` reads it.
+
+**Binder changes** (`src/bind.rs`), each with a unit test:
+- A `use` inside a block shadows the module's names (`semaphore_batch.rs:264`).
+- `Arc::new(T::new())`, `Rc::new`, `Box::new`, `Box::pin` are a `T`.
+- `let (a, b) = f()` / `q::f()` / an imported `f()`: the tuple element of `f`'s return
+  type (same file, a path, or an import). `_` counts as an element.
+- A method's return type is tagged where it is written (`-> &inject::Shared<..>`).
+- `?` and `.await` keep the receiver type; methods not declared on the type that keep
+  it: `project`, `lock`, `borrow(_mut)`, `get_mut`, `read`, `write`, `as_ref`,
+  `as_mut`, `as_deref`, `context`, `with_context`, `map_err`, `ok`, `ok_or(_else)`,
+  `unwrap_or(_else)`, `cloned`, `copied` (this crate's types only).
+- `type EntryList = LinkedList<..>`: a unique alias resolves to its type.
+- Every type name defined twice or more is tagged with its module (`homes_of`, cached),
+  not only the target's. A field read (`h.inner`, `self.shared`) reads the struct in
+  that module; a shared name with no known module gives "unknown" (was: the first
+  struct of that name in a HashMap, so random). This fixed a hidden miss (true lines
+  scored "other") that the wider tags exposed in `self.shared.inject.push(..)`.
+
+**Scores** (`--at`, sure lines vs the key; "+possible" = sure + possible lines):
+
+| Set | Exact | Sure precision | Sure recall | +possible recall | Possible lines (grep lines) |
+| --- | --- | --- | --- | --- | --- |
+| tokio dev, 24 (tuned on) | 21 | 0.980 | 0.943 | 1.000 | 464 (6,463) |
+| tokio holdout, 24 | 16 | 1.000 | 0.839 | 1.000 | 331 (3,415) |
+| ripgrep, 24 | 24 | 1.000 | 1.000 | 1.000 | 42 (2,943) |
+| reflex, 24 | 24 | 1.000 | 1.000 | 1.000 | 110 (4,383) |
+
+Before this round (old key, tokio dev): exact 13/24, precision 0.735, recall 0.714.
+Caveats: the ripgrep and reflex keys were fixed after their misses were read (key
+defects: `use` groups, `aarch64` blocks); one reflex binder case (`open(..).context(..)?`)
+was fixed after it was seen. A fresh tokio set (questions 49–72) was not looked at
+before scoring: see the next section. Correction (2026-11-12): the two tokio dev
+"extras" (`tests/queue.rs:15, 28`) were key defects, not cfg twins. `in_use` read a
+statement after a `use` line as part of it; the key now ends a `use` at `;` or `}`.
+Left as "possible" on purpose: closure parameters (`with_inner(|inner| inner.list..)`),
+a value from a generic cell (`ctx.get()` in a `match`), trait dispatch.
+
+### Binder round 2 and an unseen tokio set — 2026-11-12, 2.3.1 + `--at` (`5bad2c0`)
+
+Binder changes (`src/bind.rs`), each with a unit test:
+- Wrapper-named types: an inherent `impl<T> UnsafeCell<T>` is the crate's own type, a
+  trait `impl X for Arc<Handle>` is Handle's. The target's own wrapper-named type is
+  not unwrapped (tokio's loom `UnsafeCell`, its async `Mutex`).
+- Labelled macro arms (`cfg_metrics_variant! { stable: {..}, unstable: {..} }`) are
+  blanked before parsing, so the enclosing `impl` parses.
+- Closure parameters: written type, a struct pattern, or the callee's bound
+  (`F: FnOnce(&mut Inner)`). Match arms, `if let`, `while let`: `Some`/`Ok` of the
+  scrutinee, a tuple variant or tuple struct field. Later `let`s shadow them.
+- `Self` in a written type is the impl type. A `receiver_type` depth guard (64) turns
+  a missed cycle into "unknown", never a stack overflow (`watch.rs:992` overflowed).
+- Another crate (or the package's `tests/`) reaches only a plain `pub` fn of a plain
+  `pub` type: tokio-util's `buf.is_empty()` is Other for `pub(crate)`
+  `LinkedList::is_empty`. Dependencies are not checked (ripgrep core reaches
+  grep-printer through the `grep` facade).
+- `use a::b::{self as c}` is an alias of `b`. A lifetime is not a generic's type
+  (`MutexGuard<'_, InnerState>` → InnerState).
+- A chain reaching a type that no input file declares the method for reads the file
+  that defines the type: the tagged home module, or the only file defining that name
+  (`lock.wheel.poll(now)` → `TimerHandle`). Reading every file of that name merged
+  tokio's many `Handle`/`Inner` methods and lost true lines: do not widen it.
+- A method returning another module's type of the same name resolves the written
+  path (`scheduler::Handle::driver() -> &driver::Handle`); it was read as `-> Self`.
+
+Key fix: `impact_keys.py` `in_use` ends a `use` at `;`/`}` (the old rule dropped
+`oneshot.rs:1433`, `tests/queue.rs:15,28`). `--after PATH:LINE` continues a set.
+
+| Set | Exact /24 | Sure precision | Sure recall | +possible recall | Possible lines (grep) |
+| --- | --- | --- | --- | --- | --- |
+| tokio dev (seen) | 23 | 1.000 | 0.981 | 1.000 | 199 (6,463) |
+| tokio holdout (seen this round) | 19 | 1.000 | 0.889 | 1.000 | 212 (3,415) |
+| tokio fresh, 49–72 (seen this round) | 22 | 0.993 | 0.986 | 1.000 | 198 (4,304) |
+| **tokio unseen, 73–96 (scored before any miss was read)** | **18** | **1.000** | **0.853** | **1.000** | 172 (3,103) |
+| ripgrep | 24 | 1.000 | 1.000 | 1.000 | 20 (2,943) |
+| reflex | 24 | 1.000 | 1.000 | 1.000 | 110 (4,383) |
+
+Reading: on names the binder has not been tuned on, a "sure" line is always a true
+site, and sure lines hold 85 % of the sites; the rest are in the "possible" lines
+(172 against grep's 3,103). The fresh set went 20 → 22 exact, recall 0.801 → 0.986,
+but only after its misses were read: the unseen set is the honest number.
+Still "possible" by design or not yet handled: std `thread_local!` `with`, a call in
+`write!`, an `Err((x, ..))` arm (needs the `Err` type), `let (c, r) = ctx.enter(.., || ..)`.
+
+**After the unseen score** (the set is now seen): calls inside expression macros
+(`ready!(..)`, `assert_eq!(..)`, `write!(..)`: `!` → `_`, same offsets, put back when the
+arguments do not parse), indexing on any field path (`dst.inner.buffer[i]`), and
+`a & b` / `a | b` of one known type. Unseen set 18 → 19 exact, recall 0.853 → 0.894;
+holdout 19 → 20, 0.889 → 0.894; dev, fresh, ripgrep, reflex unchanged.
+
+### Live: impact-wide on the unseen keys — 2026-11-12, Sonnet 5.5, 3 trials, `5bad2c0`
+
+8 questions (the first 8 of the unseen set: `reset`, `with` (18 sites), `async_io` (24),
+`wake_rx`, `instant_to_tick`, `poll_write_vectored_priv`, `new` (4 sites in ~1,146 grep
+lines), `is_error`), `--warm-tree`, arms A, Askills, Lforce, S. Graded by F1 vs the key.
+
+| Arm | Turns | Calls | Weighted tokens | Cost (API-equivalent) | Accuracy | Cost vs A |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 22 | 14 | 102,670 | $0.246 | 1.000 | — |
+| Askills | 24 | 16 | 107,146 | $0.263 | 1.000 | 1.07× |
+| Lforce | 28 | 20 | 99,939 | $0.210 | 0.925 | 0.85× |
+| S | 19 | 11 | 106,223 | $0.250 | 1.000 | 1.01× |
+
+Reading: Grep agents are already exact here. They read the `\bname\b` lines and filter
+them in their head (`with`: one 6 KB grep, 18/18; `new`: grep the type name
+`MetricAtomicU64`, not `new`). Every arm needs 2–4 turns per question, and the fixed
+prefix decides the cost. S uses fewer calls (11 vs 14) but carries the skill text: parity.
+The binder's offline gains do not show up as accuracy, because the baseline has none
+to lose. D5 is not met on impact (needs ≤0.85× at equal accuracy). Do not tune the
+binder further for this workflow; a win has to come from questions where the grep
+answer is too large to filter by reading (hundreds of lines, many files).
+
+### Live: impact-wide on Haiku 5.5 — 2026-11-12, 3 trials, `ef7e74c`
+
+Same 8 unseen-key questions, `--warm-tree`, arms A, Askills, S (no Lforce).
+
+| Arm | Turns | Calls | Weighted tokens | Cost (API-equivalent) | Accuracy |
+| --- | --- | --- | --- | --- | --- |
+| A | 49 | 41 | 248,452 | $0.038 | 0.986 |
+| Askills | 58 | 50 | 244,008 | $0.039 | 1.000 |
+| S | 22 | 14 | 152,846 | $0.024 | 1.000 |
+
+Ratios vs A (median of sessions): S cost 0.63×, weighted 0.62×, turns 0.45×; Askills
+cost 1.03×. Per trial, S cost $0.0234 / $0.0239 / $0.0247; A $0.0380 / $0.0349 /
+$0.0444; Askills $0.0349 / $0.0465 / $0.0392: no overlap. Accuracy: S 1.000 in every
+trial; A lost one question in trial 3 (0.958).
+
+Reading: Haiku with grep does not filter in its head as Sonnet does: it reads files
+(41 calls for 8 questions, 16 of them greps). With `--at` it takes the answer
+(14 calls, 9 of them `rfx`). Impact-wide meets D5 on Haiku vs A and Askills
+(≤0.85× cost at equal or better accuracy). On Sonnet it is parity (above). The edge
+is the model's, not the corpus's: the weaker the filter, the larger the win.
+
+## Haiku 5.5: explain and tests — 2026-11-13, 2.3.1 + `--at` (`ef7e74c`, then `left_out_by_file`)
+
+`--warm-tree`, 3 trials per arm, API-equivalent cost (mean of trials).
+
+**Explain (tokio)** — `results-sessions/haiku55-explain-tests/`:
+
+| Arm | Cost $ | Turns | Acc |
+| --- | --- | --- | --- |
+| A | 0.024 | 41 | 1.000 |
+| Askills | 0.023 | 42 | 0.996 |
+| S | **0.015** | 25 | 1.000 |
+
+S 0.61× A's cost, 0.63× Askills'. Every S trial is cheaper than every grep trial.
+**Explain meets D5 on Haiku.**
+
+**Tests for a change** (key: tests that *did* run X; F1):
+
+| Run | Repo | Arm | Cost $ | Acc | Note |
+| --- | --- | --- | --- | --- | --- |
+| explain-tests | tokio | A | 0.975 | 0.982 | |
+| explain-tests | tokio | Askills | 0.965 | 0.878 | |
+| explain-tests | tokio | S (old line) | 0.592 | 0.769 | trial 3 gave up: 0.441, $0.053 |
+| tests-leftout | tokio | S (old line, grouped left-out) | 0.614 | 0.791 | trial 1 gave up: 0.540 |
+| tests-stop | tokio | S (stop line) | 0.868 | **0.947** | 3 of 3 finished |
+| tests-noline | tokio | S (no tests line) | 0.684 | 0.855 | trial 2 gave up: 0.611 |
+| tests-rg-grep | ripgrep | A | 0.044 | 1.000 | |
+| tests-rg-grep | ripgrep | Askills | 0.063 | 0.926 | trial 1 over-listed |
+| tests-stop | ripgrep | S (stop line) | 0.048 | 0.771 | trials 2, 3 over-listed |
+| tests-noline | ripgrep | S (no tests line) | 0.051 | 0.771 | same 3 questions, same trials |
+
+- **Giving up.** On tokio the `--at` walk reaches runtime-wide callers (`Runtime::spawn`:
+  51 uses, 61 possible; the park path through enum dispatch). Haiku then answers
+  "I did not finish, the list is partial", and repeats that on every later question in
+  3–5 turns. The grep arm reasons top-down ("every test that builds a runtime") and
+  never gives up.
+- **Output size was not the cause.** `rfx refs spawn --at runtime.rs:230` printed 127 KB
+  (1,028 left-out rows); Claude Code saved it to a file and showed a 2 KB preview. Past
+  40 left-out lines the answer now groups them by file with no text (`left_out_by_file`,
+  21.5 KB). Kept (it is 6× smaller), but a trial still gave up.
+- **The stop line fixed giving up on tokio**: "At a caller most tests reach (runtime
+  setup, `block_on`), stop the walk and list every test that uses it." 3 of 3 finished.
+  Removing the tests line brought giving up back (1 of 3). Kept.
+- **Over-listing on ripgrep is a may-run vs did-run error**, with or without the line:
+  `quit_byte` is reached statically by 132 tests (every `search_reader` test); the key
+  has 6 (the tests that set binary quit). The grep arm reads the condition; S lists the
+  static reach in 2 of 3 trials (Askills 1 of 3).
+- **Tests does not meet D5 on Haiku**: tokio 0.89× A's cost at −0.035 accuracy;
+  ripgrep 1.09× at −0.229. A walk answers "may run"; the question is "does run".
+
+**Haiku standing:** explain 0.61× (met), impact-wide 0.63× (met), tests not met.
+2 of 3 workflows → D5 met on Haiku 5.5. Sonnet 5.5: explain met, impact parity, tests ≈ parity.
+
+## Live: impact-wide on Opus 5.5 — 2026-11-13, `e2f9081`
+
+Same 8 unseen-key questions, `--warm-tree`, 3 trials, arms A, Askills, S
+(`results-sessions/opus55-impactwide-new/`). API-equivalent cost:
+
+| Arm | Turns | Calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- |
+| A | 25 | 17 | 136,399 | 0.608 | 0.972 |
+| Askills | 25 | 17 | 131,406 | 0.615 | 0.958 |
+| S | 21 | 13 (9 rfx) | 106,442 | 0.511 | **1.000** |
+
+- S 0.83× A's cost (median of sessions), 0.83× Askills' (means); weighted 0.78×.
+- Per trial: S $0.500–0.531; A $0.560–0.662; Askills $0.583–0.644. No overlap.
+- Grep arms miss part of `is_error` in 5 of 6 trials (F1 0.67); S is exact in 3 of 3.
+- **Impact meets D5 on Opus 5.5** (≤ 0.85× cost at better accuracy). Sonnet 5.5 is the
+  only model at parity: it filters grep lines in its head as well as `--at` does.
+
+## Live: explain on Opus 5.5 — 2026-11-14, `5824911`
+
+tokio explain, `--warm-tree`, 3 trials (`results-sessions/opus55-explain/`):
+
+| Arm | Turns | Calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- |
+| A | 25 | 17 | 118,319 | 0.491 | 1.000 |
+| Askills | 24 | 16 | 99,459 | 0.459 | 1.000 |
+| S | 17 | 9 (8 rfx) | 82,121 | 0.403 | 1.000 |
+
+- S 0.82× A's cost, **0.88× Askills'** (means); weighted 0.69× A. No trial overlap
+  (S $0.402–0.403; Askills $0.432–0.490; A $0.464–0.517).
+- Meets D5 vs A; vs Askills it misses the 0.85× bar by 0.03 at equal accuracy.
+
+## Standing by model — 2026-11-14
+
+Cost of S (the `reflex` plugin) ÷ grep, tokio unless named; vs A / vs Askills:
+
+| Workflow | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 |
+| --- | --- | --- | --- |
+| explain | 0.61× / 0.63×, acc = | 0.82× / 0.80×, acc = | 0.82× / 0.88×, acc = |
+| impact-wide | 0.63× / 0.62×, acc +0.014 | 1.01× / 0.95×, acc = | 0.84× / 0.83×, acc +0.03 |
+| tests | 0.89×, −0.035 (ripgrep 1.09×, −0.229) | 1.06×, +0.047 (pooled) | not measured |

@@ -125,6 +125,23 @@ The CLI route costs less than MCP on every session measured: its fixed text is a
 hook, not 7.8 KB of schemas. Method and per-session numbers:
 `.context/AGENT_EDGE_RESEARCH.md`.
 
+**Workflow sessions (the `reflex` plugin with `rfx refs --at`, 2026-11-12 to 2026-11-14,
+tokio, 3 trials per arm).** Each session is 8 questions of one kind. Cost of Reflex ÷ built-in
+Grep/Glob (API-equivalent cost); accuracy is F1 against compiler-checked or test-run keys:
+
+| Workflow | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 |
+|---|---|---|---|
+| Explain a function (what it calls, which functions call it) | **0.61×**, equal accuracy | **0.82×**, equal | **0.82×**, equal |
+| What breaks if a function changes (every use of *that* definition) | **0.63×**, 1.000 vs 0.986 | 1.01×, equal | **0.84×**, 1.000 vs 0.972 |
+| Which unit tests run a function | 0.89×, 0.947 vs 0.982 (ripgrep: 1.09×, 0.771 vs 1.000) | 1.06×, +0.047 | not measured |
+
+Reflex wins most where grep returns many lines that name *other* items of the same name:
+`rfx refs X --at FILE:LINE` keeps only the uses of that one definition, so the agent does
+not open files to check each line. Sonnet 5.5 filters those lines in its head about as well,
+so impact is a tie there. The tests workflow is not a win: a caller walk finds the tests that
+*may* run a function; the question is which ones *do*. Method and per-trial numbers:
+`.context/AGENT_EDGE_RESEARCH.md`.
+
 **Honest reading (2.0.3, MCP).** Reflex does not save tokens over built-in search in these agent runs.
 Its value is capability: symbol-aware search, dependency analysis, `find_references` in one
 call, exact counts without loading content, and more complete answers from weaker models on

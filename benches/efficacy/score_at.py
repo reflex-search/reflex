@@ -60,18 +60,20 @@ def main() -> None:
     sessions = json.loads(Path(args.sessions).read_text())["sessions"]
     rows = []
     for s in sessions:
-        if s["kind"] not in ("explain", "impact") or s["repo"] not in args.repos:
+        if s["kind"] not in ("explain", "impact", "impact-wide") or s["repo"] not in args.repos:
             continue
         tree = ck.KEYS_WORK / s["repo"]
         scope = SCOPES[s["repo"]]
         for st in s["steps"]:
             k = st["key"]
-            want_sites = set(k["sites"])
-            want_callers = set(k["callers"])
+            # impact-wide: lines no build compiled are don't-care (impact_keys.py).
+            dc = set(k.get("dontcare", []))
+            want_sites = set(k["sites"]) - dc
+            want_callers = set(k.get("callers", []))
             plain = refs(args.rfx, tree, k["name"], scope, None)
             at = refs(args.rfx, tree, k["name"], scope, k["where"])
             plain_sites = {loc(r) for r in plain.get("references", [])
-                           if loc(r) != k["where"] and not USE.match(r.get("preview", ""))}
+                           if loc(r) != k["where"] and not USE.match(r.get("preview", ""))} - dc
             if "error" in at:
                 row = dict(repo=s["repo"], kind=s["kind"], name=k["name"], error=at["error"],
                            plain=f1(plain_sites, want_sites), at=0.0, at_poss=0.0, callers=0.0,
@@ -79,8 +81,8 @@ def main() -> None:
                 rows.append(row)
                 continue
             bound = [r for r in at["references"] if not r.get("import")]
-            at_sites = {loc(r) for r in bound}
-            poss = {loc(r) for r in at.get("possible", []) if not r.get("import")}
+            at_sites = {loc(r) for r in bound} - dc - {k["where"]}
+            poss = {loc(r) for r in at.get("possible", []) if not r.get("import")} - dc
             # `in: "macro_rules! m"`: a use in a macro body, not a calling function.
             callers = {r["in"] for r in bound if r.get("in") and not r["in"].startswith("macro_rules!")}
             row = dict(repo=s["repo"], kind=s["kind"], name=k["name"],
