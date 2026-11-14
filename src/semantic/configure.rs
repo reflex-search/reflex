@@ -251,11 +251,8 @@ impl ConfigWizard {
             WizardScreen::SortStrategySelection => self.handle_sort_strategy_key(key),
             WizardScreen::ConnectivityTest => Ok(false), // No input during test
             WizardScreen::Result { .. } => {
-                // Any key exits on result screen
-                if key.code == KeyCode::Enter || key.code == KeyCode::Char('q') {
-                    return Ok(true);
-                }
-                Ok(false)
+                // Enter or q exits the result screen
+                Ok(key.code == KeyCode::Enter || key.code == KeyCode::Char('q'))
             }
         }
     }
