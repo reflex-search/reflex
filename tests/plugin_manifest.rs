@@ -111,8 +111,18 @@ fn session_start_hook_routes_to_rfx() {
         "the hook must stay silent without rfx"
     );
     let text = std::fs::read_to_string(dir.join("routing.md")).expect("routing.md");
-    // Every session pays for this text: keep it short.
-    assert!(text.len() < 1200, "routing.md is {} bytes", text.len());
+    // Every session pays for this text: keep it short. 1200 → 1300 (2026-11-12): the
+    // tests line ("repeat `--at` … up to the tests") folded into the callers line cost
+    // the impact sessions their `--at` use (16 of 16 → 0 of 16), so both stay whole.
+    // 1300 → 1400 (2026-11-13): the tests line names where to stop the walk; Haiku 5.5
+    // walked into runtime-wide callers and gave up (haiku55-explain-tests).
+    assert!(text.len() < 1400, "routing.md is {} bytes", text.len());
+    for needle in [
+        "Callers of a function, or what breaks if it changes: `rfx refs X --at FILE:LINE` (its definition) lists only its uses.",
+        "Tests that run it: repeat `--at` on each `[in CALLER:LINE]` up to the tests. At a caller most tests reach (runtime setup, `block_on`), stop the walk and list every test that uses it.",
+    ] {
+        assert!(text.contains(needle), "lost: {needle}");
+    }
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
         "prefer `rfx` over Grep, Glob, ripgrep, or shell grep",
