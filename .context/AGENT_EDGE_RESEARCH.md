@@ -961,3 +961,27 @@ Same 8 unseen-key questions, `--warm-tree`, 3 trials, arms A, Askills, S
 - Grep arms miss part of `is_error` in 5 of 6 trials (F1 0.67); S is exact in 3 of 3.
 - **Impact meets D5 on Opus 5.5** (≤ 0.85× cost at better accuracy). Sonnet 5.5 is the
   only model at parity: it filters grep lines in its head as well as `--at` does.
+
+## Live: explain on Opus 5.5 — 2026-11-14, `5824911`
+
+tokio explain, `--warm-tree`, 3 trials (`results-sessions/opus55-explain/`):
+
+| Arm | Turns | Calls | Weighted | Cost $ | Acc |
+| --- | --- | --- | --- | --- | --- |
+| A | 25 | 17 | 118,319 | 0.491 | 1.000 |
+| Askills | 24 | 16 | 99,459 | 0.459 | 1.000 |
+| S | 17 | 9 (8 rfx) | 82,121 | 0.403 | 1.000 |
+
+- S 0.82× A's cost, **0.88× Askills'** (means); weighted 0.69× A. No trial overlap
+  (S $0.402–0.403; Askills $0.432–0.490; A $0.464–0.517).
+- Meets D5 vs A; vs Askills it misses the 0.85× bar by 0.03 at equal accuracy.
+
+## Standing by model — 2026-11-14
+
+Cost of S (the `reflex` plugin) ÷ grep, tokio unless named; vs A / vs Askills:
+
+| Workflow | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 |
+| --- | --- | --- | --- |
+| explain | 0.61× / 0.63×, acc = | 0.82× / 0.80×, acc = | 0.82× / 0.88×, acc = |
+| impact-wide | 0.63× / 0.62×, acc +0.014 | 1.01× / 0.95×, acc = | 0.84× / 0.83×, acc +0.03 |
+| tests | 0.89×, −0.035 (ripgrep 1.09×, −0.229) | 1.06×, +0.047 (pooled) | not measured |

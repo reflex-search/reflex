@@ -57,6 +57,8 @@ Open follow-ups (2026-11-10):
   Opus 5.5 impact-wide (2026-11-13): S 0.83× A's cost, accuracy 1.000 vs 0.972 (grep
   arms miss part of `is_error` in 5 of 6 trials): **met**. Impact: Haiku and Opus met,
   Sonnet parity.
+  Opus 5.5 explain (2026-11-14): S 0.82× A, 0.88× Askills, accuracy 1.000 everywhere.
+  Table by model: AGENT_EDGE_RESEARCH.md "Standing by model".
 - [ ] Arm L (LSP): built (L, Lnudge). On code-only questions the agent never called
   `LSP`, even nudged: L ≈ A. On tokio `explain` / `impact` (2026-11-11) L made 0 LSP
   calls again: L ≈ A, S 1.10× A, accuracy 1.000 in all arms. Still unmeasured: Opus, more than 1 trial. Results:
